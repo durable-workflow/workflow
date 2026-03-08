@@ -121,7 +121,6 @@ final class ChildWorkflowStubTest extends TestCase
         };
 
         $storedChildWorkflow = Mockery::mock();
-        $storedChildWorkflow->status = new \stdClass();
         $storedChildWorkflow->shouldReceive('toWorkflow')
             ->once()
             ->andReturn($childWorkflow);
@@ -199,7 +198,6 @@ final class ChildWorkflowStubTest extends TestCase
             );
 
         $storedChildWorkflow = Mockery::mock();
-        $storedChildWorkflow->status = new \stdClass();
         $storedChildWorkflow->shouldReceive('toWorkflow')
             ->once()
             ->andReturnUsing(static function () use ($childWorkflow, $childContextStoredWorkflow) {
@@ -273,7 +271,6 @@ final class ChildWorkflowStubTest extends TestCase
             );
 
         $storedChildWorkflow = Mockery::mock();
-        $storedChildWorkflow->status = new \stdClass();
         $storedChildWorkflow->shouldReceive('toWorkflow')
             ->once()
             ->andReturn($childWorkflow);
@@ -328,7 +325,7 @@ final class ChildWorkflowStubTest extends TestCase
         $this->assertSame(['test'], $result);
     }
 
-    public function testThrowsExceptionWhenChildWorkflowFailed(): void
+    public function testThrowsExceptionWhenLogContainsException(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
@@ -336,22 +333,16 @@ final class ChildWorkflowStubTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
         ]);
-
-        $childWorkflow = WorkflowStub::make(TestChildWorkflow::class);
-        $storedChild = StoredWorkflow::findOrFail($childWorkflow->id());
-        $storedChild->update([
-            'arguments' => Serializer::serialize([]),
-            'status' => \Workflow\States\WorkflowFailedStatus::$name,
-        ]);
-        $storedChild->exceptions()
+        $storedWorkflow->logs()
             ->create([
-                'class' => TestChildWorkflow::class,
-                'exception' => Serializer::serialize(new \Exception('child failed')),
-            ]);
-        $storedWorkflow->children()
-            ->attach($storedChild, [
-                'parent_index' => 0,
-                'parent_now' => WorkflowStub::now(),
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => \Workflow\Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => \Exception::class,
+                    'message' => 'child failed',
+                    'code' => 0,
+                ]),
             ]);
 
         WorkflowStub::setContext([
@@ -367,7 +358,7 @@ final class ChildWorkflowStubTest extends TestCase
         ChildWorkflowStub::make(TestChildWorkflow::class);
     }
 
-    public function testThrowsRuntimeExceptionWhenChildFailedWithoutException(): void
+    public function testThrowsRuntimeExceptionWhenExceptionClassCannotBeInstantiated(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
@@ -375,17 +366,16 @@ final class ChildWorkflowStubTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
         ]);
-
-        $childWorkflow = WorkflowStub::make(TestChildWorkflow::class);
-        $storedChild = StoredWorkflow::findOrFail($childWorkflow->id());
-        $storedChild->update([
-            'arguments' => Serializer::serialize([]),
-            'status' => \Workflow\States\WorkflowFailedStatus::$name,
-        ]);
-        $storedWorkflow->children()
-            ->attach($storedChild, [
-                'parent_index' => 0,
-                'parent_now' => WorkflowStub::now(),
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => \Workflow\Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => \Tests\Fixtures\TestRequiredArgException::class,
+                    'message' => 'bad type',
+                    'code' => 0,
+                ]),
             ]);
 
         WorkflowStub::setContext([
@@ -396,7 +386,7 @@ final class ChildWorkflowStubTest extends TestCase
         ]);
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Child workflow ' . TestChildWorkflow::class . ' failed');
+        $this->expectExceptionMessage('[Tests\Fixtures\TestRequiredArgException] bad type');
 
         ChildWorkflowStub::make(TestChildWorkflow::class);
     }

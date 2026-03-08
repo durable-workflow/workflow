@@ -301,12 +301,16 @@ final class WorkflowStub
                     return;
                 }
 
-                try {
-                    $parentWorkflow->toWorkflow()
-                        ->resume();
-                } catch (TransitionNotFound) {
-                    return;
-                }
+                Exception::dispatch(
+                    $parentWorkflow->pivot->parent_index,
+                    $parentWorkflow->pivot->parent_now,
+                    $parentWorkflow,
+                    [
+                        'class' => get_class($exception),
+                        'message' => $exception->getMessage(),
+                        'code' => $exception->getCode(),
+                    ]
+                );
             });
     }
 

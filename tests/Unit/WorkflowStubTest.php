@@ -516,4 +516,40 @@ final class WorkflowStubTest extends TestCase
         $this->assertTrue($workflow->failed());
         $this->assertTrue($parentWorkflow->fresh()->failed());
     }
+
+    public function testFailDispatchesExceptionJobForNormalChildParent(): void
+    {
+        Queue::fake();
+
+        $parentWorkflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedParentWorkflow = StoredWorkflow::findOrFail($parentWorkflow->id());
+        $storedParentWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $childStub = WorkflowStub::make(TestWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($childStub->id());
+        $storedWorkflow->update([
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->parents()
+            ->attach($storedParentWorkflow, [
+                'parent_index' => 0,
+                'parent_now' => now(),
+            ]);
+
+        $workflow = WorkflowStub::load($childStub->id());
+        $workflow->fail(new Exception('child workflow failed'));
+
+        $this->assertTrue($workflow->failed());
+
+        Queue::assertPushed(\Workflow\Exception::class, static function ($job) use ($storedParentWorkflow) {
+            return $job->index === 0
+                && $job->storedWorkflow->id === $storedParentWorkflow->id
+                && $job->exception['class'] === Exception::class
+                && $job->exception['message'] === 'child workflow failed';
+        });
+    }
 }

@@ -12,7 +12,6 @@ use RuntimeException;
 use Throwable;
 use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Serializers\Serializer;
-use Workflow\States\WorkflowFailedStatus;
 
 final class ChildWorkflowStub
 {
@@ -49,43 +48,30 @@ final class ChildWorkflowStub
         if ($log) {
             ++$context->index;
             WorkflowStub::setContext($context);
-            return resolve(Serializer::unserialize($log->result));
+            $result = Serializer::unserialize($log->result);
+            if (
+                is_array($result)
+                && array_key_exists('class', $result)
+                && is_subclass_of($result['class'], Throwable::class)
+            ) {
+                try {
+                    $throwable = new $result['class']($result['message'] ?? '', (int) ($result['code'] ?? 0));
+                } catch (Throwable $throwable) {
+                    throw new RuntimeException(
+                        sprintf('[%s] %s', $result['class'], (string) ($result['message'] ?? '')),
+                        (int) ($result['code'] ?? 0),
+                        $throwable
+                    );
+                }
+                throw $throwable;
+            }
+            return resolve($result);
         }
 
         if (! $context->replaying) {
             $storedChildWorkflow = $context->storedWorkflow->children()
                 ->wherePivot('parent_index', $context->index)
                 ->first();
-
-            if ($storedChildWorkflow && $storedChildWorkflow->status::class === WorkflowFailedStatus::class) {
-                ++$context->index;
-                WorkflowStub::setContext($context);
-                $childException = $storedChildWorkflow->exceptions()
-                    ->latest()
-                    ->first();
-                if ($childException) {
-                    $exceptionData = Serializer::unserialize($childException->exception);
-                    if (
-                        is_array($exceptionData)
-                        && array_key_exists('class', $exceptionData)
-                        && is_subclass_of($exceptionData['class'], Throwable::class)
-                    ) {
-                        try {
-                            throw new $exceptionData['class'](
-                                $exceptionData['message'] ?? '',
-                                (int) ($exceptionData['code'] ?? 0)
-                            );
-                        } catch (Throwable $throwable) {
-                            throw new RuntimeException(
-                                sprintf('[%s] %s', $exceptionData['class'], (string) ($exceptionData['message'] ?? '')),
-                                (int) ($exceptionData['code'] ?? 0),
-                                $throwable
-                            );
-                        }
-                    }
-                }
-                throw new RuntimeException('Child workflow ' . $workflow . ' failed');
-            }
 
             $childWorkflow = $storedChildWorkflow ? $storedChildWorkflow->toWorkflow() : WorkflowStub::make($workflow);
 
