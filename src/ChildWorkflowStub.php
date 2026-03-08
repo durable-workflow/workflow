@@ -8,8 +8,11 @@ use function React\Promise\all;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use function React\Promise\resolve;
+use RuntimeException;
+use Throwable;
 use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Serializers\Serializer;
+use Workflow\States\WorkflowFailedStatus;
 
 final class ChildWorkflowStub
 {
@@ -53,6 +56,36 @@ final class ChildWorkflowStub
             $storedChildWorkflow = $context->storedWorkflow->children()
                 ->wherePivot('parent_index', $context->index)
                 ->first();
+
+            if ($storedChildWorkflow && $storedChildWorkflow->status::class === WorkflowFailedStatus::class) {
+                ++$context->index;
+                WorkflowStub::setContext($context);
+                $childException = $storedChildWorkflow->exceptions()
+                    ->latest()
+                    ->first();
+                if ($childException) {
+                    $exceptionData = Serializer::unserialize($childException->exception);
+                    if (
+                        is_array($exceptionData)
+                        && array_key_exists('class', $exceptionData)
+                        && is_subclass_of($exceptionData['class'], Throwable::class)
+                    ) {
+                        try {
+                            throw new $exceptionData['class'](
+                                $exceptionData['message'] ?? '',
+                                (int) ($exceptionData['code'] ?? 0)
+                            );
+                        } catch (Throwable $throwable) {
+                            throw new RuntimeException(
+                                sprintf('[%s] %s', $exceptionData['class'], (string) ($exceptionData['message'] ?? '')),
+                                (int) ($exceptionData['code'] ?? 0),
+                                $throwable
+                            );
+                        }
+                    }
+                }
+                throw new RuntimeException('Child workflow ' . $workflow . ' failed');
+            }
 
             $childWorkflow = $storedChildWorkflow ? $storedChildWorkflow->toWorkflow() : WorkflowStub::make($workflow);
 

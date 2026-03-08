@@ -288,9 +288,22 @@ final class WorkflowStub
 
         $this->storedWorkflow->parents()
             ->each(static function ($parentWorkflow) use ($exception) {
+                if (
+                    $parentWorkflow->pivot->parent_index === StoredWorkflow::CONTINUE_PARENT_INDEX
+                    || $parentWorkflow->pivot->parent_index === StoredWorkflow::ACTIVE_WORKFLOW_INDEX
+                ) {
+                    try {
+                        $parentWorkflow->toWorkflow()
+                            ->fail($exception);
+                    } catch (TransitionNotFound) {
+                        return;
+                    }
+                    return;
+                }
+
                 try {
                     $parentWorkflow->toWorkflow()
-                        ->fail($exception);
+                        ->resume();
                 } catch (TransitionNotFound) {
                     return;
                 }
