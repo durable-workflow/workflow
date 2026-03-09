@@ -288,12 +288,44 @@ final class WorkflowStub
 
         $this->storedWorkflow->parents()
             ->each(static function ($parentWorkflow) use ($exception) {
-                try {
-                    $parentWorkflow->toWorkflow()
-                        ->fail($exception);
-                } catch (TransitionNotFound) {
+                if (
+                    $parentWorkflow->pivot->parent_index === StoredWorkflow::CONTINUE_PARENT_INDEX
+                    || $parentWorkflow->pivot->parent_index === StoredWorkflow::ACTIVE_WORKFLOW_INDEX
+                ) {
+                    try {
+                        $parentWorkflow->toWorkflow()
+                            ->fail($exception);
+                    } catch (TransitionNotFound) {
+                        return;
+                    }
                     return;
                 }
+
+                $file = new SplFileObject($exception->getFile());
+                $iterator = new LimitIterator($file, max(0, $exception->getLine() - 4), 7);
+
+                $throwable = [
+                    'class' => get_class($exception),
+                    'message' => $exception->getMessage(),
+                    'code' => $exception->getCode(),
+                    'line' => $exception->getLine(),
+                    'file' => $exception->getFile(),
+                    'trace' => collect($exception->getTrace())
+                        ->filter(static fn ($trace) => Serializer::serializable($trace))
+                        ->toArray(),
+                    'snippet' => array_slice(iterator_to_array($iterator), 0, 7),
+                ];
+
+                $parentWf = $parentWorkflow->toWorkflow();
+
+                Exception::dispatch(
+                    $parentWorkflow->pivot->parent_index,
+                    $parentWorkflow->pivot->parent_now,
+                    $parentWorkflow,
+                    $throwable,
+                    $parentWf->connection(),
+                    $parentWf->queue()
+                );
             });
     }
 

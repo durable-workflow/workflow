@@ -53,10 +53,18 @@ final class ParentWorkflowTest extends TestCase
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
         $storedWorkflow->status = WorkflowCreatedStatus::class;
         $storedWorkflow->save();
+        $storedWorkflow->logs()
+            ->delete();
+        $storedWorkflow->exceptions()
+            ->delete();
 
         $storedChildWorkflow = StoredWorkflow::findOrFail($workflow->id() + 1);
         $storedChildWorkflow->status = WorkflowCreatedStatus::class;
         $storedChildWorkflow->save();
+        $storedChildWorkflow->logs()
+            ->delete();
+        $storedChildWorkflow->exceptions()
+            ->delete();
 
         $workflow->fresh()
             ->start(shouldThrow: false);

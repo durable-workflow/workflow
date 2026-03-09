@@ -18,6 +18,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\Signal;
 use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowCreatedStatus;
+use Workflow\States\WorkflowFailedStatus;
 use Workflow\States\WorkflowPendingStatus;
 use Workflow\States\WorkflowWaitingStatus;
 use Workflow\Timer;
@@ -55,7 +56,6 @@ final class WorkflowStubTest extends TestCase
             ]);
         $workflow->fail(new Exception('test'));
         $this->assertTrue($workflow->failed());
-        $this->assertTrue($parentWorkflow->failed());
 
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
         $storedWorkflow->status = WorkflowCreatedStatus::class;
@@ -459,5 +459,97 @@ final class WorkflowStubTest extends TestCase
 
         $result2 = $workflow->receive();
         $this->assertSame('You said: second', $result2);
+    }
+
+    public function testFailPropagatesFailToContinueParent(): void
+    {
+        $parentWorkflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedParentWorkflow = StoredWorkflow::findOrFail($parentWorkflow->id());
+        $storedParentWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $childStub = WorkflowStub::make(TestWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($childStub->id());
+        $storedWorkflow->update([
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->parents()
+            ->attach($storedParentWorkflow, [
+                'parent_index' => StoredWorkflow::CONTINUE_PARENT_INDEX,
+                'parent_now' => now(),
+            ]);
+
+        $workflow = WorkflowStub::load($childStub->id());
+        $workflow->fail(new Exception('continue parent fail'));
+
+        $this->assertTrue($workflow->failed());
+        $this->assertTrue($parentWorkflow->fresh()->failed());
+    }
+
+    public function testFailContinueParentHandlesTransitionNotFound(): void
+    {
+        $parentWorkflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedParentWorkflow = StoredWorkflow::findOrFail($parentWorkflow->id());
+        $storedParentWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowFailedStatus::$name,
+        ]);
+
+        $childStub = WorkflowStub::make(TestWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($childStub->id());
+        $storedWorkflow->update([
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->parents()
+            ->attach($storedParentWorkflow, [
+                'parent_index' => StoredWorkflow::CONTINUE_PARENT_INDEX,
+                'parent_now' => now(),
+            ]);
+
+        $workflow = WorkflowStub::load($childStub->id());
+        $workflow->fail(new Exception('continue parent already failed'));
+
+        $this->assertTrue($workflow->failed());
+        $this->assertTrue($parentWorkflow->fresh()->failed());
+    }
+
+    public function testFailDispatchesExceptionJobForNormalChildParent(): void
+    {
+        Queue::fake();
+
+        $parentWorkflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedParentWorkflow = StoredWorkflow::findOrFail($parentWorkflow->id());
+        $storedParentWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $childStub = WorkflowStub::make(TestWorkflow::class);
+        $storedWorkflow = StoredWorkflow::findOrFail($childStub->id());
+        $storedWorkflow->update([
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        $storedWorkflow->parents()
+            ->attach($storedParentWorkflow, [
+                'parent_index' => 0,
+                'parent_now' => now(),
+            ]);
+
+        $workflow = WorkflowStub::load($childStub->id());
+        $workflow->fail(new Exception('child workflow failed'));
+
+        $this->assertTrue($workflow->failed());
+
+        Queue::assertPushed(\Workflow\Exception::class, static function ($job) use ($storedParentWorkflow) {
+            return $job->index === 0
+                && $job->storedWorkflow->id === $storedParentWorkflow->id
+                && $job->exception['class'] === Exception::class
+                && $job->exception['message'] === 'child workflow failed';
+        });
     }
 }
