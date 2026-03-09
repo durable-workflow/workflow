@@ -301,15 +301,30 @@ final class WorkflowStub
                     return;
                 }
 
+                $file = new SplFileObject($exception->getFile());
+                $iterator = new LimitIterator($file, max(0, $exception->getLine() - 4), 7);
+
+                $throwable = [
+                    'class' => get_class($exception),
+                    'message' => $exception->getMessage(),
+                    'code' => $exception->getCode(),
+                    'line' => $exception->getLine(),
+                    'file' => $exception->getFile(),
+                    'trace' => collect($exception->getTrace())
+                        ->filter(static fn ($trace) => Serializer::serializable($trace))
+                        ->toArray(),
+                    'snippet' => array_slice(iterator_to_array($iterator), 0, 7),
+                ];
+
+                $parentWf = $parentWorkflow->toWorkflow();
+
                 Exception::dispatch(
                     $parentWorkflow->pivot->parent_index,
                     $parentWorkflow->pivot->parent_now,
                     $parentWorkflow,
-                    [
-                        'class' => get_class($exception),
-                        'message' => $exception->getMessage(),
-                        'code' => $exception->getCode(),
-                    ]
+                    $throwable,
+                    $parentWf->connection(),
+                    $parentWf->queue()
                 );
             });
     }
