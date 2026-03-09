@@ -53,7 +53,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         try {
             if ($this->storedWorkflow->hasLogByIndex($this->index)) {
                 $workflow->resume();
-            } else {
+            } elseif (! $this->storedWorkflow->logs()->where('class', self::class)->exists()) {
                 $workflow->next($this->index, $this->now, self::class, $this->exception);
             }
         } catch (TransitionNotFound) {

@@ -64,11 +64,6 @@ final class ChildWorkflowStub
                 }
 
                 if ($log) {
-                    $context->storedWorkflow->logs()
-                        ->where('index', '>', $context->index)
-                        ->where('class', Exception::class)
-                        ->delete();
-
                     ++$context->index;
                     WorkflowStub::setContext($context);
                     try {
