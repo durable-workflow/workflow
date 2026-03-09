@@ -12,7 +12,6 @@ use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
-use Illuminate\Routing\RouteDependencyResolverTrait;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
@@ -24,6 +23,7 @@ use Workflow\Middleware\ActivityMiddleware;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
+use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\Traits\SerializesModels;
 
 class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
@@ -31,7 +31,7 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
     use Dispatchable;
     use InteractsWithQueue;
     use Queueable;
-    use RouteDependencyResolverTrait;
+    use ResolvesMethodDependencies;
     use SerializesModels;
 
     public $tries = PHP_INT_MAX;

@@ -13,7 +13,6 @@ use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
-use Illuminate\Routing\RouteDependencyResolverTrait;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\App;
 use React\Promise\PromiseInterface;
@@ -27,6 +26,7 @@ use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowContinuedStatus;
 use Workflow\States\WorkflowRunningStatus;
 use Workflow\States\WorkflowWaitingStatus;
+use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\Traits\Sagas;
 use Workflow\Traits\SerializesModels;
 
@@ -35,7 +35,7 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
     use Dispatchable;
     use InteractsWithQueue;
     use Queueable;
-    use RouteDependencyResolverTrait;
+    use ResolvesMethodDependencies;
     use Sagas;
     use SerializesModels;
 

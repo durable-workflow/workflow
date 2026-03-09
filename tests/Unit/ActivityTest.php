@@ -9,6 +9,7 @@ use Exception;
 use Tests\Fixtures\TestExceptionActivity;
 use Tests\Fixtures\TestInvalidActivity;
 use Tests\Fixtures\TestNonRetryableExceptionActivity;
+use Tests\Fixtures\TestNullableArgumentsActivity;
 use Tests\Fixtures\TestOtherActivity;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
@@ -153,5 +154,29 @@ final class ActivityTest extends TestCase
 
         $this->assertSame('http://localhost/webhooks/start/test-workflow', $activity->webhookUrl());
         $this->assertSame('http://localhost/webhooks/signal/test-workflow/1/cancel', $activity->webhookUrl('cancel'));
+    }
+
+    public function testNullArgumentsDoNotShift(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $activity = new TestNullableArgumentsActivity(
+            0,
+            now()
+                ->toDateTimeString(),
+            StoredWorkflow::findOrFail($workflow->id()),
+            ['report1'],
+            null,
+            4,
+            'hours'
+        );
+
+        $result = $activity->handle();
+
+        $this->assertSame([
+            'reports' => ['report1'],
+            'min' => null,
+            'max' => 4,
+            'comparing' => 'hours',
+        ], $result);
     }
 }
