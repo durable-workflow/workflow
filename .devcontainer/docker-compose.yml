@@ -1,3 +1,5 @@
+name: workflow
+
 version: "3"
 services:
   app:
@@ -5,7 +7,7 @@ services:
     volumes:
       - ../:/workspace:cached
     ports:
-      - 80:80
+      - ${WORKFLOW_APP_PORT:-18180}:80
     tty: true
     environment:
         APP_ENV: local
@@ -17,7 +19,7 @@ services:
     image: postgres:13
     restart: unless-stopped
     ports:
-        - 5432:5432
+        - ${WORKFLOW_DB_PORT:-15432}:5432
     environment:
         POSTGRES_DB: laravel
         POSTGRES_USER: laravel
@@ -25,8 +27,8 @@ services:
   redis:
     image: redis:6-alpine
     ports:
-      - 6379:6379
+      - ${WORKFLOW_REDIS_PORT:-16380}:6379
   mailhog:
     image: mailhog/mailhog
     ports:
-      - 8025:8025
+      - ${WORKFLOW_MAILHOG_PORT:-18025}:8025
