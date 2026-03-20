@@ -146,9 +146,7 @@ class StoredWorkflow extends Model
         if ($this->relationLoaded('logs')) {
             /** @var Collection<int, StoredWorkflowLog> $logs */
             $logs = $this->getRelation('logs');
-            return $logs->first(
-                static fn (StoredWorkflowLog $log): bool => self::modelHasIndex($log, $index)
-            );
+            return $logs->first(static fn (StoredWorkflowLog $log): bool => self::modelHasIndex($log, $index));
         }
 
         return $this->logs()
@@ -236,14 +234,6 @@ class StoredWorkflow extends Model
         return $this->signals()
             ->orderBy('created_at')
             ->get();
-    }
-
-    private static function modelHasIndex(Model $model, int $index): bool
-    {
-        // Use raw attributes so loaded relations never fall back to Eloquent's magic relation lookup.
-        $attributes = $model->getAttributes();
-
-        return array_key_exists('index', $attributes) && (int) $attributes['index'] === $index;
     }
 
     public function exceptions(): \Illuminate\Database\Eloquent\Relations\HasMany
@@ -345,5 +335,13 @@ class StoredWorkflow extends Model
         if ($workflow->id !== $this->id) {
             $workflow->delete();
         }
+    }
+
+    private static function modelHasIndex(Model $model, int $index): bool
+    {
+        // Use raw attributes so loaded relations never fall back to Eloquent's magic relation lookup.
+        $attributes = $model->getAttributes();
+
+        return array_key_exists('index', $attributes) && (int) $attributes['index'] === $index;
     }
 }
