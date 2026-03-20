@@ -323,6 +323,33 @@ final class StoredWorkflowTest extends TestCase
         $this->assertCount(0, DB::getQueryLog());
     }
 
+    public function testFindLogByIndexDoesNotUseFirstWhereForLoadedLogsRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $log = $workflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => 'test',
+            ]);
+
+        $workflow->setRelation('logs', new class([$log]) extends \Illuminate\Database\Eloquent\Collection {
+            public function firstWhere($key, $operator = null, $value = null)
+            {
+                throw new \BadMethodCallException('Loaded log lookup should not rely on firstWhere.');
+            }
+        });
+
+        $foundLog = $workflow->findLogByIndex(0);
+
+        $this->assertNotNull($foundLog);
+        $this->assertSame($log->id, $foundLog->id);
+    }
+
     public function testCreateLogSyncsLoadedLogsRelation(): void
     {
         $workflow = StoredWorkflow::create([
@@ -370,6 +397,33 @@ final class StoredWorkflowTest extends TestCase
 
         $this->assertNotNull($timer);
         $this->assertCount(0, DB::getQueryLog());
+    }
+
+    public function testFindTimerByIndexDoesNotUseFirstWhereForLoadedTimersRelation(): void
+    {
+        $workflow = StoredWorkflow::create([
+            'class' => 'TestWorkflow',
+            'status' => 'running',
+        ]);
+
+        $timer = $workflow->timers()
+            ->create([
+                'index' => 3,
+                'stop_at' => now()
+                    ->addSecond(),
+            ]);
+
+        $workflow->setRelation('timers', new class([$timer]) extends \Illuminate\Database\Eloquent\Collection {
+            public function firstWhere($key, $operator = null, $value = null)
+            {
+                throw new \BadMethodCallException('Loaded timer lookup should not rely on firstWhere.');
+            }
+        });
+
+        $foundTimer = $workflow->findTimerByIndex(3);
+
+        $this->assertNotNull($foundTimer);
+        $this->assertSame($timer->id, $foundTimer->id);
     }
 
     public function testFindTimerByIndexQueriesWhenTimersRelationIsNotLoaded(): void
