@@ -51,11 +51,14 @@ final class WorkflowTest extends TestCase
 
         $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
         $this->assertSame('workflow_activity_other', $workflow->output());
-        $this->assertSame([TestActivity::class, TestOtherActivity::class, Signal::class], $workflow->logs()
-            ->pluck('class')
-            ->sort()
-            ->values()
-            ->toArray());
+        $this->assertSame(
+            [TestActivity::class, TestOtherActivity::class, TestWorkflow::class, Signal::class],
+            $workflow->logs()
+                ->pluck('class')
+                ->sort()
+                ->values()
+                ->toArray()
+        );
     }
 
     public function testTestSignalExceptionWorkflowEarly(): void

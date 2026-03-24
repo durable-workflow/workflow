@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures;
 
+use AssertionError;
 use Illuminate\Contracts\Foundation\Application;
 use Workflow\QueryMethod;
 use Workflow\SignalMethod;
@@ -32,16 +33,22 @@ class TestBadConnectionWorkflow extends Workflow
 
     public function execute(Application $app, $shouldAssert = false)
     {
-        assert($app->runningInConsole());
+        if (! $app->runningInConsole()) {
+            throw new AssertionError('Test workflows must run in console.');
+        }
 
         if ($shouldAssert) {
-            assert(yield sideEffect(fn (): bool => ! $this->canceled));
+            if (! (yield sideEffect(fn (): bool => ! $this->canceled))) {
+                throw new AssertionError('Workflow should not be canceled before the first activity.');
+            }
         }
 
         $otherResult = yield activity(TestOtherActivity::class, 'other');
 
         if ($shouldAssert) {
-            assert(yield sideEffect(fn (): bool => ! $this->canceled));
+            if (! (yield sideEffect(fn (): bool => ! $this->canceled))) {
+                throw new AssertionError('Workflow should not be canceled before awaiting the signal.');
+            }
         }
 
         yield await(fn (): bool => $this->canceled);
