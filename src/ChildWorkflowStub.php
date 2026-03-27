@@ -85,7 +85,9 @@ final class ChildWorkflowStub
                 }
             }
 
-            if ((! $childWorkflow->running() || $childWorkflow->created()) && ! $childWorkflow->completed()) {
+            $runningStartedChildWorkflow = $childWorkflow->running() && ! $childWorkflow->created();
+
+            if (! $runningStartedChildWorkflow && ! $childWorkflow->completed()) {
                 $childWorkflow->startAsChild($context->storedWorkflow, $context->index, $context->now, ...$arguments);
             }
         }
