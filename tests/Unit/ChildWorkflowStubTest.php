@@ -9,7 +9,6 @@ use Tests\Fixtures\TestChildWorkflow;
 use Tests\Fixtures\TestParentWorkflow;
 use Tests\TestCase;
 use Workflow\ChildWorkflowStub;
-use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
@@ -92,33 +91,18 @@ final class ChildWorkflowStubTest extends TestCase
         $this->assertNull($result);
     }
 
-    public function testIgnoresTransitionNotFoundWhenChildResumeThrows(): void
+    public function testDoesNotResumeRunningStartedChildWorkflow(): void
     {
-        $childWorkflow = new class() {
-            public function running(): bool
-            {
-                return true;
-            }
-
-            public function created(): bool
-            {
-                return false;
-            }
-
-            public function resume(): void
-            {
-                throw TransitionNotFound::make('running', 'pending', StoredWorkflow::class);
-            }
-
-            public function completed(): bool
-            {
-                return false;
-            }
-
-            public function startAsChild(...$arguments): void
-            {
-            }
-        };
+        $childWorkflow = Mockery::mock();
+        $childWorkflow->shouldReceive('running')
+            ->once()
+            ->andReturn(true);
+        $childWorkflow->shouldReceive('created')
+            ->once()
+            ->andReturn(false);
+        $childWorkflow->shouldNotReceive('completed');
+        $childWorkflow->shouldNotReceive('resume');
+        $childWorkflow->shouldNotReceive('startAsChild');
 
         $storedChildWorkflow = Mockery::mock();
         $storedChildWorkflow->status = new \stdClass();

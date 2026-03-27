@@ -10,7 +10,6 @@ use React\Promise\PromiseInterface;
 use function React\Promise\resolve;
 use RuntimeException;
 use Throwable;
-use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Serializers\Serializer;
 
 final class ChildWorkflowStub
@@ -86,13 +85,7 @@ final class ChildWorkflowStub
                 }
             }
 
-            if ($childWorkflow->running() && ! $childWorkflow->created()) {
-                try {
-                    $childWorkflow->resume();
-                } catch (TransitionNotFound) {
-                    // already running
-                }
-            } elseif (! $childWorkflow->completed()) {
+            if ((! $childWorkflow->running() || $childWorkflow->created()) && ! $childWorkflow->completed()) {
                 $childWorkflow->startAsChild($context->storedWorkflow, $context->index, $context->now, ...$arguments);
             }
         }
