@@ -246,6 +246,10 @@ final class WorkflowStub
         $this->storedWorkflow->arguments = Serializer::serialize($metadata->toArray());
 
         $this->dispatch();
+
+        if (! static::faked()) {
+            Watchdog::kick();
+        }
     }
 
     public function startAsChild(StoredWorkflow $parentWorkflow, int $index, $now, ...$arguments): void
