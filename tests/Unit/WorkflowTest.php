@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use BadMethodCallException;
+use Illuminate\Contracts\Queue\Job as JobContract;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Event;
 use Mockery;
@@ -492,6 +493,27 @@ final class WorkflowTest extends TestCase
 
         $workflow = new TestWorkflow($storedWorkflow);
         $workflow->cancel();
+        $workflow->handle();
+
+        $this->assertSame(WorkflowWaitingStatus::class, $stub->status());
+    }
+
+    public function testWaitingWorkflowRedeliveryReleasesForRetry(): void
+    {
+        $stub = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($stub->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowWaitingStatus::$name,
+        ]);
+
+        $job = Mockery::mock(JobContract::class);
+        $job->shouldReceive('release')
+            ->once()
+            ->with(0);
+
+        $workflow = new TestWorkflow($storedWorkflow);
+        $workflow->setJob($job);
         $workflow->handle();
 
         $this->assertSame(WorkflowWaitingStatus::class, $stub->status());

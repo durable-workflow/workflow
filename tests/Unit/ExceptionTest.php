@@ -17,7 +17,10 @@ final class ExceptionTest extends TestCase
 {
     public function testMiddleware(): void
     {
-        $exception = new Exception(0, now()->toDateTimeString(), new StoredWorkflow(), new \Exception(
+        $storedWorkflow = new StoredWorkflow();
+        $storedWorkflow->id = 123;
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, new \Exception(
             'Test exception'
         ));
 
@@ -26,6 +29,8 @@ final class ExceptionTest extends TestCase
 
         $this->assertCount(1, $middleware);
         $this->assertSame(WithoutOverlappingMiddleware::class, get_class($middleware[0]));
+        $this->assertSame(WithoutOverlappingMiddleware::WORKFLOW, $middleware[0]->type);
+        $this->assertSame('123:callbacks', $middleware[0]->key);
         $this->assertSame(15, $middleware[0]->expiresAfter);
     }
 
