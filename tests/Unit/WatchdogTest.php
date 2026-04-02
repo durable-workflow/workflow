@@ -158,6 +158,19 @@ final class WatchdogTest extends TestCase
         });
     }
 
+    public function testKickLeavesQueueUnsetWhenQueueStringHasNoUsableQueue(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+
+        Watchdog::kick('redis', ' , ');
+
+        Queue::assertPushed(Watchdog::class, static function (Watchdog $watchdog): bool {
+            return $watchdog->connection === 'redis'
+                && $watchdog->queue === null;
+        });
+    }
+
     public function testKickSkipsWhenMarkerPresent(): void
     {
         Queue::fake();
@@ -275,6 +288,41 @@ final class WatchdogTest extends TestCase
 
         $watchdog = new Watchdog();
         $watchdog->handle();
+
+        Queue::assertNotPushed(TestSimpleWorkflow::class);
+    }
+
+    public function testHandleSkipsWorkflowThatStopsBeingPendingAfterRefresh(): void
+    {
+        Queue::fake();
+
+        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $modelClass = new class() extends StoredWorkflow {
+            public function refresh(): static
+            {
+                $this->status = WorkflowRunningStatus::$name;
+
+                return $this;
+            }
+        };
+        $modelClassName = get_class($modelClass);
+
+        config([
+            'workflows.stored_workflow_model' => $modelClassName,
+        ]);
+
+        $storedWorkflow = $modelClassName::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
+        ]);
+
+        $watchdog = new Watchdog();
+        $watchdog->handle();
+
+        $storedWorkflow->refresh();
 
         Queue::assertNotPushed(TestSimpleWorkflow::class);
     }
