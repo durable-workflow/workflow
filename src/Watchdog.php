@@ -69,6 +69,7 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
                 app(Dispatcher::class)->dispatch($watchdog);
             } catch (\Throwable $exception) {
                 Cache::forget(self::CACHE_KEY);
+                Cache::forget(self::LOOP_THROTTLE_KEY);
 
                 throw $exception;
             }

@@ -317,6 +317,7 @@ final class WatchdogTest extends TestCase
         }
 
         $this->assertFalse(Cache::has('workflow:watchdog'));
+        $this->assertFalse(Cache::has('workflow:watchdog:looping'));
     }
 
     public function testWakeIsIdempotent(): void
