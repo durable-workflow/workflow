@@ -325,6 +325,47 @@ final class WithoutOverlappingMiddlewareTest extends TestCase
         $this->assertTrue($result);
     }
 
+    public function testUnlockActivityAppliesTtlWhenOtherActivitiesRemain(): void
+    {
+        $job = new \stdClass();
+        $job->key = 'test-activity-key';
+
+        $remainingKey = 'other-activity-key';
+
+        $lock = $this->mock(Lock::class, static function (MockInterface $mock) {
+            $mock->shouldReceive('get')
+                ->once()
+                ->andReturn(true);
+            $mock->shouldReceive('release')
+                ->once();
+        });
+
+        $this->mock(Repository::class, static function (MockInterface $mock) use ($job, $lock, $remainingKey) {
+            $mock->shouldReceive('lock')
+                ->once()
+                ->andReturn($lock);
+            $mock->shouldReceive('get')
+                ->with('laravel-workflow-overlap:1:activity', [])
+                ->andReturn([$job->key, $remainingKey]);
+            $mock->shouldReceive('put')
+                ->with('laravel-workflow-overlap:1:activity', [$remainingKey], 60)
+                ->once();
+            $mock->shouldReceive('forget')
+                ->with($job->key)
+                ->once();
+            $mock->shouldReceive('has')
+                ->with($remainingKey)
+                ->once()
+                ->andReturn(false);
+        });
+
+        $middleware = new WithoutOverlappingMiddleware(1, WithoutOverlappingMiddleware::ACTIVITY, 0, 60);
+
+        $result = $middleware->unlock($job);
+
+        $this->assertTrue($result);
+    }
+
     public function testUnlockActivityRetriesOnLockFailure(): void
     {
         $job = new \stdClass();

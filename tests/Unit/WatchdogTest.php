@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Queue\Job as JobContract;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use RuntimeException;
 use Tests\Fixtures\TestSimpleWorkflow;
 use Tests\TestCase;
 use Workflow\Models\StoredWorkflow;
@@ -160,7 +163,10 @@ final class WatchdogTest extends TestCase
 
         Watchdog::wake('redis');
 
-        Queue::assertPushed(Watchdog::class);
+        Queue::assertPushed(Watchdog::class, static function (Watchdog $watchdog): bool {
+            return $watchdog->connection === 'redis'
+                && $watchdog->delay === null;
+        });
         $this->assertTrue(Cache::has('workflow:watchdog'));
     }
 
@@ -247,6 +253,70 @@ final class WatchdogTest extends TestCase
         }
 
         Queue::assertNotPushed(Watchdog::class);
+    }
+
+    public function testWakeWaitsForCommitBeforeDispatching(): void
+    {
+        Queue::fake();
+
+        $this->createStalePendingWorkflow();
+
+        DB::transaction(function (): void {
+            Watchdog::wake('redis');
+
+            Queue::assertNotPushed(Watchdog::class);
+            $this->assertFalse(Cache::has('workflow:watchdog'));
+        });
+
+        Queue::assertPushed(Watchdog::class, static function (Watchdog $watchdog): bool {
+            return $watchdog->connection === 'redis'
+                && $watchdog->delay === null;
+        });
+        $this->assertTrue(Cache::has('workflow:watchdog'));
+    }
+
+    public function testWakeDoesNotSetMarkerOrDispatchOnRollback(): void
+    {
+        Queue::fake();
+
+        $this->createStalePendingWorkflow();
+
+        try {
+            DB::transaction(function (): void {
+                Watchdog::wake('redis');
+
+                Queue::assertNotPushed(Watchdog::class);
+                $this->assertFalse(Cache::has('workflow:watchdog'));
+
+                throw new RuntimeException('rollback');
+            });
+        } catch (RuntimeException $exception) {
+            $this->assertSame('rollback', $exception->getMessage());
+        }
+
+        Queue::assertNotPushed(Watchdog::class);
+        $this->assertFalse(Cache::has('workflow:watchdog'));
+    }
+
+    public function testWakeClearsMarkerWhenDispatchFails(): void
+    {
+        $this->createStalePendingWorkflow();
+
+        $dispatcher = $this->createMock(Dispatcher::class);
+        $dispatcher->expects($this->once())
+            ->method('dispatch')
+            ->willThrowException(new RuntimeException('dispatch failed'));
+
+        $this->app->instance(Dispatcher::class, $dispatcher);
+
+        try {
+            Watchdog::wake('redis');
+            $this->fail('Expected dispatch failure to be rethrown.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('dispatch failed', $exception->getMessage());
+        }
+
+        $this->assertFalse(Cache::has('workflow:watchdog'));
     }
 
     public function testWakeIsIdempotent(): void

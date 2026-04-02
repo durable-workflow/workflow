@@ -6,18 +6,18 @@ namespace Workflow;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Bus\UniqueLock;
+use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Workflow\Models\StoredWorkflow;
 use Workflow\States\WorkflowPendingStatus;
 
 class Watchdog implements ShouldBeEncrypted, ShouldQueue
 {
-    use Dispatchable;
     use InteractsWithQueue;
     use Queueable;
 
@@ -51,20 +51,28 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
             return;
         }
 
-        if (! Cache::add(self::CACHE_KEY, true, $timeout)) {
-            return;
-        }
-
-        $dispatch = static::dispatch()
-            ->afterCommit()
-            ->delay($timeout)
-            ->onConnection($connection);
-
         $queue = self::normalizeQueue($queue);
 
-        if ($queue !== null) {
-            $dispatch->onQueue($queue);
-        }
+        DB::afterCommit(static function () use ($connection, $queue, $timeout): void {
+            if (! Cache::add(self::CACHE_KEY, true, $timeout)) {
+                return;
+            }
+
+            $watchdog = (new self())
+                ->onConnection($connection);
+
+            if ($queue !== null) {
+                $watchdog->onQueue($queue);
+            }
+
+            try {
+                app(Dispatcher::class)->dispatch($watchdog);
+            } catch (\Throwable $exception) {
+                Cache::forget(self::CACHE_KEY);
+
+                throw $exception;
+            }
+        });
     }
 
     public function handle(): void
