@@ -66,7 +66,7 @@ final class WorkflowServiceProviderTest extends TestCase
         }
     }
 
-    public function testLoopingEventKicksWatchdog(): void
+    public function testLoopingEventWakesWatchdog(): void
     {
         Queue::fake();
         Cache::forget('workflow:watchdog');
@@ -87,7 +87,7 @@ final class WorkflowServiceProviderTest extends TestCase
         });
     }
 
-    public function testLoopingEventThrottlesKick(): void
+    public function testLoopingEventThrottlesWake(): void
     {
         Queue::fake();
         Cache::forget('workflow:watchdog');

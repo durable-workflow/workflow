@@ -245,10 +245,6 @@ final class WorkflowStub
 
         $this->storedWorkflow->arguments = Serializer::serialize($metadata->toArray());
 
-        if (! static::faked()) {
-            Watchdog::kick($this->storedWorkflow->effectiveConnection(), $this->storedWorkflow->effectiveQueue());
-        }
-
         $this->dispatch();
     }
 

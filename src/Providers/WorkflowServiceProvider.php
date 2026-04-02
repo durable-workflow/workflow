@@ -29,7 +29,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->commands([ActivityMakeCommand::class, WorkflowMakeCommand::class]);
 
         Event::listen(Looping::class, static function (Looping $event): void {
-            Watchdog::kickFromWorkerLoop($event->connectionName, $event->queue);
+            Watchdog::wake($event->connectionName, $event->queue);
         });
     }
 }

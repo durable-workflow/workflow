@@ -135,23 +135,27 @@ final class WatchdogTest extends TestCase
         $this->assertTrue(Cache::has('workflow:watchdog'));
     }
 
-    public function testKickDispatchesWhenMarkerAbsent(): void
+    public function testWakeDispatchesWhenPendingWorkflowNeedsRecovery(): void
     {
         Queue::fake();
         Cache::forget('workflow:watchdog');
 
-        Watchdog::kick();
+        $this->createStalePendingWorkflow();
+
+        Watchdog::wake('redis');
 
         Queue::assertPushed(Watchdog::class);
         $this->assertTrue(Cache::has('workflow:watchdog'));
     }
 
-    public function testKickUsesRequestedConnectionAndQueue(): void
+    public function testWakeUsesRequestedConnectionAndQueue(): void
     {
         Queue::fake();
         Cache::forget('workflow:watchdog');
 
-        Watchdog::kick('redis', 'high,default');
+        $this->createStalePendingWorkflow();
+
+        Watchdog::wake('redis', 'high,default');
 
         Queue::assertPushed(Watchdog::class, static function (Watchdog $watchdog): bool {
             return $watchdog->connection === 'redis'
@@ -159,12 +163,14 @@ final class WatchdogTest extends TestCase
         });
     }
 
-    public function testKickLeavesQueueUnsetWhenQueueStringHasNoUsableQueue(): void
+    public function testWakeLeavesQueueUnsetWhenQueueStringHasNoUsableQueue(): void
     {
         Queue::fake();
         Cache::forget('workflow:watchdog');
 
-        Watchdog::kick('redis', ' , ');
+        $this->createStalePendingWorkflow();
+
+        Watchdog::wake('redis', ' , ');
 
         Queue::assertPushed(Watchdog::class, static function (Watchdog $watchdog): bool {
             return $watchdog->connection === 'redis'
@@ -172,24 +178,40 @@ final class WatchdogTest extends TestCase
         });
     }
 
-    public function testKickSkipsWhenMarkerPresent(): void
+    public function testWakeSkipsWhenMarkerPresent(): void
     {
         Queue::fake();
         Cache::put('workflow:watchdog', true, 300);
 
-        Watchdog::kick();
+        $this->createStalePendingWorkflow();
+
+        Watchdog::wake('redis');
 
         Queue::assertNotPushed(Watchdog::class);
     }
 
-    public function testKickIsIdempotent(): void
+    public function testWakeSkipsWhenNoRecoverablePendingWorkflowsExist(): void
     {
         Queue::fake();
         Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
 
-        Watchdog::kick();
-        Watchdog::kick();
-        Watchdog::kick();
+        Watchdog::wake('redis');
+
+        Queue::assertNotPushed(Watchdog::class);
+    }
+
+    public function testWakeIsIdempotent(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+
+        $this->createStalePendingWorkflow();
+
+        Watchdog::wake('redis');
+        Watchdog::wake('redis');
+        Watchdog::wake('redis');
 
         Queue::assertPushed(Watchdog::class, 1);
     }
@@ -391,5 +413,18 @@ final class WatchdogTest extends TestCase
         $watchdog = new Watchdog();
         $watchdog->setJob($job);
         $watchdog->handle();
+    }
+
+    private function createStalePendingWorkflow(array $attributes = []): StoredWorkflow
+    {
+        $timeout = (int) config('workflows.watchdog_timeout', 300);
+
+        return StoredWorkflow::create(array_merge([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
+        ], $attributes));
     }
 }

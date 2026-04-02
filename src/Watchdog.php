@@ -33,29 +33,10 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
 
     public $timeout = 0;
 
-    public static function kick(?string $connection = null, ?string $queue = null): void
+    public static function wake(string $connection, ?string $queue = null): void
     {
         $timeout = self::timeout();
 
-        if (Cache::add(self::CACHE_KEY, true, $timeout)) {
-            $dispatch = static::dispatch()
-                ->afterCommit()
-                ->delay($timeout);
-
-            if ($connection !== null) {
-                $dispatch->onConnection($connection);
-            }
-
-            $queue = self::normalizeQueue($queue);
-
-            if ($queue !== null) {
-                $dispatch->onQueue($queue);
-            }
-        }
-    }
-
-    public static function kickFromWorkerLoop(string $connection, ?string $queue): void
-    {
         if (Cache::has(self::CACHE_KEY)) {
             return;
         }
@@ -64,11 +45,24 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
             return;
         }
 
-        if (! self::hasRecoverablePendingWorkflows(self::timeout())) {
+        if (! self::hasRecoverablePendingWorkflows($timeout)) {
             return;
         }
 
-        static::kick($connection, $queue);
+        if (! Cache::add(self::CACHE_KEY, true, $timeout)) {
+            return;
+        }
+
+        $dispatch = static::dispatch()
+            ->afterCommit()
+            ->delay($timeout)
+            ->onConnection($connection);
+
+        $queue = self::normalizeQueue($queue);
+
+        if ($queue !== null) {
+            $dispatch->onQueue($queue);
+        }
     }
 
     public function handle(): void
