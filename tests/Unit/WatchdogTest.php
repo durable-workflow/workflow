@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Illuminate\Contracts\Queue\Job as JobContract;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\TestSimpleWorkflow;
@@ -257,8 +258,7 @@ final class WatchdogTest extends TestCase
                 ->subSeconds($timeout + 1),
         ]);
 
-        $lockKey = 'laravel_unique_job:' . TestSimpleWorkflow::class . $storedWorkflow->id;
-        Cache::lock($lockKey)->get();
+        Cache::lock('laravel_unique_job:' . TestSimpleWorkflow::class . $storedWorkflow->id)->get();
 
         $watchdog = new Watchdog();
         $watchdog->handle();
@@ -267,6 +267,37 @@ final class WatchdogTest extends TestCase
             return $workflow->connection === 'sync'
                 && $workflow->queue === 'high';
         });
+    }
+
+    public function testHandleContinuesScanningAfterSkippedWorkflow(): void
+    {
+        Queue::fake();
+
+        $timeout = (int) config('workflows.watchdog_timeout', 300);
+
+        $skippedWorkflow = StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
+        ]);
+
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
+        ]);
+
+        Cache::lock('workflow:watchdog:recovering:' . $skippedWorkflow->id, $timeout)
+            ->get();
+
+        $watchdog = new Watchdog();
+        $watchdog->handle();
+
+        Queue::assertPushed(TestSimpleWorkflow::class, 1);
     }
 
     public function testHandleSkipsWorkflowAlreadyClaimedForRecovery(): void
@@ -290,6 +321,26 @@ final class WatchdogTest extends TestCase
         $watchdog->handle();
 
         Queue::assertNotPushed(TestSimpleWorkflow::class);
+    }
+
+    public function testHandleReleasesRecoveryClaimAfterRecoveringWorkflow(): void
+    {
+        Queue::fake();
+
+        $timeout = (int) config('workflows.watchdog_timeout', 300);
+
+        $storedWorkflow = StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
+        ]);
+
+        $watchdog = new Watchdog();
+        $watchdog->handle();
+
+        $this->assertTrue(Cache::lock('workflow:watchdog:recovering:' . $storedWorkflow->id, 1)->get());
     }
 
     public function testHandleSkipsWorkflowThatStopsBeingPendingAfterRefresh(): void
@@ -325,5 +376,20 @@ final class WatchdogTest extends TestCase
         $storedWorkflow->refresh();
 
         Queue::assertNotPushed(TestSimpleWorkflow::class);
+    }
+
+    public function testHandleReleasesCurrentJobWhenRunningOnQueue(): void
+    {
+        Queue::fake();
+
+        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $job = $this->createMock(JobContract::class);
+        $job->expects($this->once())
+            ->method('release')
+            ->with($timeout);
+
+        $watchdog = new Watchdog();
+        $watchdog->setJob($job);
+        $watchdog->handle();
     }
 }

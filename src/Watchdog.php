@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow;
 
 use Illuminate\Bus\Queueable;
+use Illuminate\Bus\UniqueLock;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -36,7 +37,7 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
     {
         $timeout = self::timeout();
 
-        if (Cache::add(self::CACHE_KEY, true, self::bootstrapWindow($timeout))) {
+        if (Cache::add(self::CACHE_KEY, true, $timeout)) {
             $dispatch = static::dispatch()
                 ->afterCommit()
                 ->delay($timeout);
@@ -81,9 +82,13 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
         $model::where('status', WorkflowPendingStatus::$name)
             ->where('updated_at', '<=', Carbon::now()->subSeconds($timeout))
             ->whereNotNull('arguments')
-            ->each(static fn (StoredWorkflow $storedWorkflow): bool => self::recover($storedWorkflow, $timeout));
+            ->each(static function (StoredWorkflow $storedWorkflow) use ($timeout): void {
+                self::recover($storedWorkflow, $timeout);
+            });
 
-        $this->release($timeout);
+        if ($this->job !== null) {
+            $this->release($timeout);
+        }
     }
 
     private static function recover(StoredWorkflow $storedWorkflow, int $timeout): bool
@@ -94,19 +99,20 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
             return false;
         }
 
-        if (! Cache::lock(self::RECOVERY_LOCK_PREFIX . $storedWorkflow->id, $timeout)->get()) {
-            return false;
-        }
+        $claimTtl = self::bootstrapWindow($timeout);
+        $workflowStub = $storedWorkflow->toWorkflow();
+        $workflowJob = new $storedWorkflow->class($storedWorkflow, ...$storedWorkflow->workflowArguments());
 
-        $storedWorkflow->touch();
+        return (bool) (Cache::lock(self::RECOVERY_LOCK_PREFIX . $storedWorkflow->id, $claimTtl)
+            ->get(static function () use ($storedWorkflow, $workflowJob, $workflowStub): bool {
+                $storedWorkflow->touch();
 
-        Cache::lock('laravel_unique_job:' . $storedWorkflow->class . $storedWorkflow->id)
-            ->forceRelease();
+                (new UniqueLock(Cache::driver()))->release($workflowJob);
 
-        $storedWorkflow->toWorkflow()
-            ->resume();
+                $workflowStub->resume();
 
-        return true;
+                return true;
+            }) ?? false);
     }
 
     private static function timeout(): int
