@@ -217,6 +217,38 @@ final class WatchdogTest extends TestCase
         Queue::assertNotPushed(Watchdog::class);
     }
 
+    public function testWakeSkipsWhenAnotherWorkerClaimsMarkerFirst(): void
+    {
+        Queue::fake();
+
+        $this->createStalePendingWorkflow();
+
+        $modelClass = new class() extends StoredWorkflow {
+            public function newQuery()
+            {
+                Cache::put('workflow:watchdog', true, Watchdog::DEFAULT_TIMEOUT);
+
+                return parent::newQuery();
+            }
+        };
+        $modelClassName = get_class($modelClass);
+        $originalModel = config('workflows.stored_workflow_model');
+
+        config([
+            'workflows.stored_workflow_model' => $modelClassName,
+        ]);
+
+        try {
+            Watchdog::wake('redis');
+        } finally {
+            config([
+                'workflows.stored_workflow_model' => $originalModel,
+            ]);
+        }
+
+        Queue::assertNotPushed(Watchdog::class);
+    }
+
     public function testWakeIsIdempotent(): void
     {
         Queue::fake();
