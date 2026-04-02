@@ -106,4 +106,34 @@ final class WorkflowServiceProviderTest extends TestCase
 
         Queue::assertPushed(Watchdog::class, 1);
     }
+
+    public function testLoopingEventSkipsWhenThrottleAlreadyHeld(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+        Cache::put('workflow:watchdog:looping', true, 60);
+
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds((int) config('workflows.watchdog_timeout', 300) + 1),
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertNotPushed(Watchdog::class);
+    }
+
+    public function testLoopingEventSkipsWhenNoRecoverablePendingWorkflowsExist(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertNotPushed(Watchdog::class);
+    }
 }
