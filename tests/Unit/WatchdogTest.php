@@ -475,25 +475,32 @@ final class WatchdogTest extends TestCase
             }
         };
         $modelClassName = get_class($modelClass);
+        $originalStoredWorkflowModel = config('workflows.stored_workflow_model');
 
-        config([
-            'workflows.stored_workflow_model' => $modelClassName,
-        ]);
+        try {
+            config([
+                'workflows.stored_workflow_model' => $modelClassName,
+            ]);
 
-        $storedWorkflow = $modelClassName::create([
-            'class' => TestSimpleWorkflow::class,
-            'arguments' => Serializer::serialize([]),
-            'status' => WorkflowPendingStatus::$name,
-            'updated_at' => now()
-                ->subSeconds($timeout + 1),
-        ]);
+            $storedWorkflow = $modelClassName::create([
+                'class' => TestSimpleWorkflow::class,
+                'arguments' => Serializer::serialize([]),
+                'status' => WorkflowPendingStatus::$name,
+                'updated_at' => now()
+                    ->subSeconds($timeout + 1),
+            ]);
 
-        $watchdog = new Watchdog();
-        $watchdog->handle();
+            $watchdog = new Watchdog();
+            $watchdog->handle();
 
-        $storedWorkflow->refresh();
+            $storedWorkflow->refresh();
 
-        Queue::assertNotPushed(TestSimpleWorkflow::class);
+            Queue::assertNotPushed(TestSimpleWorkflow::class);
+        } finally {
+            config([
+                'workflows.stored_workflow_model' => $originalStoredWorkflowModel,
+            ]);
+        }
     }
 
     public function testHandleReleasesCurrentJobWhenRunningOnQueue(): void
