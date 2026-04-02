@@ -22,7 +22,10 @@
     "scripts": {
         "ecs": "vendor/bin/ecs check --fix",
         "stan": "vendor/bin/phpstan analyse src tests",
-        "feature": "phpunit --testdox --testsuite feature",
+        "feature": [
+            "Composer\\Config::disableProcessTimeout",
+            "phpunit --testdox --testsuite feature"
+        ],
         "unit": "phpunit --testdox --testsuite unit",
         "test": "phpunit --testdox",
         "coverage": "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml",

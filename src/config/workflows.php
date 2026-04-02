@@ -21,8 +21,6 @@ return [
 
     'prune_age' => '1 month',
 
-    'watchdog_timeout' => 300,
-
     'webhooks_route' => env('WORKFLOW_WEBHOOKS_ROUTE', 'webhooks'),
 
     'webhook_auth' => [

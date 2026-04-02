@@ -18,11 +18,27 @@ use Workflow\Watchdog;
 
 final class WatchdogTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+    }
+
+    protected function tearDown(): void
+    {
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+
+        parent::tearDown();
+    }
+
     public function testHandleRecoversStalePendingWorkflow(): void
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         $storedWorkflow = StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -64,7 +80,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -83,7 +99,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         $storedWorkflow = StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -107,7 +123,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -216,34 +232,11 @@ final class WatchdogTest extends TestCase
         Queue::assertPushed(Watchdog::class, 1);
     }
 
-    public function testWatchdogTimeoutConfig(): void
-    {
-        Queue::fake();
-        Cache::forget('workflow:watchdog');
-
-        config([
-            'workflows.watchdog_timeout' => 60,
-        ]);
-
-        StoredWorkflow::create([
-            'class' => TestSimpleWorkflow::class,
-            'arguments' => Serializer::serialize([]),
-            'status' => WorkflowPendingStatus::$name,
-            'updated_at' => now()
-                ->subSeconds(61),
-        ]);
-
-        $watchdog = new Watchdog();
-        $watchdog->handle();
-
-        Queue::assertPushed(TestSimpleWorkflow::class);
-    }
-
     public function testHandleTouchesWorkflowBeforeRedispatch(): void
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         $storedWorkflow = StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -264,7 +257,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         $storedWorkflow = StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -295,7 +288,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         $skippedWorkflow = StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -326,7 +319,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         $storedWorkflow = StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -349,7 +342,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         $storedWorkflow = StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
@@ -369,7 +362,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
         $modelClass = new class() extends StoredWorkflow {
             public function refresh(): static
             {
@@ -404,7 +397,7 @@ final class WatchdogTest extends TestCase
     {
         Queue::fake();
 
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
         $job = $this->createMock(JobContract::class);
         $job->expects($this->once())
             ->method('release')
@@ -417,7 +410,7 @@ final class WatchdogTest extends TestCase
 
     private function createStalePendingWorkflow(array $attributes = []): StoredWorkflow
     {
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = Watchdog::DEFAULT_TIMEOUT;
 
         return StoredWorkflow::create(array_merge([
             'class' => TestSimpleWorkflow::class,

@@ -185,7 +185,6 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                 }
                 return;
             }
-            // Redelivered after worker crash – proceed with replay.
         }
 
         $parentWorkflow = $this->storedWorkflow->parents()

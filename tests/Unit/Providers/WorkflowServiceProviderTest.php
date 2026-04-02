@@ -22,7 +22,19 @@ final class WorkflowServiceProviderTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+
         $this->app->register(WorkflowServiceProvider::class);
+    }
+
+    protected function tearDown(): void
+    {
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+
+        parent::tearDown();
     }
 
     public function testProviderLoads(): void
@@ -76,7 +88,7 @@ final class WorkflowServiceProviderTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
             'updated_at' => now()
-                ->subSeconds((int) config('workflows.watchdog_timeout', 300) + 1),
+                ->subSeconds(Watchdog::DEFAULT_TIMEOUT + 1),
         ]);
 
         Event::dispatch(new Looping('redis', 'high,default'));
@@ -97,7 +109,7 @@ final class WorkflowServiceProviderTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
             'updated_at' => now()
-                ->subSeconds((int) config('workflows.watchdog_timeout', 300) + 1),
+                ->subSeconds(Watchdog::DEFAULT_TIMEOUT + 1),
         ]);
 
         Event::dispatch(new Looping('redis', 'high,default'));
@@ -118,7 +130,7 @@ final class WorkflowServiceProviderTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
             'updated_at' => now()
-                ->subSeconds((int) config('workflows.watchdog_timeout', 300) + 1),
+                ->subSeconds(Watchdog::DEFAULT_TIMEOUT + 1),
         ]);
 
         Event::dispatch(new Looping('redis', 'high,default'));

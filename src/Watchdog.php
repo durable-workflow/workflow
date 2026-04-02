@@ -21,6 +21,8 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
     use InteractsWithQueue;
     use Queueable;
 
+    public const DEFAULT_TIMEOUT = 300;
+
     private const CACHE_KEY = 'workflow:watchdog';
 
     private const LOOP_THROTTLE_KEY = 'workflow:watchdog:looping';
@@ -111,7 +113,7 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
 
     private static function timeout(): int
     {
-        return (int) config('workflows.watchdog_timeout', 300);
+        return self::DEFAULT_TIMEOUT;
     }
 
     private static function hasRecoverablePendingWorkflows(int $timeout): bool
