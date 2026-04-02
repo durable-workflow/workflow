@@ -9,8 +9,12 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\TestSimpleWorkflow;
 use Tests\TestCase;
+use Workflow\Models\StoredWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
+use Workflow\Serializers\Serializer;
+use Workflow\States\WorkflowPendingStatus;
 use Workflow\Watchdog;
 
 final class WorkflowServiceProviderTest extends TestCase
@@ -67,9 +71,20 @@ final class WorkflowServiceProviderTest extends TestCase
         Queue::fake();
         Cache::forget('workflow:watchdog');
 
-        Event::dispatch(new Looping('sync', 'default'));
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds((int) config('workflows.watchdog_timeout', 300) + 1),
+        ]);
 
-        Queue::assertPushed(Watchdog::class, 1);
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertPushed(Watchdog::class, static function (Watchdog $watchdog): bool {
+            return $watchdog->connection === 'redis'
+                && $watchdog->queue === 'high';
+        });
     }
 
     public function testLoopingEventThrottlesKick(): void
@@ -77,9 +92,17 @@ final class WorkflowServiceProviderTest extends TestCase
         Queue::fake();
         Cache::forget('workflow:watchdog');
 
-        Event::dispatch(new Looping('sync', 'default'));
-        Event::dispatch(new Looping('sync', 'default'));
-        Event::dispatch(new Looping('sync', 'default'));
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds((int) config('workflows.watchdog_timeout', 300) + 1),
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+        Event::dispatch(new Looping('redis', 'high,default'));
+        Event::dispatch(new Looping('redis', 'high,default'));
 
         Queue::assertPushed(Watchdog::class, 1);
     }

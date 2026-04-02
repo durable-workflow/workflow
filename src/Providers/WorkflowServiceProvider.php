@@ -28,13 +28,8 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         $this->commands([ActivityMakeCommand::class, WorkflowMakeCommand::class]);
 
-        Event::listen(Looping::class, static function (): void {
-            static $lastKick = 0;
-            $now = time();
-            if ($now - $lastKick >= 60) {
-                $lastKick = $now;
-                Watchdog::kick();
-            }
+        Event::listen(Looping::class, static function (Looping $event): void {
+            Watchdog::kickFromWorkerLoop($event->connectionName, $event->queue);
         });
     }
 }

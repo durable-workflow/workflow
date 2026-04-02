@@ -20,47 +20,129 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
     use InteractsWithQueue;
     use Queueable;
 
+    private const CACHE_KEY = 'workflow:watchdog';
+
+    private const LOOP_THROTTLE_KEY = 'workflow:watchdog:looping';
+
+    private const RECOVERY_LOCK_PREFIX = 'workflow:watchdog:recovering:';
+
     public int $tries = 0;
 
     public int $maxExceptions = 0;
 
     public $timeout = 0;
 
-    public static function kick(): void
+    public static function kick(?string $connection = null, ?string $queue = null): void
     {
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = self::timeout();
 
-        if (Cache::add('workflow:watchdog', true, $timeout)) {
-            static::dispatch()->delay($timeout);
+        if (Cache::add(self::CACHE_KEY, true, self::bootstrapWindow($timeout))) {
+            $dispatch = static::dispatch()
+                ->afterCommit()
+                ->delay($timeout);
+
+            if ($connection !== null) {
+                $dispatch->onConnection($connection);
+            }
+
+            $queue = self::normalizeQueue($queue);
+
+            if ($queue !== null) {
+                $dispatch->onQueue($queue);
+            }
         }
+    }
+
+    public static function kickFromWorkerLoop(string $connection, ?string $queue): void
+    {
+        if (Cache::has(self::CACHE_KEY)) {
+            return;
+        }
+
+        if (! Cache::add(self::LOOP_THROTTLE_KEY, true, 60)) {
+            return;
+        }
+
+        if (! self::hasRecoverablePendingWorkflows(self::timeout())) {
+            return;
+        }
+
+        static::kick($connection, $queue);
     }
 
     public function handle(): void
     {
-        $timeout = (int) config('workflows.watchdog_timeout', 300);
+        $timeout = self::timeout();
 
-        Cache::put('workflow:watchdog', true, $timeout);
+        Cache::put(self::CACHE_KEY, true, $timeout);
 
         $model = config('workflows.stored_workflow_model', StoredWorkflow::class);
 
         $model::where('status', WorkflowPendingStatus::$name)
             ->where('updated_at', '<=', Carbon::now()->subSeconds($timeout))
             ->whereNotNull('arguments')
-            ->each(static function (StoredWorkflow $storedWorkflow): void {
-                $storedWorkflow->refresh();
-
-                if ($storedWorkflow->status::class !== WorkflowPendingStatus::class) {
-                    return;
-                }
-
-                $storedWorkflow->touch();
-
-                Cache::lock('laravel_unique_job:' . $storedWorkflow->class . $storedWorkflow->id)
-                    ->forceRelease();
-
-                $storedWorkflow->class::dispatch($storedWorkflow, ...$storedWorkflow->workflowArguments());
-            });
+            ->each(static fn (StoredWorkflow $storedWorkflow): bool => self::recover($storedWorkflow, $timeout));
 
         $this->release($timeout);
+    }
+
+    private static function recover(StoredWorkflow $storedWorkflow, int $timeout): bool
+    {
+        $storedWorkflow->refresh();
+
+        if ($storedWorkflow->status::class !== WorkflowPendingStatus::class) {
+            return false;
+        }
+
+        if (! Cache::lock(self::RECOVERY_LOCK_PREFIX . $storedWorkflow->id, $timeout)->get()) {
+            return false;
+        }
+
+        $storedWorkflow->touch();
+
+        Cache::lock('laravel_unique_job:' . $storedWorkflow->class . $storedWorkflow->id)
+            ->forceRelease();
+
+        $storedWorkflow->toWorkflow()
+            ->resume();
+
+        return true;
+    }
+
+    private static function timeout(): int
+    {
+        return (int) config('workflows.watchdog_timeout', 300);
+    }
+
+    private static function hasRecoverablePendingWorkflows(int $timeout): bool
+    {
+        $model = config('workflows.stored_workflow_model', StoredWorkflow::class);
+
+        return $model::where('status', WorkflowPendingStatus::$name)
+            ->where('updated_at', '<=', Carbon::now()->subSeconds($timeout))
+            ->whereNotNull('arguments')
+            ->exists();
+    }
+
+    private static function bootstrapWindow(int $timeout): int
+    {
+        return max(1, min($timeout, 60));
+    }
+
+    private static function normalizeQueue(?string $queue): ?string
+    {
+        if ($queue === null) {
+            return null;
+        }
+
+        foreach (explode(',', $queue) as $candidate) {
+            $candidate = trim($candidate);
+
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 }
