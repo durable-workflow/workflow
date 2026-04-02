@@ -67,8 +67,8 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
     {
         return [
             new WithoutOverlappingMiddleware(
-                $this->storedWorkflow->id . ':callbacks',
-                WithoutOverlappingMiddleware::WORKFLOW,
+                $this->storedWorkflow->id,
+                WithoutOverlappingMiddleware::ACTIVITY,
                 0,
                 15
             ),
