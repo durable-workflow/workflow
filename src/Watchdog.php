@@ -97,18 +97,18 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
 
     private static function recover(StoredWorkflow $storedWorkflow, int $timeout): bool
     {
-        $storedWorkflow->refresh();
-
-        if ($storedWorkflow->status::class !== WorkflowPendingStatus::class) {
-            return false;
-        }
-
         $claimTtl = self::bootstrapWindow($timeout);
         $workflowStub = $storedWorkflow->toWorkflow();
         $workflowJob = new $storedWorkflow->class($storedWorkflow, ...$storedWorkflow->workflowArguments());
 
         return (bool) (Cache::lock(self::RECOVERY_LOCK_PREFIX . $storedWorkflow->id, $claimTtl)
             ->get(static function () use ($storedWorkflow, $workflowJob, $workflowStub): bool {
+                $storedWorkflow->refresh();
+
+                if ($storedWorkflow->status::class !== WorkflowPendingStatus::class) {
+                    return false;
+                }
+
                 $storedWorkflow->touch();
 
                 (new UniqueLock(Cache::driver()))->release($workflowJob);
