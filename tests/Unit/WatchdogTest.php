@@ -4,19 +4,20 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\TestSimpleWorkflow;
 use Tests\TestCase;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
+use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\States\WorkflowRunningStatus;
 use Workflow\Watchdog;
 
 final class WatchdogTest extends TestCase
 {
-    public function testHandleRecoversStalePendingWorkflows(): void
+    public function testHandleRecoversStalePendingWorkflow(): void
     {
         Queue::fake();
 
@@ -26,15 +27,17 @@ final class WatchdogTest extends TestCase
             'class' => TestSimpleWorkflow::class,
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
-            'updated_at' => now()->subSeconds($timeout + 1),
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
         ]);
 
         $watchdog = new Watchdog();
         $watchdog->handle();
 
-        Queue::assertPushed(TestSimpleWorkflow::class, static function ($job) use ($storedWorkflow) {
-            return $job->storedWorkflow->id === $storedWorkflow->id;
-        });
+        $storedWorkflow->refresh();
+        $this->assertSame(WorkflowPendingStatus::class, $storedWorkflow->status::class);
+
+        Queue::assertPushed(TestSimpleWorkflow::class, 1);
     }
 
     public function testHandleIgnoresRecentPendingWorkflows(): void
@@ -62,7 +65,8 @@ final class WatchdogTest extends TestCase
         StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
             'status' => WorkflowPendingStatus::$name,
-            'updated_at' => now()->subSeconds($timeout + 1),
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
         ]);
 
         $watchdog = new Watchdog();
@@ -71,7 +75,7 @@ final class WatchdogTest extends TestCase
         Queue::assertNotPushed(TestSimpleWorkflow::class);
     }
 
-    public function testHandleClearsUniqueLockBeforeRedispatch(): void
+    public function testHandleSkipsAlreadyRecoveredWorkflow(): void
     {
         Queue::fake();
 
@@ -81,16 +85,38 @@ final class WatchdogTest extends TestCase
             'class' => TestSimpleWorkflow::class,
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
-            'updated_at' => now()->subSeconds($timeout + 1),
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
         ]);
 
-        $lockKey = 'laravel_unique_job:' . TestSimpleWorkflow::class . $storedWorkflow->id;
-        Cache::lock($lockKey)->get();
+        $storedWorkflow->update([
+            'status' => WorkflowRunningStatus::$name,
+        ]);
 
         $watchdog = new Watchdog();
         $watchdog->handle();
 
-        $this->assertTrue(Cache::lock($lockKey)->get());
+        Queue::assertNotPushed(TestSimpleWorkflow::class);
+    }
+
+    public function testHandleSkipsAlreadyCompletedWorkflow(): void
+    {
+        Queue::fake();
+
+        $timeout = (int) config('workflows.watchdog_timeout', 300);
+
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowCompletedStatus::$name,
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
+        ]);
+
+        $watchdog = new Watchdog();
+        $watchdog->handle();
+
+        Queue::assertNotPushed(TestSimpleWorkflow::class);
     }
 
     public function testHandleRefreshesWatchdogMarker(): void
@@ -138,7 +164,30 @@ final class WatchdogTest extends TestCase
         Queue::assertPushed(Watchdog::class, 1);
     }
 
-    public function testHandleToleratesAlreadyRecoveredWorkflow(): void
+    public function testWatchdogTimeoutConfig(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+
+        config([
+            'workflows.watchdog_timeout' => 60,
+        ]);
+
+        StoredWorkflow::create([
+            'class' => TestSimpleWorkflow::class,
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+            'updated_at' => now()
+                ->subSeconds(61),
+        ]);
+
+        $watchdog = new Watchdog();
+        $watchdog->handle();
+
+        Queue::assertPushed(TestSimpleWorkflow::class);
+    }
+
+    public function testHandleTouchesWorkflowBeforeRedispatch(): void
     {
         Queue::fake();
 
@@ -148,35 +197,38 @@ final class WatchdogTest extends TestCase
             'class' => TestSimpleWorkflow::class,
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
-            'updated_at' => now()->subSeconds($timeout + 1),
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
         ]);
 
         $watchdog = new Watchdog();
         $watchdog->handle();
 
         $storedWorkflow->refresh();
-        $this->assertSame(WorkflowPendingStatus::$name, $storedWorkflow->status::class === WorkflowPendingStatus::class ? 'pending' : (string) $storedWorkflow->status);
-
-        Queue::assertPushed(TestSimpleWorkflow::class, 1);
+        $this->assertTrue($storedWorkflow->updated_at->greaterThan(now()->subSeconds(5)));
     }
 
-    public function testWatchdogTimeoutConfig(): void
+    public function testHandleClearsUniqueLockBeforeRedispatch(): void
     {
         Queue::fake();
-        Cache::forget('workflow:watchdog');
 
-        config(['workflows.watchdog_timeout' => 60]);
+        $timeout = (int) config('workflows.watchdog_timeout', 300);
 
         $storedWorkflow = StoredWorkflow::create([
             'class' => TestSimpleWorkflow::class,
             'arguments' => Serializer::serialize([]),
             'status' => WorkflowPendingStatus::$name,
-            'updated_at' => now()->subSeconds(61),
+            'updated_at' => now()
+                ->subSeconds($timeout + 1),
         ]);
+
+        $lockKey = 'laravel_unique_job:' . TestSimpleWorkflow::class . $storedWorkflow->id;
+        Cache::lock($lockKey)->get();
 
         $watchdog = new Watchdog();
         $watchdog->handle();
 
-        Queue::assertPushed(TestSimpleWorkflow::class);
+        $this->assertTrue(Cache::lock($lockKey)->get());
+        Queue::assertPushed(TestSimpleWorkflow::class, 1);
     }
 }

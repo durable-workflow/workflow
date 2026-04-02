@@ -27,6 +27,8 @@ use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowContinuedStatus;
 use Workflow\States\WorkflowFailedStatus;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\States\WorkflowRunningStatus;
+use Workflow\States\WorkflowWaitingStatus;
 use Workflow\Workflow;
 use Workflow\WorkflowStub;
 
@@ -469,5 +471,29 @@ final class WorkflowTest extends TestCase
         $this->assertNotNull($continuedWorkflow);
         $this->assertSame('sync', $continuedWorkflow->workflowOptions()->connection);
         $this->assertSame('default', $continuedWorkflow->workflowOptions()->queue);
+    }
+
+    public function testRedeliveredJobResumesFromRunningState(): void
+    {
+        $stub = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($stub->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now(),
+                'class' => TestOtherActivity::class,
+                'result' => Serializer::serialize('other'),
+            ]);
+
+        $workflow = new TestWorkflow($storedWorkflow);
+        $workflow->cancel();
+        $workflow->handle();
+
+        $this->assertSame(WorkflowWaitingStatus::class, $stub->status());
     }
 }
