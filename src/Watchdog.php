@@ -39,21 +39,21 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
     {
         $timeout = self::timeout();
 
-        if (Cache::has(self::CACHE_KEY)) {
-            return;
-        }
-
-        if (! Cache::add(self::LOOP_THROTTLE_KEY, true, 60)) {
-            return;
-        }
-
-        if (! self::hasRecoverablePendingWorkflows($timeout)) {
-            return;
-        }
-
         $queue = self::normalizeQueue($queue);
 
         DB::afterCommit(static function () use ($connection, $queue, $timeout): void {
+            if (Cache::has(self::CACHE_KEY)) {
+                return;
+            }
+
+            if (! Cache::add(self::LOOP_THROTTLE_KEY, true, 60)) {
+                return;
+            }
+
+            if (! self::hasRecoverablePendingWorkflows($timeout)) {
+                return;
+            }
+
             if (! Cache::add(self::CACHE_KEY, true, $timeout)) {
                 return;
             }
@@ -109,7 +109,8 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
                 }
 
                 $workflowStub = $storedWorkflow->toWorkflow();
-                $workflowJob = new $storedWorkflow->class($storedWorkflow, ...$storedWorkflow->workflowArguments());
+                $workflowClass = $storedWorkflow->class;
+                $workflowJob = new $workflowClass($storedWorkflow, ...$storedWorkflow->workflowArguments());
 
                 $storedWorkflow->touch();
 

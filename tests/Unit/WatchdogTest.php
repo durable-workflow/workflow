@@ -299,6 +299,7 @@ final class WatchdogTest extends TestCase
 
         Queue::assertNotPushed(Watchdog::class);
         $this->assertFalse(Cache::has('workflow:watchdog'));
+        $this->assertFalse(Cache::has('workflow:watchdog:looping'));
     }
 
     public function testWakeClearsMarkerWhenDispatchFails(): void
