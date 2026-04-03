@@ -15,6 +15,7 @@ use Throwable;
 use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
+use Workflow\Models\StoredWorkflowLog;
 use Workflow\Serializers\Serializer;
 
 final class Exception implements ShouldBeEncrypted, ShouldQueue
@@ -100,10 +101,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         }
 
         $previousContext = WorkflowStub::getContext();
-        $connection = $this->storedWorkflow->getConnection();
         $shouldPersist = false;
-
-        $connection->beginTransaction();
 
         try {
             $tentativeWorkflow = $this->createTentativeWorkflowState();
@@ -130,10 +128,6 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
             $shouldPersist = WorkflowStub::probeMatched();
         } finally {
             WorkflowStub::setContext($previousContext);
-
-            if ($connection->transactionLevel() > 0) {
-                $connection->rollBack();
-            }
         }
 
         return $shouldPersist;
@@ -141,16 +135,32 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
 
     private function createTentativeWorkflowState(): StoredWorkflow
     {
-        $this->storedWorkflow->createLog([
-            'index' => $this->index,
-            'now' => $this->now,
-            'class' => self::class,
-            'result' => Serializer::serialize($this->exceptionPayload()),
-        ]);
-
         $storedWorkflowClass = $this->storedWorkflow::class;
 
-        return $storedWorkflowClass::query()->findOrFail($this->storedWorkflow->id);
+        /** @var StoredWorkflow $tentativeWorkflow */
+        $tentativeWorkflow = $storedWorkflowClass::query()
+            ->findOrFail($this->storedWorkflow->id);
+
+        $tentativeWorkflow->loadMissing(['logs', 'signals']);
+
+        /** @var StoredWorkflowLog $tentativeLog */
+        $tentativeLog = $tentativeWorkflow->logs()
+            ->make([
+                'index' => $this->index,
+                'now' => $this->now,
+                'class' => self::class,
+                'result' => Serializer::serialize($this->exceptionPayload()),
+            ]);
+
+        $tentativeWorkflow->setRelation(
+            'logs',
+            $tentativeWorkflow->getRelation('logs')
+                ->push($tentativeLog)
+                ->sortBy(static fn ($log): string => sprintf('%020d:%020d', $log->index, $log->id ?? PHP_INT_MAX))
+                ->values()
+        );
+
+        return $tentativeWorkflow;
     }
 
     private function exceptionPayload()
