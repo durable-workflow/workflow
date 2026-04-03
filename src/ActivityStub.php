@@ -51,6 +51,18 @@ final class ActivityStub
         }
 
         if ($log) {
+            if (
+                WorkflowStub::isProbing()
+                && WorkflowStub::probeIndex() === $context->index
+                && (
+                    WorkflowStub::probeClass() === null
+                    || WorkflowStub::probeClass() === $activity
+                )
+                && $log->class === Exception::class
+            ) {
+                WorkflowStub::markProbeMatched();
+            }
+
             ++$context->index;
             WorkflowStub::setContext($context);
             $result = Serializer::unserialize($log->result);
@@ -72,6 +84,13 @@ final class ActivityStub
                 throw $throwable;
             }
             return resolve($result);
+        }
+
+        if (WorkflowStub::isProbing()) {
+            ++$context->index;
+            WorkflowStub::setContext($context);
+            $deferred = new Deferred();
+            return $deferred->promise();
         }
 
         $activity::dispatch($context->index, $context->now, $context->storedWorkflow, ...$arguments);

@@ -10,9 +10,11 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Throwable;
 use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
+use Workflow\Serializers\Serializer;
 
 final class Exception implements ShouldBeEncrypted, ShouldQueue
 {
@@ -35,7 +37,8 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         public StoredWorkflow $storedWorkflow,
         public $exception,
         $connection = null,
-        $queue = null
+        $queue = null,
+        public ?string $sourceClass = null
     ) {
         $connection = $connection ?? $this->storedWorkflow->effectiveConnection() ?? config('queue.default');
         $queue = $queue ?? $this->storedWorkflow->effectiveQueue() ?? config(
@@ -53,7 +56,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         try {
             if ($this->storedWorkflow->hasLogByIndex($this->index)) {
                 $workflow->resume();
-            } elseif (! $this->storedWorkflow->logs()->where('class', self::class)->exists()) {
+            } elseif ($this->shouldPersistAfterProbeReplay()) {
                 $workflow->next($this->index, $this->now, self::class, $this->exception);
             }
         } catch (TransitionNotFound) {
@@ -73,5 +76,67 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
                 15
             ),
         ];
+    }
+
+    private function shouldPersistAfterProbeReplay(): bool
+    {
+        $workflowClass = $this->storedWorkflow->class;
+
+        if (! is_string($workflowClass) || $workflowClass === '') {
+            return true;
+        }
+
+        $previousContext = WorkflowStub::getContext();
+        $connection = $this->storedWorkflow->getConnection();
+        $shouldPersist = false;
+
+        $connection->beginTransaction();
+
+        try {
+            $tentativeWorkflow = $this->createTentativeWorkflowState();
+            $workflow = new $workflowClass($tentativeWorkflow, ...$tentativeWorkflow->workflowArguments());
+            $workflow->replaying = true;
+
+            WorkflowStub::setContext([
+                'storedWorkflow' => $tentativeWorkflow,
+                'index' => 0,
+                'now' => $this->now,
+                'replaying' => true,
+                'probing' => true,
+                'probeIndex' => $this->index,
+                'probeClass' => $this->sourceClass,
+                'probeMatched' => false,
+            ]);
+
+            try {
+                $workflow->handle();
+            } catch (Throwable) {
+                // The replay path may still throw; we only care whether it matched this tentative log.
+            }
+
+            $shouldPersist = WorkflowStub::probeMatched();
+        } finally {
+            WorkflowStub::setContext($previousContext);
+
+            if ($connection->transactionLevel() > 0) {
+                $connection->rollBack();
+            }
+        }
+
+        return $shouldPersist;
+    }
+
+    private function createTentativeWorkflowState(): StoredWorkflow
+    {
+        $this->storedWorkflow->createLog([
+            'index' => $this->index,
+            'now' => $this->now,
+            'class' => self::class,
+            'result' => Serializer::serialize($this->exception),
+        ]);
+
+        $storedWorkflowClass = $this->storedWorkflow::class;
+
+        return $storedWorkflowClass::query()->findOrFail($this->storedWorkflow->id);
     }
 }

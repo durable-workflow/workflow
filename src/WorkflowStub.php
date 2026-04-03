@@ -157,6 +157,10 @@ final class WorkflowStub
 
     public static function getContext(): \stdClass
     {
+        if (self::$context === null) {
+            self::$context = new \stdClass();
+        }
+
         return self::$context;
     }
 
@@ -168,6 +172,35 @@ final class WorkflowStub
     public static function now()
     {
         return self::getContext()->now;
+    }
+
+    public static function isProbing(): bool
+    {
+        return (bool) (self::getContext()->probing ?? false);
+    }
+
+    public static function probeIndex(): ?int
+    {
+        return self::getContext()->probeIndex ?? null;
+    }
+
+    public static function probeClass(): ?string
+    {
+        return self::getContext()->probeClass ?? null;
+    }
+
+    public static function markProbeMatched(): void
+    {
+        if (! self::isProbing()) {
+            return;
+        }
+
+        self::$context->probeMatched = true;
+    }
+
+    public static function probeMatched(): bool
+    {
+        return (bool) (self::getContext()->probeMatched ?? false);
     }
 
     public function id()
@@ -287,7 +320,7 @@ final class WorkflowStub
             ->format('Y-m-d\TH:i:s.u\Z'));
 
         $this->storedWorkflow->parents()
-            ->each(static function ($parentWorkflow) use ($exception) {
+            ->each(function ($parentWorkflow) use ($exception) {
                 if (
                     $parentWorkflow->pivot->parent_index === StoredWorkflow::CONTINUE_PARENT_INDEX
                     || $parentWorkflow->pivot->parent_index === StoredWorkflow::ACTIVE_WORKFLOW_INDEX
@@ -324,7 +357,8 @@ final class WorkflowStub
                     $parentWorkflow,
                     $throwable,
                     $parentWf->connection(),
-                    $parentWf->queue()
+                    $parentWf->queue(),
+                    $this->storedWorkflow->class
                 );
             });
     }

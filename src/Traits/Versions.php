@@ -33,6 +33,11 @@ trait Versions
             return resolve($version);
         }
 
+        if (self::isProbing()) {
+            ++self::$context->index;
+            return (new \React\Promise\Deferred())->promise();
+        }
+
         $version = $maxSupported;
 
         if (! self::$context->replaying) {

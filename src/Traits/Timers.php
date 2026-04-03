@@ -41,6 +41,12 @@ trait Timers
             $when = self::$context->now->copy()
                 ->addSeconds($seconds);
 
+            if (self::isProbing()) {
+                ++self::$context->index;
+                $deferred = new Deferred();
+                return $deferred->promise();
+            }
+
             if (! self::$context->replaying) {
                 $timer = self::$context->storedWorkflow->createTimer([
                     'index' => self::$context->index,

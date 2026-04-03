@@ -20,6 +20,11 @@ trait SideEffects
             return resolve(Serializer::unserialize($log->result));
         }
 
+        if (self::isProbing()) {
+            ++self::$context->index;
+            return (new \React\Promise\Deferred())->promise();
+        }
+
         $result = $callable();
 
         if (! self::$context->replaying) {

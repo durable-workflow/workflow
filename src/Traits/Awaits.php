@@ -22,6 +22,12 @@ trait Awaits
             return resolve(Serializer::unserialize($log->result));
         }
 
+        if (self::isProbing()) {
+            ++self::$context->index;
+            $deferred = new Deferred();
+            return $deferred->promise();
+        }
+
         $result = $condition();
 
         if ($result === true) {

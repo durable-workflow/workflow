@@ -45,6 +45,18 @@ final class ChildWorkflowStub
         }
 
         if ($log) {
+            if (
+                WorkflowStub::isProbing()
+                && WorkflowStub::probeIndex() === $context->index
+                && (
+                    WorkflowStub::probeClass() === null
+                    || WorkflowStub::probeClass() === $workflow
+                )
+                && $log->class === Exception::class
+            ) {
+                WorkflowStub::markProbeMatched();
+            }
+
             ++$context->index;
             WorkflowStub::setContext($context);
             $result = Serializer::unserialize($log->result);
@@ -65,6 +77,13 @@ final class ChildWorkflowStub
                 throw $throwable;
             }
             return resolve($result);
+        }
+
+        if (WorkflowStub::isProbing()) {
+            ++$context->index;
+            WorkflowStub::setContext($context);
+            $deferred = new Deferred();
+            return $deferred->promise();
         }
 
         if (! $context->replaying) {
