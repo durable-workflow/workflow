@@ -242,6 +242,38 @@ final class TimersTest extends TestCase
         ]);
     }
 
+    public function testTimerReturnsUnresolvedPromiseWhenProbingAndNoTimer(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+        ]);
+
+        WorkflowStub::timer('1 minute')
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+        $this->assertSame(0, $workflow->logs()->count());
+        $this->assertDatabaseMissing('workflow_timers', [
+            'stored_workflow_id' => $workflow->id(),
+            'index' => 0,
+        ]);
+    }
+
     public function testTimerCapsDelayForSqsDriver(): void
     {
         Bus::fake();

@@ -191,6 +191,30 @@ final class VersionsTest extends TestCase
         Mockery::close();
     }
 
+    public function testReturnsUnresolvedPromiseWhenProbingWithoutStoredVersion(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+        ]);
+
+        WorkflowStub::getVersion('test-change', WorkflowStub::DEFAULT_VERSION, 1)
+            ->then(static function ($value) use (&$result): void {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+        $this->assertSame(0, $workflow->logs()->count());
+    }
+
     public function testThrowsQueryExceptionWhenNotDuplicateKey(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());

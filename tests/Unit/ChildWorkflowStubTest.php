@@ -131,6 +131,77 @@ final class ChildWorkflowStubTest extends TestCase
         $this->assertSame(2, WorkflowStub::getContext()->index);
     }
 
+    public function testMarksProbeMatchedForMatchingStoredException(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'matching child failure',
+                    'code' => 0,
+                ]),
+            ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+            'probeIndex' => 0,
+            'probeClass' => TestChildWorkflow::class,
+            'probeMatched' => false,
+        ]);
+
+        try {
+            ChildWorkflowStub::make(TestChildWorkflow::class);
+            $this->fail('Expected child exception to be thrown.');
+        } catch (Exception $exception) {
+            $this->assertSame('matching child failure', $exception->getMessage());
+        }
+
+        $this->assertTrue(WorkflowStub::probeMatched());
+    }
+
+    public function testReturnsUnresolvedPromiseWhenProbingWithoutStoredChildWorkflow(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+            'probeIndex' => 0,
+            'probeClass' => TestChildWorkflow::class,
+            'probeMatched' => false,
+        ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+    }
+
     public function testDoesNotResumeRunningStartedChildWorkflow(): void
     {
         $childWorkflow = Mockery::mock();
