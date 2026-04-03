@@ -58,7 +58,6 @@ final class ChildWorkflowStub
             }
 
             ++$context->index;
-            WorkflowStub::setContext($context);
             $result = Serializer::unserialize($log->result);
             if (
                 is_array($result)
@@ -81,7 +80,6 @@ final class ChildWorkflowStub
 
         if (WorkflowStub::isProbing()) {
             ++$context->index;
-            WorkflowStub::setContext($context);
             return (new Deferred())->promise();
         }
 
@@ -111,7 +109,6 @@ final class ChildWorkflowStub
         }
 
         ++$context->index;
-        WorkflowStub::setContext($context);
         return (new Deferred())->promise();
     }
 }
