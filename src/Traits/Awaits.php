@@ -24,8 +24,7 @@ trait Awaits
 
         if (self::isProbing()) {
             ++self::$context->index;
-            $deferred = new Deferred();
-            return $deferred->promise();
+            return (new Deferred())->promise();
         }
 
         $result = $condition();
@@ -55,7 +54,6 @@ trait Awaits
         }
 
         ++self::$context->index;
-        $deferred = new Deferred();
-        return $deferred->promise();
+        return (new Deferred())->promise();
     }
 }

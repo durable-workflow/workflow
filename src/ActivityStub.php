@@ -89,15 +89,13 @@ final class ActivityStub
         if (WorkflowStub::isProbing()) {
             ++$context->index;
             WorkflowStub::setContext($context);
-            $deferred = new Deferred();
-            return $deferred->promise();
+            return (new Deferred())->promise();
         }
 
         $activity::dispatch($context->index, $context->now, $context->storedWorkflow, ...$arguments);
 
         ++$context->index;
         WorkflowStub::setContext($context);
-        $deferred = new Deferred();
-        return $deferred->promise();
+        return (new Deferred())->promise();
     }
 }

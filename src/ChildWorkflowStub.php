@@ -82,8 +82,7 @@ final class ChildWorkflowStub
         if (WorkflowStub::isProbing()) {
             ++$context->index;
             WorkflowStub::setContext($context);
-            $deferred = new Deferred();
-            return $deferred->promise();
+            return (new Deferred())->promise();
         }
 
         if (! $context->replaying) {
@@ -113,7 +112,6 @@ final class ChildWorkflowStub
 
         ++$context->index;
         WorkflowStub::setContext($context);
-        $deferred = new Deferred();
-        return $deferred->promise();
+        return (new Deferred())->promise();
     }
 }

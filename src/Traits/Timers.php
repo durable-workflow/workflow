@@ -43,8 +43,7 @@ trait Timers
 
             if (self::isProbing()) {
                 ++self::$context->index;
-                $deferred = new Deferred();
-                return $deferred->promise();
+                return (new Deferred())->promise();
             }
 
             if (! self::$context->replaying) {
@@ -54,8 +53,7 @@ trait Timers
                 ]);
             } else {
                 ++self::$context->index;
-                $deferred = new Deferred();
-                return $deferred->promise();
+                return (new Deferred())->promise();
             }
         }
 
@@ -101,7 +99,6 @@ trait Timers
         }
 
         ++self::$context->index;
-        $deferred = new Deferred();
-        return $deferred->promise();
+        return (new Deferred())->promise();
     }
 }
