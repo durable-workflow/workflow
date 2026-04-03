@@ -82,6 +82,7 @@ jobs:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports[3306] }}
         QUEUE_CONNECTION: redis
+        WORKFLOW_TEST_STREAM_WORKER_OUTPUT: 1
 
     - name: Run test suite (PostgreSQL)
       run: vendor/bin/phpunit --testdox --debug --testsuite feature
@@ -89,6 +90,7 @@ jobs:
         DB_CONNECTION: pgsql
         DB_PORT: ${{ job.services.postgres.ports[5432] }}
         QUEUE_CONNECTION: redis
+        WORKFLOW_TEST_STREAM_WORKER_OUTPUT: 1
 
     - name: Upload laravel.log if tests fail
       if: failure()

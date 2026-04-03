@@ -43,8 +43,15 @@ abstract class TestCase extends BaseTestCase
 
         for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
             self::$workers[$i] = new Process(['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work']);
-            self::$workers[$i]->disableOutput();
-            self::$workers[$i]->start();
+            if (! self::shouldStreamWorkerOutput()) {
+                self::$workers[$i]->disableOutput();
+                self::$workers[$i]->start();
+                continue;
+            }
+
+            self::$workers[$i]->start(static function (string $type, string $output) use ($i): void {
+                fwrite(STDERR, '[worker-' . $i . '][' . $type . '] ' . $output);
+            });
         }
     }
 
@@ -93,5 +100,12 @@ abstract class TestCase extends BaseTestCase
     protected function getPackageProviders($app)
     {
         return [\Workflow\Providers\WorkflowServiceProvider::class];
+    }
+
+    private static function shouldStreamWorkerOutput(): bool
+    {
+        $value = getenv('WORKFLOW_TEST_STREAM_WORKER_OUTPUT') ?: ($_ENV['WORKFLOW_TEST_STREAM_WORKER_OUTPUT'] ?? null);
+
+        return in_array($value, ['1', 'true', 'yes', 'on'], true);
     }
 }
