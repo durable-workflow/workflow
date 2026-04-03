@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Tests\Fixtures\TestConsecutiveCaughtExceptionWorkflow;
+use Tests\Fixtures\TestParallelCaughtExceptionWorkflow;
+use Tests\Fixtures\TestSignalAdvancedExceptionWorkflow;
+use Tests\Fixtures\TestSingleTryExceptionActivity;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\Exception;
@@ -47,7 +51,7 @@ final class ExceptionTest extends TestCase
 
     public function testSkipsWriteWhenSiblingExceptionLogExists(): void
     {
-        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParallelCaughtExceptionWorkflow::class)->id());
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
         $storedWorkflow->update([
             'arguments' => Serializer::serialize([]),
@@ -71,16 +75,50 @@ final class ExceptionTest extends TestCase
             'class' => \Exception::class,
             'message' => 'second child failed',
             'code' => 0,
-        ]);
+        ], sourceClass: TestSingleTryExceptionActivity::class);
         $exception->handle();
 
         $this->assertFalse($storedWorkflow->hasLogByIndex(1));
         $this->assertSame(1, $storedWorkflow->logs()->count());
     }
 
+    public function testWritesConsecutiveCaughtExceptionWithoutIntermediateLog(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestConsecutiveCaughtExceptionWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => \RuntimeException::class,
+                    'message' => 'first failure',
+                    'code' => 0,
+                ]),
+            ]);
+
+        $exception = new Exception(1, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => \InvalidArgumentException::class,
+            'message' => 'second failure',
+            'code' => 0,
+        ], sourceClass: TestSingleTryExceptionActivity::class);
+        $exception->handle();
+
+        $this->assertTrue($storedWorkflow->hasLogByIndex(1));
+        $this->assertSame(2, $storedWorkflow->logs()->count());
+        $this->assertSame(Exception::class, $storedWorkflow->findLogByIndex(1)?->class);
+    }
+
     public function testWritesLaterExceptionAfterWorkflowAdvances(): void
     {
-        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestSignalAdvancedExceptionWorkflow::class)->id());
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
         $storedWorkflow->update([
             'arguments' => Serializer::serialize([]),
@@ -113,7 +151,7 @@ final class ExceptionTest extends TestCase
             'class' => \InvalidArgumentException::class,
             'message' => 'second failure',
             'code' => 0,
-        ]);
+        ], sourceClass: TestSingleTryExceptionActivity::class);
         $exception->handle();
 
         $this->assertTrue($storedWorkflow->hasLogByIndex(2));

@@ -35,7 +35,8 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         public StoredWorkflow $storedWorkflow,
         public $exception,
         $connection = null,
-        $queue = null
+        $queue = null,
+        public ?string $sourceClass = null
     ) {
         $connection = $connection ?? $this->storedWorkflow->effectiveConnection() ?? config('queue.default');
         $queue = $queue ?? $this->storedWorkflow->effectiveQueue() ?? config(
@@ -53,7 +54,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         try {
             if ($this->storedWorkflow->hasLogByIndex($this->index)) {
                 $workflow->resume();
-            } elseif (! $this->previousLogIsException()) {
+            } elseif ($this->isCurrentReplayFrontier()) {
                 $workflow->next($this->index, $this->now, self::class, $this->exception);
             }
         } catch (TransitionNotFound) {
@@ -75,14 +76,35 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         ];
     }
 
-    private function previousLogIsException(): bool
+    private function isCurrentReplayFrontier(): bool
     {
-        $previousLog = $this->storedWorkflow->logs()
-            ->reorder()
-            ->where('index', '<', $this->index)
-            ->orderByDesc('index')
-            ->first();
+        $workflowClass = $this->storedWorkflow->class;
 
-        return $previousLog?->class === self::class;
+        if (! is_string($workflowClass) || $workflowClass === '') {
+            return true;
+        }
+
+        $workflow = new $workflowClass($this->storedWorkflow, ...$this->storedWorkflow->workflowArguments());
+        $workflow->replaying = true;
+
+        $previousContext = WorkflowStub::getContext();
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $this->storedWorkflow,
+            'index' => 0,
+            'now' => $this->now,
+            'replaying' => true,
+            'probeIndex' => $this->index,
+            'probeClass' => $this->sourceClass,
+            'probeMatched' => false,
+        ]);
+
+        try {
+            $workflow->handle();
+
+            return WorkflowStub::getContext()->probeMatched;
+        } finally {
+            WorkflowStub::setContext($previousContext);
+        }
     }
 }
