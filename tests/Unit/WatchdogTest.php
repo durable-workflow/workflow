@@ -230,11 +230,14 @@ final class WatchdogTest extends TestCase
         $this->createStalePendingWorkflow();
 
         $modelClass = new class() extends StoredWorkflow {
-            public function newQuery()
+            protected static function booted(): void
             {
-                Cache::put('workflow:watchdog', true, Watchdog::DEFAULT_TIMEOUT);
-
-                return parent::newQuery();
+                static::addGlobalScope(
+                    'mark-watchdog-present',
+                    static function (\Illuminate\Database\Eloquent\Builder $builder): void {
+                        Cache::put('workflow:watchdog', true, Watchdog::DEFAULT_TIMEOUT);
+                    }
+                );
             }
         };
         $modelClassName = get_class($modelClass);
