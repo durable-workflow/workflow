@@ -376,7 +376,7 @@ final class WatchdogTest extends TestCase
                 ->subSeconds($timeout + 1),
         ]);
 
-        Cache::lock('laravel_unique_job:' . TestSimpleWorkflow::class . $storedWorkflow->id)->get();
+        Cache::lock('laravel_unique_job:' . TestSimpleWorkflow::class . ':' . $storedWorkflow->id)->get();
 
         $watchdog = new Watchdog();
         $watchdog->handle();
