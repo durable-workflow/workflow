@@ -10,6 +10,7 @@ use Workflow\Exception;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
+use Workflow\Signal;
 use Workflow\States\WorkflowRunningStatus;
 use Workflow\WorkflowStub;
 
@@ -75,5 +76,48 @@ final class ExceptionTest extends TestCase
 
         $this->assertFalse($storedWorkflow->hasLogByIndex(1));
         $this->assertSame(1, $storedWorkflow->logs()->count());
+    }
+
+    public function testWritesLaterExceptionAfterWorkflowAdvances(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => \RuntimeException::class,
+                    'message' => 'first failure',
+                    'code' => 0,
+                ]),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => Signal::class,
+                'result' => Serializer::serialize(null),
+            ]);
+
+        $exception = new Exception(2, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => \InvalidArgumentException::class,
+            'message' => 'second failure',
+            'code' => 0,
+        ]);
+        $exception->handle();
+
+        $this->assertTrue($storedWorkflow->hasLogByIndex(2));
+        $this->assertSame(3, $storedWorkflow->logs()->count());
+        $this->assertSame(Exception::class, $storedWorkflow->findLogByIndex(2)?->class);
     }
 }

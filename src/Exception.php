@@ -53,7 +53,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         try {
             if ($this->storedWorkflow->hasLogByIndex($this->index)) {
                 $workflow->resume();
-            } elseif (! $this->storedWorkflow->logs()->where('class', self::class)->exists()) {
+            } elseif (! $this->previousLogIsException()) {
                 $workflow->next($this->index, $this->now, self::class, $this->exception);
             }
         } catch (TransitionNotFound) {
@@ -73,5 +73,16 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
                 15
             ),
         ];
+    }
+
+    private function previousLogIsException(): bool
+    {
+        $previousLog = $this->storedWorkflow->logs()
+            ->reorder()
+            ->where('index', '<', $this->index)
+            ->orderByDesc('index')
+            ->first();
+
+        return $previousLog?->class === self::class;
     }
 }
