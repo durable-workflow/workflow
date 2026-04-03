@@ -64,6 +64,7 @@ final class ActivityStub
             }
 
             ++$context->index;
+            WorkflowStub::setContext($context);
             $result = Serializer::unserialize($log->result);
             if (
                 is_array($result) &&
@@ -87,12 +88,14 @@ final class ActivityStub
 
         if (WorkflowStub::isProbing()) {
             ++$context->index;
+            WorkflowStub::setContext($context);
             return (new Deferred())->promise();
         }
 
         $activity::dispatch($context->index, $context->now, $context->storedWorkflow, ...$arguments);
 
         ++$context->index;
+        WorkflowStub::setContext($context);
         return (new Deferred())->promise();
     }
 }
