@@ -60,6 +60,9 @@ final class ChildWorkflowStub
             ++$context->index;
             WorkflowStub::setContext($context);
             $result = Serializer::unserialize($log->result);
+            if ($log->class === Exception::class && self::isForeignExceptionResult($result, $workflow)) {
+                return self::make($workflow, ...$arguments);
+            }
             if (
                 is_array($result)
                 && array_key_exists('class', $result)
@@ -113,5 +116,13 @@ final class ChildWorkflowStub
         ++$context->index;
         WorkflowStub::setContext($context);
         return (new Deferred())->promise();
+    }
+
+    private static function isForeignExceptionResult(mixed $result, string $workflow): bool
+    {
+        return is_array($result)
+            && isset($result['sourceClass'])
+            && is_string($result['sourceClass'])
+            && $result['sourceClass'] !== $workflow;
     }
 }

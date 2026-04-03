@@ -10,6 +10,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
@@ -51,18 +52,30 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
 
     public function handle()
     {
-        $workflow = $this->storedWorkflow->toWorkflow();
+        $lock = Cache::lock('laravel-workflow-exception:' . $this->storedWorkflow->id, 15);
+
+        if (! $lock->get()) {
+            $this->release();
+
+            return;
+        }
 
         try {
-            if ($this->storedWorkflow->hasLogByIndex($this->index)) {
-                $workflow->resume();
-            } elseif ($this->shouldPersistAfterProbeReplay()) {
-                $workflow->next($this->index, $this->now, self::class, $this->exception);
+            $workflow = $this->storedWorkflow->toWorkflow();
+
+            try {
+                if ($this->storedWorkflow->hasLogByIndex($this->index)) {
+                    $workflow->resume();
+                } elseif ($this->shouldPersistAfterProbeReplay()) {
+                    $workflow->next($this->index, $this->now, self::class, $this->exceptionPayload());
+                }
+            } catch (TransitionNotFound) {
+                if ($workflow->running()) {
+                    $this->release();
+                }
             }
-        } catch (TransitionNotFound) {
-            if ($workflow->running()) {
-                $this->release();
-            }
+        } finally {
+            $lock->release();
         }
     }
 
@@ -132,11 +145,22 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
             'index' => $this->index,
             'now' => $this->now,
             'class' => self::class,
-            'result' => Serializer::serialize($this->exception),
+            'result' => Serializer::serialize($this->exceptionPayload()),
         ]);
 
         $storedWorkflowClass = $this->storedWorkflow::class;
 
         return $storedWorkflowClass::query()->findOrFail($this->storedWorkflow->id);
+    }
+
+    private function exceptionPayload()
+    {
+        if (! is_array($this->exception) || $this->sourceClass === null) {
+            return $this->exception;
+        }
+
+        return array_merge($this->exception, [
+            'sourceClass' => $this->sourceClass,
+        ]);
     }
 }

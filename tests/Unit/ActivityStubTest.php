@@ -7,9 +7,11 @@ namespace Tests\Unit;
 use Exception;
 use RuntimeException;
 use Tests\Fixtures\TestActivity;
+use Tests\Fixtures\TestOtherActivity;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\ActivityStub;
+use Workflow\Exception as WorkflowException;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
@@ -121,6 +123,43 @@ final class ActivityStubTest extends TestCase
             ->then(static function ($value) use (&$result) {
                 $result = $value;
             });
+    }
+
+    public function testSkipsStoredExceptionForDifferentSourceClass(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'foreign',
+                    'code' => 0,
+                    'sourceClass' => TestOtherActivity::class,
+                ]),
+            ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => WorkflowStub::now(),
+                'class' => TestActivity::class,
+                'result' => Serializer::serialize('test'),
+            ]);
+
+        ActivityStub::make(TestActivity::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertSame('test', $result);
+        $this->assertSame(2, WorkflowStub::getContext()->index);
     }
 
     public function testAll(): void
