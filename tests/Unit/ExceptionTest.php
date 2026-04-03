@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Exception as BaseException;
+use InvalidArgumentException;
+use RuntimeException;
 use Tests\Fixtures\TestProbeBackToBackWorkflow;
 use Tests\Fixtures\TestProbeChildFailureWorkflow;
 use Tests\Fixtures\TestProbeParallelChildWorkflow;
@@ -21,7 +24,7 @@ final class ExceptionTest extends TestCase
 {
     public function testMiddleware(): void
     {
-        $exception = new Exception(0, now()->toDateTimeString(), new StoredWorkflow(), new \Exception(
+        $exception = new Exception(0, now()->toDateTimeString(), new StoredWorkflow(), new BaseException(
             'Test exception'
         ));
 
@@ -42,7 +45,7 @@ final class ExceptionTest extends TestCase
             'status' => WorkflowRunningStatus::$name,
         ]);
 
-        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, new \Exception('Test exception'));
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, new BaseException('Test exception'));
         $exception->handle();
 
         $this->assertSame(WorkflowRunningStatus::class, $workflow->status());
@@ -64,14 +67,14 @@ final class ExceptionTest extends TestCase
                     ->toDateTimeString(),
                 'class' => Exception::class,
                 'result' => Serializer::serialize([
-                    'class' => \Exception::class,
+                    'class' => BaseException::class,
                     'message' => 'child failed: child-1',
                     'code' => 0,
                 ]),
             ]);
 
         $exception = new Exception(1, now()->toDateTimeString(), $storedWorkflow, [
-            'class' => \Exception::class,
+            'class' => BaseException::class,
             'message' => 'child failed: child-2',
             'code' => 0,
         ], sourceClass: TestProbeChildFailureWorkflow::class);
@@ -97,14 +100,14 @@ final class ExceptionTest extends TestCase
                     ->toDateTimeString(),
                 'class' => Exception::class,
                 'result' => Serializer::serialize([
-                    'class' => \RuntimeException::class,
+                    'class' => RuntimeException::class,
                     'message' => 'first failure',
                     'code' => 0,
                 ]),
             ]);
 
         $exception = new Exception(1, now()->toDateTimeString(), $storedWorkflow, [
-            'class' => \InvalidArgumentException::class,
+            'class' => InvalidArgumentException::class,
             'message' => 'second failure',
             'code' => 0,
         ], sourceClass: TestProbeRetryActivity::class);

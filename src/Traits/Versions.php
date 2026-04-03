@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\Traits;
 
 use Illuminate\Database\QueryException;
+use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use function React\Promise\resolve;
 use Workflow\Exceptions\VersionNotSupportedException;
@@ -35,7 +36,7 @@ trait Versions
 
         if (self::isProbing()) {
             ++self::$context->index;
-            return (new \React\Promise\Deferred())->promise();
+            return (new Deferred())->promise();
         }
 
         $version = $maxSupported;
