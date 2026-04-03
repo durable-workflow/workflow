@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Tests\Fixtures;
 
 use Throwable;
-use Workflow\Workflow;
 use function Workflow\activity;
+use Workflow\Workflow;
 
 final class TestProbeBackToBackWorkflow extends Workflow
 {

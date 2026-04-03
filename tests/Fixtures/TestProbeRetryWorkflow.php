@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Tests\Fixtures;
 
 use Throwable;
-use Workflow\SignalMethod;
-use Workflow\Workflow;
 use function Workflow\activity;
 use function Workflow\await;
+use Workflow\SignalMethod;
+use Workflow\Workflow;
 
 final class TestProbeRetryWorkflow extends Workflow
 {

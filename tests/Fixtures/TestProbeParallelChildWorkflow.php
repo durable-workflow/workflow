@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Tests\Fixtures;
 
 use Throwable;
-use Workflow\Workflow;
 use function Workflow\all;
 use function Workflow\child;
+use Workflow\Workflow;
 
 final class TestProbeParallelChildWorkflow extends Workflow
 {
