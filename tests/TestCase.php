@@ -43,14 +43,16 @@ abstract class TestCase extends BaseTestCase
 
         for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
             self::$workers[$i] = new Process(['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work']);
-            if (! self::shouldStreamWorkerOutput()) {
+            if (! self::shouldCaptureWorkerOutput()) {
                 self::$workers[$i]->disableOutput();
                 self::$workers[$i]->start();
                 continue;
             }
 
+            file_put_contents(self::workerLogPath($i), '');
+
             self::$workers[$i]->start(static function (string $type, string $output) use ($i): void {
-                fwrite(STDERR, '[worker-' . $i . '][' . $type . '] ' . $output);
+                file_put_contents(self::workerLogPath($i), $output, FILE_APPEND | LOCK_EX);
             });
         }
     }
@@ -102,10 +104,19 @@ abstract class TestCase extends BaseTestCase
         return [\Workflow\Providers\WorkflowServiceProvider::class];
     }
 
-    private static function shouldStreamWorkerOutput(): bool
+    private static function shouldCaptureWorkerOutput(): bool
     {
-        $value = getenv('WORKFLOW_TEST_STREAM_WORKER_OUTPUT') ?: ($_ENV['WORKFLOW_TEST_STREAM_WORKER_OUTPUT'] ?? null);
+        $value = getenv(
+            'WORKFLOW_TEST_CAPTURE_WORKER_OUTPUT'
+        ) ?: ($_ENV['WORKFLOW_TEST_CAPTURE_WORKER_OUTPUT'] ?? null);
 
         return in_array($value, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private static function workerLogPath(int $worker): string
+    {
+        return dirname(
+            __DIR__
+        ) . '/vendor/orchestra/testbench-core/laravel/storage/logs/workflow-test-worker-' . $worker . '.log';
     }
 }
