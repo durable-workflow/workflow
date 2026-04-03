@@ -170,7 +170,8 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             $this->storedWorkflow,
             $throwable,
             $workflow->connection(),
-            $workflow->queue()
+            $workflow->queue(),
+            $this::class
         );
     }
 

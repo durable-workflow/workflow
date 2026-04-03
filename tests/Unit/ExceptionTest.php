@@ -7,10 +7,13 @@ namespace Tests\Unit;
 use Exception as BaseException;
 use InvalidArgumentException;
 use RuntimeException;
+use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestProbeBackToBackWorkflow;
 use Tests\Fixtures\TestProbeChildFailureWorkflow;
 use Tests\Fixtures\TestProbeParallelChildWorkflow;
 use Tests\Fixtures\TestProbeRetryActivity;
+use Tests\Fixtures\TestSagaActivity;
+use Tests\Fixtures\TestSagaParallelActivityWorkflow;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\Exception;
@@ -114,5 +117,46 @@ final class ExceptionTest extends TestCase
         $exception->handle();
 
         $this->assertTrue($storedWorkflow->fresh()->hasLogByIndex(1));
+    }
+
+    public function testSkipsWriteWhenProbeReachesDifferentActivityClassAtSameIndex(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestSagaParallelActivityWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => TestActivity::class,
+                'result' => Serializer::serialize('step complete'),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => RuntimeException::class,
+                    'message' => 'parallel failure',
+                    'code' => 0,
+                ]),
+            ]);
+
+        $exception = new Exception(2, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => RuntimeException::class,
+            'message' => 'another parallel failure',
+            'code' => 0,
+        ], sourceClass: TestSagaActivity::class);
+        $exception->handle();
+
+        $this->assertFalse($storedWorkflow->fresh()->hasLogByIndex(2));
     }
 }
