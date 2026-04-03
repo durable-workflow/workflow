@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Tests\Fixtures\TestActivity;
+use Tests\Fixtures\TestChildExceptionThrowingWorkflow;
 use Tests\Fixtures\TestConsecutiveCaughtExceptionWorkflow;
-use Tests\Fixtures\TestParallelCaughtExceptionWorkflow;
+use Tests\Fixtures\TestSagaChildWorkflow;
 use Tests\Fixtures\TestSignalAdvancedExceptionWorkflow;
 use Tests\Fixtures\TestSingleTryExceptionActivity;
 use Tests\Fixtures\TestWorkflow;
@@ -51,7 +53,7 @@ final class ExceptionTest extends TestCase
 
     public function testSkipsWriteWhenSiblingExceptionLogExists(): void
     {
-        $workflow = WorkflowStub::load(WorkflowStub::make(TestParallelCaughtExceptionWorkflow::class)->id());
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestSagaChildWorkflow::class)->id());
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
         $storedWorkflow->update([
             'arguments' => Serializer::serialize([]),
@@ -63,23 +65,32 @@ final class ExceptionTest extends TestCase
                 'index' => 0,
                 'now' => now()
                     ->toDateTimeString(),
+                'class' => TestActivity::class,
+                'result' => Serializer::serialize('activity'),
+            ]);
+
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => now()
+                    ->toDateTimeString(),
                 'class' => Exception::class,
                 'result' => Serializer::serialize([
                     'class' => \Exception::class,
-                    'message' => 'first child failed',
+                    'message' => 'first parallel child failed',
                     'code' => 0,
                 ]),
             ]);
 
-        $exception = new Exception(1, now()->toDateTimeString(), $storedWorkflow, [
+        $exception = new Exception(2, now()->toDateTimeString(), $storedWorkflow, [
             'class' => \Exception::class,
             'message' => 'second child failed',
             'code' => 0,
-        ], sourceClass: TestSingleTryExceptionActivity::class);
+        ], sourceClass: TestChildExceptionThrowingWorkflow::class);
         $exception->handle();
 
-        $this->assertFalse($storedWorkflow->hasLogByIndex(1));
-        $this->assertSame(1, $storedWorkflow->logs()->count());
+        $this->assertFalse($storedWorkflow->hasLogByIndex(2));
+        $this->assertSame(2, $storedWorkflow->logs()->count());
     }
 
     public function testWritesConsecutiveCaughtExceptionWithoutIntermediateLog(): void

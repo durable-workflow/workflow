@@ -41,6 +41,8 @@ final class WorkflowStub
 
     private static ?\stdClass $context = null;
 
+    private static ?array $replayProbe = null;
+
     private static array $signalMethodCache = [];
 
     private static array $queryMethodCache = [];
@@ -163,6 +165,45 @@ final class WorkflowStub
     public static function setContext($context): void
     {
         self::$context = (object) $context;
+    }
+
+    public static function hasReplayProbe(): bool
+    {
+        return self::$replayProbe !== null;
+    }
+
+    public static function startReplayProbe(int $index, ?string $class = null): void
+    {
+        self::$replayProbe = [
+            'index' => $index,
+            'class' => $class,
+            'matched' => false,
+            'seen' => false,
+        ];
+    }
+
+    public static function markReplayProbe(int $index, ?string $class = null): void
+    {
+        if (self::$replayProbe === null || self::$replayProbe['seen'] === true) {
+            return;
+        }
+
+        self::$replayProbe['seen'] = true;
+        self::$replayProbe['matched'] = self::$replayProbe['index'] === $index
+            && (
+                self::$replayProbe['class'] === null
+                || self::$replayProbe['class'] === $class
+            );
+    }
+
+    public static function replayProbeMatched(): bool
+    {
+        return self::$replayProbe['matched'] ?? false;
+    }
+
+    public static function clearReplayProbe(): void
+    {
+        self::$replayProbe = null;
     }
 
     public static function now()

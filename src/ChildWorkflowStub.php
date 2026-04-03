@@ -67,13 +67,8 @@ final class ChildWorkflowStub
             return resolve($result);
         }
 
-        if ($context->replaying && property_exists($context, 'probeIndex')) {
-            $context->probeMatched = $context->probeIndex === $context->index
-                && (
-                    ! property_exists($context, 'probeClass')
-                    || $context->probeClass === null
-                    || $context->probeClass === $workflow
-                );
+        if ($context->replaying && WorkflowStub::hasReplayProbe()) {
+            WorkflowStub::markReplayProbe($context->index, $workflow);
             ++$context->index;
             WorkflowStub::setContext($context);
             $deferred = new Deferred();

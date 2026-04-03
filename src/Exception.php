@@ -88,22 +88,21 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         $workflow->replaying = true;
 
         $previousContext = WorkflowStub::getContext();
+        WorkflowStub::startReplayProbe($this->index, $this->sourceClass);
 
         WorkflowStub::setContext([
             'storedWorkflow' => $this->storedWorkflow,
             'index' => 0,
             'now' => $this->now,
             'replaying' => true,
-            'probeIndex' => $this->index,
-            'probeClass' => $this->sourceClass,
-            'probeMatched' => false,
         ]);
 
         try {
             $workflow->handle();
 
-            return WorkflowStub::getContext()->probeMatched;
+            return WorkflowStub::replayProbeMatched();
         } finally {
+            WorkflowStub::clearReplayProbe();
             WorkflowStub::setContext($previousContext);
         }
     }

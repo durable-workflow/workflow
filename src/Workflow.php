@@ -209,7 +209,7 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             $this->now = $log ? $log->now : Carbon::now();
         }
 
-        $this->setContext([
+        WorkflowStub::setContext([
             'storedWorkflow' => $this->storedWorkflow,
             'index' => $this->index,
             'now' => $this->now,
@@ -229,7 +229,7 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
             $this->now = $log ? $log->now : Carbon::now();
 
-            $this->setContext([
+            WorkflowStub::setContext([
                 'storedWorkflow' => $this->storedWorkflow,
                 'index' => $this->index,
                 'now' => $this->now,
@@ -308,17 +308,5 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                 );
             }
         }
-    }
-
-    private function setContext(array $context): void
-    {
-        $existingContext = WorkflowStub::getContext();
-
-        if (property_exists($existingContext, 'probeIndex')) {
-            $context['probeIndex'] = $existingContext->probeIndex;
-            $context['probeMatched'] = $existingContext->probeMatched ?? false;
-        }
-
-        WorkflowStub::setContext($context);
     }
 }

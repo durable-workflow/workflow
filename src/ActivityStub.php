@@ -74,13 +74,8 @@ final class ActivityStub
             return resolve($result);
         }
 
-        if ($context->replaying && property_exists($context, 'probeIndex')) {
-            $context->probeMatched = $context->probeIndex === $context->index
-                && (
-                    ! property_exists($context, 'probeClass')
-                    || $context->probeClass === null
-                    || $context->probeClass === $activity
-                );
+        if ($context->replaying && WorkflowStub::hasReplayProbe()) {
+            WorkflowStub::markReplayProbe($context->index, $activity);
             ++$context->index;
             WorkflowStub::setContext($context);
             $deferred = new Deferred();
