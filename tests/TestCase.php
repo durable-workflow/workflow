@@ -29,17 +29,7 @@ abstract class TestCase extends BaseTestCase
             }
         }
 
-        $redisHost = getenv('REDIS_HOST') ?: ($_ENV['REDIS_HOST'] ?? null);
-        $redisPort = getenv('REDIS_PORT') ?: ($_ENV['REDIS_PORT'] ?? 6379);
-        if ($redisHost && class_exists(\Redis::class)) {
-            try {
-                $redis = new \Redis();
-                $redis->connect($redisHost, (int) $redisPort);
-                $redis->flushDB();
-            } catch (\Throwable $e) {
-                // Ignore if no redis
-            }
-        }
+        self::flushRedis();
 
         for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
             self::$workers[$i] = new Process(['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work']);
@@ -53,6 +43,10 @@ abstract class TestCase extends BaseTestCase
         foreach (self::$workers as $worker) {
             $worker->stop();
         }
+
+        self::$workers = [];
+
+        self::flushRedis();
     }
 
     protected function setUp(): void
@@ -67,17 +61,7 @@ abstract class TestCase extends BaseTestCase
 
         Cache::flush();
 
-        $redisHost = getenv('REDIS_HOST') ?: ($_ENV['REDIS_HOST'] ?? null);
-        $redisPort = getenv('REDIS_PORT') ?: ($_ENV['REDIS_PORT'] ?? 6379);
-        if ($redisHost && class_exists(\Redis::class)) {
-            try {
-                $redis = new \Redis();
-                $redis->connect($redisHost, (int) $redisPort);
-                $redis->flushDB();
-            } catch (\Throwable $e) {
-                // Ignore if no redis
-            }
-        }
+        self::flushRedis();
     }
 
     protected function defineDatabaseMigrations()
@@ -93,5 +77,20 @@ abstract class TestCase extends BaseTestCase
     protected function getPackageProviders($app)
     {
         return [\Workflow\Providers\WorkflowServiceProvider::class];
+    }
+
+    private static function flushRedis(): void
+    {
+        $redisHost = getenv('REDIS_HOST') ?: ($_ENV['REDIS_HOST'] ?? null);
+        $redisPort = getenv('REDIS_PORT') ?: ($_ENV['REDIS_PORT'] ?? 6379);
+        if ($redisHost && class_exists(\Redis::class)) {
+            try {
+                $redis = new \Redis();
+                $redis->connect($redisHost, (int) $redisPort);
+                $redis->flushDB();
+            } catch (\Throwable $e) {
+                // Ignore if no redis
+            }
+        }
     }
 }
