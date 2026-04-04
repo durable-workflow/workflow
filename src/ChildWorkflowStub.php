@@ -88,6 +88,7 @@ final class ChildWorkflowStub
         }
 
         if (WorkflowStub::isProbing()) {
+            WorkflowStub::markProbePendingBeforeMatch();
             ++$context->index;
             WorkflowStub::setContext($context);
             return (new Deferred())->promise();

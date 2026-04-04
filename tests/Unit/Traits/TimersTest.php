@@ -267,11 +267,47 @@ final class TimersTest extends TestCase
 
         $this->assertNull($result);
         $this->assertSame(1, WorkflowStub::getContext()->index);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
         $this->assertSame(0, $workflow->logs()->count());
         $this->assertDatabaseMissing('workflow_timers', [
             'stored_workflow_id' => $workflow->id(),
             'index' => 0,
         ]);
+    }
+
+    public function testTimerMarksProbePendingBeforeMatchWhenStoredTimerHasNotElapsed(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->timers()
+            ->create([
+                'index' => 0,
+                'stop_at' => now()
+                    ->addMinute(),
+            ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+        ]);
+
+        WorkflowStub::timer('1 minute')
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
+        $this->assertSame(1, WorkflowStub::getContext()->index);
+        $this->assertSame(0, $workflow->logs()->count());
     }
 
     public function testTimerCapsDelayForSqsDriver(): void

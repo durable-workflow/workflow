@@ -42,6 +42,7 @@ trait Timers
                 ->addSeconds($seconds);
 
             if (self::isProbing()) {
+                self::markProbePendingBeforeMatch();
                 ++self::$context->index;
                 return (new Deferred())->promise();
             }
@@ -96,6 +97,10 @@ trait Timers
                 self::connection(),
                 self::queue()
             )->delay($delay);
+        }
+
+        if (self::isProbing()) {
+            self::markProbePendingBeforeMatch();
         }
 
         ++self::$context->index;

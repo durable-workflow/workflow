@@ -201,6 +201,7 @@ final class ActivityStubTest extends TestCase
             });
 
         $this->assertNull($result);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
         $this->assertFalse(WorkflowStub::probeMatched());
         $this->assertSame(2, WorkflowStub::getContext()->index);
     }

@@ -147,10 +147,10 @@ final class ExceptionTest extends TestCase
             'code' => 0,
         ], connection: 'redis', queue: 'default');
 
-        $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
         $method->setAccessible(true);
 
-        $this->assertTrue($method->invoke($exception));
+        $this->assertSame('persist', $method->invoke($exception));
     }
 
     public function testProbeReplayShortCircuitsWhenWorkflowClassDoesNotExist(): void
@@ -165,10 +165,10 @@ final class ExceptionTest extends TestCase
             'code' => 0,
         ], connection: 'redis', queue: 'default');
 
-        $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
         $method->setAccessible(true);
 
-        $this->assertTrue($method->invoke($exception));
+        $this->assertSame('persist', $method->invoke($exception));
     }
 
     public function testProbeReplayShortCircuitsWhenWorkflowClassIsNotAWorkflow(): void
@@ -183,10 +183,10 @@ final class ExceptionTest extends TestCase
             'code' => 0,
         ], connection: 'redis', queue: 'default');
 
-        $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
         $method->setAccessible(true);
 
-        $this->assertTrue($method->invoke($exception));
+        $this->assertSame('persist', $method->invoke($exception));
     }
 
     public function testProbeReplayShortCircuitsWhenWorkflowClassIsNotInstantiable(): void
@@ -201,10 +201,10 @@ final class ExceptionTest extends TestCase
             'code' => 0,
         ], connection: 'redis', queue: 'default');
 
-        $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
         $method->setAccessible(true);
 
-        $this->assertTrue($method->invoke($exception));
+        $this->assertSame('persist', $method->invoke($exception));
     }
 
     public function testProbeReplayShortCircuitsWhenWorkflowClassAutoloadThrows(): void
@@ -228,10 +228,10 @@ final class ExceptionTest extends TestCase
         spl_autoload_register($autoload);
 
         try {
-            $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+            $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
             $method->setAccessible(true);
 
-            $this->assertTrue($method->invoke($exception));
+            $this->assertSame('persist', $method->invoke($exception));
         } finally {
             spl_autoload_unregister($autoload);
         }
@@ -268,6 +268,31 @@ final class ExceptionTest extends TestCase
 
         $this->assertFalse($storedWorkflow->hasLogByIndex(1));
         $this->assertSame(1, $storedWorkflow->logs()->count());
+    }
+
+    public function testRetriesWriteWhenProbeMatchesAfterEarlierPendingWork(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestProbeParallelChildWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $job = Mockery::mock(JobContract::class);
+        $job->shouldReceive('release')
+            ->once()
+            ->with(1);
+
+        $exception = new Exception(1, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'child failed: child-2',
+            'code' => 0,
+        ], sourceClass: TestProbeChildFailureWorkflow::class);
+        $exception->setJob($job);
+        $exception->handle();
+
+        $this->assertFalse($storedWorkflow->fresh()->hasLogByIndex(1));
     }
 
     public function testPersistsWriteWhenProbeReachesCandidateException(): void

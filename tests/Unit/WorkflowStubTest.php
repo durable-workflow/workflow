@@ -246,24 +246,30 @@ final class WorkflowStubTest extends TestCase
             $this->assertNull(WorkflowStub::probeIndex());
             $this->assertNull(WorkflowStub::probeClass());
             $this->assertFalse(WorkflowStub::probeMatched());
+            $this->assertFalse(WorkflowStub::probePendingBeforeMatch());
 
             WorkflowStub::markProbeMatched();
+            WorkflowStub::markProbePendingBeforeMatch();
 
             $this->assertFalse(WorkflowStub::probeMatched());
+            $this->assertFalse(WorkflowStub::probePendingBeforeMatch());
 
             WorkflowStub::setContext([
                 'probing' => true,
                 'probeIndex' => 7,
                 'probeClass' => TestWorkflow::class,
                 'probeMatched' => false,
+                'probePendingBeforeMatch' => false,
             ]);
 
+            WorkflowStub::markProbePendingBeforeMatch();
             WorkflowStub::markProbeMatched();
 
             $this->assertTrue(WorkflowStub::isProbing());
             $this->assertSame(7, WorkflowStub::probeIndex());
             $this->assertSame(TestWorkflow::class, WorkflowStub::probeClass());
             $this->assertTrue(WorkflowStub::probeMatched());
+            $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
         } finally {
             $contextProperty->setValue($previousContext);
         }

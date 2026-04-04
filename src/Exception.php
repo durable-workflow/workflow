@@ -28,6 +28,12 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
 
     private const LOCK_RETRY_DELAY = 1;
 
+    private const PROBE_SKIP = 'skip';
+
+    private const PROBE_PERSIST = 'persist';
+
+    private const PROBE_RETRY = 'retry';
+
     public ?string $key = null;
 
     public $tries = PHP_INT_MAX;
@@ -70,8 +76,14 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
             try {
                 if ($this->storedWorkflow->hasLogByIndex($this->index)) {
                     $workflow->resume();
-                } elseif ($this->shouldPersistAfterProbeReplay()) {
-                    $workflow->next($this->index, $this->now, self::class, $this->exceptionPayload());
+                } else {
+                    $probeDecision = $this->probeReplayDecision();
+
+                    if ($probeDecision === self::PROBE_PERSIST) {
+                        $workflow->next($this->index, $this->now, self::class, $this->exceptionPayload());
+                    } elseif ($probeDecision === self::PROBE_RETRY) {
+                        $this->release(self::LOCK_RETRY_DELAY);
+                    }
                 }
             } catch (TransitionNotFound) {
                 if ($workflow->running()) {
@@ -95,28 +107,28 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         ];
     }
 
-    private function shouldPersistAfterProbeReplay(): bool
+    private function probeReplayDecision(): string
     {
         $workflowClass = $this->storedWorkflow->class;
 
         if (! is_string($workflowClass) || $workflowClass === '') {
-            return true;
+            return self::PROBE_PERSIST;
         }
 
         try {
             if (! class_exists($workflowClass) || ! is_subclass_of($workflowClass, Workflow::class)) {
-                return true;
+                return self::PROBE_PERSIST;
             }
 
             if (! (new ReflectionClass($workflowClass))->isInstantiable()) {
-                return true;
+                return self::PROBE_PERSIST;
             }
         } catch (Throwable) {
-            return true;
+            return self::PROBE_PERSIST;
         }
 
         $previousContext = WorkflowStub::getContext();
-        $shouldPersist = false;
+        $probeDecision = self::PROBE_SKIP;
 
         try {
             $tentativeWorkflow = $this->createTentativeWorkflowState();
@@ -132,6 +144,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
                 'probeIndex' => $this->index,
                 'probeClass' => $this->sourceClass,
                 'probeMatched' => false,
+                'probePendingBeforeMatch' => false,
             ]);
 
             try {
@@ -140,12 +153,16 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
                 // The replay path may still throw; we only care whether it matched this tentative log.
             }
 
-            $shouldPersist = WorkflowStub::probeMatched();
+            if (WorkflowStub::probeMatched()) {
+                $probeDecision = WorkflowStub::probePendingBeforeMatch()
+                    ? self::PROBE_RETRY
+                    : self::PROBE_PERSIST;
+            }
         } finally {
             WorkflowStub::setContext($previousContext);
         }
 
-        return $shouldPersist;
+        return $probeDecision;
     }
 
     private function createTentativeWorkflowState(): StoredWorkflow

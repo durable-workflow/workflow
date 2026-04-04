@@ -114,6 +114,7 @@ final class SideEffectsTest extends TestCase
 
         $this->assertFalse($callableEvaluated);
         $this->assertNull($result);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
         $this->assertSame(0, $workflow->logs()->count());
         $this->assertSame(1, WorkflowStub::getContext()->index);
     }

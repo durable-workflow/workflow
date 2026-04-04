@@ -242,6 +242,7 @@ final class ChildWorkflowStubTest extends TestCase
             });
 
         $this->assertNull($result);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
         $this->assertSame(1, WorkflowStub::getContext()->index);
     }
 

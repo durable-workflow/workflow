@@ -128,6 +128,7 @@ final class AwaitsTest extends TestCase
 
         $this->assertFalse($conditionEvaluated);
         $this->assertNull($result);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
         $this->assertSame(0, $workflow->logs()->count());
         $this->assertSame(1, WorkflowStub::getContext()->index);
     }

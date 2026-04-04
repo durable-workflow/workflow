@@ -211,6 +211,7 @@ final class VersionsTest extends TestCase
             });
 
         $this->assertNull($result);
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
         $this->assertSame(1, WorkflowStub::getContext()->index);
         $this->assertSame(0, $workflow->logs()->count());
     }

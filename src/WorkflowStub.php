@@ -198,9 +198,23 @@ final class WorkflowStub
         self::$context->probeMatched = true;
     }
 
+    public static function markProbePendingBeforeMatch(): void
+    {
+        if (! self::isProbing() || self::probeMatched()) {
+            return;
+        }
+
+        self::$context->probePendingBeforeMatch = true;
+    }
+
     public static function probeMatched(): bool
     {
         return (bool) (self::getContext()->probeMatched ?? false);
+    }
+
+    public static function probePendingBeforeMatch(): bool
+    {
+        return (bool) (self::getContext()->probePendingBeforeMatch ?? false);
     }
 
     public function id()

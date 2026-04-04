@@ -23,6 +23,7 @@ trait Awaits
         }
 
         if (self::isProbing()) {
+            self::markProbePendingBeforeMatch();
             ++self::$context->index;
             return (new Deferred())->promise();
         }
