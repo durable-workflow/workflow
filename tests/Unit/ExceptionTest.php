@@ -21,6 +21,7 @@ use Tests\Fixtures\TestSagaParallelActivityWorkflow;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
 use Workflow\Exception;
+use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowRunningStatus;
@@ -34,7 +35,13 @@ final class ExceptionTest extends TestCase
             'Test exception'
         ));
 
-        $this->assertSame([], $exception->middleware());
+        $middleware = collect($exception->middleware())
+            ->values();
+
+        $this->assertCount(1, $middleware);
+        $this->assertSame(WithoutOverlappingMiddleware::class, $middleware[0]::class);
+        $this->assertSame(WithoutOverlappingMiddleware::WORKFLOW, $middleware[0]->type);
+        $this->assertSame(15, $middleware[0]->expiresAfter);
     }
 
     public function testExceptionWorkflowRunning(): void

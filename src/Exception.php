@@ -13,6 +13,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
 use Workflow\Exceptions\TransitionNotFound;
+use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Models\StoredWorkflowLog;
 use Workflow\Serializers\Serializer;
@@ -81,7 +82,14 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
 
     public function middleware()
     {
-        return [];
+        return [
+            new WithoutOverlappingMiddleware(
+                $this->storedWorkflow->id,
+                WithoutOverlappingMiddleware::WORKFLOW,
+                0,
+                15
+            ),
+        ];
     }
 
     private function shouldPersistAfterProbeReplay(): bool
