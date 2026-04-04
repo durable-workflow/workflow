@@ -45,6 +45,15 @@ final class ChildWorkflowStub
         }
 
         if ($log) {
+            $result = Serializer::unserialize($log->result);
+
+            if ($log->class === Exception::class && self::isForeignExceptionResult($result, $workflow)) {
+                ++$context->index;
+                WorkflowStub::setContext($context);
+
+                return self::make($workflow, ...$arguments);
+            }
+
             if (
                 WorkflowStub::isProbing()
                 && WorkflowStub::probeIndex() === $context->index
@@ -59,10 +68,6 @@ final class ChildWorkflowStub
 
             ++$context->index;
             WorkflowStub::setContext($context);
-            $result = Serializer::unserialize($log->result);
-            if ($log->class === Exception::class && self::isForeignExceptionResult($result, $workflow)) {
-                return self::make($workflow, ...$arguments);
-            }
             if (
                 is_array($result)
                 && array_key_exists('class', $result)

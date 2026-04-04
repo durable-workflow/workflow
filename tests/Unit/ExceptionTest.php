@@ -26,6 +26,7 @@ use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowRunningStatus;
+use Workflow\Workflow;
 use Workflow\WorkflowStub;
 
 final class ExceptionTest extends TestCase
@@ -119,7 +120,7 @@ final class ExceptionTest extends TestCase
         $job = Mockery::mock(JobContract::class);
         $job->shouldReceive('release')
             ->once()
-            ->with(0);
+            ->with(1);
 
         $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
             'class' => BaseException::class,
@@ -186,6 +187,54 @@ final class ExceptionTest extends TestCase
         $method->setAccessible(true);
 
         $this->assertTrue($method->invoke($exception));
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassIsNotInstantiable(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = ExceptionTestAbstractWorkflow::class;
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'abstract workflow class',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+        $method->setAccessible(true);
+
+        $this->assertTrue($method->invoke($exception));
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassAutoloadThrows(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = 'Tests\\Fixtures\\ThrowingAutoloadWorkflow';
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'autoload failure',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $autoload = static function (string $class): void {
+            if ($class === 'Tests\\Fixtures\\ThrowingAutoloadWorkflow') {
+                throw new RuntimeException('autoload exploded');
+            }
+        };
+
+        spl_autoload_register($autoload);
+
+        try {
+            $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+            $method->setAccessible(true);
+
+            $this->assertTrue($method->invoke($exception));
+        } finally {
+            spl_autoload_unregister($autoload);
+        }
     }
 
     public function testSkipsWriteWhenProbeDoesNotReachCandidateException(): void
@@ -299,4 +348,8 @@ final class ExceptionTest extends TestCase
 
         $this->assertFalse($storedWorkflow->fresh()->hasLogByIndex(2));
     }
+}
+
+abstract class ExceptionTestAbstractWorkflow extends Workflow
+{
 }

@@ -162,6 +162,49 @@ final class ActivityStubTest extends TestCase
         $this->assertSame(2, WorkflowStub::getContext()->index);
     }
 
+    public function testDoesNotMarkProbeMatchedForForeignStoredException(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $result = null;
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'foreign',
+                    'code' => 0,
+                    'sourceClass' => TestOtherActivity::class,
+                ]),
+            ]);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 0,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+            'probeIndex' => 0,
+            'probeClass' => TestActivity::class,
+            'probeMatched' => false,
+        ]);
+
+        ActivityStub::make(TestActivity::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertNull($result);
+        $this->assertFalse(WorkflowStub::probeMatched());
+        $this->assertSame(2, WorkflowStub::getContext()->index);
+    }
+
     public function testAll(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());

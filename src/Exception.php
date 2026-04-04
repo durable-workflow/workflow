@@ -26,6 +26,8 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
     use Queueable;
     use SerializesModels;
 
+    private const LOCK_RETRY_DELAY = 1;
+
     public ?string $key = null;
 
     public $tries = PHP_INT_MAX;
@@ -57,7 +59,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         $lock = Cache::lock('laravel-workflow-exception:' . $this->storedWorkflow->id, 15);
 
         if (! $lock->get()) {
-            $this->release();
+            $this->release(self::LOCK_RETRY_DELAY);
 
             return;
         }
