@@ -11,6 +11,7 @@ use InvalidArgumentException;
 use Mockery;
 use ReflectionMethod;
 use RuntimeException;
+use stdClass;
 use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestProbeBackToBackWorkflow;
 use Tests\Fixtures\TestProbeChildFailureWorkflow;
@@ -143,7 +144,43 @@ final class ExceptionTest extends TestCase
             'class' => BaseException::class,
             'message' => 'invalid workflow class',
             'code' => 0,
-        ]);
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+        $method->setAccessible(true);
+
+        $this->assertTrue($method->invoke($exception));
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassDoesNotExist(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = 'Tests\\Fixtures\\MissingWorkflowClass';
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'missing workflow class',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
+        $method->setAccessible(true);
+
+        $this->assertTrue($method->invoke($exception));
+    }
+
+    public function testProbeReplayShortCircuitsWhenWorkflowClassIsNotAWorkflow(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->class = stdClass::class;
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'non workflow class',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
 
         $method = new ReflectionMethod(Exception::class, 'shouldPersistAfterProbeReplay');
         $method->setAccessible(true);

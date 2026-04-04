@@ -11,6 +11,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Cache;
+use ReflectionClass;
 use Throwable;
 use Workflow\Exceptions\TransitionNotFound;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
@@ -97,6 +98,18 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         $workflowClass = $this->storedWorkflow->class;
 
         if (! is_string($workflowClass) || $workflowClass === '') {
+            return true;
+        }
+
+        try {
+            if (! class_exists($workflowClass) || ! is_subclass_of($workflowClass, Workflow::class)) {
+                return true;
+            }
+
+            if (! (new ReflectionClass($workflowClass))->isInstantiable()) {
+                return true;
+            }
+        } catch (Throwable) {
             return true;
         }
 
