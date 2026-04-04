@@ -177,10 +177,14 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                 $this->storedWorkflow->status->transitionTo(WorkflowRunningStatus::class);
             }
         } catch (TransitionNotFound) {
-            if ($this->storedWorkflow->toWorkflow()->running()) {
-                $this->release();
+            $this->storedWorkflow->refresh();
+
+            if ($this->storedWorkflow->status::class !== WorkflowRunningStatus::class) {
+                if ($this->storedWorkflow->toWorkflow()->running()) {
+                    $this->release();
+                }
+                return;
             }
-            return;
         }
 
         $parentWorkflow = $this->storedWorkflow->parents()

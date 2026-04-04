@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Workflow\Providers;
 
+use Illuminate\Queue\Events\Looping;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
 use Workflow\Commands\WorkflowMakeCommand;
+use Workflow\Watchdog;
 
 final class WorkflowServiceProvider extends ServiceProvider
 {
@@ -24,5 +27,9 @@ final class WorkflowServiceProvider extends ServiceProvider
         ], 'migrations');
 
         $this->commands([ActivityMakeCommand::class, WorkflowMakeCommand::class]);
+
+        Event::listen(Looping::class, static function (Looping $event): void {
+            Watchdog::wake($event->connectionName, $event->queue);
+        });
     }
 }
