@@ -348,12 +348,31 @@ final class WorkflowExecutor
     private function pendingSignalCommand(WorkflowRun $run, SignalCall $signalCall): ?WorkflowCommand
     {
         /** @var WorkflowCommand|null $command */
-        $command = $run->commands->first(
-            static fn (WorkflowCommand $command): bool => $command->command_type === CommandType::Signal
-                && $command->status === CommandStatus::Accepted
-                && $command->applied_at === null
-                && $command->targetName() === $signalCall->name
-        );
+        $command = $run->commands
+            ->filter(
+                static fn (WorkflowCommand $command): bool => $command->command_type === CommandType::Signal
+                    && $command->status === CommandStatus::Accepted
+                    && $command->applied_at === null
+                    && $command->targetName() === $signalCall->name
+            )
+            ->sort(static function (WorkflowCommand $left, WorkflowCommand $right): int {
+                $leftSequence = $left->command_sequence ?? PHP_INT_MAX;
+                $rightSequence = $right->command_sequence ?? PHP_INT_MAX;
+
+                if ($leftSequence !== $rightSequence) {
+                    return $leftSequence <=> $rightSequence;
+                }
+
+                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? PHP_INT_MAX;
+                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? PHP_INT_MAX;
+
+                if ($leftCreatedAt !== $rightCreatedAt) {
+                    return $leftCreatedAt <=> $rightCreatedAt;
+                }
+
+                return $left->id <=> $right->id;
+            })
+            ->first();
 
         return $command;
     }

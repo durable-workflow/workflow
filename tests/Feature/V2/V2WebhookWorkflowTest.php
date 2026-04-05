@@ -66,6 +66,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'started_new')
             ->assertJsonPath('workflow_id', 'order-456')
             ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('command_sequence', 1)
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null);
 
@@ -109,6 +110,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'rejected_duplicate')
             ->assertJsonPath('workflow_id', 'order-789')
             ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'rejected')
             ->assertJsonPath('rejection_reason', 'instance_already_started')
             ->assertJsonPath('run_id', $first->json('run_id'));
@@ -135,6 +137,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'returned_existing_active')
             ->assertJsonPath('workflow_id', 'order-999')
             ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null)
             ->assertJsonPath('run_id', $first->json('run_id'));
@@ -208,6 +211,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('workflow_id', 'order-signal')
             ->assertJsonPath('run_id', $workflow->runId())
             ->assertJsonPath('workflow_type', 'test-signal-workflow')
+            ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null);
 
@@ -258,6 +262,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'repair_dispatched')
             ->assertJsonPath('workflow_id', 'order-repair')
             ->assertJsonPath('run_id', '01JTESTFLOWRUNREPAIRWEB001')
+            ->assertJsonPath('command_sequence', 1)
             ->assertJsonPath('workflow_type', 'test-greeting-workflow')
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null);

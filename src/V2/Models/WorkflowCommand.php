@@ -31,10 +31,36 @@ class WorkflowCommand extends Model
         'command_type' => CommandType::class,
         'status' => CommandStatus::class,
         'outcome' => CommandOutcome::class,
+        'command_sequence' => 'integer',
         'accepted_at' => 'datetime',
         'applied_at' => 'datetime',
         'rejected_at' => 'datetime',
     ];
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    public static function record(
+        WorkflowInstance $instance,
+        ?WorkflowRun $run,
+        array $attributes,
+    ): self {
+        if ($run !== null) {
+            $attributes['command_sequence'] ??= (static::query()
+                ->where('workflow_run_id', $run->id)
+                ->max('command_sequence') ?? 0) + 1;
+        }
+
+        $attributes['workflow_instance_id'] ??= $instance->id;
+        $attributes['workflow_run_id'] ??= $run?->id;
+        $attributes['workflow_class'] ??= $run?->workflow_class ?? $instance->workflow_class;
+        $attributes['workflow_type'] ??= $run?->workflow_type ?? $instance->workflow_type;
+
+        /** @var self $command */
+        $command = static::query()->create($attributes);
+
+        return $command;
+    }
 
     public function instance(): BelongsTo
     {

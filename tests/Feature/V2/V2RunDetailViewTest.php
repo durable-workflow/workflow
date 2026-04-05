@@ -54,8 +54,10 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('Waiting for signal name-provided.', $detail['liveness_reason']);
         $this->assertTrue($detail['can_issue_terminal_commands']);
         $this->assertNull($detail['read_only_reason']);
+        $this->assertSame(1, $detail['commands'][0]['sequence']);
         $this->assertSame('start', $detail['commands'][0]['type']);
         $this->assertSame('started_new', $detail['commands'][0]['outcome']);
+        $this->assertSame(1, $detail['timeline'][0]['command_sequence']);
         $this->assertSame('SignalWaitOpened', $detail['timeline'][2]['type']);
         $this->assertSame('signal', $detail['timeline'][2]['kind']);
         $this->assertSame('Waiting for signal name-provided.', $detail['timeline'][2]['summary']);
@@ -88,7 +90,9 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(0, $detail['exception_count']);
         $this->assertSame(0, $detail['exceptions_count']);
         $this->assertCount(2, $detail['commands']);
+        $this->assertSame(1, $detail['commands'][0]['sequence']);
         $this->assertSame('start', $detail['commands'][0]['type']);
+        $this->assertSame(2, $detail['commands'][1]['sequence']);
         $this->assertSame('signal', $detail['commands'][1]['type']);
         $this->assertSame('name-provided', $detail['commands'][1]['target_name']);
         $this->assertSame('signal_received', $detail['commands'][1]['outcome']);
@@ -106,6 +110,7 @@ final class V2RunDetailViewTest extends TestCase
             'ActivityCompleted',
             'WorkflowCompleted',
         ], array_column($detail['timeline'], 'type'));
+        $this->assertSame([1, 1, null, 2, 2, null, null, null], array_column($detail['timeline'], 'command_sequence'));
     }
 
     public function testRunDetailViewIncludesCurrentRunPointerForHistoricalRun(): void

@@ -241,12 +241,15 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('name-provided', $timeline[2]['signal_name']);
         $this->assertSame('command', $timeline[3]['kind']);
         $this->assertSame('Signal name-provided received.', $timeline[3]['summary']);
+        $this->assertSame(2, $timeline[3]['command_sequence']);
         $this->assertSame('signal', $timeline[3]['command_type']);
         $this->assertSame('signal_received', $timeline[3]['command_outcome']);
+        $this->assertSame(2, $timeline[3]['command']['sequence']);
         $this->assertSame('name-provided', $timeline[3]['command']['target_name']);
         $this->assertSame('signal', $timeline[4]['kind']);
         $this->assertSame('Applied signal name-provided.', $timeline[4]['summary']);
         $this->assertSame('name-provided', $timeline[4]['signal_name']);
+        $this->assertSame(2, $timeline[4]['command_sequence']);
         $this->assertSame('signal', $timeline[4]['command_type']);
     }
 

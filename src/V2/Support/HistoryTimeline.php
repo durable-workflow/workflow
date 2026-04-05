@@ -87,6 +87,7 @@ final class HistoryTimeline
             'summary' => self::summaryFor($event, $command, $task, $activity, $timer, $failure),
             'recorded_at' => self::timestamp($event->recorded_at),
             'command_id' => $commandId,
+            'command_sequence' => $command?->command_sequence,
             'task_id' => $taskId,
             'command_type' => $command?->command_type?->value ?? self::stringValue($payload['command_type'] ?? null),
             'command_status' => $command?->status?->value,
@@ -227,6 +228,7 @@ final class HistoryTimeline
 
         return [
             'id' => $command?->id ?? $commandId,
+            'sequence' => $command?->command_sequence,
             'type' => $command?->command_type?->value ?? self::stringValue($payload['command_type'] ?? null),
             'target_name' => $command?->targetName() ?? self::stringValue($payload['signal_name'] ?? null),
             'status' => $command?->status?->value,

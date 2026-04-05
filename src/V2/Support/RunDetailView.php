@@ -120,6 +120,7 @@ final class RunDetailView
             'commands' => $run->commands
                 ->map(static fn (WorkflowCommand $command): array => [
                     'id' => $command->id,
+                    'sequence' => $command->command_sequence,
                     'type' => $command->command_type->value,
                     'target_scope' => $command->target_scope,
                     'target_name' => $command->targetName(),

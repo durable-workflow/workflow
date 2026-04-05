@@ -247,9 +247,7 @@ final class WorkflowStub
                     && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
 
                 /** @var WorkflowCommand $command */
-                $command = WorkflowCommand::query()->create([
-                    'workflow_instance_id' => $instance->id,
-                    'workflow_run_id' => $run->id,
+                $command = WorkflowCommand::record($instance, $run, [
                     'command_type' => CommandType::Start->value,
                     'target_scope' => 'instance',
                     'status' => $canReturnExisting
@@ -258,8 +256,6 @@ final class WorkflowStub
                     'outcome' => $canReturnExisting
                         ? CommandOutcome::ReturnedExistingActive->value
                         : CommandOutcome::RejectedDuplicate->value,
-                    'workflow_class' => $run->workflow_class,
-                    'workflow_type' => $run->workflow_type,
                     'payload_codec' => config('workflows.serializer'),
                     'payload' => Serializer::serialize($metadata->arguments),
                     'rejection_reason' => $canReturnExisting
@@ -312,15 +308,11 @@ final class WorkflowStub
             ]);
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::query()->create([
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
+            $command = WorkflowCommand::record($instance, $run, [
                 'command_type' => CommandType::Start->value,
                 'target_scope' => 'instance',
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::StartedNew->value,
-                'workflow_class' => $run->workflow_class,
-                'workflow_type' => $run->workflow_type,
                 'payload_codec' => config('workflows.serializer'),
                 'payload' => Serializer::serialize($metadata->arguments),
                 'accepted_at' => now(),
@@ -498,15 +490,11 @@ final class WorkflowStub
             }
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::query()->create([
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
+            $command = WorkflowCommand::record($instance, $run, [
                 'command_type' => CommandType::Signal->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::SignalReceived->value,
-                'workflow_class' => $run->workflow_class,
-                'workflow_type' => $run->workflow_type,
                 'payload_codec' => config('workflows.serializer'),
                 'payload' => Serializer::serialize([
                     'name' => $name,
@@ -674,17 +662,13 @@ final class WorkflowStub
             ])->save();
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::query()->create([
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
+            $command = WorkflowCommand::record($instance, $run, [
                 'command_type' => CommandType::Repair->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => $task instanceof WorkflowTask
                     ? CommandOutcome::RepairDispatched->value
                     : CommandOutcome::RepairNotNeeded->value,
-                'workflow_class' => $run->workflow_class,
-                'workflow_type' => $run->workflow_type,
                 'payload_codec' => config('workflows.serializer'),
                 'payload' => Serializer::serialize([
                     'liveness_state' => $summary->liveness_state,
@@ -884,9 +868,7 @@ final class WorkflowStub
             }
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::query()->create([
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
+            $command = WorkflowCommand::record($instance, $run, [
                 'command_type' => $commandType->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
@@ -895,8 +877,6 @@ final class WorkflowStub
                     CommandType::Terminate => CommandOutcome::Terminated->value,
                     default => null,
                 },
-                'workflow_class' => $run->workflow_class,
-                'workflow_type' => $run->workflow_type,
                 'payload_codec' => config('workflows.serializer'),
                 'accepted_at' => now(),
             ]);
@@ -973,9 +953,7 @@ final class WorkflowStub
         string $targetScope = 'instance',
     ): WorkflowCommand {
         /** @var WorkflowCommand $command */
-        $command = WorkflowCommand::query()->create([
-            'workflow_instance_id' => $instance->id,
-            'workflow_run_id' => $run?->id,
+        $command = WorkflowCommand::record($instance, $run, [
             'command_type' => $commandType->value,
             'target_scope' => $targetScope,
             'status' => CommandStatus::Rejected->value,
@@ -985,8 +963,6 @@ final class WorkflowStub
                 'selected_run_not_current' => CommandOutcome::RejectedNotCurrent->value,
                 default => null,
             },
-            'workflow_class' => $run?->workflow_class ?? $instance->workflow_class,
-            'workflow_type' => $run?->workflow_type ?? $instance->workflow_type,
             'payload_codec' => config('workflows.serializer'),
             'rejection_reason' => $reason,
             'rejected_at' => now(),

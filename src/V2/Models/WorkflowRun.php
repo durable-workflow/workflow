@@ -53,7 +53,9 @@ class WorkflowRun extends Model
     public function commands(): HasMany
     {
         return $this->hasMany(WorkflowCommand::class, 'workflow_run_id')
-            ->oldest('created_at');
+            ->orderBy('command_sequence')
+            ->oldest('created_at')
+            ->oldest('id');
     }
 
     public function activityExecutions(): HasMany

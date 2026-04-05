@@ -18,6 +18,7 @@ final class CommandResponse
             'workflow_id' => $result->instanceId(),
             'run_id' => $result->runId(),
             'command_id' => $result->commandId(),
+            'command_sequence' => $result->commandSequence(),
             'workflow_type' => $workflowType ?? $result->workflowType(),
             'command_status' => $result->status(),
             'rejection_reason' => $result->rejectionReason(),

@@ -13,6 +13,7 @@ use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
+use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
@@ -580,12 +581,14 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('signal_received', $result->outcome());
         $this->assertSame('signal-instance', $result->instanceId());
         $this->assertSame($runId, $result->runId());
+        $this->assertSame(2, $result->commandSequence());
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         $command = WorkflowCommand::query()->findOrFail($result->commandId());
 
         $this->assertNotNull($command->applied_at);
+        $this->assertSame(2, $command->command_sequence);
         $this->assertSame('name-provided', $command->targetName());
         $this->assertSame([
             'name' => 'Taylor',
@@ -608,6 +611,55 @@ final class V2WorkflowTest extends TestCase
             ->orderBy('sequence')
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testSignalCommandsUseDurableCommandSequenceOrder(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalOrderingWorkflow::class, 'signal-order-instance');
+        $started = $workflow->start();
+        $runId = $started->runId();
+
+        $this->assertNotNull($runId);
+        $this->assertSame(1, $started->commandSequence());
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertSame('waiting', $workflow->status());
+
+        $first = $workflow->signal('message', 'first');
+        $second = $workflow->signal('message', 'second');
+
+        $this->assertSame(2, $first->commandSequence());
+        $this->assertSame(3, $second->commandSequence());
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+        $this->assertSame([
+            'messages' => ['first', 'second'],
+            'workflow_id' => 'signal-order-instance',
+            'run_id' => $runId,
+        ], $workflow->output());
+
+        $this->assertSame([1, 2, 3], WorkflowCommand::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('command_sequence')
+            ->pluck('command_sequence')
+            ->all());
+
+        $this->assertSame([
+            $first->commandId(),
+            $second->commandId(),
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalApplied')
+            ->orderBy('sequence')
+            ->pluck('workflow_command_id')
             ->all());
     }
 

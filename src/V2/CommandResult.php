@@ -20,6 +20,11 @@ class CommandResult
         return $this->command->id;
     }
 
+    public function commandSequence(): ?int
+    {
+        return $this->command->command_sequence;
+    }
+
     public function instanceId(): ?string
     {
         return $this->command->workflow_instance_id;
