@@ -22,9 +22,11 @@ final class ChildWorkflowStub
     public static function make($workflow, ...$arguments): PromiseInterface
     {
         $context = WorkflowStub::getContext();
+        $result = null;
 
         while (true) {
             $log = $context->storedWorkflow->findLogByIndex($context->index);
+            $result = null;
 
             if (WorkflowStub::faked()) {
                 $mocks = WorkflowStub::mocks();
@@ -45,10 +47,17 @@ final class ChildWorkflowStub
                 }
             }
 
-            if (! $log || ! ($log->class === Exception::class && self::isForeignExceptionResult(
-                Serializer::unserialize($log->result),
-                $workflow
-            ))) {
+            if (! $log) {
+                break;
+            }
+
+            if ($log->class !== Exception::class) {
+                break;
+            }
+
+            $result = Serializer::unserialize($log->result);
+
+            if (! self::isForeignExceptionResult($result, $workflow)) {
                 break;
             }
 
@@ -57,7 +66,7 @@ final class ChildWorkflowStub
         }
 
         if ($log) {
-            $result = Serializer::unserialize($log->result);
+            $result ??= Serializer::unserialize($log->result);
 
             if (
                 WorkflowStub::isProbing()

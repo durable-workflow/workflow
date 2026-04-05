@@ -28,9 +28,11 @@ final class ActivityStub
     public static function make($activity, ...$arguments): PromiseInterface
     {
         $context = WorkflowStub::getContext();
+        $result = null;
 
         while (true) {
             $log = $context->storedWorkflow->findLogByIndex($context->index);
+            $result = null;
 
             if (WorkflowStub::faked()) {
                 $mocks = WorkflowStub::mocks();
@@ -51,10 +53,17 @@ final class ActivityStub
                 }
             }
 
-            if (! $log || ! ($log->class === Exception::class && self::isForeignExceptionResult(
-                Serializer::unserialize($log->result),
-                $activity
-            ))) {
+            if (! $log) {
+                break;
+            }
+
+            if ($log->class !== Exception::class) {
+                break;
+            }
+
+            $result = Serializer::unserialize($log->result);
+
+            if (! self::isForeignExceptionResult($result, $activity)) {
                 break;
             }
 
@@ -63,7 +72,7 @@ final class ActivityStub
         }
 
         if ($log) {
-            $result = Serializer::unserialize($log->result);
+            $result ??= Serializer::unserialize($log->result);
 
             if (
                 WorkflowStub::isProbing()

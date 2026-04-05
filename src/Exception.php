@@ -195,7 +195,6 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
             'logs',
             $tentativeWorkflow->getRelation('logs')
                 ->push($tentativeLog)
-                ->sortBy(static fn ($log): string => sprintf('%020d:%020d', $log->index, $log->id ?? PHP_INT_MAX))
                 ->values()
         );
 
