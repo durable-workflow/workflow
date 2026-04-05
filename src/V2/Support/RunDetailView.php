@@ -24,6 +24,7 @@ final class RunDetailView
         $run->loadMissing([
             'summary',
             'commands',
+            'tasks',
             'activityExecutions',
             'timers',
             'failures',
@@ -79,6 +80,8 @@ final class RunDetailView
                     && $event->workflow_command_id !== null
             )
             ->keyBy('workflow_command_id');
+        $tasks = RunTaskView::forRun($run);
+        $waits = RunWaitView::forRun($run);
 
         return [
             'id' => $run->id,
@@ -126,7 +129,9 @@ final class RunDetailView
                     : 'Selected run is historical. Issue commands against the current active run.'),
             'created_at' => $summary?->started_at ?? $run->started_at ?? $run->created_at,
             'updated_at' => $summary?->closed_at ?? $run->last_progress_at ?? $run->updated_at,
+            'activities_scope' => 'selected_run',
             'activities' => $activities,
+            'commands_scope' => 'selected_run',
             'commands' => $run->commands
                 ->map(static fn (WorkflowCommand $command): array => [
                     'id' => $command->id,
@@ -159,6 +164,11 @@ final class RunDetailView
                 ])
                 ->values()
                 ->all(),
+            'waits_scope' => 'selected_run',
+            'waits' => $waits,
+            'tasks_scope' => 'selected_run',
+            'tasks' => $tasks,
+            'timeline_scope' => 'selected_run',
             'timeline' => HistoryTimeline::forRun($run),
             'logs' => $run->activityExecutions->map(
                 static fn (ActivityExecution $execution): array => [
@@ -186,6 +196,7 @@ final class RunDetailView
                     'created_at' => $failure->created_at,
                 ]
             )->values(),
+            'lineage_scope' => 'selected_run',
             'timers' => $run->timers->map(
                 static fn (WorkflowTimer $timer): array => [
                     'id' => $timer->id,

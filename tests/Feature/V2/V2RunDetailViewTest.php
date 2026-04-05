@@ -52,11 +52,28 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('Waiting for signal name-provided', $detail['wait_reason']);
         $this->assertSame('waiting_for_signal', $detail['liveness_state']);
         $this->assertSame('Waiting for signal name-provided.', $detail['liveness_reason']);
+        $this->assertSame('selected_run', $detail['activities_scope']);
+        $this->assertSame('selected_run', $detail['commands_scope']);
+        $this->assertSame('selected_run', $detail['waits_scope']);
+        $this->assertSame('selected_run', $detail['tasks_scope']);
+        $this->assertSame('selected_run', $detail['timeline_scope']);
+        $this->assertSame('selected_run', $detail['lineage_scope']);
         $this->assertTrue($detail['can_issue_terminal_commands']);
         $this->assertNull($detail['read_only_reason']);
         $this->assertSame(1, $detail['commands'][0]['sequence']);
         $this->assertSame('start', $detail['commands'][0]['type']);
         $this->assertSame('started_new', $detail['commands'][0]['outcome']);
+        $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+        $this->assertSame('open', $signalWait['status']);
+        $this->assertSame('waiting', $signalWait['source_status']);
+        $this->assertSame('Waiting for signal name-provided.', $signalWait['summary']);
+        $this->assertFalse($signalWait['task_backed']);
+        $this->assertTrue($signalWait['external_only']);
+        $this->assertSame('signal', $signalWait['resume_source_kind']);
+        $this->assertNull($signalWait['resume_source_id']);
+        $workflowTask = $this->findTask($detail['tasks'], 'workflow');
+        $this->assertSame('completed', $workflowTask['status']);
+        $this->assertFalse($workflowTask['is_open']);
         $this->assertSame(1, $detail['timeline'][0]['command_sequence']);
         $this->assertSame('SignalWaitOpened', $detail['timeline'][2]['type']);
         $this->assertSame('signal', $detail['timeline'][2]['kind']);
@@ -100,6 +117,23 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('completed', $detail['activities'][0]['status']);
         $this->assertNotNull($detail['activities'][0]['created_at']);
         $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
+        $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+        $this->assertSame('resolved', $signalWait['status']);
+        $this->assertSame('received', $signalWait['source_status']);
+        $this->assertSame('Signal name-provided received.', $signalWait['summary']);
+        $this->assertSame(2, $signalWait['command_sequence']);
+        $this->assertSame('accepted', $signalWait['command_status']);
+        $this->assertSame('signal_received', $signalWait['command_outcome']);
+        $activityWait = $this->findWait($detail['waits'], 'activity');
+        $this->assertSame('resolved', $activityWait['status']);
+        $this->assertSame('completed', $activityWait['source_status']);
+        $this->assertSame('Activity '.\Tests\Fixtures\V2\TestGreetingActivity::class.' completed.', $activityWait['summary']);
+        $this->assertTrue($activityWait['task_backed']);
+        $this->assertSame('activity', $activityWait['task_type']);
+        $this->assertSame('completed', $activityWait['task_status']);
+        $activityTask = $this->findTask($detail['tasks'], 'activity');
+        $this->assertSame('completed', $activityTask['status']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $activityTask['activity_type']);
         $this->assertSame([
             'StartAccepted',
             'WorkflowStarted',
@@ -232,6 +266,74 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('completed', $currentDetail['closed_reason']);
     }
 
+    public function testRunDetailViewIncludesTaskBackedTimerWaitForSelectedRun(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-timer');
+        $workflow->start(60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'timer');
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+
+        $detail = RunDetailView::forRun($run);
+        $timerWait = $this->findWait($detail['waits'], 'timer');
+
+        $this->assertSame('timer', $detail['wait_kind']);
+        $this->assertSame('open', $timerWait['status']);
+        $this->assertSame('pending', $timerWait['source_status']);
+        $this->assertSame('Waiting for timer.', $timerWait['summary']);
+        $this->assertTrue($timerWait['task_backed']);
+        $this->assertFalse($timerWait['external_only']);
+        $this->assertSame('timer', $timerWait['resume_source_kind']);
+        $this->assertNotNull($timerWait['resume_source_id']);
+        $this->assertNotNull($timerWait['task_id']);
+        $this->assertSame('timer', $timerWait['task_type']);
+        $this->assertSame('ready', $timerWait['task_status']);
+
+        $timerTask = $this->findTask($detail['tasks'], 'timer');
+
+        $this->assertTrue($timerTask['is_open']);
+        $this->assertSame('ready', $timerTask['status']);
+        $this->assertSame($timerWait['resume_source_id'], $timerTask['timer_id']);
+        $this->assertSame(1, $timerTask['timer_sequence']);
+        $this->assertNotNull($timerTask['timer_fire_at']);
+    }
+
+    public function testRunDetailViewMarksRepairNeededTimerWaitAsNotTaskBacked(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-timer-repair');
+        $workflow->start(60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'timer');
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Timer->value)
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']));
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $timerWait = $this->findWait($detail['waits'], 'timer');
+
+        $this->assertSame('repair_needed', $detail['liveness_state']);
+        $this->assertSame('timer', $detail['wait_kind']);
+        $this->assertFalse($timerWait['task_backed']);
+        $this->assertNull($timerWait['task_id']);
+        $this->assertNull($timerWait['task_type']);
+        $this->assertNull($timerWait['task_status']);
+        $this->assertNull($this->findTaskOrNull($detail['tasks'], 'timer'));
+    }
+
     private function waitFor(callable $condition): void
     {
         $startedAt = microtime(true);
@@ -272,5 +374,56 @@ final class V2RunDetailViewTest extends TestCase
         }
 
         $this->fail('Timed out draining ready workflow tasks.');
+    }
+
+    /**
+     * @param list<array<string, mixed>> $waits
+     * @return array<string, mixed>
+     */
+    private function findWait(array $waits, string $kind, ?string $targetName = null): array
+    {
+        foreach ($waits as $wait) {
+            if (($wait['kind'] ?? null) !== $kind) {
+                continue;
+            }
+
+            if ($targetName !== null && ($wait['target_name'] ?? null) !== $targetName) {
+                continue;
+            }
+
+            return $wait;
+        }
+
+        $this->fail(sprintf('Did not find %s wait in detail payload.', $kind));
+    }
+
+    /**
+     * @param list<array<string, mixed>> $tasks
+     * @return array<string, mixed>
+     */
+    private function findTask(array $tasks, string $type): array
+    {
+        foreach ($tasks as $task) {
+            if (($task['type'] ?? null) === $type) {
+                return $task;
+            }
+        }
+
+        $this->fail(sprintf('Did not find %s task in detail payload.', $type));
+    }
+
+    /**
+     * @param list<array<string, mixed>> $tasks
+     * @return array<string, mixed>|null
+     */
+    private function findTaskOrNull(array $tasks, string $type): ?array
+    {
+        foreach ($tasks as $task) {
+            if (($task['type'] ?? null) === $type) {
+                return $task;
+            }
+        }
+
+        return null;
     }
 }
