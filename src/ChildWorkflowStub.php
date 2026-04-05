@@ -23,36 +23,41 @@ final class ChildWorkflowStub
     {
         $context = WorkflowStub::getContext();
 
-        $log = $context->storedWorkflow->findLogByIndex($context->index);
+        while (true) {
+            $log = $context->storedWorkflow->findLogByIndex($context->index);
 
-        if (WorkflowStub::faked()) {
-            $mocks = WorkflowStub::mocks();
+            if (WorkflowStub::faked()) {
+                $mocks = WorkflowStub::mocks();
 
-            if (! $log && array_key_exists($workflow, $mocks)) {
-                $result = $mocks[$workflow];
+                if (! $log && array_key_exists($workflow, $mocks)) {
+                    $result = $mocks[$workflow];
 
-                $log = $context->storedWorkflow->createLog([
-                    'index' => $context->index,
-                    'now' => $context->now,
-                    'class' => $workflow,
-                    'result' => Serializer::serialize(
-                        is_callable($result) ? $result($context, ...$arguments) : $result
-                    ),
-                ]);
+                    $log = $context->storedWorkflow->createLog([
+                        'index' => $context->index,
+                        'now' => $context->now,
+                        'class' => $workflow,
+                        'result' => Serializer::serialize(
+                            is_callable($result) ? $result($context, ...$arguments) : $result
+                        ),
+                    ]);
 
-                WorkflowStub::recordDispatched($workflow, $arguments);
+                    WorkflowStub::recordDispatched($workflow, $arguments);
+                }
             }
+
+            if (! $log || ! ($log->class === Exception::class && self::isForeignExceptionResult(
+                Serializer::unserialize($log->result),
+                $workflow
+            ))) {
+                break;
+            }
+
+            ++$context->index;
+            WorkflowStub::setContext($context);
         }
 
         if ($log) {
             $result = Serializer::unserialize($log->result);
-
-            if ($log->class === Exception::class && self::isForeignExceptionResult($result, $workflow)) {
-                ++$context->index;
-                WorkflowStub::setContext($context);
-
-                return self::make($workflow, ...$arguments);
-            }
 
             if (
                 WorkflowStub::isProbing()

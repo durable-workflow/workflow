@@ -131,6 +131,55 @@ final class ChildWorkflowStubTest extends TestCase
         $this->assertSame(2, WorkflowStub::getContext()->index);
     }
 
+    public function testSkipsMultipleStoredExceptionsForDifferentSourceClass(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'foreign child 1',
+                    'code' => 0,
+                    'sourceClass' => TestExceptionWorkflow::class,
+                ]),
+            ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 1,
+                'now' => WorkflowStub::now(),
+                'class' => WorkflowException::class,
+                'result' => Serializer::serialize([
+                    'class' => Exception::class,
+                    'message' => 'foreign child 2',
+                    'code' => 0,
+                    'sourceClass' => TestExceptionWorkflow::class,
+                ]),
+            ]);
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 2,
+                'now' => WorkflowStub::now(),
+                'class' => TestChildWorkflow::class,
+                'result' => Serializer::serialize('test'),
+            ]);
+
+        ChildWorkflowStub::make(TestChildWorkflow::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        $this->assertSame('test', $result);
+        $this->assertSame(3, WorkflowStub::getContext()->index);
+    }
+
     public function testMarksProbeMatchedForMatchingStoredException(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestParentWorkflow::class)->id());
