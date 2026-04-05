@@ -23,6 +23,7 @@ return [
         'history_event_model' => Workflow\V2\Models\WorkflowHistoryEvent::class,
         'task_model' => Workflow\V2\Models\WorkflowTask::class,
         'command_model' => Workflow\V2\Models\WorkflowCommand::class,
+        'link_model' => Workflow\V2\Models\WorkflowLink::class,
         'activity_execution_model' => Workflow\V2\Models\ActivityExecution::class,
         'timer_model' => Workflow\V2\Models\WorkflowTimer::class,
         'failure_model' => Workflow\V2\Models\WorkflowFailure::class,

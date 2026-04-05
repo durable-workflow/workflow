@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use LogicException;
 use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
+use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -28,6 +29,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -188,6 +190,105 @@ final class V2WorkflowTest extends TestCase
             'id' => $runId,
             'workflow_type' => 'config-greeting-workflow',
         ]);
+    }
+
+    public function testWorkflowCanContinueAsNewAcrossRuns(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'continue-instance');
+        $started = $workflow->start(0, 2);
+        $firstRunId = $started->runId();
+
+        $this->assertNotNull($firstRunId);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $finalRunId = $workflow->runId();
+
+        $this->assertNotNull($finalRunId);
+        $this->assertTrue($workflow->completed());
+        $this->assertNotSame($firstRunId, $finalRunId);
+        $this->assertSame('continue-instance', $workflow->id());
+        $this->assertSame([
+            'count' => 2,
+            'workflow_id' => 'continue-instance',
+            'run_id' => $finalRunId,
+        ], $workflow->output());
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'continue-instance')
+            ->orderBy('run_number')
+            ->get();
+
+        $this->assertCount(3, $runs);
+        $this->assertSame([1, 2, 3], $runs->pluck('run_number')->all());
+        $this->assertSame(['completed', 'completed', 'completed'], $runs->pluck('status')->map(
+            static fn (RunStatus $status): string => $status->value
+        )->all());
+        $this->assertSame(['continued', 'continued', 'completed'], $runs->pluck('closed_reason')->all());
+
+        $this->assertDatabaseHas('workflow_instances', [
+            'id' => 'continue-instance',
+            'current_run_id' => $finalRunId,
+            'run_count' => 3,
+        ]);
+
+        $this->assertSame(2, WorkflowLink::query()->count());
+        $this->assertDatabaseHas('workflow_links', [
+            'link_type' => 'continue_as_new',
+            'parent_workflow_instance_id' => 'continue-instance',
+            'parent_workflow_run_id' => $runs[0]->id,
+            'child_workflow_instance_id' => 'continue-instance',
+            'child_workflow_run_id' => $runs[1]->id,
+            'is_primary_parent' => true,
+        ]);
+        $this->assertDatabaseHas('workflow_links', [
+            'link_type' => 'continue_as_new',
+            'parent_workflow_instance_id' => 'continue-instance',
+            'parent_workflow_run_id' => $runs[1]->id,
+            'child_workflow_instance_id' => 'continue-instance',
+            'child_workflow_run_id' => $runs[2]->id,
+            'is_primary_parent' => true,
+        ]);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ActivityScheduled',
+            'ActivityCompleted',
+            'WorkflowContinuedAsNew',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runs[0]->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $this->assertSame([
+            'WorkflowStarted',
+            'ActivityScheduled',
+            'ActivityCompleted',
+            'WorkflowContinuedAsNew',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runs[1]->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $this->assertSame([
+            'WorkflowStarted',
+            'ActivityScheduled',
+            'ActivityCompleted',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runs[2]->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
     }
 
     public function testMakeCanReuseReservedInstanceWhenDurableTypeMatchesConfiguredAlias(): void
@@ -1278,6 +1379,33 @@ final class V2WorkflowTest extends TestCase
         }
 
         $this->fail('Timed out waiting for workflow to settle.');
+    }
+
+    private function drainReadyTasks(): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('created_at')
+                ->first();
+
+            if ($task === null) {
+                return;
+            }
+
+            $job = match ($task->task_type) {
+                TaskType::Workflow => new RunWorkflowTask($task->id),
+                TaskType::Activity => new RunActivityTask($task->id),
+                TaskType::Timer => new RunTimerTask($task->id),
+            };
+
+            $this->app->call([$job, 'handle']);
+        }
+
+        $this->fail('Timed out draining ready workflow tasks.');
     }
 
     private function configureGreetingTypeMaps(): void

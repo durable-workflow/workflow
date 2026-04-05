@@ -162,6 +162,10 @@ final class HistoryTimeline
                 ? 'Start rejected.'
                 : sprintf('Start rejected: %s.', $rejectionReason),
             HistoryEventType::WorkflowStarted => 'Workflow run started.',
+            HistoryEventType::WorkflowContinuedAsNew => sprintf(
+                'Continued as new on run %s.',
+                self::stringValue($payload['continued_to_run_id'] ?? null) ?? 'unknown'
+            ),
             HistoryEventType::SignalWaitOpened => $signalName === null
                 ? 'Waiting for signal.'
                 : sprintf('Waiting for signal %s.', $signalName),

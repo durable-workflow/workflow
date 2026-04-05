@@ -4,13 +4,21 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
@@ -168,6 +176,57 @@ final class V2RunDetailViewTest extends TestCase
         );
     }
 
+    public function testRunDetailViewIncludesContinueAsNewLineage(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'detail-continued');
+        $workflow->start(0, 1);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'detail-continued')
+            ->orderBy('run_number')
+            ->get();
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = $runs[0];
+        /** @var WorkflowRun $currentRun */
+        $currentRun = $runs[1];
+
+        $historicalDetail = RunDetailView::forRun(
+            $historicalRun->fresh(['summary', 'instance.currentRun.summary'])
+        );
+        $currentDetail = RunDetailView::forRun(
+            $currentRun->fresh(['summary', 'instance.currentRun.summary'])
+        );
+
+        $this->assertSame('completed', $historicalDetail['status']);
+        $this->assertSame('continued', $historicalDetail['closed_reason']);
+        $this->assertFalse($historicalDetail['is_current_run']);
+        $this->assertSame($currentRun->id, $historicalDetail['current_run_id']);
+        $this->assertCount(0, $historicalDetail['parents']);
+        $this->assertCount(1, $historicalDetail['continuedWorkflows']);
+        $this->assertSame('continue_as_new', $historicalDetail['continuedWorkflows'][0]['link_type']);
+        $this->assertSame($currentRun->id, $historicalDetail['continuedWorkflows'][0]['child_workflow_run_id']);
+        $this->assertSame('completed', $historicalDetail['continuedWorkflows'][0]['status']);
+        $this->assertSame('completed', $historicalDetail['continuedWorkflows'][0]['status_bucket']);
+        $this->assertSame('WorkflowContinuedAsNew', $historicalDetail['timeline'][4]['type']);
+
+        $this->assertTrue($currentDetail['is_current_run']);
+        $this->assertSame($currentRun->id, $currentDetail['current_run_id']);
+        $this->assertCount(1, $currentDetail['parents']);
+        $this->assertCount(0, $currentDetail['continuedWorkflows']);
+        $this->assertSame('continue_as_new', $currentDetail['parents'][0]['link_type']);
+        $this->assertSame($historicalRun->id, $currentDetail['parents'][0]['parent_workflow_run_id']);
+        $this->assertSame('completed', $currentDetail['parents'][0]['status']);
+        $this->assertSame('completed', $currentDetail['parents'][0]['status_bucket']);
+        $this->assertSame('completed', $currentDetail['status']);
+        $this->assertSame('completed', $currentDetail['closed_reason']);
+    }
+
     private function waitFor(callable $condition): void
     {
         $startedAt = microtime(true);
@@ -181,5 +240,32 @@ final class V2RunDetailViewTest extends TestCase
         }
 
         $this->fail('Condition was not met within 5 seconds.');
+    }
+
+    private function drainReadyTasks(): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('created_at')
+                ->first();
+
+            if ($task === null) {
+                return;
+            }
+
+            $job = match ($task->task_type) {
+                TaskType::Workflow => new RunWorkflowTask($task->id),
+                TaskType::Activity => new RunActivityTask($task->id),
+                TaskType::Timer => new RunTimerTask($task->id),
+            };
+
+            $this->app->call([$job, 'handle']);
+        }
+
+        $this->fail('Timed out draining ready workflow tasks.');
     }
 }

@@ -22,6 +22,8 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -189,11 +191,15 @@ final class WorkflowExecutor
                 return $this->waitForNextResumeSource($run, $task);
             }
 
+            if ($current instanceof ContinueAsNewCall) {
+                return $this->continueAsNew($run, $task, $current);
+            }
+
             $this->failRun(
                 $run,
                 $task,
                 new UnsupportedWorkflowYieldException(sprintf(
-                    'Workflow %s yielded %s. v2 currently supports activity(), timer(), and awaitSignal() only.',
+                    'Workflow %s yielded %s. v2 currently supports activity(), timer(), awaitSignal(), and continueAsNew() only.',
                     $run->workflow_class,
                     get_debug_type($current),
                 )),
@@ -442,6 +448,98 @@ final class WorkflowExecutor
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+    }
+
+    private function continueAsNew(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ContinueAsNewCall $continueAsNew,
+    ): WorkflowTask {
+        $now = now();
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()
+            ->lockForUpdate()
+            ->findOrFail($run->workflow_instance_id);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'run_number' => $run->run_number + 1,
+            'workflow_class' => $run->workflow_class,
+            'workflow_type' => $run->workflow_type,
+            'status' => RunStatus::Pending->value,
+            'compatibility' => $run->compatibility,
+            'payload_codec' => $run->payload_codec,
+            'arguments' => Serializer::serialize($continueAsNew->arguments),
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'started_at' => $now,
+            'last_progress_at' => $now,
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $continuedRun->id,
+            'run_count' => $continuedRun->run_number,
+        ])->save();
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()->create([
+            'link_type' => 'continue_as_new',
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+            'child_workflow_run_id' => $continuedRun->id,
+            'is_primary_parent' => true,
+        ]);
+
+        $run->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_reason' => 'continued',
+            'closed_at' => $now,
+            'last_progress_at' => $now,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
+            'continued_to_run_id' => $continuedRun->id,
+            'continued_to_run_number' => $continuedRun->run_number,
+            'workflow_link_id' => $link->id,
+            'closed_reason' => 'continued',
+        ], $task->id);
+
+        WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $continuedRun->workflow_class,
+            'workflow_type' => $continuedRun->workflow_type,
+            'workflow_instance_id' => $continuedRun->workflow_instance_id,
+            'workflow_run_id' => $continuedRun->id,
+            'continued_from_run_id' => $run->id,
+            'workflow_link_id' => $link->id,
+        ]);
+
+        /** @var WorkflowTask $continuedTask */
+        $continuedTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $continuedRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $now,
+            'payload' => [],
+            'connection' => $continuedRun->connection,
+            'queue' => $continuedRun->queue,
+        ]);
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+        RunSummaryProjector::project(
+            $continuedRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        return $continuedTask;
     }
 
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void

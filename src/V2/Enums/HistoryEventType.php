@@ -9,6 +9,7 @@ enum HistoryEventType: string
     case StartAccepted = 'StartAccepted';
     case StartRejected = 'StartRejected';
     case WorkflowStarted = 'WorkflowStarted';
+    case WorkflowContinuedAsNew = 'WorkflowContinuedAsNew';
     case SignalWaitOpened = 'SignalWaitOpened';
     case SignalReceived = 'SignalReceived';
     case SignalApplied = 'SignalApplied';

@@ -79,6 +79,18 @@ class WorkflowRun extends Model
         return $this->hasOne(WorkflowRunSummary::class, 'id', 'id');
     }
 
+    public function parentLinks(): HasMany
+    {
+        return $this->hasMany(WorkflowLink::class, 'child_workflow_run_id')
+            ->oldest('created_at');
+    }
+
+    public function childLinks(): HasMany
+    {
+        return $this->hasMany(WorkflowLink::class, 'parent_workflow_run_id')
+            ->oldest('created_at');
+    }
+
     /**
      * @return array<int, mixed>
      */

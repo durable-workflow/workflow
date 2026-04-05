@@ -8,6 +8,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimer;
 
@@ -25,6 +26,8 @@ final class RunDetailView
             'timers',
             'failures',
             'historyEvents',
+            'parentLinks.parentRun.summary',
+            'childLinks.childRun.summary',
             'instance.currentRun.summary',
         ]);
 
@@ -168,8 +171,46 @@ final class RunDetailView
                     'fired_at' => $timer->fired_at,
                 ]
             )->values(),
-            'parents' => [],
-            'continuedWorkflows' => [],
+            'parents' => $run->parentLinks->map(
+                static function (WorkflowLink $link): array {
+                    $parentRun = $link->parentRun;
+                    $parentSummary = $parentRun?->summary;
+
+                    return [
+                        'id' => $link->id,
+                        'link_type' => $link->link_type,
+                        'is_primary_parent' => $link->is_primary_parent,
+                        'parent_workflow_id' => $link->parent_workflow_instance_id,
+                        'parent_workflow_run_id' => $link->parent_workflow_run_id,
+                        'workflow_instance_id' => $link->parent_workflow_instance_id,
+                        'workflow_run_id' => $link->parent_workflow_run_id,
+                        'run_number' => $parentRun?->run_number,
+                        'status' => $parentRun?->status?->value,
+                        'status_bucket' => $parentSummary?->status_bucket,
+                        'closed_reason' => $parentSummary?->closed_reason ?? $parentRun?->closed_reason,
+                    ];
+                }
+            )->values(),
+            'continuedWorkflows' => $run->childLinks->map(
+                static function (WorkflowLink $link): array {
+                    $childRun = $link->childRun;
+                    $childSummary = $childRun?->summary;
+
+                    return [
+                        'id' => $link->id,
+                        'link_type' => $link->link_type,
+                        'is_primary_parent' => $link->is_primary_parent,
+                        'child_workflow_id' => $link->child_workflow_instance_id,
+                        'child_workflow_run_id' => $link->child_workflow_run_id,
+                        'workflow_instance_id' => $link->child_workflow_instance_id,
+                        'workflow_run_id' => $link->child_workflow_run_id,
+                        'run_number' => $childRun?->run_number,
+                        'status' => $childRun?->status?->value,
+                        'status_bucket' => $childSummary?->status_bucket,
+                        'closed_reason' => $childSummary?->closed_reason ?? $childRun?->closed_reason,
+                    ];
+                }
+            )->values(),
             'chartData' => self::chartData($run),
         ];
     }

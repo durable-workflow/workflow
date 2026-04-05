@@ -6,6 +6,7 @@ namespace Workflow\V2;
 
 use Carbon\CarbonInterval;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
 
@@ -33,5 +34,12 @@ if (! function_exists(__NAMESPACE__ . '\\awaitSignal')) {
     function awaitSignal(string $name): SignalCall
     {
         return new SignalCall($name);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\continueAsNew')) {
+    function continueAsNew(...$arguments): ContinueAsNewCall
+    {
+        return new ContinueAsNewCall($arguments);
     }
 }
