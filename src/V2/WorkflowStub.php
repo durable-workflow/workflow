@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use BadMethodCallException;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use LogicException;
+use ReflectionClass;
+use Workflow\QueryMethod;
 use Workflow\Serializers\Serializer;
+use Workflow\UpdateMethod;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
@@ -27,6 +31,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
@@ -35,6 +40,16 @@ use Workflow\WorkflowMetadata;
 
 final class WorkflowStub
 {
+    /**
+     * @var array<class-string, array<string, true>>
+     */
+    private static array $queryMethodCache = [];
+
+    /**
+     * @var array<class-string, array<string, true>>
+     */
+    private static array $updateMethodCache = [];
+
     private ?WorkflowRun $run = null;
     private ?string $selectedRunId = null;
 
@@ -184,6 +199,30 @@ final class WorkflowStub
         return $this->run?->workflowOutput();
     }
 
+    public function query(string $method, ...$arguments): mixed
+    {
+        $this->refresh();
+
+        if ($this->run === null) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] has not started yet.',
+                $this->instance->id,
+            ));
+        }
+
+        $workflowClass = TypeRegistry::resolveWorkflowClass($this->run->workflow_class, $this->run->workflow_type);
+
+        if (! self::isQueryMethod($workflowClass, $method)) {
+            throw new LogicException(sprintf(
+                'Method [%s::%s] is not a v2 query method.',
+                $workflowClass,
+                $method,
+            ));
+        }
+
+        return (new QueryStateReplayer())->query($this->run, $method, $arguments);
+    }
+
     public function summary(): ?WorkflowRunSummary
     {
         if ($this->run === null) {
@@ -209,6 +248,33 @@ final class WorkflowStub
         }
 
         return $this;
+    }
+
+    public function __call(string $method, array $arguments): mixed
+    {
+        $this->refresh();
+
+        $workflowClass = $this->run?->workflow_class ?? $this->instance->workflow_class;
+        $workflowType = $this->run?->workflow_type ?? $this->instance->workflow_type;
+        $resolvedClass = TypeRegistry::resolveWorkflowClass($workflowClass, $workflowType);
+
+        if (self::isQueryMethod($resolvedClass, $method)) {
+            return $this->query($method, ...$arguments);
+        }
+
+        if (self::isUpdateMethod($resolvedClass, $method)) {
+            throw new LogicException(sprintf(
+                'Method [%s::%s] is marked with #[UpdateMethod], but v2 updates are not implemented yet.',
+                $resolvedClass,
+                $method,
+            ));
+        }
+
+        throw new BadMethodCallException(sprintf(
+            'Call to undefined method [%s::%s].',
+            static::class,
+            $method,
+        ));
     }
 
     public function start(...$arguments): StartResult
@@ -1053,5 +1119,43 @@ final class WorkflowStub
     private function commandTargetScope(): string
     {
         return $this->runTargeted ? 'run' : 'instance';
+    }
+
+    private static function isQueryMethod(string $class, string $method): bool
+    {
+        if (! isset(self::$queryMethodCache[$class])) {
+            self::$queryMethodCache[$class] = [];
+
+            foreach ((new ReflectionClass($class))->getMethods() as $reflectionMethod) {
+                foreach ($reflectionMethod->getAttributes() as $attribute) {
+                    if ($attribute->getName() === QueryMethod::class) {
+                        self::$queryMethodCache[$class][$reflectionMethod->getName()] = true;
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        return self::$queryMethodCache[$class][$method] ?? false;
+    }
+
+    private static function isUpdateMethod(string $class, string $method): bool
+    {
+        if (! isset(self::$updateMethodCache[$class])) {
+            self::$updateMethodCache[$class] = [];
+
+            foreach ((new ReflectionClass($class))->getMethods() as $reflectionMethod) {
+                foreach ($reflectionMethod->getAttributes() as $attribute) {
+                    if ($attribute->getName() === UpdateMethod::class) {
+                        self::$updateMethodCache[$class][$reflectionMethod->getName()] = true;
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        return self::$updateMethodCache[$class][$method] ?? false;
     }
 }
