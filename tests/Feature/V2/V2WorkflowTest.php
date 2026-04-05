@@ -9,6 +9,7 @@ use LogicException;
 use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
+use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
@@ -179,8 +180,6 @@ final class V2WorkflowTest extends TestCase
 
         $workflow = WorkflowStub::make(TestConfiguredGreetingWorkflow::class);
         $result = $workflow->start('Taylor');
-
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         $runId = $result->runId();
 
@@ -1168,6 +1167,101 @@ final class V2WorkflowTest extends TestCase
             'status' => 'rejected',
             'outcome' => 'rejected_not_active',
             'rejection_reason' => 'run_not_active',
+        ]);
+    }
+
+    public function testRepairRecreatesMissingActivityTaskForPendingActivityExecution(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-activity-instance',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'status' => ActivityStatus::Pending->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame('activity', $summary->wait_kind);
+
+        $result = WorkflowStub::loadRun($run->id)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair', $result->type());
+        $this->assertSame('repair_dispatched', $result->outcome());
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->sole();
+
+        $this->assertSame(TaskType::Activity, $task->task_type);
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(['activity_execution_id' => $execution->id], $task->payload);
+        $this->assertSame(1, $task->repair_count);
+        $this->assertSame('redis', $task->connection);
+        $this->assertSame('activities', $task->queue);
+
+        Queue::assertPushed(RunActivityTask::class, static fn (RunActivityTask $job): bool => $job->taskId === $task->id);
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('activity', $updatedSummary->wait_kind);
+        $this->assertSame('activity_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+        $this->assertSame('activity', $updatedSummary->next_task_type);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'command_type' => 'repair',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'outcome' => 'repair_dispatched',
+        ]);
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $run->id,
+            'workflow_command_id' => $result->commandId(),
+            'workflow_task_id' => $task->id,
+            'event_type' => 'RepairRequested',
         ]);
     }
 

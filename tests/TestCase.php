@@ -6,6 +6,7 @@ namespace Tests;
 
 use Dotenv\Dotenv;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Queue;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Symfony\Component\Process\Process;
 
@@ -58,6 +59,8 @@ abstract class TestCase extends BaseTestCase
         }
 
         parent::setUp();
+
+        Queue::swap($this->app->make('queue'));
 
         Cache::flush();
 

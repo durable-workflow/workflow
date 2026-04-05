@@ -4,13 +4,18 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Webhooks;
 use Workflow\V2\WorkflowStub;
 
@@ -218,6 +223,76 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testRepairWebhookReturnsTypedAcceptedResponseWhenTaskIsRecreated(): void
+    {
+        Queue::fake();
+
+        WorkflowInstance::query()->create([
+            'id' => 'order-repair',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+            'current_run_id' => '01JTESTFLOWRUNREPAIRWEB001',
+        ]);
+
+        WorkflowRun::query()->create([
+            'id' => '01JTESTFLOWRUNREPAIRWEB001',
+            'workflow_instance_id' => 'order-repair',
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $response = $this->postJson('/webhooks/instances/order-repair/repair');
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('outcome', 'repair_dispatched')
+            ->assertJsonPath('workflow_id', 'order-repair')
+            ->assertJsonPath('run_id', '01JTESTFLOWRUNREPAIRWEB001')
+            ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('rejection_reason', null);
+
+        Queue::assertPushed(RunWorkflowTask::class);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-repair',
+            'workflow_run_id' => '01JTESTFLOWRUNREPAIRWEB001',
+            'command_type' => 'repair',
+            'status' => 'accepted',
+            'outcome' => 'repair_dispatched',
+        ]);
+    }
+
+    public function testRepairWebhookReturnsNoOpOutcomeForHealthySignalWait(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-repair-signal');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $response = $this->postJson('/webhooks/instances/order-repair-signal/repair');
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('outcome', 'repair_not_needed')
+            ->assertJsonPath('workflow_id', 'order-repair-signal')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('workflow_type', 'test-signal-workflow')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('rejection_reason', null);
+    }
+
     public function testCancelWebhookReturnsTypedAcceptedResponse(): void
     {
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'order-cancel');
@@ -288,6 +363,22 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertStatus(409)
             ->assertJsonPath('outcome', 'rejected_not_started')
             ->assertJsonPath('workflow_id', 'order-reserved')
+            ->assertJsonPath('run_id', null)
+            ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'instance_not_started');
+    }
+
+    public function testRepairWebhookRejectsReservedInstanceThatHasNotStarted(): void
+    {
+        WorkflowStub::make(TestGreetingWorkflow::class, 'order-repair-reserved');
+
+        $response = $this->postJson('/webhooks/instances/order-repair-reserved/repair');
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('outcome', 'rejected_not_started')
+            ->assertJsonPath('workflow_id', 'order-repair-reserved')
             ->assertJsonPath('run_id', null)
             ->assertJsonPath('workflow_type', 'test-greeting-workflow')
             ->assertJsonPath('command_status', 'rejected')

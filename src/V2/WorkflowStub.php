@@ -696,6 +696,18 @@ final class WorkflowStub
                 'applied_at' => now(),
             ]);
 
+            WorkflowHistoryEvent::record($run, HistoryEventType::RepairRequested, [
+                'workflow_command_id' => $command->id,
+                'workflow_instance_id' => $instance->id,
+                'workflow_run_id' => $run->id,
+                'command_type' => CommandType::Repair->value,
+                'outcome' => $command->outcome?->value,
+                'liveness_state' => $summary->liveness_state,
+                'wait_kind' => $summary->wait_kind,
+                'task_id' => $task?->id,
+                'task_type' => $task?->task_type?->value,
+            ], $task?->id, $command->id);
+
             RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
             );

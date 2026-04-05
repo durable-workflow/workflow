@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestFailingWorkflow;
@@ -11,6 +12,9 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
@@ -244,6 +248,55 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('Applied signal name-provided.', $timeline[4]['summary']);
         $this->assertSame('name-provided', $timeline[4]['signal_name']);
         $this->assertSame('signal', $timeline[4]['command_type']);
+    }
+
+    public function testTimelineIncludesTypedRepairCommandEntryWhenRepairRecreatesTask(): void
+    {
+        Queue::fake();
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'timeline-repair',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        $result = WorkflowStub::loadRun($run->id)->attemptRepair();
+
+        $timeline = HistoryTimeline::forRun($run->fresh());
+
+        $this->assertSame(['RepairRequested'], array_column($timeline, 'type'));
+        $this->assertSame('command', $timeline[0]['kind']);
+        $this->assertSame('Repair recreated workflow task.', $timeline[0]['summary']);
+        $this->assertSame('repair', $timeline[0]['command_type']);
+        $this->assertSame('accepted', $timeline[0]['command_status']);
+        $this->assertSame('repair_dispatched', $timeline[0]['command_outcome']);
+        $this->assertSame($result->commandId(), $timeline[0]['command']['id']);
+        $this->assertSame('repair', $timeline[0]['command']['type']);
+        $this->assertSame('repair_dispatched', $timeline[0]['command']['outcome']);
+        $this->assertSame('workflow', $timeline[0]['task']['type']);
+        $this->assertSame('ready', $timeline[0]['task']['status']);
     }
 
     private function waitFor(callable $condition): void

@@ -86,6 +86,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('signal_received', $detail['commands'][1]['outcome']);
         $this->assertCount(1, $detail['activities']);
         $this->assertSame('completed', $detail['activities'][0]['status']);
+        $this->assertNotNull($detail['activities'][0]['created_at']);
         $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
         $this->assertSame([
             'StartAccepted',

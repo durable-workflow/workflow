@@ -54,6 +54,14 @@ final class Webhooks
             return self::commandResponse($result, $result->accepted() ? 200 : 409);
         })->name('workflows.v2.cancel');
 
+        Route::post("{$basePath}/instances/{workflowId}/repair", static function (Request $request, string $workflowId) {
+            self::validateAuth($request);
+
+            $result = WorkflowStub::load($workflowId)->attemptRepair();
+
+            return self::commandResponse($result, $result->accepted() ? 200 : 409);
+        })->name('workflows.v2.repair');
+
         Route::post("{$basePath}/instances/{workflowId}/signals/{signal}", static function (
             Request $request,
             string $workflowId,

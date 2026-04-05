@@ -84,7 +84,7 @@ final class HistoryTimeline
             'sequence' => $event->sequence,
             'type' => $event->event_type->value,
             'kind' => self::kindFor($event->event_type),
-            'summary' => self::summaryFor($event, $command, $activity, $timer, $failure),
+            'summary' => self::summaryFor($event, $command, $task, $activity, $timer, $failure),
             'recorded_at' => self::timestamp($event->recorded_at),
             'command_id' => $commandId,
             'task_id' => $taskId,
@@ -117,6 +117,7 @@ final class HistoryTimeline
             HistoryEventType::StartAccepted,
             HistoryEventType::StartRejected,
             HistoryEventType::SignalReceived,
+            HistoryEventType::RepairRequested,
             HistoryEventType::CancelRequested,
             HistoryEventType::TerminateRequested => 'command',
             HistoryEventType::SignalWaitOpened,
@@ -133,6 +134,7 @@ final class HistoryTimeline
     private static function summaryFor(
         WorkflowHistoryEvent $event,
         ?WorkflowCommand $command,
+        ?WorkflowTask $task,
         ?ActivityExecution $activity,
         ?WorkflowTimer $timer,
         ?WorkflowFailure $failure,
@@ -169,6 +171,18 @@ final class HistoryTimeline
             HistoryEventType::SignalApplied => $signalName === null
                 ? 'Signal applied.'
                 : sprintf('Applied signal %s.', $signalName),
+            HistoryEventType::RepairRequested => match ($outcome) {
+                'repair_dispatched' => sprintf(
+                    'Repair recreated %s task.',
+                    self::displayLabel(
+                        $task?->task_type?->value
+                        ?? self::stringValue($payload['task_type'] ?? null)
+                        ?? 'workflow'
+                    ),
+                ),
+                'repair_not_needed' => 'Repair accepted; the run already had a durable resume source.',
+                default => 'Repair accepted.',
+            },
             HistoryEventType::CancelRequested => 'Cancel requested.',
             HistoryEventType::WorkflowCancelled => 'Workflow cancelled.',
             HistoryEventType::TerminateRequested => 'Terminate requested.',

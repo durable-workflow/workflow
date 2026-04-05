@@ -56,6 +56,7 @@ final class RunDetailView
                 'connection' => $execution->connection,
                 'queue' => $execution->queue,
                 'last_heartbeat_at' => $execution->last_heartbeat_at,
+                'created_at' => $execution->created_at,
                 'started_at' => $execution->started_at,
                 'closed_at' => $execution->closed_at,
                 'arguments' => serialize($execution->activityArguments()),
