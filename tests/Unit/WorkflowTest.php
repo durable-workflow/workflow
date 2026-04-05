@@ -9,6 +9,7 @@ use Illuminate\Contracts\Queue\Job as JobContract;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Event;
 use Mockery;
+use ReflectionMethod;
 use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestChildWorkflow;
 use Tests\Fixtures\TestContinueAsNewWorkflow;
@@ -177,6 +178,43 @@ final class WorkflowTest extends TestCase
         $activity->handle();
 
         $this->assertSame(1, $storedWorkflow->logs()->count());
+    }
+
+    public function testSetContextPreservesProbePendingBeforeMatch(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->arguments = Serializer::serialize([]);
+        $storedWorkflow->save();
+
+        $workflow = new Workflow($storedWorkflow);
+
+        WorkflowStub::setContext([
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 3,
+            'now' => now(),
+            'replaying' => true,
+            'probing' => true,
+            'probeIndex' => 7,
+            'probeClass' => TestActivity::class,
+            'probeMatched' => true,
+            'probePendingBeforeMatch' => true,
+        ]);
+
+        $method = new ReflectionMethod(Workflow::class, 'setContext');
+        $method->setAccessible(true);
+        $method->invoke($workflow, [
+            'storedWorkflow' => $storedWorkflow,
+            'index' => 4,
+            'now' => now(),
+            'replaying' => true,
+        ]);
+
+        $this->assertTrue(WorkflowStub::isProbing());
+        $this->assertSame(7, WorkflowStub::probeIndex());
+        $this->assertSame(TestActivity::class, WorkflowStub::probeClass());
+        $this->assertTrue(WorkflowStub::probeMatched());
+        $this->assertTrue(WorkflowStub::probePendingBeforeMatch());
     }
 
     public function testParent(): void

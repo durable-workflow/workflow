@@ -323,6 +323,7 @@ class Workflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
             $context['probeIndex'] = $existingContext->probeIndex ?? null;
             $context['probeClass'] = $existingContext->probeClass ?? null;
             $context['probeMatched'] = $existingContext->probeMatched ?? false;
+            $context['probePendingBeforeMatch'] = $existingContext->probePendingBeforeMatch ?? false;
         }
 
         WorkflowStub::setContext($context);
