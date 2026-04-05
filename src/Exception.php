@@ -10,6 +10,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use ReflectionClass;
 use Throwable;
@@ -138,7 +139,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
             WorkflowStub::setContext([
                 'storedWorkflow' => $tentativeWorkflow,
                 'index' => 0,
-                'now' => $this->now,
+                'now' => Carbon::parse($this->now),
                 'replaying' => true,
                 'probing' => true,
                 'probeIndex' => $this->index,

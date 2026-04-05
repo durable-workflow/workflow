@@ -15,6 +15,7 @@ use stdClass;
 use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestProbeBackToBackWorkflow;
 use Tests\Fixtures\TestProbeChildFailureWorkflow;
+use Tests\Fixtures\TestProbeNowSignalWorkflow;
 use Tests\Fixtures\TestProbeParallelChildWorkflow;
 use Tests\Fixtures\TestProbeRetryActivity;
 use Tests\Fixtures\TestSagaActivity;
@@ -235,6 +236,35 @@ final class ExceptionTest extends TestCase
         } finally {
             spl_autoload_unregister($autoload);
         }
+    }
+
+    public function testProbeReplayUsesCarbonNowBeforeWorkflowHandleResetsContext(): void
+    {
+        TestProbeNowSignalWorkflow::$signalSawCarbonNow = false;
+
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestProbeNowSignalWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+        $storedWorkflow->signals()
+            ->create([
+                'method' => 'recordNowType',
+                'arguments' => Serializer::serialize([]),
+            ]);
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'probe now type',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+        $method->setAccessible(true);
+        $method->invoke($exception);
+
+        $this->assertTrue(TestProbeNowSignalWorkflow::$signalSawCarbonNow);
     }
 
     public function testSkipsWriteWhenProbeDoesNotReachCandidateException(): void
