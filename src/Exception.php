@@ -102,7 +102,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
             new WithoutOverlappingMiddleware(
                 $this->storedWorkflow->id,
                 WithoutOverlappingMiddleware::WORKFLOW,
-                0,
+                self::LOCK_RETRY_DELAY,
                 15
             ),
         ];
@@ -132,6 +132,12 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
         $probeDecision = self::PROBE_SKIP;
 
         try {
+            try {
+                $probeNow = Carbon::parse($this->now);
+            } catch (Throwable) {
+                return self::PROBE_PERSIST;
+            }
+
             $tentativeWorkflow = $this->createTentativeWorkflowState();
             $workflow = new $workflowClass($tentativeWorkflow, ...$tentativeWorkflow->workflowArguments());
             $workflow->replaying = true;
@@ -139,7 +145,7 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
             WorkflowStub::setContext([
                 'storedWorkflow' => $tentativeWorkflow,
                 'index' => 0,
-                'now' => Carbon::parse($this->now),
+                'now' => $probeNow,
                 'replaying' => true,
                 'probing' => true,
                 'probeIndex' => $this->index,

@@ -44,6 +44,7 @@ final class ExceptionTest extends TestCase
         $this->assertCount(1, $middleware);
         $this->assertSame(WithoutOverlappingMiddleware::class, $middleware[0]::class);
         $this->assertSame(WithoutOverlappingMiddleware::WORKFLOW, $middleware[0]->type);
+        $this->assertSame(1, $middleware[0]->releaseAfter);
         $this->assertSame(15, $middleware[0]->expiresAfter);
     }
 
@@ -265,6 +266,27 @@ final class ExceptionTest extends TestCase
         $method->invoke($exception);
 
         $this->assertTrue(TestProbeNowSignalWorkflow::$signalSawCarbonNow);
+    }
+
+    public function testProbeReplayPersistsWhenNowCannotBeParsed(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowRunningStatus::$name,
+        ]);
+
+        $exception = new Exception(0, 'not-a-timestamp', $storedWorkflow, [
+            'class' => BaseException::class,
+            'message' => 'bad now',
+            'code' => 0,
+        ], connection: 'redis', queue: 'default');
+
+        $method = new ReflectionMethod(Exception::class, 'probeReplayDecision');
+        $method->setAccessible(true);
+
+        $this->assertSame('persist', $method->invoke($exception));
     }
 
     public function testSkipsWriteWhenProbeDoesNotReachCandidateException(): void
