@@ -17,6 +17,8 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_timers'));
         $this->assertTrue(Schema::hasTable('workflow_exceptions'));
         $this->assertTrue(Schema::hasTable('workflow_relationships'));
+        $this->assertTrue(Schema::hasTable('workflow_commands'));
+        $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
 
         $this->artisan('migrate:reset', [
             '--path' => dirname(__DIR__, 3) . '/src/migrations',
@@ -29,5 +31,6 @@ final class MigrationsTest extends TestCase
         $this->assertFalse(Schema::hasTable('workflow_timers'));
         $this->assertFalse(Schema::hasTable('workflow_exceptions'));
         $this->assertFalse(Schema::hasTable('workflow_relationships'));
+        $this->assertFalse(Schema::hasTable('workflow_commands'));
     }
 }

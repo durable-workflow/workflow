@@ -17,6 +17,26 @@ return [
 
     'workflow_relationships_table' => 'workflow_relationships',
 
+    'v2' => [
+        'instance_model' => Workflow\V2\Models\WorkflowInstance::class,
+        'run_model' => Workflow\V2\Models\WorkflowRun::class,
+        'history_event_model' => Workflow\V2\Models\WorkflowHistoryEvent::class,
+        'task_model' => Workflow\V2\Models\WorkflowTask::class,
+        'command_model' => Workflow\V2\Models\WorkflowCommand::class,
+        'activity_execution_model' => Workflow\V2\Models\ActivityExecution::class,
+        'timer_model' => Workflow\V2\Models\WorkflowTimer::class,
+        'failure_model' => Workflow\V2\Models\WorkflowFailure::class,
+        'run_summary_model' => Workflow\V2\Models\WorkflowRunSummary::class,
+        'types' => [
+            'workflows' => [
+                // 'billing.invoice-sync' => App\Workflows\InvoiceSyncWorkflow::class,
+            ],
+            'activities' => [
+                // 'payments.capture' => App\Activities\CapturePaymentActivity::class,
+            ],
+        ],
+    ],
+
     'serializer' => Workflow\Serializers\Y::class,
 
     'prune_age' => '1 month',

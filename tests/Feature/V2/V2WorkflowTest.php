@@ -1,0 +1,1005 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\V2;
+
+use Illuminate\Support\Facades\Queue;
+use LogicException;
+use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
+use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
+use Tests\Fixtures\V2\TestFailingWorkflow;
+use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestHandledFailureWorkflow;
+use Tests\Fixtures\V2\TestSignalWorkflow;
+use Tests\Fixtures\V2\TestTimerWorkflow;
+use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\StartOptions;
+use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\WorkflowStub;
+
+final class V2WorkflowTest extends TestCase
+{
+    public function testWorkflowCompletesWithDistinctInstanceAndRunIds(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
+        $instanceId = $workflow->id();
+
+        $this->assertSame('reserved', $workflow->status());
+        $this->assertNull($workflow->runId());
+
+        $result = $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+        $this->assertNotSame($instanceId, $runId);
+        $this->assertTrue($result->accepted());
+        $this->assertSame('started_new', $result->outcome());
+        $this->assertTrue($result->startedNew());
+        $this->assertSame($instanceId, $result->instanceId());
+        $this->assertSame($runId, $result->runId());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $this->assertSame([
+            'greeting' => 'Hello, Taylor!',
+            'workflow_id' => $instanceId,
+            'run_id' => $runId,
+        ], $workflow->output());
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ActivityScheduled',
+            'ActivityCompleted',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $startAccepted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'StartAccepted')
+            ->first();
+
+        $this->assertNotNull($startAccepted);
+        $this->assertSame($result->commandId(), $startAccepted->workflow_command_id);
+
+        $this->assertDatabaseHas('workflow_run_summaries', [
+            'id' => $runId,
+            'workflow_instance_id' => $instanceId,
+            'status' => 'completed',
+            'status_bucket' => 'completed',
+            'engine_source' => 'v2',
+        ]);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $instanceId,
+            'workflow_run_id' => $runId,
+            'command_type' => 'start',
+            'status' => 'accepted',
+            'outcome' => 'started_new',
+        ]);
+    }
+
+    public function testAttemptStartReturnsRejectedResultForDuplicateStart(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
+        $accepted = $workflow->attemptStart('Taylor');
+
+        $this->assertTrue($accepted->accepted());
+        $this->assertSame('started_new', $accepted->outcome());
+
+        $rejected = $workflow->attemptStart('Jordan');
+
+        $this->assertTrue($rejected->rejected());
+        $this->assertTrue($rejected->rejectedDuplicate());
+        $this->assertSame('rejected_duplicate', $rejected->outcome());
+        $this->assertSame('instance_already_started', $rejected->rejectionReason());
+        $this->assertSame($workflow->id(), $rejected->instanceId());
+        $this->assertSame($workflow->runId(), $rejected->runId());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $rejected->commandId(),
+            'workflow_instance_id' => $workflow->id(),
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'start',
+            'status' => 'rejected',
+            'outcome' => 'rejected_duplicate',
+            'rejection_reason' => 'instance_already_started',
+        ]);
+
+        $this->assertSame(['StartAccepted', 'WorkflowStarted', 'StartRejected'], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testAttemptStartCanReturnExistingActiveRunWhenRequested(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'order-123');
+
+        $accepted = $workflow->attemptStart('Taylor');
+
+        $this->assertTrue($accepted->accepted());
+        $this->assertSame('started_new', $accepted->outcome());
+
+        $reused = $workflow->attemptStart('Jordan', StartOptions::returnExistingActive());
+
+        $this->assertTrue($reused->accepted());
+        $this->assertTrue($reused->returnedExistingActive());
+        $this->assertSame('returned_existing_active', $reused->outcome());
+        $this->assertNull($reused->rejectionReason());
+        $this->assertSame('order-123', $reused->instanceId());
+        $this->assertSame($accepted->runId(), $reused->runId());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $reused->commandId(),
+            'workflow_instance_id' => 'order-123',
+            'workflow_run_id' => $accepted->runId(),
+            'command_type' => 'start',
+            'status' => 'accepted',
+            'outcome' => 'returned_existing_active',
+        ]);
+
+        $this->assertSame(['StartAccepted', 'WorkflowStarted', 'StartAccepted'], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $accepted->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testConfiguredTypeMapPersistsWorkflowAliasOnStartedRuns(): void
+    {
+        $this->configureGreetingTypeMaps();
+
+        $workflow = WorkflowStub::make(TestConfiguredGreetingWorkflow::class);
+        $result = $workflow->start('Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $runId = $result->runId();
+
+        $this->assertNotNull($runId);
+        $this->assertDatabaseHas('workflow_runs', [
+            'id' => $runId,
+            'workflow_type' => 'config-greeting-workflow',
+        ]);
+    }
+
+    public function testMakeCanReuseReservedInstanceWhenDurableTypeMatchesConfiguredAlias(): void
+    {
+        $this->configureGreetingTypeMaps();
+
+        WorkflowInstance::query()->create([
+            'id' => '01J0000000000000000000099',
+            'workflow_class' => 'Legacy\\GreetingWorkflow',
+            'workflow_type' => 'config-greeting-workflow',
+            'run_count' => 0,
+            'reserved_at' => now()->subMinute(),
+        ]);
+
+        $workflow = WorkflowStub::make(TestConfiguredGreetingWorkflow::class, '01J0000000000000000000099');
+
+        $this->assertSame('01J0000000000000000000099', $workflow->id());
+        $this->assertNull($workflow->runId());
+        $this->assertDatabaseHas('workflow_instances', [
+            'id' => '01J0000000000000000000099',
+            'workflow_class' => TestConfiguredGreetingWorkflow::class,
+            'workflow_type' => 'config-greeting-workflow',
+        ]);
+    }
+
+    public function testWorkflowExecutorCanResolveConfiguredTypeWhenStoredWorkflowClassHasDrifted(): void
+    {
+        $this->configureGreetingTypeMaps();
+
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => 'Legacy\\GreetingWorkflow',
+            'workflow_type' => 'config-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'Legacy\\GreetingWorkflow',
+            'workflow_type' => 'config-greeting-workflow',
+            'status' => RunStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'payload' => [],
+            'available_at' => now()->subSeconds(5),
+            'leased_at' => now()->subSeconds(2),
+            'lease_expires_at' => now()->addMinutes(5),
+        ]);
+
+        $nextTask = app(\Workflow\V2\Support\WorkflowExecutor::class)->run(
+            $run->fresh(['instance', 'activityExecutions', 'timers', 'failures', 'tasks']),
+            $task->fresh(),
+        );
+
+        $this->assertInstanceOf(WorkflowTask::class, $nextTask);
+        $this->assertSame(TaskType::Activity, $nextTask->task_type);
+        $this->assertSame('waiting', $run->fresh()->status->value);
+        $this->assertSame('completed', $task->fresh()->status->value);
+        $this->assertDatabaseHas('activity_executions', [
+            'workflow_run_id' => $run->id,
+            'activity_class' => TestConfiguredGreetingActivity::class,
+            'activity_type' => 'config-greeting-activity',
+        ]);
+    }
+
+    public function testRunActivityTaskCanResolveConfiguredTypeWhenStoredActivityClassHasDrifted(): void
+    {
+        Queue::fake();
+        $this->configureGreetingTypeMaps();
+
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => TestConfiguredGreetingWorkflow::class,
+            'workflow_type' => 'config-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestConfiguredGreetingWorkflow::class,
+            'workflow_type' => 'config-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => 'Legacy\\GreetingActivity',
+            'activity_type' => 'config-greeting-activity',
+            'status' => ActivityStatus::Pending->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
+            'available_at' => now(),
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        (new RunActivityTask($task->id))->handle();
+
+        $this->assertSame('completed', $execution->fresh()->status->value);
+        $this->assertSame('Hello, Taylor!', $execution->fresh()->activityResult());
+        $this->assertSame('completed', $task->fresh()->status->value);
+        $this->assertDatabaseHas('workflow_tasks', [
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+        ]);
+    }
+
+    public function testStartStillThrowsForDuplicateStartWhileRecordingRejectedCommand(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
+        $workflow->start('Taylor');
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage(sprintf('Workflow instance [%s] has already started.', $workflow->id()));
+
+        try {
+            $workflow->start('Jordan');
+        } finally {
+            $this->assertSame(2, WorkflowCommand::query()->count());
+            $this->assertSame(
+                'rejected',
+                WorkflowCommand::query()->latest('created_at')->firstOrFail()->status->value
+            );
+        }
+    }
+
+    public function testWorkflowFailureIsProjected(): void
+    {
+        $workflow = WorkflowStub::make(TestFailingWorkflow::class);
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->failed());
+
+        $failure = WorkflowFailure::query()
+            ->where('source_kind', 'activity_execution')
+            ->latest('created_at')
+            ->first();
+
+        $this->assertNotNull($failure);
+        $this->assertSame('boom', $failure->message);
+        $this->assertSame('failed', $workflow->status());
+    }
+
+    public function testWorkflowCanHandleActivityFailureAndContinue(): void
+    {
+        $workflow = WorkflowStub::make(TestHandledFailureWorkflow::class);
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $summary = WorkflowRunSummary::query()->findOrFail($workflow->runId());
+
+        $this->assertSame('Hello, Recovered!', $workflow->output());
+        $this->assertSame('completed', $summary->status);
+        $this->assertSame(1, WorkflowFailure::query()->where('handled', true)->count());
+    }
+
+    public function testWorkflowCanWaitForTimerAndResume(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class);
+        $workflow->start(3);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $summary = $workflow->summary();
+
+        $this->assertSame('timer', $summary?->wait_kind);
+        $this->assertNotNull($summary?->wait_deadline_at);
+        $this->assertNotNull($summary?->next_task_id);
+        $this->assertSame('timer', $summary?->next_task_type);
+        $this->assertSame('ready', $summary?->next_task_status);
+        $this->assertSame('timer_scheduled', $summary?->liveness_state);
+        $this->assertNotNull($summary?->liveness_reason);
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->where('sequence', 1)
+            ->first();
+
+        $this->assertNotNull($timer);
+        $this->assertSame('pending', $timer->status->value);
+        $this->assertSame(3, $timer->delay_seconds);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $this->assertSame([
+            'waited' => true,
+            'workflow_id' => $workflow->id(),
+            'run_id' => $runId,
+        ], $workflow->output());
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'TimerScheduled',
+            'TimerFired',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testWorkflowCanWaitForSignalAndResumeAfterSignalCommand(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'signal-instance');
+        $workflow->start();
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'signal');
+
+        $summary = $workflow->summary();
+
+        $this->assertSame('signal', $summary?->wait_kind);
+        $this->assertSame('Waiting for signal name-provided', $summary?->wait_reason);
+        $this->assertNull($summary?->next_task_id);
+        $this->assertSame('waiting_for_signal', $summary?->liveness_state);
+        $this->assertSame('Waiting for signal name-provided.', $summary?->liveness_reason);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $result = $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('signal', $result->type());
+        $this->assertSame('signal_received', $result->outcome());
+        $this->assertSame('signal-instance', $result->instanceId());
+        $this->assertSame($runId, $result->runId());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $command = WorkflowCommand::query()->findOrFail($result->commandId());
+
+        $this->assertNotNull($command->applied_at);
+        $this->assertSame('name-provided', $command->targetName());
+        $this->assertSame([
+            'name' => 'Taylor',
+            'greeting' => 'Hello, Taylor!',
+            'workflow_id' => 'signal-instance',
+            'run_id' => $runId,
+        ], $workflow->output());
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+            'SignalReceived',
+            'SignalApplied',
+            'ActivityScheduled',
+            'ActivityCompleted',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testRunSummaryProjectsLeasedWorkflowTaskLiveness(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 0,
+            'reserved_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Running->value,
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(10),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+            'run_count' => 1,
+            'started_at' => $run->started_at,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'payload' => [],
+            'available_at' => now()
+                ->subSeconds(20),
+            'leased_at' => now()
+                ->subSeconds(10),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
+        );
+
+        $this->assertSame('workflow-task', $summary->wait_kind);
+        $this->assertSame('Workflow task leased to worker', $summary->wait_reason);
+        $this->assertSame($task->id, $summary->next_task_id);
+        $this->assertSame('workflow', $summary->next_task_type);
+        $this->assertSame('leased', $summary->next_task_status);
+        $this->assertSame('workflow_task_leased', $summary->liveness_state);
+        $this->assertSame($task->lease_expires_at?->toJSON(), $summary->next_task_lease_expires_at?->toJSON());
+    }
+
+    public function testRunSummaryFlagsRepairNeededWhenResumeSourceIsMissing(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 0,
+            'reserved_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(15),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+            'run_count' => 1,
+            'started_at' => $run->started_at,
+        ])->save();
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
+        );
+
+        $this->assertNull($summary->wait_kind);
+        $this->assertNull($summary->next_task_id);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame('Run is non-terminal but has no durable next-resume source.', $summary->liveness_reason);
+    }
+
+    public function testWorkflowCanCompleteImmediateTimerWithoutSchedulingATimerTask(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class);
+        $workflow->start(0);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $this->assertSame([
+            'waited' => true,
+            'workflow_id' => $workflow->id(),
+            'run_id' => $runId,
+        ], $workflow->output());
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->where('sequence', 1)
+            ->first();
+
+        $this->assertNotNull($timer);
+        $this->assertSame('fired', $timer->status->value);
+        $this->assertSame(0, $timer->delay_seconds);
+        $this->assertNull($workflow->summary()?->wait_kind);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'TimerScheduled',
+            'TimerFired',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testWorkflowCanBeCancelledWhileWaitingOnTimer(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class);
+        $workflow->start(2);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $result = $workflow->cancel();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('cancel', $result->type());
+        $this->assertSame('cancelled', $result->outcome());
+        $this->assertSame($workflow->id(), $result->instanceId());
+        $this->assertSame($runId, $result->runId());
+
+        $workflow->refresh();
+
+        $this->assertSame('cancelled', $workflow->status());
+        $this->assertTrue($workflow->cancelled());
+        $this->assertFalse($workflow->running());
+        $this->assertNull($workflow->output());
+
+        $summary = $workflow->summary();
+
+        $this->assertNotNull($summary);
+        $this->assertSame('cancelled', $summary->status);
+        $this->assertSame('failed', $summary->status_bucket);
+        $this->assertSame('cancelled', $summary->closed_reason);
+        $this->assertNull($summary->wait_kind);
+        $this->assertNotNull($summary->closed_at);
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->where('sequence', 1)
+            ->first();
+
+        $this->assertNotNull($timer);
+        $this->assertSame('cancelled', $timer->status->value);
+
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'timer')
+            ->first();
+
+        $this->assertNotNull($timerTask);
+        $this->assertSame('cancelled', $timerTask->status->value);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $workflow->id(),
+            'workflow_run_id' => $runId,
+            'command_type' => 'cancel',
+            'status' => 'accepted',
+            'outcome' => 'cancelled',
+        ]);
+
+        usleep(2500000);
+        $workflow->refresh();
+
+        $this->assertSame('cancelled', $workflow->status());
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'TimerScheduled',
+            'CancelRequested',
+            'WorkflowCancelled',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testRunTargetedCancelUsesRunScopeForCurrentRun(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'run-target-current');
+        $workflow->start(5);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $selectedRun = WorkflowStub::loadRun($runId);
+        $result = $selectedRun->attemptCancel();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('run', $result->targetScope());
+        $this->assertSame('cancelled', $result->outcome());
+        $this->assertSame('run-target-current', $result->instanceId());
+        $this->assertSame($runId, $result->runId());
+
+        $selectedRun->refresh();
+
+        $this->assertSame($runId, $selectedRun->runId());
+        $this->assertSame($runId, $selectedRun->currentRunId());
+        $this->assertTrue($selectedRun->currentRunIsSelected());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'run-target-current',
+            'workflow_run_id' => $runId,
+            'command_type' => 'cancel',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'outcome' => 'cancelled',
+        ]);
+    }
+
+    public function testWorkflowCanBeTerminatedWhileWaitingOnTimer(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class);
+        $workflow->start(5);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $result = $workflow->terminate();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('terminate', $result->type());
+        $this->assertSame('terminated', $result->outcome());
+
+        $workflow->refresh();
+
+        $this->assertSame('terminated', $workflow->status());
+        $this->assertTrue($workflow->terminated());
+        $this->assertFalse($workflow->running());
+        $this->assertNull($workflow->output());
+
+        $summary = $workflow->summary();
+
+        $this->assertNotNull($summary);
+        $this->assertSame('terminated', $summary->status);
+        $this->assertSame('failed', $summary->status_bucket);
+        $this->assertSame('terminated', $summary->closed_reason);
+        $this->assertNull($summary->wait_kind);
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->where('sequence', 1)
+            ->first();
+
+        $this->assertNotNull($timer);
+        $this->assertSame('cancelled', $timer->status->value);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'TimerScheduled',
+            'TerminateRequested',
+            'WorkflowTerminated',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testRunTargetedCancelRejectsHistoricalSelectionWithDurableOutcome(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'historical-instance',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'run_count' => 2,
+            'reserved_at' => now()->subMinutes(10),
+            'started_at' => now()->subMinutes(10),
+        ]);
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'arguments' => Serializer::serialize([1]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(10),
+            'closed_at' => now()->subMinutes(9),
+            'last_progress_at' => now()->subMinutes(9),
+        ]);
+
+        /** @var WorkflowRun $currentRun */
+        $currentRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 2,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([30]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $currentRun->id,
+            'run_count' => 2,
+        ])->save();
+
+        RunSummaryProjector::project(
+            $historicalRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+        RunSummaryProjector::project(
+            $currentRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $selectedRun = WorkflowStub::loadRun($historicalRun->id);
+        $result = $selectedRun->attemptCancel();
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedNotCurrent());
+        $this->assertSame('run', $result->targetScope());
+        $this->assertSame('rejected_not_current', $result->outcome());
+        $this->assertSame('selected_run_not_current', $result->rejectionReason());
+        $this->assertSame($instance->id, $result->instanceId());
+        $this->assertSame($historicalRun->id, $result->runId());
+
+        $selectedRun->refresh();
+
+        $this->assertSame($historicalRun->id, $selectedRun->runId());
+        $this->assertSame($currentRun->id, $selectedRun->currentRunId());
+        $this->assertFalse($selectedRun->currentRunIsSelected());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $historicalRun->id,
+            'command_type' => 'cancel',
+            'target_scope' => 'run',
+            'status' => 'rejected',
+            'outcome' => 'rejected_not_current',
+            'rejection_reason' => 'selected_run_not_current',
+        ]);
+    }
+
+    public function testAttemptCancelRejectsReservedInstanceThatHasNotStarted(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'reserved-instance');
+
+        $result = $workflow->attemptCancel();
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('cancel', $result->type());
+        $this->assertSame('rejected_not_started', $result->outcome());
+        $this->assertSame('instance_not_started', $result->rejectionReason());
+        $this->assertSame('reserved-instance', $result->instanceId());
+        $this->assertNull($result->runId());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'reserved-instance',
+            'workflow_run_id' => null,
+            'command_type' => 'cancel',
+            'status' => 'rejected',
+            'outcome' => 'rejected_not_started',
+            'rejection_reason' => 'instance_not_started',
+        ]);
+    }
+
+    public function testAttemptSignalRejectsClosedRun(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'closed-signal-instance');
+        $workflow->start('Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $result = $workflow->attemptSignal('name-provided', 'Jordan');
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('signal', $result->type());
+        $this->assertSame('rejected_not_active', $result->outcome());
+        $this->assertSame('run_not_active', $result->rejectionReason());
+        $this->assertSame('closed-signal-instance', $result->instanceId());
+        $this->assertSame($workflow->runId(), $result->runId());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'closed-signal-instance',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'signal',
+            'status' => 'rejected',
+            'outcome' => 'rejected_not_active',
+            'rejection_reason' => 'run_not_active',
+        ]);
+    }
+
+    public function testAttemptTerminateRejectsClosedRun(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'completed-instance');
+        $workflow->start('Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $result = $workflow->attemptTerminate();
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('terminate', $result->type());
+        $this->assertSame('rejected_not_active', $result->outcome());
+        $this->assertSame('run_not_active', $result->rejectionReason());
+        $this->assertSame('completed-instance', $result->instanceId());
+        $this->assertSame($workflow->runId(), $result->runId());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'completed-instance',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'terminate',
+            'status' => 'rejected',
+            'outcome' => 'rejected_not_active',
+            'rejection_reason' => 'run_not_active',
+        ]);
+    }
+
+    private function waitFor(callable $condition): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            if ($condition()) {
+                return;
+            }
+
+            usleep(100000);
+        }
+
+        $this->fail('Timed out waiting for workflow to settle.');
+    }
+
+    private function configureGreetingTypeMaps(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'config-greeting-workflow' => TestConfiguredGreetingWorkflow::class,
+        ]);
+
+        config()->set('workflows.v2.types.activities', [
+            'config-greeting-activity' => TestConfiguredGreetingActivity::class,
+        ]);
+    }
+}

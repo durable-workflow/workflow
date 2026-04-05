@@ -1,0 +1,24 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Fixtures\V2;
+
+use Generator;
+use Throwable;
+use function Workflow\V2\activity;
+use Workflow\V2\Workflow;
+
+final class TestHandledFailureWorkflow extends Workflow
+{
+    public function execute(): Generator
+    {
+        try {
+            yield activity(TestFailingActivity::class);
+        } catch (Throwable) {
+            // Continue after an activity failure to prove the run can recover.
+        }
+
+        return yield activity(TestGreetingActivity::class, 'Recovered');
+    }
+}
