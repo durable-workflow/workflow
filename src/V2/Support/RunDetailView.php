@@ -37,6 +37,13 @@ final class RunDetailView
             RunStatus::Running,
             RunStatus::Waiting,
         ], true);
+        $canRepair = $isCurrentRun
+            && $summary?->liveness_state === 'repair_needed'
+            && in_array($run->status, [
+                RunStatus::Pending,
+                RunStatus::Running,
+                RunStatus::Waiting,
+            ], true);
 
         $activities = $run->activityExecutions
             ->map(static fn (ActivityExecution $execution): array => [
@@ -97,6 +104,7 @@ final class RunDetailView
             'exception_count' => $summary?->exception_count ?? $run->failures->count(),
             'exceptions_count' => $summary?->exceptions_count ?? $run->failures->count(),
             'can_issue_terminal_commands' => $canIssueTerminalCommands,
+            'can_repair' => $canRepair,
             'read_only_reason' => $canIssueTerminalCommands
                 ? null
                 : ($isCurrentRun

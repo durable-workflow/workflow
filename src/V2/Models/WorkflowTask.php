@@ -28,6 +28,7 @@ class WorkflowTask extends Model
         'task_type' => TaskType::class,
         'status' => TaskStatus::class,
         'payload' => 'array',
+        'repair_count' => 'integer',
         'available_at' => 'datetime',
         'leased_at' => 'datetime',
         'lease_expires_at' => 'datetime',

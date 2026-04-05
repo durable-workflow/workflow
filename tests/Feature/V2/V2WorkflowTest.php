@@ -20,6 +20,8 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -602,6 +604,198 @@ final class V2WorkflowTest extends TestCase
         $this->assertNull($summary->next_task_id);
         $this->assertSame('repair_needed', $summary->liveness_state);
         $this->assertSame('Run is non-terminal but has no durable next-resume source.', $summary->liveness_reason);
+    }
+
+    public function testRepairRecreatesMissingWorkflowTaskForRepairNeededRun(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-workflow-instance',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('repair_needed', $summary->liveness_state);
+
+        $result = WorkflowStub::loadRun($run->id)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair', $result->type());
+        $this->assertSame('repair_dispatched', $result->outcome());
+        $this->assertSame($instance->id, $result->instanceId());
+        $this->assertSame($run->id, $result->runId());
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->sole();
+
+        $this->assertSame(TaskType::Workflow, $task->task_type);
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame([], $task->payload);
+        $this->assertSame(1, $task->repair_count);
+        $this->assertSame('redis', $task->connection);
+        $this->assertSame('default', $task->queue);
+
+        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id);
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('workflow-task', $updatedSummary->wait_kind);
+        $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'command_type' => 'repair',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'outcome' => 'repair_dispatched',
+        ]);
+    }
+
+    public function testRepairRecreatesMissingTimerTaskForPendingTimer(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-timer-instance',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([30]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'status' => 'pending',
+            'delay_seconds' => 30,
+            'fire_at' => now()->addSeconds(25),
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame('timer', $summary->wait_kind);
+
+        $result = WorkflowStub::loadRun($run->id)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair_dispatched', $result->outcome());
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->sole();
+
+        $this->assertSame(TaskType::Timer, $task->task_type);
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(['timer_id' => $timer->id], $task->payload);
+        $this->assertSame(1, $task->repair_count);
+        $this->assertSame($timer->fire_at?->toJSON(), $task->available_at?->toJSON());
+
+        Queue::assertPushed(RunTimerTask::class, static fn (RunTimerTask $job): bool => $job->taskId === $task->id);
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('timer', $updatedSummary->wait_kind);
+        $this->assertSame('timer_scheduled', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+        $this->assertSame('timer', $updatedSummary->next_task_type);
+    }
+
+    public function testRepairReturnsAcceptedNoOpForHealthySignalWait(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'repair-signal');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+        $this->assertSame('waiting_for_signal', $workflow->summary()?->liveness_state);
+
+        Queue::fake();
+
+        $existingTaskIds = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->pluck('id')
+            ->all();
+
+        $result = WorkflowStub::loadRun($runId)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair', $result->type());
+        $this->assertSame('repair_not_needed', $result->outcome());
+        $this->assertNull($result->rejectionReason());
+
+        $this->assertSame(
+            $existingTaskIds,
+            WorkflowTask::query()->where('workflow_run_id', $runId)->pluck('id')->all(),
+        );
+
+        Queue::assertNothingPushed();
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $workflow->id(),
+            'workflow_run_id' => $runId,
+            'command_type' => 'repair',
+            'status' => 'accepted',
+            'outcome' => 'repair_not_needed',
+        ]);
     }
 
     public function testWorkflowCanCompleteImmediateTimerWithoutSchedulingATimerTask(): void

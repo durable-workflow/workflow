@@ -20,6 +20,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -412,6 +413,21 @@ final class WorkflowStub
         return $result;
     }
 
+    public function repair(): CommandResult
+    {
+        $result = $this->attemptRepair();
+
+        if ($result->rejected()) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] cannot be repaired: %s.',
+                $this->instance->id,
+                $result->rejectionReason() ?? 'unknown',
+            ));
+        }
+
+        return $result;
+    }
+
     public function attemptSignal(string $name, ...$arguments): CommandResult
     {
         if ($name === '') {
@@ -534,6 +550,167 @@ final class WorkflowStub
             throw new LogicException(sprintf(
                 'Workflow instance [%s] failed to record a signal command.',
                 $this->instance->id
+            ));
+        }
+
+        return new CommandResult($command);
+    }
+
+    public function attemptRepair(): CommandResult
+    {
+        /** @var WorkflowCommand|null $command */
+        $command = null;
+        $task = null;
+
+        DB::transaction(function () use (&$command, &$task): void {
+            /** @var WorkflowInstance $instance */
+            $instance = WorkflowInstance::query()
+                ->lockForUpdate()
+                ->findOrFail($this->instance->id);
+
+            if ($instance->current_run_id === null) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    null,
+                    CommandType::Repair,
+                    'instance_not_started',
+                    $this->commandTargetScope(),
+                );
+
+                return;
+            }
+
+            if ($this->runTargeted) {
+                /** @var WorkflowRun $run */
+                $run = WorkflowRun::query()
+                    ->lockForUpdate()
+                    ->findOrFail($this->selectedRunId);
+
+                if ($run->id !== $instance->current_run_id) {
+                    $command = $this->rejectCommand(
+                        $instance,
+                        $run,
+                        CommandType::Repair,
+                        'selected_run_not_current',
+                        $this->commandTargetScope(),
+                    );
+
+                    return;
+                }
+            } else {
+                /** @var WorkflowRun $run */
+                $run = WorkflowRun::query()
+                    ->lockForUpdate()
+                    ->findOrFail($instance->current_run_id);
+            }
+
+            if (in_array($run->status, [
+                RunStatus::Completed,
+                RunStatus::Failed,
+                RunStatus::Cancelled,
+                RunStatus::Terminated,
+            ], true)) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Repair,
+                    'run_not_active',
+                    $this->commandTargetScope(),
+                );
+
+                return;
+            }
+
+            $run->setRelation('instance', $instance);
+            $run->setRelation(
+                'tasks',
+                WorkflowTask::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->orderBy('available_at')
+                    ->lockForUpdate()
+                    ->get()
+            );
+            $run->setRelation(
+                'activityExecutions',
+                ActivityExecution::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->orderBy('sequence')
+                    ->lockForUpdate()
+                    ->get()
+            );
+            $run->setRelation(
+                'timers',
+                WorkflowTimer::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->orderBy('sequence')
+                    ->lockForUpdate()
+                    ->get()
+            );
+            $run->setRelation(
+                'failures',
+                WorkflowFailure::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->latest('created_at')
+                    ->lockForUpdate()
+                    ->get()
+            );
+            $run->setRelation(
+                'historyEvents',
+                WorkflowHistoryEvent::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->orderBy('sequence')
+                    ->lockForUpdate()
+                    ->get()
+            );
+
+            $summary = RunSummaryProjector::project($run);
+
+            if ($summary->liveness_state === 'repair_needed') {
+                $task = $this->createRepairTask($run, $summary);
+            }
+
+            $run->forceFill([
+                'last_progress_at' => now(),
+            ])->save();
+
+            /** @var WorkflowCommand $command */
+            $command = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $instance->id,
+                'workflow_run_id' => $run->id,
+                'command_type' => CommandType::Repair->value,
+                'target_scope' => $this->commandTargetScope(),
+                'status' => CommandStatus::Accepted->value,
+                'outcome' => $task instanceof WorkflowTask
+                    ? CommandOutcome::RepairDispatched->value
+                    : CommandOutcome::RepairNotNeeded->value,
+                'workflow_class' => $run->workflow_class,
+                'workflow_type' => $run->workflow_type,
+                'payload_codec' => config('workflows.serializer'),
+                'payload' => Serializer::serialize([
+                    'liveness_state' => $summary->liveness_state,
+                    'wait_kind' => $summary->wait_kind,
+                    'task_id' => $task?->id,
+                    'task_type' => $task?->task_type?->value,
+                ]),
+                'accepted_at' => now(),
+                'applied_at' => now(),
+            ]);
+
+            RunSummaryProjector::project(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+            );
+        });
+
+        $this->refresh();
+
+        if ($task instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($task);
+        }
+
+        if (! $command instanceof WorkflowCommand) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] failed to record a repair command.',
+                $this->instance->id,
             ));
         }
 
@@ -812,6 +989,77 @@ final class WorkflowStub
             ->where('workflow_run_id', $runId)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
             ->exists();
+    }
+
+    private function createRepairTask(WorkflowRun $run, WorkflowRunSummary $summary): WorkflowTask
+    {
+        if ($summary->wait_kind === 'activity') {
+            /** @var ActivityExecution|null $execution */
+            $execution = $run->activityExecutions
+                ->first(static fn (ActivityExecution $execution): bool => in_array(
+                    $execution->status,
+                    [ActivityStatus::Pending, ActivityStatus::Running],
+                    true,
+                ));
+
+            if ($execution instanceof ActivityExecution) {
+                /** @var WorkflowTask $task */
+                $task = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Activity->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => now(),
+                    'payload' => [
+                        'activity_execution_id' => $execution->id,
+                    ],
+                    'connection' => $execution->connection ?? $run->connection,
+                    'queue' => $execution->queue ?? $run->queue,
+                    'repair_count' => 1,
+                ]);
+
+                return $task;
+            }
+        }
+
+        if ($summary->wait_kind === 'timer') {
+            /** @var WorkflowTimer|null $timer */
+            $timer = $run->timers
+                ->first(static fn (WorkflowTimer $timer): bool => $timer->status === TimerStatus::Pending);
+
+            if ($timer instanceof WorkflowTimer) {
+                /** @var WorkflowTask $task */
+                $task = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Timer->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $timer->fire_at !== null && $timer->fire_at->isFuture()
+                        ? $timer->fire_at
+                        : now(),
+                    'payload' => [
+                        'timer_id' => $timer->id,
+                    ],
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'repair_count' => 1,
+                ]);
+
+                return $task;
+            }
+        }
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'repair_count' => 1,
+        ]);
+
+        return $task;
     }
 
     private function commandTargetScope(): string
