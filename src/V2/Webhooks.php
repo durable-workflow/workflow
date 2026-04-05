@@ -18,6 +18,7 @@ use Workflow\Auth\WebhookAuthenticator;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\CommandResponse;
 
 final class Webhooks
 {
@@ -239,14 +240,6 @@ final class Webhooks
 
     private static function commandResponse(CommandResult $result, int $status, ?string $workflowType = null)
     {
-        return response()->json([
-            'outcome' => $result->outcome(),
-            'workflow_id' => $result->instanceId(),
-            'run_id' => $result->runId(),
-            'command_id' => $result->commandId(),
-            'workflow_type' => $workflowType ?? $result->workflowType(),
-            'command_status' => $result->status(),
-            'rejection_reason' => $result->rejectionReason(),
-        ], $status);
+        return response()->json(CommandResponse::payload($result, $workflowType), $status);
     }
 }

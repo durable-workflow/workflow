@@ -19,6 +19,13 @@ class WorkflowRunSummary extends Model
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
+    protected $appends = [
+        'instance_id',
+        'selected_run_id',
+        'run_id',
+        'exceptions_count',
+    ];
+
     protected $casts = [
         'is_current_run' => 'bool',
         'started_at' => 'datetime',
@@ -32,5 +39,25 @@ class WorkflowRunSummary extends Model
     public function run(): BelongsTo
     {
         return $this->belongsTo(WorkflowRun::class, 'id', 'id');
+    }
+
+    public function getInstanceIdAttribute(): string
+    {
+        return $this->workflow_instance_id;
+    }
+
+    public function getSelectedRunIdAttribute(): string
+    {
+        return $this->id;
+    }
+
+    public function getRunIdAttribute(): string
+    {
+        return $this->id;
+    }
+
+    public function getExceptionsCountAttribute(): int
+    {
+        return (int) $this->exception_count;
     }
 }
