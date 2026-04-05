@@ -32,14 +32,14 @@ final class ChildWorkflowStub
                 $mocks = WorkflowStub::mocks();
 
                 if (! $log && array_key_exists($workflow, $mocks)) {
-                    $result = $mocks[$workflow];
+                    $mockedResult = $mocks[$workflow];
 
                     $log = $context->storedWorkflow->createLog([
                         'index' => $context->index,
                         'now' => $context->now,
                         'class' => $workflow,
                         'result' => Serializer::serialize(
-                            is_callable($result) ? $result($context, ...$arguments) : $result
+                            is_callable($mockedResult) ? $mockedResult($context, ...$arguments) : $mockedResult
                         ),
                     ]);
 
