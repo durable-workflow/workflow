@@ -15,6 +15,7 @@ use Workflow\Auth\NullAuthenticator;
 use Workflow\Auth\SignatureAuthenticator;
 use Workflow\Auth\TokenAuthenticator;
 use Workflow\Auth\WebhookAuthenticator;
+use Workflow\V2\UpdateResult;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Support\TypeRegistry;
@@ -74,6 +75,27 @@ final class Webhooks
 
             return self::commandResponse($result, $result->accepted() ? 202 : 409);
         })->name('workflows.v2.signal');
+
+        Route::post("{$basePath}/instances/{workflowId}/updates/{update}", static function (
+            Request $request,
+            string $workflowId,
+            string $update,
+        ) {
+            self::validateAuth($request);
+
+            try {
+                $result = WorkflowStub::load($workflowId)
+                    ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
+            } catch (LogicException) {
+                abort(404);
+            }
+
+            return self::commandResponse($result, match (true) {
+                $result->rejected() => 409,
+                $result instanceof UpdateResult && $result->failed() => 422,
+                default => 200,
+            });
+        })->name('workflows.v2.update');
 
         Route::post("{$basePath}/instances/{workflowId}/terminate", static function (Request $request, string $workflowId) {
             self::validateAuth($request);

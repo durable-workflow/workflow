@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -11,6 +12,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\Serializers\Serializer;
 
 final class RunDetailView
 {
@@ -71,6 +73,12 @@ final class RunDetailView
         $activityClasses = $run->activityExecutions
             ->keyBy('id')
             ->map(static fn (ActivityExecution $execution): string => $execution->activity_class);
+        $updateCompletions = $run->historyEvents
+            ->filter(
+                static fn ($event): bool => $event->event_type === HistoryEventType::UpdateCompleted
+                    && $event->workflow_command_id !== null
+            )
+            ->keyBy('workflow_command_id');
 
         return [
             'id' => $run->id,
@@ -108,6 +116,8 @@ final class RunDetailView
             'exception_count' => $summary?->exception_count ?? $run->failures->count(),
             'exceptions_count' => $summary?->exceptions_count ?? $run->failures->count(),
             'can_issue_terminal_commands' => $canIssueTerminalCommands,
+            'can_signal' => $canIssueTerminalCommands,
+            'can_update' => $canIssueTerminalCommands,
             'can_repair' => $canRepair,
             'read_only_reason' => $canIssueTerminalCommands
                 ? null
@@ -132,6 +142,20 @@ final class RunDetailView
                     'accepted_at' => $command->accepted_at,
                     'applied_at' => $command->applied_at,
                     'rejected_at' => $command->rejected_at,
+                    'result_available' => $updateCompletions->has($command->id)
+                        && array_key_exists('result', (array) $updateCompletions->get($command->id)?->payload),
+                    'result' => $updateCompletions->has($command->id)
+                        ? self::normalizeUpdateResult($updateCompletions->get($command->id)?->payload['result'] ?? null)
+                        : null,
+                    'failure_id' => $updateCompletions->has($command->id)
+                        ? $updateCompletions->get($command->id)?->payload['failure_id'] ?? null
+                        : null,
+                    'failure_message' => $updateCompletions->has($command->id)
+                        ? $updateCompletions->get($command->id)?->payload['message'] ?? null
+                        : null,
+                    'completed_at' => $updateCompletions->has($command->id)
+                        ? $updateCompletions->get($command->id)?->recorded_at
+                        : null,
                 ])
                 ->values()
                 ->all(),
@@ -242,6 +266,15 @@ final class RunDetailView
         }
 
         return $entries;
+    }
+
+    private static function normalizeUpdateResult(mixed $result): mixed
+    {
+        if (! is_string($result)) {
+            return $result;
+        }
+
+        return serialize(Serializer::unserialize($result));
     }
 
     private static function timestampToMilliseconds($timestamp): int

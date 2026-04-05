@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Workflow\V2\CommandResult;
+use Workflow\V2\UpdateResult;
 
 final class CommandResponse
 {
@@ -13,7 +14,7 @@ final class CommandResponse
      */
     public static function payload(CommandResult $result, ?string $workflowType = null): array
     {
-        return [
+        $payload = [
             'outcome' => $result->outcome(),
             'workflow_id' => $result->instanceId(),
             'run_id' => $result->runId(),
@@ -23,5 +24,13 @@ final class CommandResponse
             'command_status' => $result->status(),
             'rejection_reason' => $result->rejectionReason(),
         ];
+
+        if ($result instanceof UpdateResult) {
+            $payload['result'] = $result->result();
+            $payload['failure_id'] = $result->failureId();
+            $payload['failure_message'] = $result->failureMessage();
+        }
+
+        return $payload;
     }
 }

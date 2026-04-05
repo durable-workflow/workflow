@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Generator;
+use LogicException;
 use ReflectionMethod;
 use RuntimeException;
 use Throwable;
@@ -77,6 +78,8 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof ActivityCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
                 /** @var ActivityExecution|null $execution */
                 $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
 
@@ -114,6 +117,8 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof TimerCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
                 /** @var WorkflowTimer|null $timer */
                 $timer = $run->timers->firstWhere('sequence', $sequence);
 
@@ -154,6 +159,8 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof SignalCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
 
                 if ($signalEvent !== null) {
@@ -640,5 +647,50 @@ final class WorkflowExecutor
             sprintf('[%s] %s', $payload['class'] ?? RuntimeException::class, $payload['message'] ?? 'Activity failed'),
             (int) ($payload['code'] ?? 0),
         );
+    }
+
+    private function applyRecordedUpdates(
+        WorkflowRun $run,
+        \Workflow\V2\Workflow $workflow,
+        int $sequence,
+    ): void {
+        $events = $run->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::UpdateApplied
+                    && ($event->payload['sequence'] ?? null) === $sequence
+            )
+            ->sortBy('sequence');
+
+        foreach ($events as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+
+            /** @var WorkflowCommand|null $command */
+            $command = $event->workflow_command_id === null
+                ? null
+                : $run->commands->firstWhere('id', $event->workflow_command_id);
+
+            $method = $event->payload['update_name'] ?? $command?->targetName();
+
+            if (! is_string($method) || $method === '') {
+                throw new LogicException(sprintf(
+                    'Workflow update event [%s] is missing an update method name.',
+                    $event->id,
+                ));
+            }
+
+            $serializedArguments = $event->payload['arguments'] ?? null;
+            $arguments = is_string($serializedArguments)
+                ? Serializer::unserialize($serializedArguments)
+                : $command?->payloadArguments();
+
+            $parameters = $workflow->resolveMethodDependencies(
+                is_array($arguments) ? array_values($arguments) : [],
+                new ReflectionMethod($workflow, $method),
+            );
+
+            $workflow->{$method}(...$parameters);
+        }
     }
 }

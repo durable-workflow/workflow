@@ -9,6 +9,7 @@ use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
@@ -33,6 +34,7 @@ final class V2WebhookWorkflowTest extends TestCase
             TestGreetingWorkflow::class,
             TestSignalWorkflow::class,
             'test-timer-workflow' => TestTimerWorkflow::class,
+            TestUpdateWorkflow::class,
         ]);
     }
 
@@ -225,6 +227,42 @@ final class V2WebhookWorkflowTest extends TestCase
             'status' => 'accepted',
             'outcome' => 'signal_received',
         ]);
+    }
+
+    public function testUpdateWebhookReturnsTypedCompletedResponse(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-update-webhook/updates/approve', [
+            'arguments' => [true, 'webhook'],
+        ]);
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('outcome', 'update_completed')
+            ->assertJsonPath('workflow_id', 'order-update-webhook')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('workflow_type', 'test-update-workflow')
+            ->assertJsonPath('command_sequence', 2)
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('rejection_reason', null)
+            ->assertJsonPath('failure_id', null)
+            ->assertJsonPath('failure_message', null)
+            ->assertJson([
+                'result' => [
+                    'approved' => true,
+                    'events' => ['started', 'approved:yes:webhook'],
+                ],
+            ]);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => true,
+            'events' => ['started', 'approved:yes:webhook'],
+        ], $workflow->currentState());
     }
 
     public function testRepairWebhookReturnsTypedAcceptedResponseWhenTaskIsRecreated(): void

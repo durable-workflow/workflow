@@ -8,6 +8,7 @@ enum CommandType: string
 {
     case Start = 'start';
     case Signal = 'signal';
+    case Update = 'update';
     case Repair = 'repair';
     case Cancel = 'cancel';
     case Terminate = 'terminate';

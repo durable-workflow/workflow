@@ -10,6 +10,8 @@ enum CommandOutcome: string
     case ReturnedExistingActive = 'returned_existing_active';
     case RejectedDuplicate = 'rejected_duplicate';
     case SignalReceived = 'signal_received';
+    case UpdateCompleted = 'update_completed';
+    case UpdateFailed = 'update_failed';
     case RepairDispatched = 'repair_dispatched';
     case RepairNotNeeded = 'repair_not_needed';
     case Cancelled = 'cancelled';

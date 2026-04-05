@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Generator;
+use LogicException;
 use ReflectionMethod;
 use RuntimeException;
 use Throwable;
@@ -14,6 +15,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -32,6 +34,11 @@ final class QueryStateReplayer
 
     public function replay(WorkflowRun $run): \Workflow\V2\Workflow
     {
+        return $this->replayState($run)->workflow;
+    }
+
+    public function replayState(WorkflowRun $run): ReplayState
+    {
         $run->loadMissing(['instance', 'activityExecutions', 'timers', 'failures', 'commands', 'historyEvents']);
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
@@ -43,7 +50,7 @@ final class QueryStateReplayer
         $result = $workflow->execute(...$arguments);
 
         if (! $result instanceof Generator) {
-            return $workflow;
+            return new ReplayState($workflow, 0, null);
         }
 
         $current = $result->current();
@@ -51,7 +58,7 @@ final class QueryStateReplayer
 
         while (true) {
             if (! $result->valid()) {
-                return $workflow;
+                return new ReplayState($workflow, $sequence, null);
             }
 
             if ($current instanceof ActivityCall) {
@@ -59,7 +66,9 @@ final class QueryStateReplayer
                 $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
 
                 if ($execution === null || in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
-                    return $workflow;
+                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                    return new ReplayState($workflow, $sequence, $current);
                 }
 
                 if ($execution->status === ActivityStatus::Completed) {
@@ -77,7 +86,9 @@ final class QueryStateReplayer
                 $timer = $run->timers->firstWhere('sequence', $sequence);
 
                 if ($timer === null || $timer->status === TimerStatus::Pending) {
-                    return $workflow;
+                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                    return new ReplayState($workflow, $sequence, $current);
                 }
 
                 $current = $result->send(true);
@@ -88,10 +99,12 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof SignalCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
 
                 if ($signalEvent === null) {
-                    return $workflow;
+                    return new ReplayState($workflow, $sequence, $current);
                 }
 
                 $current = $result->send($this->signalValue($signalEvent));
@@ -102,7 +115,7 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof ContinueAsNewCall) {
-                return $workflow;
+                return new ReplayState($workflow, $sequence, $current);
             }
 
             throw new UnsupportedWorkflowYieldException(sprintf(
@@ -150,5 +163,77 @@ final class QueryStateReplayer
             sprintf('[%s] %s', $payload['class'] ?? RuntimeException::class, $payload['message'] ?? 'Activity failed'),
             (int) ($payload['code'] ?? 0),
         );
+    }
+
+    private function applyRecordedUpdates(
+        WorkflowRun $run,
+        \Workflow\V2\Workflow $workflow,
+        int $sequence,
+    ): void {
+        $events = $run->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::UpdateApplied
+                    && ($event->payload['sequence'] ?? null) === $sequence
+            )
+            ->sortBy('sequence');
+
+        foreach ($events as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+
+            /** @var WorkflowCommand|null $command */
+            $command = $event->workflow_command_id === null
+                ? null
+                : $run->commands->firstWhere('id', $event->workflow_command_id);
+
+            $method = $this->updateMethodName($event, $command);
+
+            if ($method === null) {
+                throw new LogicException(sprintf(
+                    'Workflow update event [%s] is missing an update method name.',
+                    $event->id,
+                ));
+            }
+
+            $arguments = $this->updateArguments($event, $command);
+            $parameters = $workflow->resolveMethodDependencies(
+                $arguments,
+                new ReflectionMethod($workflow, $method),
+            );
+
+            $workflow->{$method}(...$parameters);
+        }
+    }
+
+    private function updateMethodName(
+        WorkflowHistoryEvent $event,
+        ?WorkflowCommand $command,
+    ): ?string {
+        $method = $event->payload['update_name'] ?? $command?->targetName();
+
+        return is_string($method) && $method !== ''
+            ? $method
+            : null;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function updateArguments(
+        WorkflowHistoryEvent $event,
+        ?WorkflowCommand $command,
+    ): array {
+        $serialized = $event->payload['arguments'] ?? null;
+
+        if (is_string($serialized)) {
+            $arguments = Serializer::unserialize($serialized);
+
+            return is_array($arguments)
+                ? array_values($arguments)
+                : [];
+        }
+
+        return $command?->payloadArguments() ?? [];
     }
 }

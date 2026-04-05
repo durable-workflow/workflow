@@ -94,6 +94,7 @@ final class HistoryTimeline
             'command_outcome' => $command?->outcome?->value ?? self::stringValue($payload['outcome'] ?? null),
             'command_rejection_reason' => $command?->rejection_reason ?? self::stringValue($payload['rejection_reason'] ?? null),
             'signal_name' => $command?->targetName() ?? self::stringValue($payload['signal_name'] ?? null),
+            'update_name' => $command?->targetName() ?? self::stringValue($payload['update_name'] ?? null),
             'activity_execution_id' => $activity?->id ?? $activityId,
             'activity_type' => $activity?->activity_type ?? self::stringValue($payload['activity_type'] ?? null),
             'activity_class' => $activity?->activity_class ?? self::stringValue($payload['activity_class'] ?? null),
@@ -118,11 +119,14 @@ final class HistoryTimeline
             HistoryEventType::StartAccepted,
             HistoryEventType::StartRejected,
             HistoryEventType::SignalReceived,
+            HistoryEventType::UpdateAccepted,
             HistoryEventType::RepairRequested,
             HistoryEventType::CancelRequested,
             HistoryEventType::TerminateRequested => 'command',
             HistoryEventType::SignalWaitOpened,
             HistoryEventType::SignalApplied => 'signal',
+            HistoryEventType::UpdateApplied,
+            HistoryEventType::UpdateCompleted => 'update',
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
@@ -154,6 +158,7 @@ final class HistoryTimeline
         $outcome = $command?->outcome?->value ?? $payload['outcome'] ?? null;
         $rejectionReason = $command?->rejection_reason ?? $payload['rejection_reason'] ?? null;
         $signalName = $command?->targetName() ?? $payload['signal_name'] ?? null;
+        $updateName = $command?->targetName() ?? $payload['update_name'] ?? null;
 
         return match ($event->event_type) {
             HistoryEventType::StartAccepted => $outcome === null
@@ -176,6 +181,17 @@ final class HistoryTimeline
             HistoryEventType::SignalApplied => $signalName === null
                 ? 'Signal applied.'
                 : sprintf('Applied signal %s.', $signalName),
+            HistoryEventType::UpdateAccepted => $updateName === null
+                ? 'Update accepted.'
+                : sprintf('Accepted update %s.', $updateName),
+            HistoryEventType::UpdateApplied => $updateName === null
+                ? 'Update applied.'
+                : sprintf('Applied update %s.', $updateName),
+            HistoryEventType::UpdateCompleted => $message === null
+                ? ($updateName === null ? 'Update completed.' : sprintf('Completed update %s.', $updateName))
+                : ($updateName === null
+                    ? sprintf('Update failed: %s.', $message)
+                    : sprintf('Update %s failed: %s.', $updateName, $message)),
             HistoryEventType::RepairRequested => match ($outcome) {
                 'repair_dispatched' => sprintf(
                     'Repair recreated %s task.',
@@ -230,7 +246,9 @@ final class HistoryTimeline
             'id' => $command?->id ?? $commandId,
             'sequence' => $command?->command_sequence,
             'type' => $command?->command_type?->value ?? self::stringValue($payload['command_type'] ?? null),
-            'target_name' => $command?->targetName() ?? self::stringValue($payload['signal_name'] ?? null),
+            'target_name' => $command?->targetName()
+                ?? self::stringValue($payload['signal_name'] ?? null)
+                ?? self::stringValue($payload['update_name'] ?? null),
             'status' => $command?->status?->value,
             'outcome' => $command?->outcome?->value ?? self::stringValue($payload['outcome'] ?? null),
             'rejection_reason' => $command?->rejection_reason ?? self::stringValue($payload['rejection_reason'] ?? null),
