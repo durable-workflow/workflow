@@ -31,6 +31,7 @@ final class RunDetailView
             'historyEvents',
             'parentLinks.parentRun.summary',
             'childLinks.childRun.summary',
+            'childLinks.childRun.historyEvents',
             'instance.currentRun.summary',
         ]);
 

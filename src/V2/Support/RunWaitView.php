@@ -32,6 +32,7 @@ final class RunWaitView
             'timers',
             'childLinks.childRun.summary',
             'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
         ]);
 
         $taskByActivityExecutionId = self::preferredTasksByPayloadKey($run, 'activity_execution_id');
@@ -254,61 +255,102 @@ final class RunWaitView
 
                 return $right->id <=> $left->id;
             })
-            ->unique(static fn (WorkflowLink $link): string => (string) ($link->sequence ?? $link->id));
+            ->keyBy(static fn (WorkflowLink $link): string => (string) ($link->sequence ?? $link->id));
 
-        return $latestLinks
-            ->map(static function (WorkflowLink $link) use ($run): array {
-                $childRun = $link->childRun;
+        $scheduledEvents = $run->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
+                    && is_int($event->payload['sequence'] ?? null)
+            )
+            ->keyBy(static fn (WorkflowHistoryEvent $event): string => (string) $event->payload['sequence']);
 
-                /** @var WorkflowHistoryEvent|null $scheduledEvent */
-                $scheduledEvent = $run->historyEvents->first(
-                    static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
-                        && ($event->payload['sequence'] ?? null) === $link->sequence
-                );
+        $resolutionEvents = $run->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => in_array(
+                    $event->event_type,
+                    ChildRunHistory::resolutionEventTypes(),
+                    true,
+                ) && is_int($event->payload['sequence'] ?? null)
+            )
+            ->keyBy(static fn (WorkflowHistoryEvent $event): string => (string) $event->payload['sequence']);
 
-                $status = match ($childRun?->status) {
-                    RunStatus::Pending, RunStatus::Running, RunStatus::Waiting => 'open',
-                    RunStatus::Cancelled, RunStatus::Terminated => 'cancelled',
-                    default => 'resolved',
-                };
+        $sequences = array_unique(array_merge(
+            $latestLinks->keys()->all(),
+            $scheduledEvents->keys()->all(),
+            $resolutionEvents->keys()->all(),
+        ));
 
-                $label = $childRun?->workflow_type ?? $childRun?->workflow_class ?? 'child workflow';
+        sort($sequences, SORT_NATURAL);
 
-                $summary = match ($childRun?->status) {
-                    RunStatus::Completed => sprintf('Child workflow %s completed.', $label),
-                    RunStatus::Failed => sprintf('Child workflow %s failed.', $label),
-                    RunStatus::Cancelled => sprintf('Child workflow %s cancelled.', $label),
-                    RunStatus::Terminated => sprintf('Child workflow %s terminated.', $label),
-                    default => sprintf('Waiting for child workflow %s.', $label),
-                };
+        return array_values(array_map(static function (string $sequence) use (
+            $latestLinks,
+            $scheduledEvents,
+            $resolutionEvents,
+        ): array {
+            /** @var WorkflowLink|null $link */
+            $link = $latestLinks->get($sequence);
+            /** @var WorkflowHistoryEvent|null $scheduledEvent */
+            $scheduledEvent = $scheduledEvents->get($sequence);
+            /** @var WorkflowHistoryEvent|null $resolutionEvent */
+            $resolutionEvent = $resolutionEvents->get($sequence);
+            $childRun = $link?->childRun;
+            $resolvedStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
+            $label = self::stringValue($resolutionEvent?->payload['child_workflow_type'] ?? null)
+                ?? self::stringValue($scheduledEvent?->payload['child_workflow_type'] ?? null)
+                ?? $childRun?->workflow_type
+                ?? self::stringValue($resolutionEvent?->payload['child_workflow_class'] ?? null)
+                ?? self::stringValue($scheduledEvent?->payload['child_workflow_class'] ?? null)
+                ?? $childRun?->workflow_class
+                ?? 'child workflow';
+            $sourceStatus = $resolvedStatus?->value ?? $childRun?->status?->value;
+            $status = match (true) {
+                $resolutionEvent !== null => in_array($resolvedStatus, [RunStatus::Cancelled, RunStatus::Terminated], true)
+                    ? 'cancelled'
+                    : 'resolved',
+                in_array($childRun?->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true) => 'open',
+                in_array($childRun?->status, [RunStatus::Cancelled, RunStatus::Terminated], true) => 'cancelled',
+                default => 'resolved',
+            };
 
-                return [
-                    'id' => sprintf('child:%s', $link->id),
-                    'kind' => 'child',
-                    'sequence' => $link->sequence,
-                    'status' => $status,
-                    'source_status' => $childRun?->status?->value,
-                    'summary' => $summary,
-                    'opened_at' => $scheduledEvent?->recorded_at ?? $scheduledEvent?->created_at ?? $link->created_at,
-                    'deadline_at' => null,
-                    'resolved_at' => $childRun?->closed_at,
-                    'target_name' => $childRun?->workflow_instance_id,
-                    'target_type' => $label,
-                    'task_backed' => false,
-                    'external_only' => false,
-                    'resume_source_kind' => 'child_workflow_run',
-                    'resume_source_id' => $childRun?->id,
-                    'task_id' => null,
-                    'task_type' => null,
-                    'task_status' => null,
-                    'command_id' => null,
-                    'command_sequence' => null,
-                    'command_status' => null,
-                    'command_outcome' => null,
-                ];
-            })
-            ->values()
-            ->all();
+            $summary = match ($sourceStatus) {
+                RunStatus::Completed->value => sprintf('Child workflow %s completed.', $label),
+                RunStatus::Failed->value => sprintf('Child workflow %s failed.', $label),
+                RunStatus::Cancelled->value => sprintf('Child workflow %s cancelled.', $label),
+                RunStatus::Terminated->value => sprintf('Child workflow %s terminated.', $label),
+                default => sprintf('Waiting for child workflow %s.', $label),
+            };
+
+            return [
+                'id' => sprintf('child:%s', $link?->id ?? $sequence),
+                'kind' => 'child',
+                'sequence' => is_numeric($sequence) ? (int) $sequence : null,
+                'status' => $status,
+                'source_status' => $sourceStatus,
+                'summary' => $summary,
+                'opened_at' => $scheduledEvent?->recorded_at ?? $scheduledEvent?->created_at ?? $link?->created_at,
+                'deadline_at' => null,
+                'resolved_at' => $resolutionEvent?->recorded_at ?? $childRun?->closed_at,
+                'target_name' => self::stringValue($resolutionEvent?->payload['child_workflow_instance_id'] ?? null)
+                    ?? self::stringValue($scheduledEvent?->payload['child_workflow_instance_id'] ?? null)
+                    ?? $link?->child_workflow_instance_id
+                    ?? $childRun?->workflow_instance_id,
+                'target_type' => $label,
+                'task_backed' => false,
+                'external_only' => false,
+                'resume_source_kind' => 'child_workflow_run',
+                'resume_source_id' => self::stringValue($resolutionEvent?->payload['child_workflow_run_id'] ?? null)
+                    ?? self::stringValue($scheduledEvent?->payload['child_workflow_run_id'] ?? null)
+                    ?? $link?->child_workflow_run_id
+                    ?? $childRun?->id,
+                'task_id' => null,
+                'task_type' => null,
+                'task_status' => null,
+                'command_id' => null,
+                'command_sequence' => null,
+                'command_status' => null,
+                'command_outcome' => null,
+            ];
+        }, $sequences));
     }
 
     private static function stringValue(mixed $value): ?string

@@ -6,6 +6,8 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
+use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
@@ -13,6 +15,7 @@ use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
@@ -22,6 +25,8 @@ use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\WorkflowStub;
@@ -191,6 +196,88 @@ final class V2QueryWorkflowTest extends TestCase
             'stage' => 'completed',
             'events' => ['started', 'timer-fired', 'signal:ready'],
         ], $workflow->output());
+    }
+
+    public function testQueriesUseTypedParentChildCompletionHistoryWhenChildRowsDrift(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryReplayedChildWorkflow::class, 'query-history-child');
+        $workflow->start('Taylor');
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $workflow->runId())
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $expectedState = [
+            'stage' => 'completed',
+            'child' => [
+                'greeting' => 'Hello, Taylor!',
+                'workflow_id' => $link->child_workflow_instance_id,
+                'run_id' => $childRun->id,
+            ],
+        ];
+
+        $this->assertSame($expectedState, $workflow->currentState());
+
+        $childRun->forceFill([
+            'status' => RunStatus::Failed,
+            'closed_reason' => 'failed',
+            'output' => Serializer::serialize(['greeting' => 'corrupted-child-output']),
+            'closed_at' => now(),
+        ])->save();
+
+        $this->assertSame($expectedState, $workflow->refresh()->currentState());
+    }
+
+    public function testQueriesUseTypedParentChildFailureHistoryWhenChildRowsDrift(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryReplayedChildFailureWorkflow::class, 'query-child-failure');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $workflow->runId())
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $expectedState = [
+            'stage' => 'completed',
+            'caught' => [
+                'class' => \Tests\Fixtures\V2\TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+                'order_id' => 'order-123',
+                'channel' => 'api',
+            ],
+        ];
+
+        $this->assertSame($expectedState, $workflow->currentState());
+
+        $childRun->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_reason' => 'completed',
+            'output' => Serializer::serialize('corrupted-child-result'),
+            'closed_at' => now(),
+        ])->save();
+
+        $this->assertSame($expectedState, $workflow->refresh()->currentState());
     }
 
     private function drainReadyTasks(): void

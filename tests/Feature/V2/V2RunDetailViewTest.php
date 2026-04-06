@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
@@ -20,6 +21,7 @@ use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunDetailView;
@@ -409,6 +411,46 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('waiting', $detail['continuedWorkflows'][0]['status']);
         $this->assertSame(TestTimerWorkflow::class, $detail['continuedWorkflows'][0]['workflow_type']);
         $this->assertFalse($detail['can_repair']);
+    }
+
+    public function testRunDetailViewKeepsResolvedChildWaitFromParentHistoryWhenChildRowDrifts(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'detail-child-history');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $runId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $childRun->forceFill([
+            'status' => RunStatus::Waiting,
+            'closed_reason' => null,
+            'closed_at' => null,
+        ])->save();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+        $childWait = $this->findWait($detail['waits'], 'child');
+
+        $this->assertSame('completed', $detail['status']);
+        $this->assertSame('resolved', $childWait['status']);
+        $this->assertSame('completed', $childWait['source_status']);
+        $this->assertSame('Child workflow test-child-greeting-workflow completed.', $childWait['summary']);
+        $this->assertSame($link->child_workflow_instance_id, $childWait['target_name']);
+        $this->assertSame($link->child_workflow_run_id, $childWait['resume_source_id']);
     }
 
     public function testRunDetailViewIncludesTaskBackedTimerWaitForSelectedRun(): void

@@ -47,6 +47,7 @@ final class WorkflowExecutor
             'historyEvents',
             'childLinks.childRun.instance.currentRun',
             'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
         ]);
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
@@ -260,15 +261,38 @@ final class WorkflowExecutor
             if ($current instanceof ChildWorkflowCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
-                $childLink = $this->childLinkForSequence($run, $sequence);
+                $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
+                $childLink = ChildRunHistory::latestLinkForSequence($run, $sequence);
+
+                if ($resolutionEvent !== null) {
+                    try {
+                        if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
+                            $current = $result->send(
+                                ChildRunHistory::outputForResolution($resolutionEvent, $childLink?->childRun)
+                            );
+                        } else {
+                            $current = $result->throw(
+                                ChildRunHistory::exceptionForResolution($resolutionEvent, $childLink?->childRun)
+                            );
+                        }
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
 
                 if ($childLink === null) {
                     return $this->scheduleChildWorkflow($run, $task, $sequence, $current);
                 }
 
                 $childRun = $childLink->childRun;
+                $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
 
-                if ($childRun === null || in_array($childRun->status, [
+                if ($childRun === null || in_array($childStatus, [
                     RunStatus::Pending,
                     RunStatus::Running,
                     RunStatus::Waiting,
@@ -276,13 +300,13 @@ final class WorkflowExecutor
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
-                $this->recordChildResolution($run, $task, $sequence, $childLink, $childRun);
+                $resolutionEvent = $this->recordChildResolution($run, $task, $sequence, $childLink, $childRun);
 
                 try {
-                    if ($childRun->status === RunStatus::Completed) {
-                        $current = $result->send($childRun->workflowOutput());
+                    if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
+                        $current = $result->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
                     } else {
-                        $current = $result->throw($this->childException($childRun));
+                        $current = $result->throw(ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun));
                     }
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -535,36 +559,6 @@ final class WorkflowExecutor
         return $timerTask;
     }
 
-    private function childLinkForSequence(WorkflowRun $run, int $sequence): ?WorkflowLink
-    {
-        /** @var WorkflowLink|null $link */
-        $link = $run->childLinks
-            ->filter(
-                static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow'
-                    && $link->sequence === $sequence
-            )
-            ->sort(static function (WorkflowLink $left, WorkflowLink $right): int {
-                $leftRunNumber = $left->childRun?->run_number ?? 0;
-                $rightRunNumber = $right->childRun?->run_number ?? 0;
-
-                if ($leftRunNumber !== $rightRunNumber) {
-                    return $rightRunNumber <=> $leftRunNumber;
-                }
-
-                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? 0;
-                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? 0;
-
-                if ($leftCreatedAt !== $rightCreatedAt) {
-                    return $rightCreatedAt <=> $leftCreatedAt;
-                }
-
-                return $right->id <=> $left->id;
-            })
-            ->first();
-
-        return $link;
-    }
-
     private function fireImmediateTimer(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -745,8 +739,8 @@ final class WorkflowExecutor
         int $sequence,
         WorkflowLink $link,
         WorkflowRun $childRun,
-    ): void {
-        $eventType = match ($childRun->status) {
+    ): WorkflowHistoryEvent {
+        $eventType = match (ChildRunHistory::resolvedStatus(null, $childRun)) {
             RunStatus::Completed => HistoryEventType::ChildRunCompleted,
             RunStatus::Cancelled => HistoryEventType::ChildRunCancelled,
             RunStatus::Terminated => HistoryEventType::ChildRunTerminated,
@@ -760,12 +754,30 @@ final class WorkflowExecutor
         );
 
         if ($alreadyRecorded) {
-            return;
+            /** @var WorkflowHistoryEvent $event */
+            $event = $run->historyEvents->first(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $eventType
+                    && ($event->payload['sequence'] ?? null) === $sequence
+                    && ($event->payload['child_workflow_run_id'] ?? null) === $childRun->id
+            );
+
+            return $event;
         }
 
+        $childTerminalEvent = $childRun->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
+                    HistoryEventType::WorkflowCompleted,
+                    HistoryEventType::WorkflowFailed,
+                    HistoryEventType::WorkflowCancelled,
+                    HistoryEventType::WorkflowTerminated,
+                ], true)
+            )
+            ->sortByDesc('sequence')
+            ->first();
         $failure = $childRun->failures->first();
 
-        WorkflowHistoryEvent::record($run, $eventType, array_filter([
+        return WorkflowHistoryEvent::record($run, $eventType, array_filter([
             'sequence' => $sequence,
             'workflow_link_id' => $link->id,
             'child_workflow_instance_id' => $childRun->workflow_instance_id,
@@ -775,26 +787,24 @@ final class WorkflowExecutor
             'child_run_number' => $childRun->run_number,
             'child_status' => $childRun->status->value,
             'closed_reason' => $childRun->closed_reason,
+            'closed_at' => $childRun->closed_at?->toJSON(),
+            'output' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
+                ? $childTerminalEvent->payload['output'] ?? $childRun->output
+                : null,
             'failure_id' => $failure?->id,
-            'exception_class' => $failure?->exception_class,
-            'message' => $failure?->message,
+            'exception' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception'] ?? null
+                : null,
+            'exception_class' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception_class'] ?? $failure?->exception_class
+                : $failure?->exception_class,
+            'message' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['message'] ?? $failure?->message
+                : $failure?->message,
+            'code' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['code'] ?? null
+                : null,
         ], static fn ($value): bool => $value !== null), $task->id);
-    }
-
-    private function childException(WorkflowRun $childRun): Throwable
-    {
-        /** @var WorkflowFailure|null $failure */
-        $failure = $childRun->failures->first();
-
-        if ($failure !== null) {
-            return new RuntimeException(sprintf('[%s] %s', $failure->exception_class, $failure->message));
-        }
-
-        return new RuntimeException(sprintf(
-            'Child workflow %s closed as %s.',
-            $childRun->id,
-            $childRun->status->value,
-        ));
     }
 
     private function waitForNextResumeSource(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask

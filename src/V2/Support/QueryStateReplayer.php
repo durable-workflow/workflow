@@ -19,7 +19,6 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 
 final class QueryStateReplayer
@@ -34,8 +33,7 @@ final class QueryStateReplayer
 
     public function replay(WorkflowRun $run): \Workflow\V2\Workflow
     {
-        return $this->replayState($run)
-->workflow;
+        return $this->replayState($run)->workflow;
     }
 
     public function replayState(WorkflowRun $run): ReplayState
@@ -49,6 +47,7 @@ final class QueryStateReplayer
             'historyEvents',
             'childLinks.childRun.instance.currentRun',
             'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
         ]);
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
@@ -153,10 +152,29 @@ final class QueryStateReplayer
             if ($current instanceof ChildWorkflowCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
-                $childLink = $this->childLinkForSequence($run, $sequence);
+                $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
+                $childLink = ChildRunHistory::latestLinkForSequence($run, $sequence);
                 $childRun = $childLink?->childRun;
 
-                if ($childRun === null || in_array($childRun->status, [
+                if ($resolutionEvent !== null) {
+                    if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
+                        $current = $result->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
+                    } else {
+                        $current = $result->throw(ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun));
+                    }
+
+                    ++$sequence;
+
+                    continue;
+                }
+
+                if ($childRun === null) {
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
+
+                if ($childStatus === null || in_array($childStatus, [
                     RunStatus::Pending,
                     RunStatus::Running,
                     RunStatus::Waiting,
@@ -164,10 +182,10 @@ final class QueryStateReplayer
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
-                if ($childRun->status === RunStatus::Completed) {
-                    $current = $result->send($childRun->workflowOutput());
+                if ($childStatus === RunStatus::Completed) {
+                    $current = $result->send(ChildRunHistory::outputForChildRun($childRun));
                 } else {
-                    $current = $result->throw($this->childException($childRun));
+                    $current = $result->throw(ChildRunHistory::exceptionForChildRun($childRun));
                 }
 
                 ++$sequence;
@@ -185,36 +203,6 @@ final class QueryStateReplayer
                 get_debug_type($current),
             ));
         }
-    }
-
-    private function childLinkForSequence(WorkflowRun $run, int $sequence): ?WorkflowLink
-    {
-        /** @var WorkflowLink|null $link */
-        $link = $run->childLinks
-            ->filter(
-                static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow'
-                    && $link->sequence === $sequence
-            )
-            ->sort(static function (WorkflowLink $left, WorkflowLink $right): int {
-                $leftRunNumber = $left->childRun?->run_number ?? 0;
-                $rightRunNumber = $right->childRun?->run_number ?? 0;
-
-                if ($leftRunNumber !== $rightRunNumber) {
-                    return $rightRunNumber <=> $leftRunNumber;
-                }
-
-                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? 0;
-                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? 0;
-
-                if ($leftCreatedAt !== $rightCreatedAt) {
-                    return $rightCreatedAt <=> $leftCreatedAt;
-                }
-
-                return $right->id <=> $left->id;
-            })
-            ->first();
-
-        return $link;
     }
 
     private function appliedSignalEvent(
@@ -320,22 +308,6 @@ final class QueryStateReplayer
             $fallbackMessage,
             $fallbackCode,
         );
-    }
-
-    private function childException(WorkflowRun $childRun): Throwable
-    {
-        /** @var WorkflowFailure|null $failure */
-        $failure = $childRun->failures->first();
-
-        if ($failure !== null) {
-            return new RuntimeException(sprintf('[%s] %s', $failure->exception_class, $failure->message));
-        }
-
-        return new RuntimeException(sprintf(
-            'Child workflow %s closed as %s.',
-            $childRun->id,
-            $childRun->status->value,
-        ));
     }
 
     private function applyRecordedUpdates(
