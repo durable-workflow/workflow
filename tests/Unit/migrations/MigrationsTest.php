@@ -19,6 +19,8 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_relationships'));
         $this->assertTrue(Schema::hasTable('workflow_commands'));
         $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
+        $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_timestamp'));
+        $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_key'));
 
         $this->artisan('migrate:reset', [
             '--path' => dirname(__DIR__, 3) . '/src/migrations',

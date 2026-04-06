@@ -29,6 +29,7 @@ class WorkflowRunSummary extends Model
     protected $casts = [
         'is_current_run' => 'bool',
         'started_at' => 'datetime',
+        'sort_timestamp' => 'datetime',
         'closed_at' => 'datetime',
         'wait_started_at' => 'datetime',
         'wait_deadline_at' => 'datetime',

@@ -101,6 +101,12 @@ final class RunSummaryProjector
             $durationMs = $run->closed_at->diffInMilliseconds($run->started_at);
         }
 
+        $sortTimestamp = RunSummarySortKey::timestamp(
+            $run->started_at,
+            $run->created_at,
+            $run->updated_at,
+        );
+
         /** @var WorkflowRunSummary $summary */
         $summary = WorkflowRunSummary::query()->updateOrCreate(
             [
@@ -119,6 +125,13 @@ final class RunSummaryProjector
                 'connection' => $run->connection,
                 'queue' => $run->queue,
                 'started_at' => $run->started_at,
+                'sort_timestamp' => $sortTimestamp,
+                'sort_key' => RunSummarySortKey::key(
+                    $run->started_at,
+                    $run->created_at,
+                    $run->updated_at,
+                    $run->id,
+                ),
                 'closed_at' => $run->closed_at,
                 'duration_ms' => $durationMs,
                 'wait_kind' => $waitKind,

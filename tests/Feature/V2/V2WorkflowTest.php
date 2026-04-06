@@ -36,6 +36,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\RunSummarySortKey;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
@@ -191,6 +192,29 @@ final class V2WorkflowTest extends TestCase
             'id' => $runId,
             'workflow_type' => 'config-greeting-workflow',
         ]);
+    }
+
+    public function testRunSummaryProjectsStableSortContract(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'sort-contract');
+        $result = $workflow->start('Taylor');
+        $runId = $result->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $summary = $workflow->summary();
+
+        $this->assertNotNull($summary);
+        $this->assertNotNull($summary->sort_timestamp);
+        $this->assertSame($run->started_at?->toJSON(), $summary->sort_timestamp?->toJSON());
+        $this->assertSame(
+            RunSummarySortKey::key($run->started_at, $run->created_at, $run->updated_at, $runId),
+            $summary->sort_key,
+        );
     }
 
     public function testWorkflowCanContinueAsNewAcrossRuns(): void
