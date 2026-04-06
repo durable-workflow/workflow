@@ -1952,6 +1952,97 @@ final class V2WorkflowTest extends TestCase
         ]);
     }
 
+    public function testRepairDoesNotRecreateMissingTaskForRunningActivityExecution(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-running-activity-01',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'status' => ActivityStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'started_at' => now()->subSeconds(20),
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('activity', $summary->wait_kind);
+        $this->assertSame('activity_running_without_task', $summary->liveness_state);
+        $this->assertSame(
+            sprintf(
+                'Activity %s is already running without an open activity task. Repair is deferred to avoid duplicating in-flight work.',
+                $execution->id,
+            ),
+            $summary->liveness_reason,
+        );
+
+        $result = WorkflowStub::loadRun($run->id)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair', $result->type());
+        $this->assertSame('repair_not_needed', $result->outcome());
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
+
+        Queue::assertNothingPushed();
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('activity', $updatedSummary->wait_kind);
+        $this->assertSame('activity_running_without_task', $updatedSummary->liveness_state);
+        $this->assertNull($updatedSummary->next_task_id);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'command_type' => 'repair',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'outcome' => 'repair_not_needed',
+        ]);
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $run->id,
+            'workflow_command_id' => $result->commandId(),
+            'workflow_task_id' => null,
+            'event_type' => 'RepairRequested',
+        ]);
+    }
+
     private function waitFor(callable $condition): void
     {
         $deadline = microtime(true) + 10;

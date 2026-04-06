@@ -370,6 +370,74 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'timer'));
     }
 
+    public function testRunDetailViewMarksRunningActivityWithoutTaskAsNonRepairable(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'detail-running-activity',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var \Workflow\V2\Models\ActivityExecution $execution */
+        $execution = \Workflow\V2\Models\ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => \Tests\Fixtures\V2\TestGreetingActivity::class,
+            'activity_type' => \Tests\Fixtures\V2\TestGreetingActivity::class,
+            'status' => \Workflow\V2\Enums\ActivityStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'started_at' => now()->subSeconds(20),
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $activityWait = $this->findWait($detail['waits'], 'activity');
+
+        $this->assertSame('activity', $detail['wait_kind']);
+        $this->assertSame('activity_running_without_task', $detail['liveness_state']);
+        $this->assertSame(
+            sprintf(
+                'Activity %s is already running without an open activity task. Repair is deferred to avoid duplicating in-flight work.',
+                $execution->id,
+            ),
+            $detail['liveness_reason'],
+        );
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame('open', $activityWait['status']);
+        $this->assertSame('running', $activityWait['source_status']);
+        $this->assertFalse($activityWait['task_backed']);
+        $this->assertSame('activity_execution', $activityWait['resume_source_kind']);
+        $this->assertSame($execution->id, $activityWait['resume_source_id']);
+        $this->assertNull($activityWait['task_id']);
+        $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
+    }
+
     private function waitFor(callable $condition): void
     {
         $startedAt = microtime(true);

@@ -231,6 +231,16 @@ final class RunSummaryProjector
                 return self::taskLiveness($nextTask, 'Activity');
             }
 
+            if ($openActivity->status === ActivityStatus::Running) {
+                return [
+                    'activity_running_without_task',
+                    sprintf(
+                        'Activity %s is already running without an open activity task. Repair is deferred to avoid duplicating in-flight work.',
+                        $openActivity->id,
+                    ),
+                ];
+            }
+
             return [
                 'repair_needed',
                 sprintf(

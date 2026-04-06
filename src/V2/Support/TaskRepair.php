@@ -109,7 +109,7 @@ final class TaskRepair
             $execution = $run->activityExecutions
                 ->first(static fn (ActivityExecution $execution): bool => in_array(
                     $execution->status,
-                    [ActivityStatus::Pending, ActivityStatus::Running],
+                    [ActivityStatus::Pending],
                     true,
                 ));
 
