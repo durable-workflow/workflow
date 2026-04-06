@@ -99,6 +99,34 @@ final class RunTaskView
         ?ActivityExecution $activity,
         ?WorkflowTimer $timer,
     ): string {
+        if (self::taskWaitingForCompatibleWorker($task)) {
+            return match ($task->task_type) {
+                TaskType::Workflow => match (true) {
+                    TaskRepairPolicy::leaseExpired($task) => 'Workflow task lease expired and is waiting for a compatible worker.',
+                    TaskRepairPolicy::readyTaskNeedsRedispatch($task) => 'Workflow task is waiting for a compatible worker; dispatch is overdue.',
+                    default => 'Workflow task is waiting for a compatible worker.',
+                },
+                TaskType::Activity => sprintf(
+                    TaskRepairPolicy::leaseExpired($task)
+                        ? 'Activity task lease expired and is waiting for a compatible worker for %s.'
+                        : (TaskRepairPolicy::readyTaskNeedsRedispatch($task)
+                            ? 'Activity task is waiting for a compatible worker for %s; dispatch is overdue.'
+                            : 'Activity task is waiting for a compatible worker for %s.'),
+                    $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                ),
+                TaskType::Timer => sprintf(
+                    TaskRepairPolicy::leaseExpired($task)
+                        ? '%s lease expired and is waiting for a compatible worker.'
+                        : (TaskRepairPolicy::readyTaskNeedsRedispatch($task)
+                            ? '%s is waiting for a compatible worker; dispatch is overdue.'
+                            : '%s is waiting for a compatible worker.'),
+                    ucfirst($timer?->delay_seconds === null
+                        ? 'timer task'
+                        : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
+                ),
+            };
+        }
+
         if (TaskRepairPolicy::leaseExpired($task)) {
             return match ($task->task_type) {
                 TaskType::Workflow => 'Workflow task lease expired; waiting for recovery.',
@@ -124,22 +152,6 @@ final class RunTaskView
                 ),
                 TaskType::Timer => sprintf(
                     '%s is ready but dispatch is overdue.',
-                    ucfirst($timer?->delay_seconds === null
-                        ? 'timer task'
-                        : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
-                ),
-            };
-        }
-
-        if (! WorkerCompatibility::supports($task->compatibility)) {
-            return match ($task->task_type) {
-                TaskType::Workflow => 'Workflow task is waiting for a compatible worker.',
-                TaskType::Activity => sprintf(
-                    'Activity task is waiting for a compatible worker for %s.',
-                    $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
-                ),
-                TaskType::Timer => sprintf(
-                    '%s is waiting for a compatible worker.',
                     ucfirst($timer?->delay_seconds === null
                         ? 'timer task'
                         : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
@@ -186,6 +198,20 @@ final class RunTaskView
             TaskStatus::Cancelled => sprintf('%s task cancelled.', ucfirst($label)),
             TaskStatus::Failed => sprintf('%s task failed.', ucfirst($label)),
         };
+    }
+
+    private static function taskWaitingForCompatibleWorker(WorkflowTask $task): bool
+    {
+        if (WorkerCompatibility::supports($task->compatibility)) {
+            return false;
+        }
+
+        if (TaskRepairPolicy::leaseExpired($task)) {
+            return true;
+        }
+
+        return $task->status === TaskStatus::Ready
+            && ($task->available_at === null || ! $task->available_at->isFuture());
     }
 
     private static function stringValue(mixed $value): ?string

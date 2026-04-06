@@ -186,6 +186,9 @@ final class V2CompatibilityWorkflowTest extends TestCase
             ->with(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
             ->findOrFail($workflow->runId());
 
+        /** @var WorkflowTask $task */
+        $task = $run->tasks->firstOrFail();
+
         RunSummaryProjector::project($run);
 
         $detail = RunDetailView::forRun($run->fresh([
@@ -207,6 +210,16 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'Requires compatibility [build-a]; this worker supports [build-b].',
             $detail['compatibility_reason'],
         );
+        $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
+        $this->assertSame('Workflow task waiting for a compatible worker', $detail['wait_reason']);
+        $this->assertSame(
+            sprintf(
+                'Workflow task %s is ready but waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b].',
+                $task->id,
+            ),
+            $detail['liveness_reason'],
+        );
+        $this->assertFalse($detail['can_repair']);
         $this->assertSame('build-a', $detail['tasks'][0]['compatibility']);
         $this->assertFalse($detail['tasks'][0]['compatibility_supported']);
         $this->assertSame(
@@ -214,6 +227,167 @@ final class V2CompatibilityWorkflowTest extends TestCase
             $detail['tasks'][0]['compatibility_reason'],
         );
         $this->assertSame('Workflow task is waiting for a compatible worker.', $detail['tasks'][0]['summary']);
+    }
+
+    public function testIncompatibleOverdueReadyTaskDoesNotSurfaceAsRepairNeeded(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'compat-overdue',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'reserved_at' => now()->subMinutes(2),
+            'started_at' => now()->subMinutes(2),
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'compatibility' => 'build-a',
+            'payload_codec' => config('workflows.serializer'),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(2),
+            'last_progress_at' => now()->subMinutes(2),
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subMinute(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_dispatched_at' => now()->subSeconds(30),
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh([
+            'summary',
+            'commands',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+            'parentLinks.parentRun.summary',
+            'childLinks.childRun.summary',
+            'instance.currentRun.summary',
+        ]));
+
+        $this->assertSame('workflow_task_waiting_for_compatible_worker', $summary->liveness_state);
+        $this->assertSame('Workflow task waiting for a compatible worker', $summary->wait_reason);
+        $this->assertSame(
+            sprintf(
+                'Workflow task %s is ready but dispatch is overdue and is waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b].',
+                $task->id,
+            ),
+            $summary->liveness_reason,
+        );
+        $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame(
+            'Workflow task is waiting for a compatible worker; dispatch is overdue.',
+            $detail['tasks'][0]['summary'],
+        );
+    }
+
+    public function testIncompatibleExpiredLeaseDoesNotSurfaceAsRepairNeeded(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'compat-expired-lease',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'reserved_at' => now()->subMinutes(2),
+            'started_at' => now()->subMinutes(2),
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'compatibility' => 'build-a',
+            'payload_codec' => config('workflows.serializer'),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(2),
+            'last_progress_at' => now()->subMinutes(2),
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subMinute(),
+            'leased_at' => now()->subMinutes(2),
+            'lease_owner' => 'worker-build-a',
+            'lease_expires_at' => now()->subMinute(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_dispatched_at' => now()->subMinutes(2),
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh([
+            'summary',
+            'commands',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+            'parentLinks.parentRun.summary',
+            'childLinks.childRun.summary',
+            'instance.currentRun.summary',
+        ]));
+
+        $this->assertSame('workflow_task_waiting_for_compatible_worker', $summary->liveness_state);
+        $this->assertSame('Workflow task waiting for a compatible worker', $summary->wait_reason);
+        $this->assertSame(
+            sprintf(
+                'Workflow task %s lease expired and is waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b].',
+                $task->id,
+            ),
+            $summary->liveness_reason,
+        );
+        $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame(
+            'Workflow task lease expired and is waiting for a compatible worker.',
+            $detail['tasks'][0]['summary'],
+        );
     }
 
     private function drainReadyTasks(): void

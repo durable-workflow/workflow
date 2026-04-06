@@ -79,6 +79,7 @@ final class RunSummaryProjector
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
+                self::taskWaitingForCompatibleWorker($nextTask) => 'Workflow task waiting for a compatible worker',
                 TaskRepairPolicy::leaseExpired($nextTask) => 'Workflow task lease expired',
                 TaskRepairPolicy::readyTaskNeedsRedispatch($nextTask) => 'Workflow task ready but dispatch is overdue',
                 $nextTask->status === TaskStatus::Leased => 'Workflow task leased to worker',
@@ -413,6 +414,13 @@ final class RunSummaryProjector
      */
     private static function taskLiveness(WorkflowTask $task, string $label): array
     {
+        if (self::taskWaitingForCompatibleWorker($task)) {
+            return [
+                sprintf('%s_task_waiting_for_compatible_worker', $task->task_type->value),
+                self::compatibleWorkerReason($task, $label),
+            ];
+        }
+
         if (TaskRepairPolicy::leaseExpired($task)) {
             return [
                 'repair_needed',
@@ -448,5 +456,45 @@ final class RunSummaryProjector
                 sprintf('%s_task_ready', $task->task_type->value),
                 sprintf('%s task %s is ready to run.', $label, $task->id),
             ];
+    }
+
+    private static function taskWaitingForCompatibleWorker(WorkflowTask $task): bool
+    {
+        if (WorkerCompatibility::supports($task->compatibility)) {
+            return false;
+        }
+
+        if (TaskRepairPolicy::leaseExpired($task)) {
+            return true;
+        }
+
+        return $task->status === TaskStatus::Ready
+            && ($task->available_at === null || ! $task->available_at->isFuture());
+    }
+
+    private static function compatibleWorkerReason(WorkflowTask $task, string $label): string
+    {
+        $reason = WorkerCompatibility::mismatchReason($task->compatibility) ?? 'Requires a compatible worker.';
+
+        return match (true) {
+            TaskRepairPolicy::leaseExpired($task) => sprintf(
+                '%s task %s lease expired and is waiting for a compatible worker. %s',
+                $label,
+                $task->id,
+                $reason,
+            ),
+            TaskRepairPolicy::readyTaskNeedsRedispatch($task) => sprintf(
+                '%s task %s is ready but dispatch is overdue and is waiting for a compatible worker. %s',
+                $label,
+                $task->id,
+                $reason,
+            ),
+            default => sprintf(
+                '%s task %s is ready but waiting for a compatible worker. %s',
+                $label,
+                $task->id,
+                $reason,
+            ),
+        };
     }
 }
