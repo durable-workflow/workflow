@@ -249,6 +249,14 @@ final class HistoryTimeline
             'target_name' => $command?->targetName()
                 ?? self::stringValue($payload['signal_name'] ?? null)
                 ?? self::stringValue($payload['update_name'] ?? null),
+            'source' => $command?->source,
+            'caller_label' => $command?->callerLabel(),
+            'auth_status' => $command?->authStatus(),
+            'auth_method' => $command?->authMethod(),
+            'request_method' => $command?->requestMethod(),
+            'request_path' => $command?->requestPath(),
+            'request_route_name' => $command?->requestRouteName(),
+            'request_fingerprint' => $command?->requestFingerprint(),
             'status' => $command?->status?->value,
             'outcome' => $command?->outcome?->value ?? self::stringValue($payload['outcome'] ?? null),
             'rejection_reason' => $command?->rejection_reason ?? self::stringValue($payload['rejection_reason'] ?? null),

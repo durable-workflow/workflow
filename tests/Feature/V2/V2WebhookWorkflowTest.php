@@ -70,6 +70,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('workflow_type', 'test-greeting-workflow')
             ->assertJsonPath('command_sequence', 1)
             ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('command_source', 'webhook')
             ->assertJsonPath('rejection_reason', null);
 
         $runId = $response->json('run_id');
@@ -89,10 +90,37 @@ final class V2WebhookWorkflowTest extends TestCase
             'workflow_instance_id' => 'order-456',
             'workflow_run_id' => $runId,
             'command_type' => 'start',
+            'source' => 'webhook',
             'status' => 'accepted',
             'outcome' => 'started_new',
             'workflow_type' => 'test-greeting-workflow',
         ]);
+    }
+
+    public function testWebhookCommandsPersistDurableIngressMetadata(): void
+    {
+        $response = $this->withHeaders([
+            'X-Request-Id' => 'req-start-123',
+            'X-Correlation-Id' => 'corr-start-456',
+        ])->postJson('/webhooks/start/test-greeting-workflow', [
+            'workflow_id' => 'order-context',
+            'name' => 'Taylor',
+        ]);
+
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+
+        $this->assertSame('webhook', $command->source);
+        $this->assertSame('Webhook', $command->callerLabel());
+        $this->assertSame('not_configured', $command->authStatus());
+        $this->assertSame('none', $command->authMethod());
+        $this->assertSame('POST', $command->requestMethod());
+        $this->assertSame('/webhooks/start/test-greeting-workflow', $command->requestPath());
+        $this->assertSame('workflows.v2.start.test-greeting-workflow', $command->requestRouteName());
+        $this->assertSame('req-start-123', $command->requestId());
+        $this->assertSame('corr-start-456', $command->correlationId());
+        $this->assertIsString($command->requestFingerprint());
+        $this->assertStringStartsWith('sha256:', $command->requestFingerprint());
     }
 
     public function testStartWebhookReturnsRejectedDuplicateOutcomeForExistingInstance(): void

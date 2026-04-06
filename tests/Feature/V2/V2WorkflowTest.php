@@ -103,9 +103,25 @@ final class V2WorkflowTest extends TestCase
             'workflow_instance_id' => $instanceId,
             'workflow_run_id' => $runId,
             'command_type' => 'start',
+            'source' => 'php',
             'status' => 'accepted',
             'outcome' => 'started_new',
         ]);
+    }
+
+    public function testPhpApiCommandsRecordDurableCommandContext(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'command-context-php');
+        $result = $workflow->attemptStart('Taylor');
+
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($result->commandId());
+
+        $this->assertSame('php', $command->source);
+        $this->assertSame('PHP API', $command->callerLabel());
+        $this->assertSame('not_applicable', $command->authStatus());
+        $this->assertSame('none', $command->authMethod());
+        $this->assertSame('php', $command->commandContext()['caller']['type'] ?? null);
     }
 
     public function testAttemptStartReturnsRejectedResultForDuplicateStart(): void

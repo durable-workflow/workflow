@@ -70,6 +70,19 @@ class CommandResult
         return $this->command->target_scope;
     }
 
+    public function source(): ?string
+    {
+        return $this->command->source;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function context(): array
+    {
+        return $this->command->commandContext();
+    }
+
     public function accepted(): bool
     {
         return $this->command->status === CommandStatus::Accepted;

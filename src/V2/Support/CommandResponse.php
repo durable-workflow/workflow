@@ -22,6 +22,7 @@ final class CommandResponse
             'command_sequence' => $result->commandSequence(),
             'workflow_type' => $workflowType ?? $result->workflowType(),
             'command_status' => $result->status(),
+            'command_source' => $result->source(),
             'rejection_reason' => $result->rejectionReason(),
         ];
 

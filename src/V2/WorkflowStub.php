@@ -55,6 +55,7 @@ final class WorkflowStub
 
     private ?WorkflowRun $run = null;
     private ?string $selectedRunId = null;
+    private ?CommandContext $commandContext = null;
 
     private function __construct(
         private WorkflowInstance $instance,
@@ -253,6 +254,14 @@ final class WorkflowStub
         return $this;
     }
 
+    public function withCommandContext(CommandContext $commandContext): self
+    {
+        $clone = clone $this;
+        $clone->commandContext = $commandContext;
+
+        return $clone;
+    }
+
     public function __call(string $method, array $arguments): mixed
     {
         $this->refresh();
@@ -312,7 +321,7 @@ final class WorkflowStub
                     && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
 
                 /** @var WorkflowCommand $command */
-                $command = WorkflowCommand::record($instance, $run, [
+                $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                     'command_type' => CommandType::Start->value,
                     'target_scope' => 'instance',
                     'status' => $canReturnExisting
@@ -335,7 +344,7 @@ final class WorkflowStub
                     'rejected_at' => $canReturnExisting
                         ? null
                         : now(),
-                ]);
+                ]));
 
                 WorkflowHistoryEvent::record($run, $canReturnExisting
                     ? HistoryEventType::StartAccepted
@@ -373,7 +382,7 @@ final class WorkflowStub
             ]);
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, [
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Start->value,
                 'target_scope' => 'instance',
                 'status' => CommandStatus::Accepted->value,
@@ -382,7 +391,7 @@ final class WorkflowStub
                 'payload' => Serializer::serialize($metadata->arguments),
                 'accepted_at' => now(),
                 'applied_at' => now(),
-            ]);
+            ]));
 
             $instance->forceFill([
                 'current_run_id' => $run->id,
@@ -581,7 +590,7 @@ final class WorkflowStub
             $replayState = (new QueryStateReplayer())->replayState($run);
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, [
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Update->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
@@ -591,7 +600,7 @@ final class WorkflowStub
                     'arguments' => $arguments,
                 ]),
                 'accepted_at' => now(),
-            ]);
+            ]));
 
             WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
                 'workflow_command_id' => $command->id,
@@ -767,7 +776,7 @@ final class WorkflowStub
             }
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, [
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Signal->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
@@ -778,7 +787,7 @@ final class WorkflowStub
                     'arguments' => $arguments,
                 ]),
                 'accepted_at' => now(),
-            ]);
+            ]));
 
             WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, [
                 'workflow_command_id' => $command->id,
@@ -939,7 +948,7 @@ final class WorkflowStub
             ])->save();
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, [
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Repair->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
@@ -955,7 +964,7 @@ final class WorkflowStub
                 ]),
                 'accepted_at' => now(),
                 'applied_at' => now(),
-            ]);
+            ]));
 
             WorkflowHistoryEvent::record($run, HistoryEventType::RepairRequested, [
                 'workflow_command_id' => $command->id,
@@ -1145,7 +1154,7 @@ final class WorkflowStub
             }
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, [
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => $commandType->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
@@ -1156,7 +1165,7 @@ final class WorkflowStub
                 },
                 'payload_codec' => config('workflows.serializer'),
                 'accepted_at' => now(),
-            ]);
+            ]));
 
             WorkflowHistoryEvent::record($run, $requestedEventType, [
                 'workflow_command_id' => $command->id,
@@ -1230,7 +1239,7 @@ final class WorkflowStub
         string $targetScope = 'instance',
     ): WorkflowCommand {
         /** @var WorkflowCommand $command */
-        $command = WorkflowCommand::record($instance, $run, [
+        $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
             'command_type' => $commandType->value,
             'target_scope' => $targetScope,
             'status' => CommandStatus::Rejected->value,
@@ -1243,9 +1252,26 @@ final class WorkflowStub
             'payload_codec' => config('workflows.serializer'),
             'rejection_reason' => $reason,
             'rejected_at' => now(),
-        ]);
+        ]));
 
         return $command;
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @return array<string, mixed>
+     */
+    private function commandAttributes(array $attributes): array
+    {
+        return array_merge(
+            $this->resolvedCommandContext()->attributes(),
+            $attributes,
+        );
+    }
+
+    private function resolvedCommandContext(): CommandContext
+    {
+        return $this->commandContext ?? CommandContext::phpApi();
     }
 
     private function hasOpenTask(string $runId): bool

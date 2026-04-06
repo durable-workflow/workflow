@@ -33,10 +33,14 @@ final class Webhooks
         foreach (self::normalizeWorkflows($workflows) as $alias => $workflow) {
             Route::post("{$basePath}/start/{$alias}", static function (Request $request) use ($alias, $workflow) {
                 $request = self::validateAuth($request);
+                $commandContext = CommandContext::webhook(
+                    $request,
+                    (string) config('workflows.webhook_auth.method', 'none'),
+                );
 
                 [$instanceId, $arguments, $startOptions] = self::resolveStartArguments($workflow, $request->all());
 
-                $stub = WorkflowStub::make($workflow, $instanceId);
+                $stub = WorkflowStub::make($workflow, $instanceId)->withCommandContext($commandContext);
                 $result = $stub->attemptStart(...[...$arguments, $startOptions]);
 
                 return self::commandResponse($result, match ($result->outcome()) {
@@ -48,17 +52,27 @@ final class Webhooks
         }
 
         Route::post("{$basePath}/instances/{workflowId}/cancel", static function (Request $request, string $workflowId) {
-            self::validateAuth($request);
+            $request = self::validateAuth($request);
 
-            $result = WorkflowStub::load($workflowId)->attemptCancel();
+            $result = WorkflowStub::load($workflowId)
+                ->withCommandContext(CommandContext::webhook(
+                    $request,
+                    (string) config('workflows.webhook_auth.method', 'none'),
+                ))
+                ->attemptCancel();
 
             return self::commandResponse($result, $result->accepted() ? 200 : 409);
         })->name('workflows.v2.cancel');
 
         Route::post("{$basePath}/instances/{workflowId}/repair", static function (Request $request, string $workflowId) {
-            self::validateAuth($request);
+            $request = self::validateAuth($request);
 
-            $result = WorkflowStub::load($workflowId)->attemptRepair();
+            $result = WorkflowStub::load($workflowId)
+                ->withCommandContext(CommandContext::webhook(
+                    $request,
+                    (string) config('workflows.webhook_auth.method', 'none'),
+                ))
+                ->attemptRepair();
 
             return self::commandResponse($result, $result->accepted() ? 200 : 409);
         })->name('workflows.v2.repair');
@@ -68,9 +82,13 @@ final class Webhooks
             string $workflowId,
             string $signal,
         ) {
-            self::validateAuth($request);
+            $request = self::validateAuth($request);
 
             $result = WorkflowStub::load($workflowId)
+                ->withCommandContext(CommandContext::webhook(
+                    $request,
+                    (string) config('workflows.webhook_auth.method', 'none'),
+                ))
                 ->attemptSignal($signal, ...self::resolveSignalArguments($request->all()));
 
             return self::commandResponse($result, $result->accepted() ? 202 : 409);
@@ -81,10 +99,14 @@ final class Webhooks
             string $workflowId,
             string $update,
         ) {
-            self::validateAuth($request);
+            $request = self::validateAuth($request);
 
             try {
                 $result = WorkflowStub::load($workflowId)
+                    ->withCommandContext(CommandContext::webhook(
+                        $request,
+                        (string) config('workflows.webhook_auth.method', 'none'),
+                    ))
                     ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
             } catch (LogicException) {
                 abort(404);
@@ -98,9 +120,14 @@ final class Webhooks
         })->name('workflows.v2.update');
 
         Route::post("{$basePath}/instances/{workflowId}/terminate", static function (Request $request, string $workflowId) {
-            self::validateAuth($request);
+            $request = self::validateAuth($request);
 
-            $result = WorkflowStub::load($workflowId)->attemptTerminate();
+            $result = WorkflowStub::load($workflowId)
+                ->withCommandContext(CommandContext::webhook(
+                    $request,
+                    (string) config('workflows.webhook_auth.method', 'none'),
+                ))
+                ->attemptTerminate();
 
             return self::commandResponse($result, $result->accepted() ? 200 : 409);
         })->name('workflows.v2.terminate');

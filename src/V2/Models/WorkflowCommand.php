@@ -32,6 +32,7 @@ class WorkflowCommand extends Model
         'status' => CommandStatus::class,
         'outcome' => CommandOutcome::class,
         'command_sequence' => 'integer',
+        'context' => 'array',
         'accepted_at' => 'datetime',
         'applied_at' => 'datetime',
         'rejected_at' => 'datetime',
@@ -121,6 +122,97 @@ class WorkflowCommand extends Model
 
         return is_string($targetName) && $targetName !== ''
             ? $targetName
+            : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function commandContext(): array
+    {
+        return is_array($this->context)
+            ? $this->context
+            : [];
+    }
+
+    public function callerLabel(): ?string
+    {
+        $caller = $this->commandContext()['caller'] ?? null;
+
+        return is_array($caller) && is_string($caller['label'] ?? null)
+            ? $caller['label']
+            : null;
+    }
+
+    public function authStatus(): ?string
+    {
+        $auth = $this->commandContext()['auth'] ?? null;
+
+        return is_array($auth) && is_string($auth['status'] ?? null)
+            ? $auth['status']
+            : null;
+    }
+
+    public function authMethod(): ?string
+    {
+        $auth = $this->commandContext()['auth'] ?? null;
+
+        return is_array($auth) && is_string($auth['method'] ?? null)
+            ? $auth['method']
+            : null;
+    }
+
+    public function requestMethod(): ?string
+    {
+        $request = $this->commandContext()['request'] ?? null;
+
+        return is_array($request) && is_string($request['method'] ?? null)
+            ? $request['method']
+            : null;
+    }
+
+    public function requestPath(): ?string
+    {
+        $request = $this->commandContext()['request'] ?? null;
+
+        return is_array($request) && is_string($request['path'] ?? null)
+            ? $request['path']
+            : null;
+    }
+
+    public function requestRouteName(): ?string
+    {
+        $request = $this->commandContext()['request'] ?? null;
+
+        return is_array($request) && is_string($request['route_name'] ?? null)
+            ? $request['route_name']
+            : null;
+    }
+
+    public function requestFingerprint(): ?string
+    {
+        $request = $this->commandContext()['request'] ?? null;
+
+        return is_array($request) && is_string($request['fingerprint'] ?? null)
+            ? $request['fingerprint']
+            : null;
+    }
+
+    public function requestId(): ?string
+    {
+        $request = $this->commandContext()['request'] ?? null;
+
+        return is_array($request) && is_string($request['request_id'] ?? null)
+            ? $request['request_id']
+            : null;
+    }
+
+    public function correlationId(): ?string
+    {
+        $request = $this->commandContext()['request'] ?? null;
+
+        return is_array($request) && is_string($request['correlation_id'] ?? null)
+            ? $request['correlation_id']
             : null;
     }
 }
