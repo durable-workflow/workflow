@@ -38,6 +38,7 @@ use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\WorkflowMetadata;
 
@@ -948,7 +949,7 @@ final class WorkflowStub
             $summary = RunSummaryProjector::project($run);
 
             if ($summary->liveness_state === 'repair_needed') {
-                $task = $this->createRepairTask($run, $summary);
+                $task = TaskRepair::repairRun($run, $summary);
             }
 
             $run->forceFill([
@@ -1298,77 +1299,6 @@ final class WorkflowStub
             ->where('workflow_run_id', $runId)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
             ->exists();
-    }
-
-    private function createRepairTask(WorkflowRun $run, WorkflowRunSummary $summary): WorkflowTask
-    {
-        if ($summary->wait_kind === 'activity') {
-            /** @var ActivityExecution|null $execution */
-            $execution = $run->activityExecutions
-                ->first(static fn (ActivityExecution $execution): bool => in_array(
-                    $execution->status,
-                    [ActivityStatus::Pending, ActivityStatus::Running],
-                    true,
-                ));
-
-            if ($execution instanceof ActivityExecution) {
-                /** @var WorkflowTask $task */
-                $task = WorkflowTask::query()->create([
-                    'workflow_run_id' => $run->id,
-                    'task_type' => TaskType::Activity->value,
-                    'status' => TaskStatus::Ready->value,
-                    'available_at' => now(),
-                    'payload' => [
-                        'activity_execution_id' => $execution->id,
-                    ],
-                    'connection' => $execution->connection ?? $run->connection,
-                    'queue' => $execution->queue ?? $run->queue,
-                    'repair_count' => 1,
-                ]);
-
-                return $task;
-            }
-        }
-
-        if ($summary->wait_kind === 'timer') {
-            /** @var WorkflowTimer|null $timer */
-            $timer = $run->timers
-                ->first(static fn (WorkflowTimer $timer): bool => $timer->status === TimerStatus::Pending);
-
-            if ($timer instanceof WorkflowTimer) {
-                /** @var WorkflowTask $task */
-                $task = WorkflowTask::query()->create([
-                    'workflow_run_id' => $run->id,
-                    'task_type' => TaskType::Timer->value,
-                    'status' => TaskStatus::Ready->value,
-                    'available_at' => $timer->fire_at !== null && $timer->fire_at->isFuture()
-                        ? $timer->fire_at
-                        : now(),
-                    'payload' => [
-                        'timer_id' => $timer->id,
-                    ],
-                    'connection' => $run->connection,
-                    'queue' => $run->queue,
-                    'repair_count' => 1,
-                ]);
-
-                return $task;
-            }
-        }
-
-        /** @var WorkflowTask $task */
-        $task = WorkflowTask::query()->create([
-            'workflow_run_id' => $run->id,
-            'task_type' => TaskType::Workflow->value,
-            'status' => TaskStatus::Ready->value,
-            'available_at' => now(),
-            'payload' => [],
-            'connection' => $run->connection,
-            'queue' => $run->queue,
-            'repair_count' => 1,
-        ]);
-
-        return $task;
     }
 
     private function loadLockedRunRelations(WorkflowRun $run, WorkflowInstance $instance): void

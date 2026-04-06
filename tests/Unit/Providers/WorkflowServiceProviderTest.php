@@ -15,6 +15,14 @@ use Workflow\Models\StoredWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
 
 final class WorkflowServiceProviderTest extends TestCase
@@ -25,6 +33,7 @@ final class WorkflowServiceProviderTest extends TestCase
 
         Cache::forget('workflow:watchdog');
         Cache::forget('workflow:watchdog:looping');
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
 
         $this->app->register(WorkflowServiceProvider::class);
     }
@@ -33,6 +42,7 @@ final class WorkflowServiceProviderTest extends TestCase
     {
         Cache::forget('workflow:watchdog');
         Cache::forget('workflow:watchdog:looping');
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
 
         parent::tearDown();
     }
@@ -147,5 +157,59 @@ final class WorkflowServiceProviderTest extends TestCase
         Event::dispatch(new Looping('redis', 'high,default'));
 
         Queue::assertNotPushed(Watchdog::class);
+    }
+
+    public function testLoopingEventRepairsOverdueV2Task(): void
+    {
+        Queue::fake();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'provider-v2-repair-inst',
+            'workflow_class' => TestSimpleWorkflow::class,
+            'workflow_type' => TestSimpleWorkflow::class,
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestSimpleWorkflow::class,
+            'workflow_type' => TestSimpleWorkflow::class,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSeconds(20),
+            'last_dispatched_at' => now()->subSeconds(20),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id);
+
+        $task->refresh();
+
+        $this->assertSame(1, $task->repair_count);
+        $this->assertNotNull($task->last_dispatched_at);
     }
 }

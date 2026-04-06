@@ -63,9 +63,12 @@ final class RunTaskView
                         'type' => $task->task_type->value,
                         'status' => $task->status->value,
                         'summary' => self::summaryFor($task, $activity, $timer),
+                        'dispatch_overdue' => TaskRepairPolicy::readyTaskNeedsRedispatch($task),
                         'is_open' => in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true),
                         'available_at' => $task->available_at,
                         'leased_at' => $task->leased_at,
+                        'last_dispatched_at' => $task->last_dispatched_at,
+                        'lease_expired' => TaskRepairPolicy::leaseExpired($task),
                         'lease_owner' => $task->lease_owner,
                         'lease_expires_at' => $task->lease_expires_at,
                         'attempt_count' => $task->attempt_count,
@@ -93,6 +96,38 @@ final class RunTaskView
         ?ActivityExecution $activity,
         ?WorkflowTimer $timer,
     ): string {
+        if (TaskRepairPolicy::leaseExpired($task)) {
+            return match ($task->task_type) {
+                TaskType::Workflow => 'Workflow task lease expired; waiting for recovery.',
+                TaskType::Activity => sprintf(
+                    'Activity task lease expired for %s; waiting for recovery.',
+                    $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                ),
+                TaskType::Timer => sprintf(
+                    '%s lease expired; waiting for recovery.',
+                    ucfirst($timer?->delay_seconds === null
+                        ? 'timer task'
+                        : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
+                ),
+            };
+        }
+
+        if (TaskRepairPolicy::readyTaskNeedsRedispatch($task)) {
+            return match ($task->task_type) {
+                TaskType::Workflow => 'Workflow task is ready but dispatch is overdue.',
+                TaskType::Activity => sprintf(
+                    'Activity task is ready but dispatch is overdue for %s.',
+                    $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                ),
+                TaskType::Timer => sprintf(
+                    '%s is ready but dispatch is overdue.',
+                    ucfirst($timer?->delay_seconds === null
+                        ? 'timer task'
+                        : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
+                ),
+            };
+        }
+
         return match ($task->task_type) {
             TaskType::Workflow => match ($task->status) {
                 TaskStatus::Ready => 'Workflow task ready to resume the selected run.',

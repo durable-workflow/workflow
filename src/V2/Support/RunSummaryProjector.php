@@ -78,9 +78,12 @@ final class RunSummaryProjector
             $waitDeadlineAt = $openTimer->fire_at;
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
-            $waitReason = $nextTask->status === TaskStatus::Leased
-                ? 'Workflow task leased to worker'
-                : 'Workflow task ready';
+            $waitReason = match (true) {
+                TaskRepairPolicy::leaseExpired($nextTask) => 'Workflow task lease expired',
+                TaskRepairPolicy::readyTaskNeedsRedispatch($nextTask) => 'Workflow task ready but dispatch is overdue',
+                $nextTask->status === TaskStatus::Leased => 'Workflow task leased to worker',
+                default => 'Workflow task ready',
+            };
             $waitStartedAt = $nextTask->leased_at ?? $nextTask->available_at;
             $waitDeadlineAt = $nextTask->lease_expires_at;
         } elseif ($openChildWait !== null) {
@@ -239,6 +242,10 @@ final class RunSummaryProjector
 
         if ($openTimer !== null) {
             if ($nextTask !== null) {
+                if (TaskRepairPolicy::leaseExpired($nextTask) || TaskRepairPolicy::readyTaskNeedsRedispatch($nextTask)) {
+                    return self::taskLiveness($nextTask, 'Timer');
+                }
+
                 return $nextTask->status === TaskStatus::Leased
                     ? ['timer_task_leased', sprintf('Timer task %s is leased to a worker.', $nextTask->id)]
                     : [
@@ -395,6 +402,32 @@ final class RunSummaryProjector
      */
     private static function taskLiveness(WorkflowTask $task, string $label): array
     {
+        if (TaskRepairPolicy::leaseExpired($task)) {
+            return [
+                'repair_needed',
+                sprintf(
+                    '%s task %s lease expired at %s.',
+                    $label,
+                    $task->id,
+                    $task->lease_expires_at?->toJSON() ?? 'an unknown time',
+                ),
+            ];
+        }
+
+        if (TaskRepairPolicy::readyTaskNeedsRedispatch($task)) {
+            $reference = $task->last_dispatched_at ?? $task->created_at;
+
+            return [
+                'repair_needed',
+                sprintf(
+                    '%s task %s is ready but has not been dispatched since %s.',
+                    $label,
+                    $task->id,
+                    $reference?->toJSON() ?? 'an unknown time',
+                ),
+            ];
+        }
+
         return $task->status === TaskStatus::Leased
             ? [
                 sprintf('%s_task_leased', $task->task_type->value),

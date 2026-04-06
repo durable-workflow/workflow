@@ -25,6 +25,7 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -39,6 +40,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Support\RunSummarySortKey;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
@@ -1020,6 +1022,137 @@ final class V2WorkflowTest extends TestCase
         ]);
     }
 
+    public function testRunSummaryFlagsRepairNeededWhenWorkflowTaskLeaseExpires(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-expired-wf-inst',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSeconds(20),
+            'leased_at' => now()->subSeconds(20),
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->subSecond(),
+            'last_dispatched_at' => now()->subSeconds(20),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('workflow-task', $summary->wait_kind);
+        $this->assertSame($task->id, $summary->next_task_id);
+        $this->assertSame('leased', $summary->next_task_status);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertStringContainsString('lease expired', $summary->liveness_reason);
+    }
+
+    public function testRepairReusesExpiredWorkflowTaskInsteadOfCreatingDuplicate(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-existing-wf-task',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSeconds(25),
+            'leased_at' => now()->subSeconds(25),
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->subSecond(),
+            'last_dispatched_at' => now()->subSeconds(25),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('repair_needed', $summary->liveness_state);
+
+        $result = WorkflowStub::loadRun($run->id)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair_dispatched', $result->outcome());
+        $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNull($task->leased_at);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+        $this->assertSame(1, $task->repair_count);
+        $this->assertNotNull($task->last_dispatched_at);
+
+        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id);
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('workflow-task', $updatedSummary->wait_kind);
+        $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+    }
+
     public function testRepairRecreatesMissingTimerTaskForPendingTimer(): void
     {
         Queue::fake();
@@ -1134,6 +1267,221 @@ final class V2WorkflowTest extends TestCase
             'status' => 'accepted',
             'outcome' => 'repair_not_needed',
         ]);
+    }
+
+    public function testTaskWatchdogRedispatchesReadyWorkflowTaskWhenDispatchIsOverdue(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-overdue-wf-task',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSeconds(20),
+            'last_dispatched_at' => now()->subSeconds(20),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        TaskWatchdog::wake();
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(1, $task->repair_count);
+        $this->assertNotNull($task->last_dispatched_at);
+
+        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('workflow-task', $summary->wait_kind);
+        $this->assertSame('workflow_task_ready', $summary->liveness_state);
+    }
+
+    public function testTaskWatchdogReclaimsExpiredActivityTaskLease(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-expired-act-task',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'status' => ActivityStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'started_at' => now()->subSeconds(25),
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSeconds(25),
+            'leased_at' => now()->subSeconds(25),
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->subSecond(),
+            'last_dispatched_at' => now()->subSeconds(25),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
+            'connection' => 'redis',
+            'queue' => 'activities',
+        ]);
+
+        TaskWatchdog::wake();
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNull($task->leased_at);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+        $this->assertSame(1, $task->repair_count);
+
+        Queue::assertPushed(RunActivityTask::class, static fn (RunActivityTask $job): bool => $job->taskId === $task->id);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('activity', $summary->wait_kind);
+        $this->assertSame('activity_task_ready', $summary->liveness_state);
+        $this->assertSame($task->id, $summary->next_task_id);
+    }
+
+    public function testTaskWatchdogReclaimsExpiredTimerTaskLease(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-expired-timer-task',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([30]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => 30,
+            'fire_at' => now()->addSeconds(20),
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSeconds(10),
+            'leased_at' => now()->subSeconds(10),
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->subSecond(),
+            'last_dispatched_at' => now()->subSeconds(10),
+            'payload' => [
+                'timer_id' => $timer->id,
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        TaskWatchdog::wake();
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNull($task->leased_at);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+        $this->assertSame(1, $task->repair_count);
+
+        Queue::assertPushed(RunTimerTask::class, static fn (RunTimerTask $job): bool => $job->taskId === $task->id);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('timer', $summary->wait_kind);
+        $this->assertSame('timer_scheduled', $summary->liveness_state);
+        $this->assertSame($task->id, $summary->next_task_id);
     }
 
     public function testWorkflowCanCompleteImmediateTimerWithoutSchedulingATimerTask(): void
