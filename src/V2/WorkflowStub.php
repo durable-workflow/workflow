@@ -32,6 +32,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\QueryStateReplayer;
+use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\SignalWaits;
@@ -394,6 +395,8 @@ final class WorkflowStub
                 'run_count' => $run->run_number,
             ])->save();
 
+            $commandContract = RunCommandContract::snapshot($run->workflow_class);
+
             WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
@@ -409,6 +412,8 @@ final class WorkflowStub
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'workflow_command_id' => $command->id,
+                'declared_signals' => $commandContract['signals'],
+                'declared_updates' => $commandContract['updates'],
             ], null, $command->id);
 
             /** @var WorkflowTask $task */
@@ -569,9 +574,9 @@ final class WorkflowStub
                 return;
             }
 
-            $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+            $this->loadLockedRunRelations($run, $instance);
 
-            if (! WorkflowDefinition::hasUpdateMethod($resolvedClass, $method)) {
+            if (! RunCommandContract::hasUpdateMethod($run, $method)) {
                 $command = $this->rejectCommand(
                     $instance,
                     $run,
@@ -589,8 +594,6 @@ final class WorkflowStub
 
                 return;
             }
-
-            $this->loadLockedRunRelations($run, $instance);
 
             if (UpdateCommandGate::blockedReason($run) !== null) {
                 $command = $this->rejectCommand(
@@ -611,6 +614,7 @@ final class WorkflowStub
                 return;
             }
 
+            $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
             $replayState = (new QueryStateReplayer())->replayState($run);
 
             /** @var WorkflowCommand $command */
@@ -801,9 +805,9 @@ final class WorkflowStub
                 return;
             }
 
-            $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+            $this->loadLockedRunRelations($run, $instance);
 
-            if (! WorkflowDefinition::hasSignal($resolvedClass, $name)) {
+            if (! RunCommandContract::hasSignal($run, $name)) {
                 $command = $this->rejectCommand(
                     $instance,
                     $run,
@@ -822,7 +826,6 @@ final class WorkflowStub
                 return;
             }
 
-            $this->loadLockedRunRelations($run, $instance);
             $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name);
 
             /** @var WorkflowCommand $command */

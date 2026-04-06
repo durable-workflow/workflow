@@ -366,6 +366,7 @@ final class WorkflowExecutor
     ): WorkflowTask {
         $metadata = WorkflowMetadata::fromStartArguments($childWorkflowCall->arguments);
         $workflowType = TypeRegistry::for($childWorkflowCall->workflow);
+        $commandContract = RunCommandContract::snapshot($childWorkflowCall->workflow);
         $now = now();
 
         /** @var WorkflowInstance $childInstance */
@@ -456,6 +457,8 @@ final class WorkflowExecutor
             'parent_workflow_run_id' => $run->id,
             'parent_sequence' => $sequence,
             'workflow_link_id' => $link->id,
+            'declared_signals' => $commandContract['signals'],
+            'declared_updates' => $commandContract['updates'],
         ], null, $startCommand->id);
 
         /** @var WorkflowTask $childTask */
@@ -824,6 +827,7 @@ final class WorkflowExecutor
         ContinueAsNewCall $continueAsNew,
     ): WorkflowTask {
         $now = now();
+        $commandContract = RunCommandContract::snapshot($run->workflow_class);
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()
             ->lockForUpdate()
@@ -920,6 +924,8 @@ final class WorkflowExecutor
             'workflow_command_id' => $startCommand->id,
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
+            'declared_signals' => $commandContract['signals'],
+            'declared_updates' => $commandContract['updates'],
         ], null, $startCommand->id);
 
         /** @var WorkflowTask $continuedTask */

@@ -46,6 +46,18 @@ final class WorkflowDefinition
 
     /**
      * @param class-string $class
+     * @return array{signals: list<string>, updates: list<string>}
+     */
+    public static function commandContract(string $class): array
+    {
+        return [
+            'signals' => self::signalNames($class),
+            'updates' => self::updateMethods($class),
+        ];
+    }
+
+    /**
+     * @param class-string $class
      * @return list<string>
      */
     public static function signalNames(string $class): array

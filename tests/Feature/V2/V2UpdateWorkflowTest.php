@@ -68,6 +68,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertTrue($detail['can_signal']);
         $this->assertSame(['name-provided'], $detail['declared_signals']);
         $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
         $this->assertCount(2, $detail['commands']);
         $this->assertSame('update', $detail['commands'][1]['type']);
         $this->assertSame('approve', $detail['commands'][1]['target_name']);
@@ -239,6 +240,55 @@ final class V2UpdateWorkflowTest extends TestCase
             'outcome' => 'rejected_unknown_update',
             'rejection_reason' => 'unknown_update',
         ]);
+    }
+
+    public function testSignalIntakeUsesDurableRunContractWhenWorkflowClassCannotBeResolved(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-ct-signal');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        Queue::fake();
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+        ]);
+
+        $accepted = $workflow->attemptSignal('name-provided', 'Taylor');
+        $rejected = $workflow->attemptSignal('not-declared', 'Taylor');
+
+        $this->assertTrue($accepted->accepted());
+        $this->assertSame('signal_received', $accepted->outcome());
+        $this->assertTrue($rejected->rejected());
+        $this->assertSame('rejected_unknown_signal', $rejected->outcome());
+        $this->assertSame('unknown_signal', $rejected->rejectionReason());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+
+        $this->assertSame(['name-provided'], $detail['declared_signals']);
+        $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+    }
+
+    public function testUnknownUpdateRejectionUsesDurableRunContractWhenWorkflowClassCannotBeResolved(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-ct-update');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+        ]);
+
+        $result = $workflow->attemptUpdate('missing-update', true, 'api');
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('rejected_unknown_update', $result->outcome());
+        $this->assertSame('unknown_update', $result->rejectionReason());
     }
 
     public function testAttemptUpdateRejectsHistoricalSelectedRuns(): void
