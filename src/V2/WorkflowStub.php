@@ -37,6 +37,7 @@ use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TypeRegistry;
@@ -781,6 +782,9 @@ final class WorkflowStub
                 return;
             }
 
+            $this->loadLockedRunRelations($run, $instance);
+            $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name);
+
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Signal->value,
@@ -795,12 +799,13 @@ final class WorkflowStub
                 'accepted_at' => now(),
             ]));
 
-            WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, [
+            WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'signal_name' => $name,
-            ], null, $command->id);
+                'signal_wait_id' => $signalWaitId,
+            ], static fn (mixed $value): bool => $value !== null), null, $command->id);
 
             if (! $this->hasOpenTask($run->id)) {
                 /** @var WorkflowTask $task */
@@ -1365,6 +1370,22 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->get()
         );
+    }
+
+    private function signalWaitIdForAcceptedCommand(WorkflowRun $run, string $name): ?string
+    {
+        $hasEarlierPendingSignal = $run->commands->contains(
+            static fn (WorkflowCommand $command): bool => $command->command_type === CommandType::Signal
+                && $command->status === CommandStatus::Accepted
+                && $command->applied_at === null
+                && $command->targetName() === $name
+        );
+
+        if ($hasEarlierPendingSignal) {
+            return null;
+        }
+
+        return SignalWaits::openWaitIdForName($run, $name);
     }
 
     private function commandTargetScope(): string

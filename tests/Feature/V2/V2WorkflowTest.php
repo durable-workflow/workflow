@@ -900,6 +900,89 @@ final class V2WorkflowTest extends TestCase
             ->all());
     }
 
+    public function testRepeatedSameNamedSignalWaitsUseDurableWaitIds(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalOrderingWorkflow::class, 'signal-wait-ids');
+        $started = $workflow->start();
+        $runId = $started->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $openedWaits = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalWaitOpened')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(1, $openedWaits);
+
+        $firstWaitId = $openedWaits[0]->payload['signal_wait_id'] ?? null;
+
+        $this->assertIsString($firstWaitId);
+
+        $first = $workflow->signal('message', 'first');
+
+        $firstReceived = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalReceived')
+            ->where('workflow_command_id', $first->commandId())
+            ->sole();
+
+        $this->assertSame($firstWaitId, $firstReceived->payload['signal_wait_id'] ?? null);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertSame('waiting', $workflow->status());
+
+        $openedWaits = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalWaitOpened')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $openedWaits);
+
+        $secondWaitId = $openedWaits[1]->payload['signal_wait_id'] ?? null;
+
+        $this->assertIsString($secondWaitId);
+        $this->assertNotSame($firstWaitId, $secondWaitId);
+
+        $second = $workflow->signal('message', 'second');
+
+        $secondReceived = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalReceived')
+            ->where('workflow_command_id', $second->commandId())
+            ->sole();
+
+        $this->assertSame($secondWaitId, $secondReceived->payload['signal_wait_id'] ?? null);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+
+        $this->assertSame([$firstWaitId, $secondWaitId], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalApplied')
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): ?string => $event->payload['signal_wait_id'] ?? null)
+            ->all());
+
+        $this->assertSame([
+            'messages' => ['first', 'second'],
+            'workflow_id' => 'signal-wait-ids',
+            'run_id' => $runId,
+        ], $workflow->output());
+    }
+
     public function testRunSummaryProjectsLeasedWorkflowTaskLiveness(): void
     {
         $instance = WorkflowInstance::query()->create([

@@ -95,6 +95,8 @@ final class HistoryTimeline
             'command_rejection_reason' => $command?->rejection_reason ?? self::stringValue(
                 $payload['rejection_reason'] ?? null
             ),
+            'workflow_sequence' => self::intValue($payload['sequence'] ?? null),
+            'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
             'signal_name' => $command?->targetName() ?? self::stringValue($payload['signal_name'] ?? null),
             'update_name' => $command?->targetName() ?? self::stringValue($payload['update_name'] ?? null),
             'activity_execution_id' => $activity?->id ?? $activityId,

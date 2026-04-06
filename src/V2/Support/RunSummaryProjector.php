@@ -287,68 +287,45 @@ final class RunSummaryProjector
     }
 
     /**
-     * @return array{name: string, opened_at: \Carbon\CarbonInterface}|null
+     * @return array{id: string, name: string, opened_at: \Carbon\CarbonInterface}|null
      */
     private static function openSignalWait(WorkflowRun $run): ?array
     {
-        $openSignals = [];
-        $openSignalKeysByName = [];
-
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
-            }
-
-            $signalName = $event->payload['signal_name'] ?? null;
-
-            if ($event->event_type === HistoryEventType::SignalWaitOpened) {
-                $sequence = $event->payload['sequence'] ?? null;
-
-                if (! is_int($sequence) || ! is_string($signalName) || $signalName === '') {
-                    continue;
-                }
-
-                $key = sprintf('%d:%s', $sequence, $signalName);
-
-                $openSignals[$key] = [
-                    'sequence' => $sequence,
-                    'name' => $signalName,
-                    'opened_at' => $event->recorded_at ?? $event->created_at,
-                ];
-                $openSignalKeysByName[$signalName] ??= [];
-                $openSignalKeysByName[$signalName][] = $key;
-
-                continue;
-            }
-
-            if (! in_array($event->event_type, [
-                HistoryEventType::SignalReceived,
-                HistoryEventType::SignalApplied,
-            ], true) || ! is_string($signalName) || $signalName === '') {
-                continue;
-            }
-
-            $key = array_shift($openSignalKeysByName[$signalName]);
-
-            if ($key === null) {
-                continue;
-            }
-
-            unset($openSignals[$key]);
-        }
+        $openSignals = array_values(array_filter(
+            SignalWaits::forRun($run),
+            static fn (array $wait): bool => $wait['status'] === 'open',
+        ));
 
         if ($openSignals === []) {
             return null;
         }
 
         uasort($openSignals, static function (array $left, array $right): int {
-            return $left['sequence'] <=> $right['sequence'];
+            $leftSequence = $left['sequence'] ?? PHP_INT_MIN;
+            $rightSequence = $right['sequence'] ?? PHP_INT_MIN;
+
+            if ($leftSequence !== $rightSequence) {
+                return $leftSequence <=> $rightSequence;
+            }
+
+            $leftOpenedAt = $left['opened_at']?->getTimestampMs() ?? PHP_INT_MIN;
+            $rightOpenedAt = $right['opened_at']?->getTimestampMs() ?? PHP_INT_MIN;
+
+            if ($leftOpenedAt !== $rightOpenedAt) {
+                return $leftOpenedAt <=> $rightOpenedAt;
+            }
+
+            return $left['signal_wait_id'] <=> $right['signal_wait_id'];
         });
 
-        /** @var array{name: string, opened_at: \Carbon\CarbonInterface} $signal */
+        /** @var array{id: string, name: string, opened_at: \Carbon\CarbonInterface} $signal */
         $signal = end($openSignals);
 
-        return $signal;
+        return [
+            'id' => $signal['signal_wait_id'],
+            'name' => $signal['signal_name'],
+            'opened_at' => $signal['opened_at'],
+        ];
     }
 
     /**

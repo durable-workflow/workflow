@@ -11,16 +11,23 @@ use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
+use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\WorkflowStub;
@@ -256,6 +263,58 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('signal', $timeline[4]['command_type']);
     }
 
+    public function testTimelineExposesSignalWaitIdentityForRepeatedSameNamedSignals(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalOrderingWorkflow::class, 'timeline-signal-order');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $workflow->signal('message', 'first');
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $workflow->signal('message', 'second');
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+
+        $timeline = HistoryTimeline::forRun($run);
+        $opened = array_values(array_filter(
+            $timeline,
+            static fn (array $entry): bool => ($entry['type'] ?? null) === 'SignalWaitOpened',
+        ));
+        $received = array_values(array_filter(
+            $timeline,
+            static fn (array $entry): bool => ($entry['type'] ?? null) === 'SignalReceived',
+        ));
+        $applied = array_values(array_filter(
+            $timeline,
+            static fn (array $entry): bool => ($entry['type'] ?? null) === 'SignalApplied',
+        ));
+
+        $this->assertCount(2, $opened);
+        $this->assertCount(2, $received);
+        $this->assertCount(2, $applied);
+        $this->assertSame([1, 2], array_column($opened, 'workflow_sequence'));
+        $this->assertSame([1, 2], array_column($applied, 'workflow_sequence'));
+        $this->assertSame(array_column($opened, 'signal_wait_id'), array_column($received, 'signal_wait_id'));
+        $this->assertSame(array_column($opened, 'signal_wait_id'), array_column($applied, 'signal_wait_id'));
+        $this->assertNotSame($opened[0]['signal_wait_id'], $opened[1]['signal_wait_id']);
+    }
+
     public function testTimelineIncludesTypedChildWorkflowEntriesForCompletedParentRun(): void
     {
         $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'timeline-child');
@@ -367,5 +426,32 @@ final class V2HistoryTimelineTest extends TestCase
         }
 
         $this->fail('Timed out waiting for workflow to settle.');
+    }
+
+    private function drainReadyTasks(): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('created_at')
+                ->first();
+
+            if ($task === null) {
+                return;
+            }
+
+            $job = match ($task->task_type) {
+                TaskType::Workflow => new RunWorkflowTask($task->id),
+                TaskType::Activity => new RunActivityTask($task->id),
+                TaskType::Timer => new RunTimerTask($task->id),
+            };
+
+            $this->app->call([$job, 'handle']);
+        }
+
+        $this->fail('Timed out draining ready workflow tasks.');
     }
 }

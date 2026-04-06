@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
+use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
@@ -199,6 +200,48 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('accepted', $signalWait['command_status']);
         $this->assertSame('signal_received', $signalWait['command_outcome']);
         $this->assertNull($this->findOpenTaskOrNull($detail['tasks'], 'workflow'));
+    }
+
+    public function testRunDetailViewDistinguishesRepeatedSameNamedSignalWaits(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalOrderingWorkflow::class, 'detail-signal-order');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $firstSignal = $workflow->signal('message', 'first');
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertSame('waiting', $workflow->status());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+
+        $detail = RunDetailView::forRun($run);
+        $signalWaits = array_values(array_filter(
+            $detail['waits'],
+            static fn (array $wait): bool => ($wait['kind'] ?? null) === 'signal',
+        ));
+
+        usort($signalWaits, static fn (array $left, array $right): int => ($left['sequence'] ?? 0) <=> ($right['sequence'] ?? 0));
+
+        $this->assertCount(2, $signalWaits);
+        $this->assertSame([1, 2], array_column($signalWaits, 'sequence'));
+        $this->assertSame(['resolved', 'open'], array_column($signalWaits, 'status'));
+        $this->assertSame(['applied', 'waiting'], array_column($signalWaits, 'source_status'));
+        $this->assertSame(['message', 'message'], array_column($signalWaits, 'target_name'));
+        $this->assertSame([$firstSignal->commandId(), null], array_column($signalWaits, 'command_id'));
+        $this->assertNotSame($signalWaits[0]['signal_wait_id'], $signalWaits[1]['signal_wait_id']);
+        $this->assertIsString($signalWaits[0]['signal_wait_id']);
+        $this->assertIsString($signalWaits[1]['signal_wait_id']);
     }
 
     public function testRunDetailViewIncludesCurrentRunPointerForHistoricalRun(): void

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Generator;
+use Illuminate\Support\Str;
 use LogicException;
 use ReflectionMethod;
 use RuntimeException;
@@ -583,17 +584,19 @@ final class WorkflowExecutor
         WorkflowCommand $command,
     ): WorkflowHistoryEvent {
         $value = $this->signalPayloadValue($command);
+        $signalWaitId = $this->signalWaitId($run, $command, $signalCall->name);
 
         $command->forceFill([
             'applied_at' => now(),
         ])->save();
 
-        return WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, [
+        return WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
             'workflow_command_id' => $command->id,
             'signal_name' => $signalCall->name,
+            'signal_wait_id' => $signalWaitId,
             'sequence' => $sequence,
             'value' => Serializer::serialize($value),
-        ], $task->id, $command->id);
+        ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task->id, $command->id);
     }
 
     private function recordSignalWait(
@@ -614,8 +617,31 @@ final class WorkflowExecutor
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SignalWaitOpened, [
             'signal_name' => $signalCall->name,
+            'signal_wait_id' => (string) Str::ulid(),
             'sequence' => $sequence,
         ], $task->id);
+    }
+
+    private function signalWaitId(WorkflowRun $run, WorkflowCommand $command, string $signalName): ?string
+    {
+        /** @var WorkflowHistoryEvent|null $receivedEvent */
+        $receivedEvent = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SignalReceived
+                && $event->workflow_command_id === $command->id
+        );
+
+        $signalWaitId = $receivedEvent === null
+            ? null
+            : $this->stringValue($receivedEvent->payload['signal_wait_id'] ?? null);
+
+        return $signalWaitId ?? SignalWaits::openWaitIdForName($run, $signalName);
+    }
+
+    private function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 
     private function signalValue(WorkflowHistoryEvent $event): mixed

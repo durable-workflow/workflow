@@ -182,112 +182,52 @@ final class RunWaitView
      */
     private static function signalWaits(WorkflowRun $run): array
     {
-        $waits = [];
-        $openWaitKeysByName = [];
         $commands = $run->commands->keyBy('id');
 
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
-            }
+        return array_values(array_map(static function (array $wait) use ($commands): array {
+            /** @var WorkflowCommand|null $command */
+            $command = $wait['command_id'] === null
+                ? null
+                : $commands->get($wait['command_id']);
 
-            $signalName = self::stringValue($event->payload['signal_name'] ?? null);
+            $summary = match ($wait['status']) {
+                'open' => sprintf('Waiting for signal %s.', $wait['signal_name']),
+                'cancelled' => match ($wait['source_status']) {
+                    'cancelled' => 'Signal wait ended when the run was cancelled.',
+                    'terminated' => 'Signal wait ended when the run was terminated.',
+                    'continued' => 'Signal wait ended when the run continued as new.',
+                    'closed' => 'Signal wait ended when the run closed.',
+                    default => 'Signal wait ended when the run failed.',
+                },
+                default => sprintf('Signal %s received.', $wait['signal_name']),
+            };
 
-            if ($event->event_type === HistoryEventType::SignalWaitOpened) {
-                if ($signalName === null) {
-                    continue;
-                }
-
-                $sequence = self::intValue($event->payload['sequence'] ?? null);
-                $key = sprintf('signal:%s:%s', $sequence ?? $event->sequence, $signalName);
-
-                $waits[$key] = [
-                    'id' => $key,
-                    'kind' => 'signal',
-                    'sequence' => $sequence,
-                    'status' => 'open',
-                    'source_status' => 'waiting',
-                    'summary' => sprintf('Waiting for signal %s.', $signalName),
-                    'opened_at' => $event->recorded_at ?? $event->created_at,
-                    'deadline_at' => null,
-                    'resolved_at' => null,
-                    'target_name' => $signalName,
-                    'target_type' => null,
-                    'task_backed' => false,
-                    'external_only' => true,
-                    'resume_source_kind' => 'signal',
-                    'resume_source_id' => null,
-                    'task_id' => null,
-                    'task_type' => null,
-                    'task_status' => null,
-                    'command_id' => null,
-                    'command_sequence' => null,
-                    'command_status' => null,
-                    'command_outcome' => null,
-                ];
-
-                $openWaitKeysByName[$signalName] ??= [];
-                $openWaitKeysByName[$signalName][] = $key;
-
-                continue;
-            }
-
-            if ($signalName === null || ! isset($openWaitKeysByName[$signalName][0])) {
-                if (in_array($event->event_type, [
-                    HistoryEventType::WorkflowCompleted,
-                    HistoryEventType::WorkflowFailed,
-                    HistoryEventType::WorkflowCancelled,
-                    HistoryEventType::WorkflowTerminated,
-                    HistoryEventType::WorkflowContinuedAsNew,
-                ], true)) {
-                    self::closeOpenSignalWaits($waits, $openWaitKeysByName, $event);
-                }
-
-                continue;
-            }
-
-            if (in_array($event->event_type, [
-                HistoryEventType::SignalReceived,
-                HistoryEventType::SignalApplied,
-            ], true)) {
-                $key = array_shift($openWaitKeysByName[$signalName]);
-
-                if ($key === null || ! isset($waits[$key])) {
-                    continue;
-                }
-
-                /** @var WorkflowCommand|null $command */
-                $command = $event->workflow_command_id === null
-                    ? null
-                    : $commands->get($event->workflow_command_id);
-
-                $waits[$key]['status'] = 'resolved';
-                $waits[$key]['source_status'] = $event->event_type === HistoryEventType::SignalApplied
-                    ? 'applied'
-                    : 'received';
-                $waits[$key]['summary'] = sprintf('Signal %s received.', $signalName);
-                $waits[$key]['resolved_at'] = $event->recorded_at ?? $event->created_at;
-                $waits[$key]['resume_source_id'] = $event->workflow_command_id;
-                $waits[$key]['command_id'] = $event->workflow_command_id;
-                $waits[$key]['command_sequence'] = $command?->command_sequence;
-                $waits[$key]['command_status'] = $command?->status?->value;
-                $waits[$key]['command_outcome'] = $command?->outcome?->value;
-
-                continue;
-            }
-
-            if (in_array($event->event_type, [
-                HistoryEventType::WorkflowCompleted,
-                HistoryEventType::WorkflowFailed,
-                HistoryEventType::WorkflowCancelled,
-                HistoryEventType::WorkflowTerminated,
-                HistoryEventType::WorkflowContinuedAsNew,
-            ], true)) {
-                self::closeOpenSignalWaits($waits, $openWaitKeysByName, $event);
-            }
-        }
-
-        return array_values($waits);
+            return [
+                'id' => $wait['signal_wait_id'],
+                'signal_wait_id' => $wait['signal_wait_id'],
+                'kind' => 'signal',
+                'sequence' => $wait['sequence'],
+                'status' => $wait['status'],
+                'source_status' => $wait['source_status'],
+                'summary' => $summary,
+                'opened_at' => $wait['opened_at'],
+                'deadline_at' => null,
+                'resolved_at' => $wait['resolved_at'],
+                'target_name' => $wait['signal_name'],
+                'target_type' => null,
+                'task_backed' => false,
+                'external_only' => true,
+                'resume_source_kind' => 'signal',
+                'resume_source_id' => $wait['command_id'],
+                'task_id' => null,
+                'task_type' => null,
+                'task_status' => null,
+                'command_id' => $wait['command_id'],
+                'command_sequence' => $command?->command_sequence,
+                'command_status' => $command?->status?->value,
+                'command_outcome' => $command?->outcome?->value,
+            ];
+        }, SignalWaits::forRun($run)));
     }
 
     /**
@@ -371,58 +311,9 @@ final class RunWaitView
             ->all();
     }
 
-    /**
-     * @param array<string, array<string, mixed>> $waits
-     * @param array<string, list<string>> $openWaitKeysByName
-     */
-    private static function closeOpenSignalWaits(
-        array &$waits,
-        array &$openWaitKeysByName,
-        WorkflowHistoryEvent $event,
-    ): void {
-        $sourceStatus = match ($event->event_type) {
-            HistoryEventType::WorkflowCancelled => 'cancelled',
-            HistoryEventType::WorkflowTerminated => 'terminated',
-            HistoryEventType::WorkflowContinuedAsNew => 'continued',
-            default => 'closed',
-        };
-
-        $summary = match ($event->event_type) {
-            HistoryEventType::WorkflowCancelled => 'Signal wait ended when the run was cancelled.',
-            HistoryEventType::WorkflowTerminated => 'Signal wait ended when the run was terminated.',
-            HistoryEventType::WorkflowContinuedAsNew => 'Signal wait ended when the run continued as new.',
-            HistoryEventType::WorkflowFailed => 'Signal wait ended when the run failed.',
-            default => 'Signal wait ended when the run closed.',
-        };
-
-        foreach ($openWaitKeysByName as $signalName => $keys) {
-            while ($keys !== []) {
-                $key = array_shift($keys);
-
-                if ($key === null || ! isset($waits[$key])) {
-                    continue;
-                }
-
-                $waits[$key]['status'] = 'cancelled';
-                $waits[$key]['source_status'] = $sourceStatus;
-                $waits[$key]['summary'] = $summary;
-                $waits[$key]['resolved_at'] = $event->recorded_at ?? $event->created_at;
-            }
-
-            $openWaitKeysByName[$signalName] = [];
-        }
-    }
-
     private static function stringValue(mixed $value): ?string
     {
         return is_string($value) && $value !== ''
-            ? $value
-            : null;
-    }
-
-    private static function intValue(mixed $value): ?int
-    {
-        return is_int($value)
             ? $value
             : null;
     }
