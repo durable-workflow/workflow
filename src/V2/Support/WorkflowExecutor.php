@@ -11,7 +11,9 @@ use ReflectionMethod;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
@@ -351,6 +353,15 @@ final class WorkflowExecutor
             'current_run_id' => $childRun->id,
         ])->save();
 
+        $startCommand = $this->recordWorkflowStartCommand(
+            $run,
+            $sequence,
+            $childInstance,
+            $childRun,
+            $metadata->arguments,
+            $now,
+        );
+
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
             'link_type' => 'child_workflow',
@@ -381,16 +392,26 @@ final class WorkflowExecutor
             'child_run_number' => $childRun->run_number,
         ], $task->id);
 
+        WorkflowHistoryEvent::record($childRun, HistoryEventType::StartAccepted, [
+            'workflow_command_id' => $startCommand->id,
+            'workflow_instance_id' => $childRun->workflow_instance_id,
+            'workflow_run_id' => $childRun->id,
+            'workflow_class' => $childRun->workflow_class,
+            'workflow_type' => $childRun->workflow_type,
+            'outcome' => $startCommand->outcome?->value,
+        ], null, $startCommand->id);
+
         WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $childRun->workflow_class,
             'workflow_type' => $childRun->workflow_type,
             'workflow_instance_id' => $childRun->workflow_instance_id,
             'workflow_run_id' => $childRun->id,
+            'workflow_command_id' => $startCommand->id,
             'parent_workflow_instance_id' => $run->workflow_instance_id,
             'parent_workflow_run_id' => $run->id,
             'parent_sequence' => $sequence,
             'workflow_link_id' => $link->id,
-        ]);
+        ], null, $startCommand->id);
 
         /** @var WorkflowTask $childTask */
         $childTask = WorkflowTask::query()->create([
@@ -785,6 +806,15 @@ final class WorkflowExecutor
             'run_count' => $continuedRun->run_number,
         ])->save();
 
+        $startCommand = $this->recordWorkflowStartCommand(
+            $run,
+            $sequence,
+            $instance,
+            $continuedRun,
+            $continueAsNew->arguments,
+            $now,
+        );
+
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
             'link_type' => 'continue_as_new',
@@ -828,14 +858,24 @@ final class WorkflowExecutor
             'closed_reason' => 'continued',
         ], $task->id);
 
+        WorkflowHistoryEvent::record($continuedRun, HistoryEventType::StartAccepted, [
+            'workflow_command_id' => $startCommand->id,
+            'workflow_instance_id' => $continuedRun->workflow_instance_id,
+            'workflow_run_id' => $continuedRun->id,
+            'workflow_class' => $continuedRun->workflow_class,
+            'workflow_type' => $continuedRun->workflow_type,
+            'outcome' => $startCommand->outcome?->value,
+        ], null, $startCommand->id);
+
         WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $continuedRun->workflow_class,
             'workflow_type' => $continuedRun->workflow_type,
             'workflow_instance_id' => $continuedRun->workflow_instance_id,
             'workflow_run_id' => $continuedRun->id,
+            'workflow_command_id' => $startCommand->id,
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
-        ]);
+        ], null, $startCommand->id);
 
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([
@@ -888,6 +928,45 @@ final class WorkflowExecutor
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     */
+    private function recordWorkflowStartCommand(
+        WorkflowRun $sourceRun,
+        int $sourceSequence,
+        WorkflowInstance $targetInstance,
+        WorkflowRun $targetRun,
+        array $arguments,
+        mixed $recordedAt,
+    ): WorkflowCommand {
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::record(
+            $targetInstance,
+            $targetRun,
+            array_merge(
+                CommandContext::workflow(
+                    $sourceRun->workflow_instance_id,
+                    $sourceRun->id,
+                    $sourceSequence,
+                )->attributes(),
+                [
+                    'command_type' => CommandType::Start->value,
+                    'target_scope' => 'instance',
+                    'status' => CommandStatus::Accepted->value,
+                    'outcome' => CommandOutcome::StartedNew->value,
+                    'payload_codec' => config('workflows.serializer'),
+                    'payload' => Serializer::serialize($arguments),
+                    'accepted_at' => $recordedAt,
+                    'applied_at' => $recordedAt,
+                    'created_at' => $recordedAt,
+                    'updated_at' => $recordedAt,
+                ],
+            ),
+        );
+
+        return $command;
     }
 
     private function failRun(

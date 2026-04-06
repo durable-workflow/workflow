@@ -360,12 +360,20 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($currentRun->id, $currentDetail['current_run_id']);
         $this->assertCount(1, $currentDetail['parents']);
         $this->assertCount(0, $currentDetail['continuedWorkflows']);
+        $this->assertCount(1, $currentDetail['commands']);
+        $this->assertSame('start', $currentDetail['commands'][0]['type']);
+        $this->assertSame('workflow', $currentDetail['commands'][0]['source']);
+        $this->assertSame('Workflow', $currentDetail['commands'][0]['caller_label']);
+        $this->assertSame($historicalRun->id, $currentDetail['commands'][0]['context']['workflow']['parent_run_id']);
+        $this->assertSame(2, $currentDetail['commands'][0]['context']['workflow']['sequence']);
         $this->assertSame('continue_as_new', $currentDetail['parents'][0]['link_type']);
         $this->assertSame($historicalRun->id, $currentDetail['parents'][0]['parent_workflow_run_id']);
         $this->assertSame('completed', $currentDetail['parents'][0]['status']);
         $this->assertSame('completed', $currentDetail['parents'][0]['status_bucket']);
         $this->assertSame('completed', $currentDetail['status']);
         $this->assertSame('completed', $currentDetail['closed_reason']);
+        $this->assertSame('StartAccepted', $currentDetail['timeline'][0]['type']);
+        $this->assertSame(1, $currentDetail['timeline'][0]['command_sequence']);
     }
 
     public function testRunDetailViewIncludesChildWaitAndLineageForParentRun(): void

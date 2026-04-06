@@ -330,6 +330,35 @@ final class V2WorkflowTest extends TestCase
             'is_primary_parent' => true,
         ]);
 
+        /** @var WorkflowCommand $secondRunStart */
+        $secondRunStart = WorkflowCommand::query()
+            ->where('workflow_run_id', $runs[1]->id)
+            ->where('command_type', 'start')
+            ->sole();
+        /** @var WorkflowCommand $thirdRunStart */
+        $thirdRunStart = WorkflowCommand::query()
+            ->where('workflow_run_id', $runs[2]->id)
+            ->where('command_type', 'start')
+            ->sole();
+
+        $this->assertSame('workflow', $secondRunStart->source);
+        $this->assertSame('Workflow', $secondRunStart->callerLabel());
+        $this->assertSame([
+            'parent_instance_id' => 'continue-instance',
+            'parent_run_id' => $runs[0]->id,
+            'sequence' => 2,
+        ], $secondRunStart->commandContext()['workflow']);
+        $this->assertSame(1, $secondRunStart->command_sequence);
+
+        $this->assertSame('workflow', $thirdRunStart->source);
+        $this->assertSame('Workflow', $thirdRunStart->callerLabel());
+        $this->assertSame([
+            'parent_instance_id' => 'continue-instance',
+            'parent_run_id' => $runs[1]->id,
+            'sequence' => 2,
+        ], $thirdRunStart->commandContext()['workflow']);
+        $this->assertSame(1, $thirdRunStart->command_sequence);
+
         $this->assertSame([
             'StartAccepted',
             'WorkflowStarted',
@@ -344,6 +373,7 @@ final class V2WorkflowTest extends TestCase
             ->all());
 
         $this->assertSame([
+            'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
             'ActivityCompleted',
@@ -356,6 +386,7 @@ final class V2WorkflowTest extends TestCase
             ->all());
 
         $this->assertSame([
+            'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
             'ActivityCompleted',
@@ -410,6 +441,33 @@ final class V2WorkflowTest extends TestCase
             'WorkflowCompleted',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $parentRunId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        /** @var WorkflowCommand $childStart */
+        $childStart = WorkflowCommand::query()
+            ->where('workflow_run_id', $childRun->id)
+            ->where('command_type', 'start')
+            ->sole();
+
+        $this->assertSame('workflow', $childStart->source);
+        $this->assertSame('Workflow', $childStart->callerLabel());
+        $this->assertSame([
+            'parent_instance_id' => 'parent-child-instance',
+            'parent_run_id' => $parentRunId,
+            'sequence' => 1,
+        ], $childStart->commandContext()['workflow']);
+        $this->assertSame(1, $childStart->command_sequence);
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ActivityScheduled',
+            'ActivityCompleted',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $childRun->id)
             ->orderBy('sequence')
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
