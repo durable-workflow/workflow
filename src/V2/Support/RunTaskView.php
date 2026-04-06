@@ -63,6 +63,9 @@ final class RunTaskView
                         'type' => $task->task_type->value,
                         'status' => $task->status->value,
                         'summary' => self::summaryFor($task, $activity, $timer),
+                        'compatibility' => $task->compatibility,
+                        'compatibility_supported' => WorkerCompatibility::supports($task->compatibility),
+                        'compatibility_reason' => WorkerCompatibility::mismatchReason($task->compatibility),
                         'dispatch_overdue' => TaskRepairPolicy::readyTaskNeedsRedispatch($task),
                         'is_open' => in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true),
                         'available_at' => $task->available_at,
@@ -121,6 +124,22 @@ final class RunTaskView
                 ),
                 TaskType::Timer => sprintf(
                     '%s is ready but dispatch is overdue.',
+                    ucfirst($timer?->delay_seconds === null
+                        ? 'timer task'
+                        : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
+                ),
+            };
+        }
+
+        if (! WorkerCompatibility::supports($task->compatibility)) {
+            return match ($task->task_type) {
+                TaskType::Workflow => 'Workflow task is waiting for a compatible worker.',
+                TaskType::Activity => sprintf(
+                    'Activity task is waiting for a compatible worker for %s.',
+                    $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                ),
+                TaskType::Timer => sprintf(
+                    '%s is waiting for a compatible worker.',
                     ucfirst($timer?->delay_seconds === null
                         ? 'timer task'
                         : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),

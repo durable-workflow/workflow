@@ -27,6 +27,7 @@ use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkerCompatibility;
 
 final class RunActivityTask implements ShouldQueue
 {
@@ -164,6 +165,7 @@ final class RunActivityTask implements ShouldQueue
                 'payload' => [],
                 'connection' => $run->connection,
                 'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
             ]);
 
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
@@ -185,6 +187,10 @@ final class RunActivityTask implements ShouldQueue
                 ->find($this->taskId);
 
             if ($task === null || $task->task_type !== TaskType::Activity || $task->status !== TaskStatus::Ready) {
+                return null;
+            }
+
+            if (! WorkerCompatibility::supports($task->compatibility)) {
                 return null;
             }
 

@@ -40,6 +40,7 @@ use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowStub
@@ -373,6 +374,7 @@ final class WorkflowStub
                 'workflow_class' => $instance->workflow_class,
                 'workflow_type' => $instance->workflow_type,
                 'status' => RunStatus::Pending->value,
+                'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => config('workflows.serializer'),
                 'arguments' => \Workflow\Serializers\Serializer::serialize($metadata->arguments),
                 'connection' => RoutingResolver::workflowConnection($instance->workflow_class, $metadata),
@@ -426,6 +428,7 @@ final class WorkflowStub
                 'payload' => [],
                 'connection' => $run->connection,
                 'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
             ]);
 
             RunSummaryProjector::project(
@@ -807,6 +810,7 @@ final class WorkflowStub
                     'payload' => [],
                     'connection' => $run->connection,
                     'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
                 ]);
             }
 
@@ -1454,6 +1458,7 @@ final class WorkflowStub
                 'payload' => [],
                 'connection' => $parentRun->connection,
                 'queue' => $parentRun->queue,
+                'compatibility' => $parentRun->compatibility,
             ]);
 
             RunSummaryProjector::project(

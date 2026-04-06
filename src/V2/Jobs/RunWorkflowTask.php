@@ -17,6 +17,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowExecutor;
 
 final class RunWorkflowTask implements ShouldQueue
@@ -110,6 +111,10 @@ final class RunWorkflowTask implements ShouldQueue
                 ->find($this->taskId);
 
             if ($task === null || $task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Ready) {
+                return false;
+            }
+
+            if (! WorkerCompatibility::supports($task->compatibility)) {
                 return false;
             }
 

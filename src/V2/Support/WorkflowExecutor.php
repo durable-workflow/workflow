@@ -302,6 +302,7 @@ final class WorkflowExecutor
             ],
             'connection' => $execution->connection,
             'queue' => $execution->queue,
+            'compatibility' => $run->compatibility,
         ]);
 
         $this->markRunWaiting($run, $task);
@@ -335,6 +336,7 @@ final class WorkflowExecutor
             'workflow_class' => $childWorkflowCall->workflow,
             'workflow_type' => $workflowType,
             'status' => RunStatus::Pending->value,
+            'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
             'payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize($metadata->arguments),
             'connection' => RoutingResolver::workflowConnection($childWorkflowCall->workflow, $metadata),
@@ -398,6 +400,7 @@ final class WorkflowExecutor
             'payload' => [],
             'connection' => $childRun->connection,
             'queue' => $childRun->queue,
+            'compatibility' => $childRun->compatibility,
         ]);
 
         $this->markRunWaiting($run, $task);
@@ -454,6 +457,7 @@ final class WorkflowExecutor
             ],
             'connection' => $run->connection,
             'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
         ]);
 
         $this->markRunWaiting($run, $task);
@@ -818,6 +822,7 @@ final class WorkflowExecutor
             'payload' => [],
             'connection' => $continuedRun->connection,
             'queue' => $continuedRun->queue,
+            'compatibility' => $continuedRun->compatibility,
         ]);
 
         $task->forceFill([
@@ -949,6 +954,7 @@ final class WorkflowExecutor
                 'payload' => [],
                 'connection' => $parentRun->connection,
                 'queue' => $parentRun->queue,
+                'compatibility' => $parentRun->compatibility,
             ]);
 
             TaskDispatcher::dispatch($parentTask);

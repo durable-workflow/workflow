@@ -47,7 +47,6 @@ final class TaskRepair
             }
 
             $task->forceFill([
-                'last_dispatched_at' => now(),
                 'repair_count' => $task->repair_count + 1,
                 'last_error' => null,
             ])->save();
@@ -65,7 +64,6 @@ final class TaskRepair
                 'leased_at' => null,
                 'lease_owner' => null,
                 'lease_expires_at' => null,
-                'last_dispatched_at' => now(),
                 'repair_count' => $task->repair_count + 1,
                 'last_error' => null,
             ])->save();
@@ -127,6 +125,7 @@ final class TaskRepair
                     ],
                     'connection' => $execution->connection ?? $run->connection,
                     'queue' => $execution->queue ?? $run->queue,
+                    'compatibility' => $run->compatibility,
                     'repair_count' => 1,
                 ]);
 
@@ -153,6 +152,7 @@ final class TaskRepair
                     ],
                     'connection' => $run->connection,
                     'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
                     'repair_count' => 1,
                 ]);
 
@@ -169,6 +169,7 @@ final class TaskRepair
             'payload' => [],
             'connection' => $run->connection,
             'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
             'repair_count' => 1,
         ]);
 

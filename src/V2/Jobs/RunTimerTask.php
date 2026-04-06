@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\WorkerCompatibility;
 
 final class RunTimerTask implements ShouldQueue
 {
@@ -109,6 +110,7 @@ final class RunTimerTask implements ShouldQueue
                 'payload' => [],
                 'connection' => $run->connection,
                 'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
             ]);
 
             RunSummaryProjector::project(
@@ -132,6 +134,10 @@ final class RunTimerTask implements ShouldQueue
                 ->find($this->taskId);
 
             if ($task === null || $task->task_type !== TaskType::Timer || $task->status !== TaskStatus::Ready) {
+                return null;
+            }
+
+            if (! WorkerCompatibility::supports($task->compatibility)) {
                 return null;
             }
 

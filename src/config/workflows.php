@@ -36,6 +36,10 @@ return [
                 // 'payments.capture' => App\Activities\CapturePaymentActivity::class,
             ],
         ],
+        'compatibility' => [
+            'current' => env('WORKFLOW_V2_CURRENT_COMPATIBILITY'),
+            'supported' => env('WORKFLOW_V2_SUPPORTED_COMPATIBILITIES'),
+        ],
     ],
 
     'serializer' => Workflow\Serializers\Y::class,

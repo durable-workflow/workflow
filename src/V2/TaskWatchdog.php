@@ -14,6 +14,7 @@ use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskRepairPolicy;
+use Workflow\V2\Support\WorkerCompatibility;
 
 final class TaskWatchdog
 {
@@ -40,6 +41,10 @@ final class TaskWatchdog
                     }
 
                     if (! TaskRepairPolicy::readyTaskNeedsRedispatch($task) && ! TaskRepairPolicy::leaseExpired($task)) {
+                        return null;
+                    }
+
+                    if (! WorkerCompatibility::supports($task->compatibility)) {
                         return null;
                     }
 

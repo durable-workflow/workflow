@@ -136,6 +136,7 @@ final class RunSummaryProjector
                 'engine_source' => 'v2',
                 'class' => $run->workflow_class,
                 'workflow_type' => $run->workflow_type,
+                'compatibility' => $run->compatibility,
                 'status' => $run->status->value,
                 'status_bucket' => $statusBucket->value,
                 'closed_reason' => $run->closed_reason,
