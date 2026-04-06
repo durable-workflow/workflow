@@ -32,6 +32,7 @@ class WorkflowTask extends Model
         'available_at' => 'datetime',
         'leased_at' => 'datetime',
         'lease_expires_at' => 'datetime',
+        'last_dispatch_attempt_at' => 'datetime',
         'last_dispatched_at' => 'datetime',
     ];
 

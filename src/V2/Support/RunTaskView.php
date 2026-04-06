@@ -62,15 +62,19 @@ final class RunTaskView
                         'id' => $task->id,
                         'type' => $task->task_type->value,
                         'status' => $task->status->value,
+                        'transport_state' => self::transportState($task),
                         'summary' => self::summaryFor($task, $activity, $timer),
                         'compatibility' => $task->compatibility,
                         'compatibility_supported' => WorkerCompatibility::supports($task->compatibility),
                         'compatibility_reason' => WorkerCompatibility::mismatchReason($task->compatibility),
-                        'dispatch_overdue' => TaskRepairPolicy::readyTaskNeedsRedispatch($task),
+                        'dispatch_failed' => TaskRepairPolicy::dispatchFailed($task),
+                        'dispatch_overdue' => TaskRepairPolicy::dispatchOverdue($task),
                         'is_open' => in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true),
                         'available_at' => $task->available_at,
+                        'last_dispatch_attempt_at' => $task->last_dispatch_attempt_at,
                         'leased_at' => $task->leased_at,
                         'last_dispatched_at' => $task->last_dispatched_at,
+                        'last_dispatch_error' => $task->last_dispatch_error,
                         'lease_expired' => TaskRepairPolicy::leaseExpired($task),
                         'lease_owner' => $task->lease_owner,
                         'lease_expires_at' => $task->lease_expires_at,
@@ -105,7 +109,10 @@ final class RunTaskView
                     TaskRepairPolicy::leaseExpired(
                         $task
                     ) => 'Workflow task lease expired and is waiting for a compatible worker.',
-                    TaskRepairPolicy::readyTaskNeedsRedispatch(
+                    TaskRepairPolicy::dispatchFailed(
+                        $task
+                    ) => 'Workflow task dispatch failed and is waiting for a compatible worker.',
+                    TaskRepairPolicy::dispatchOverdue(
                         $task
                     ) => 'Workflow task is waiting for a compatible worker; dispatch is overdue.',
                     default => 'Workflow task is waiting for a compatible worker.',
@@ -113,17 +120,21 @@ final class RunTaskView
                 TaskType::Activity => sprintf(
                     TaskRepairPolicy::leaseExpired($task)
                         ? 'Activity task lease expired and is waiting for a compatible worker for %s.'
-                        : (TaskRepairPolicy::readyTaskNeedsRedispatch($task)
+                        : (TaskRepairPolicy::dispatchFailed($task)
+                            ? 'Activity task dispatch failed and is waiting for a compatible worker for %s.'
+                            : (TaskRepairPolicy::dispatchOverdue($task)
                             ? 'Activity task is waiting for a compatible worker for %s; dispatch is overdue.'
-                            : 'Activity task is waiting for a compatible worker for %s.'),
+                            : 'Activity task is waiting for a compatible worker for %s.')),
                     $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
                 ),
                 TaskType::Timer => sprintf(
                     TaskRepairPolicy::leaseExpired($task)
                         ? '%s lease expired and is waiting for a compatible worker.'
-                        : (TaskRepairPolicy::readyTaskNeedsRedispatch($task)
+                        : (TaskRepairPolicy::dispatchFailed($task)
+                            ? '%s dispatch failed and is waiting for a compatible worker.'
+                            : (TaskRepairPolicy::dispatchOverdue($task)
                             ? '%s is waiting for a compatible worker; dispatch is overdue.'
-                            : '%s is waiting for a compatible worker.'),
+                            : '%s is waiting for a compatible worker.')),
                     ucfirst($timer?->delay_seconds === null
                         ? 'timer task'
                         : sprintf(
@@ -155,7 +166,27 @@ final class RunTaskView
             };
         }
 
-        if (TaskRepairPolicy::readyTaskNeedsRedispatch($task)) {
+        if (TaskRepairPolicy::dispatchFailed($task)) {
+            return match ($task->task_type) {
+                TaskType::Workflow => 'Workflow task dispatch failed; waiting for recovery.',
+                TaskType::Activity => sprintf(
+                    'Activity task dispatch failed for %s; waiting for recovery.',
+                    $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                ),
+                TaskType::Timer => sprintf(
+                    '%s dispatch failed; waiting for recovery.',
+                    ucfirst($timer?->delay_seconds === null
+                        ? 'timer task'
+                        : sprintf(
+                            'timer for %s second%s task',
+                            $timer->delay_seconds,
+                            $timer->delay_seconds === 1 ? '' : 's'
+                        )),
+                ),
+            };
+        }
+
+        if (TaskRepairPolicy::dispatchOverdue($task)) {
             return match ($task->task_type) {
                 TaskType::Workflow => 'Workflow task is ready but dispatch is overdue.',
                 TaskType::Activity => sprintf(
@@ -228,6 +259,35 @@ final class RunTaskView
 
         return $task->status === TaskStatus::Ready
             && ($task->available_at === null || ! $task->available_at->isFuture());
+    }
+
+    private static function transportState(WorkflowTask $task): string
+    {
+        if ($task->status === TaskStatus::Leased) {
+            return TaskRepairPolicy::leaseExpired($task)
+                ? 'lease_expired'
+                : 'leased';
+        }
+
+        if ($task->status !== TaskStatus::Ready) {
+            return $task->status->value;
+        }
+
+        if ($task->available_at !== null && $task->available_at->isFuture()) {
+            return TaskRepairPolicy::dispatchFailed($task)
+                ? 'dispatch_failed'
+                : 'scheduled';
+        }
+
+        if (TaskRepairPolicy::dispatchFailed($task)) {
+            return 'dispatch_failed';
+        }
+
+        if (TaskRepairPolicy::dispatchOverdue($task)) {
+            return 'dispatch_overdue';
+        }
+
+        return 'ready';
     }
 
     private static function stringValue(mixed $value): ?string

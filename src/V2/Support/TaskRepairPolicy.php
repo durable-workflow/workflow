@@ -23,13 +23,35 @@ final class TaskRepairPolicy
             && $task->lease_expires_at->lte($now ?? now());
     }
 
-    public static function readyTaskNeedsRedispatch(WorkflowTask $task, ?CarbonInterface $now = null): bool
+    public static function dispatchFailed(WorkflowTask $task): bool
+    {
+        if ($task->status !== TaskStatus::Ready) {
+            return false;
+        }
+
+        if ($task->last_dispatch_attempt_at === null) {
+            return false;
+        }
+
+        if (! is_string($task->last_dispatch_error) || trim($task->last_dispatch_error) === '') {
+            return false;
+        }
+
+        return $task->last_dispatched_at === null
+            || $task->last_dispatch_attempt_at->gt($task->last_dispatched_at);
+    }
+
+    public static function dispatchOverdue(WorkflowTask $task, ?CarbonInterface $now = null): bool
     {
         if ($task->status !== TaskStatus::Ready) {
             return false;
         }
 
         if ($task->available_at !== null && $task->available_at->isFuture()) {
+            return false;
+        }
+
+        if (self::dispatchFailed($task)) {
             return false;
         }
 
@@ -40,5 +62,10 @@ final class TaskRepairPolicy
         }
 
         return $reference->lte(($now ?? now())->copy()->subSeconds(self::REDISPATCH_AFTER_SECONDS));
+    }
+
+    public static function readyTaskNeedsRedispatch(WorkflowTask $task, ?CarbonInterface $now = null): bool
+    {
+        return self::dispatchFailed($task) || self::dispatchOverdue($task, $now);
     }
 }

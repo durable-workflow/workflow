@@ -80,8 +80,9 @@ final class RunSummaryProjector
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
                 self::taskWaitingForCompatibleWorker($nextTask) => 'Workflow task waiting for a compatible worker',
+                TaskRepairPolicy::dispatchFailed($nextTask) => 'Workflow task dispatch failed',
                 TaskRepairPolicy::leaseExpired($nextTask) => 'Workflow task lease expired',
-                TaskRepairPolicy::readyTaskNeedsRedispatch($nextTask) => 'Workflow task ready but dispatch is overdue',
+                TaskRepairPolicy::dispatchOverdue($nextTask) => 'Workflow task ready but dispatch is overdue',
                 $nextTask->status === TaskStatus::Leased => 'Workflow task leased to worker',
                 default => 'Workflow task ready',
             };
@@ -417,7 +418,20 @@ final class RunSummaryProjector
             ];
         }
 
-        if (TaskRepairPolicy::readyTaskNeedsRedispatch($task)) {
+        if (TaskRepairPolicy::dispatchFailed($task)) {
+            return [
+                'repair_needed',
+                sprintf(
+                    '%s task %s could not be dispatched at %s. %s',
+                    $label,
+                    $task->id,
+                    $task->last_dispatch_attempt_at?->toJSON() ?? 'an unknown time',
+                    trim($task->last_dispatch_error ?? 'The queue driver rejected the task.'),
+                ),
+            ];
+        }
+
+        if (TaskRepairPolicy::dispatchOverdue($task)) {
             $reference = $task->last_dispatched_at ?? $task->created_at;
 
             return [
@@ -467,7 +481,13 @@ final class RunSummaryProjector
                 $task->id,
                 $reason,
             ),
-            TaskRepairPolicy::readyTaskNeedsRedispatch($task) => sprintf(
+            TaskRepairPolicy::dispatchFailed($task) => sprintf(
+                '%s task %s could not be dispatched and is waiting for a compatible worker. %s',
+                $label,
+                $task->id,
+                $reason,
+            ),
+            TaskRepairPolicy::dispatchOverdue($task) => sprintf(
                 '%s task %s is ready but dispatch is overdue and is waiting for a compatible worker. %s',
                 $label,
                 $task->id,

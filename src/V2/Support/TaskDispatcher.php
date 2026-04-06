@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Foundation\Bus\PendingDispatch;
+use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
+use Illuminate\Support\Facades\DB;
+use Throwable;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
@@ -16,34 +19,79 @@ final class TaskDispatcher
 {
     public static function dispatch(WorkflowTask $task): void
     {
-        $task->forceFill([
-            'last_dispatched_at' => now(),
-        ])->save();
+        if (DB::transactionLevel() > 0) {
+            DB::afterCommit(static fn () => self::publish($task->id));
 
-        self::refreshRunSummary($task);
+            return;
+        }
 
-        $dispatch = match ($task->task_type) {
-            TaskType::Workflow => RunWorkflowTask::dispatch($task->id),
-            TaskType::Activity => RunActivityTask::dispatch($task->id),
-            TaskType::Timer => RunTimerTask::dispatch($task->id),
-        };
-
-        self::configure($dispatch, $task);
+        self::publish($task->id);
     }
 
-    private static function configure(PendingDispatch $dispatch, WorkflowTask $task): void
+    private static function publish(string $taskId): void
     {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()->find($taskId);
+
+        if (! $task instanceof WorkflowTask || $task->status !== TaskStatus::Ready) {
+            return;
+        }
+
+        $job = self::makeJob($task);
+        $attemptedAt = now();
+
+        try {
+            app(BusDispatcher::class)->dispatch($job);
+            self::markDispatched($task, $attemptedAt);
+        } catch (Throwable $throwable) {
+            self::markDispatchFailure($task, $attemptedAt, $throwable->getMessage());
+
+            throw $throwable;
+        }
+    }
+
+    private static function makeJob(WorkflowTask $task): object
+    {
+        $job = match ($task->task_type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
+
         if ($task->connection !== null) {
-            $dispatch->onConnection($task->connection);
+            $job->onConnection($task->connection);
         }
 
         if ($task->queue !== null) {
-            $dispatch->onQueue($task->queue);
+            $job->onQueue($task->queue);
         }
 
         if ($task->task_type === TaskType::Timer && $task->available_at !== null) {
-            $dispatch->delay($task->available_at);
+            $job->delay($task->available_at);
         }
+
+        return $job;
+    }
+
+    private static function markDispatched(WorkflowTask $task, mixed $attemptedAt): void
+    {
+        $task->forceFill([
+            'last_dispatch_attempt_at' => $attemptedAt,
+            'last_dispatched_at' => $attemptedAt,
+            'last_dispatch_error' => null,
+        ])->save();
+
+        self::refreshRunSummary($task);
+    }
+
+    private static function markDispatchFailure(WorkflowTask $task, mixed $attemptedAt, string $message): void
+    {
+        $task->forceFill([
+            'last_dispatch_attempt_at' => $attemptedAt,
+            'last_dispatch_error' => $message,
+        ])->save();
+
+        self::refreshRunSummary($task);
     }
 
     private static function refreshRunSummary(WorkflowTask $task): void
