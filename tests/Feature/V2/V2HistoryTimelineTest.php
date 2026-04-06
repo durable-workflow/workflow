@@ -6,9 +6,11 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use RuntimeException;
+use Tests\Fixtures\V2\TestChildGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
@@ -19,6 +21,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\WorkflowStub;
 
@@ -251,6 +254,51 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('name-provided', $timeline[4]['signal_name']);
         $this->assertSame(2, $timeline[4]['command_sequence']);
         $this->assertSame('signal', $timeline[4]['command_type']);
+    }
+
+    public function testTimelineIncludesTypedChildWorkflowEntriesForCompletedParentRun(): void
+    {
+        $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'timeline-child');
+        $workflow->start('Taylor');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($parentRunId);
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $timeline = HistoryTimeline::forRun($run);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ChildWorkflowScheduled',
+            'ChildRunStarted',
+            'ChildRunCompleted',
+            'WorkflowCompleted',
+        ], array_column($timeline, 'type'));
+
+        $this->assertSame('child', $timeline[2]['kind']);
+        $this->assertSame('Scheduled child workflow test-child-greeting-workflow.', $timeline[2]['summary']);
+        $this->assertSame($link->child_workflow_instance_id, $timeline[2]['child_workflow_instance_id']);
+        $this->assertSame($link->child_workflow_run_id, $timeline[2]['child_workflow_run_id']);
+        $this->assertSame('test-child-greeting-workflow', $timeline[2]['child_workflow_type']);
+        $this->assertSame(TestChildGreetingWorkflow::class, $timeline[2]['child_workflow_class']);
+        $this->assertSame($link->child_workflow_run_id, $timeline[2]['child']['run_id']);
+        $this->assertSame(TestChildGreetingWorkflow::class, $timeline[2]['child']['class']);
+        $this->assertNull($timeline[2]['child']['status']);
+
+        $this->assertSame('Child workflow test-child-greeting-workflow completed.', $timeline[4]['summary']);
+        $this->assertSame('child', $timeline[4]['kind']);
+        $this->assertSame('completed', $timeline[4]['child_status']);
+        $this->assertSame('completed', $timeline[4]['child']['status']);
     }
 
     public function testTimelineIncludesTypedRepairCommandEntryWhenRepairRecreatesTask(): void

@@ -28,12 +28,23 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
 {
     public function run(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask
     {
-        $run->load(['instance', 'activityExecutions', 'timers', 'failures', 'tasks', 'commands', 'historyEvents']);
+        $run->load([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'tasks',
+            'commands',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+        ]);
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         $workflow = new $workflowClass($run);
@@ -198,15 +209,52 @@ final class WorkflowExecutor
                 return $this->waitForNextResumeSource($run, $task);
             }
 
+            if ($current instanceof ChildWorkflowCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                $childLink = $this->childLinkForSequence($run, $sequence);
+
+                if ($childLink === null) {
+                    return $this->scheduleChildWorkflow($run, $task, $sequence, $current);
+                }
+
+                $childRun = $childLink->childRun;
+
+                if ($childRun === null || in_array($childRun->status, [
+                    RunStatus::Pending,
+                    RunStatus::Running,
+                    RunStatus::Waiting,
+                ], true)) {
+                    return $this->waitForNextResumeSource($run, $task);
+                }
+
+                $this->recordChildResolution($run, $task, $sequence, $childLink, $childRun);
+
+                try {
+                    if ($childRun->status === RunStatus::Completed) {
+                        $current = $result->send($childRun->workflowOutput());
+                    } else {
+                        $current = $result->throw($this->childException($childRun));
+                    }
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
+                ++$sequence;
+                continue;
+            }
+
             if ($current instanceof ContinueAsNewCall) {
-                return $this->continueAsNew($run, $task, $current);
+                return $this->continueAsNew($run, $task, $sequence, $current);
             }
 
             $this->failRun(
                 $run,
                 $task,
                 new UnsupportedWorkflowYieldException(sprintf(
-                    'Workflow %s yielded %s. v2 currently supports activity(), timer(), awaitSignal(), and continueAsNew() only.',
+                    'Workflow %s yielded %s. v2 currently supports activity(), child(), timer(), awaitSignal(), and continueAsNew() only.',
                     $run->workflow_class,
                     get_debug_type($current),
                 )),
@@ -261,6 +309,115 @@ final class WorkflowExecutor
         return $activityTask;
     }
 
+    private function scheduleChildWorkflow(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        ChildWorkflowCall $childWorkflowCall,
+    ): WorkflowTask {
+        $metadata = WorkflowMetadata::fromStartArguments($childWorkflowCall->arguments);
+        $workflowType = TypeRegistry::for($childWorkflowCall->workflow);
+        $now = now();
+
+        /** @var WorkflowInstance $childInstance */
+        $childInstance = WorkflowInstance::query()->create([
+            'workflow_class' => $childWorkflowCall->workflow,
+            'workflow_type' => $workflowType,
+            'reserved_at' => $now,
+            'started_at' => $now,
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => $childWorkflowCall->workflow,
+            'workflow_type' => $workflowType,
+            'status' => RunStatus::Pending->value,
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize($metadata->arguments),
+            'connection' => RoutingResolver::workflowConnection($childWorkflowCall->workflow, $metadata),
+            'queue' => RoutingResolver::workflowQueue($childWorkflowCall->workflow, $metadata),
+            'started_at' => $now,
+            'last_progress_at' => $now,
+            'last_history_sequence' => 0,
+        ]);
+
+        $childInstance->forceFill([
+            'current_run_id' => $childRun->id,
+        ])->save();
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()->create([
+            'link_type' => 'child_workflow',
+            'sequence' => $sequence,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, [
+            'sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+        ], $task->id);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
+            'sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+            'child_run_number' => $childRun->run_number,
+        ], $task->id);
+
+        WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $childRun->workflow_class,
+            'workflow_type' => $childRun->workflow_type,
+            'workflow_instance_id' => $childRun->workflow_instance_id,
+            'workflow_run_id' => $childRun->id,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'parent_sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+        ]);
+
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $childRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $now,
+            'payload' => [],
+            'connection' => $childRun->connection,
+            'queue' => $childRun->queue,
+        ]);
+
+        $this->markRunWaiting($run, $task);
+
+        RunSummaryProjector::project(
+            $childRun->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+            ])
+        );
+
+        return $childTask;
+    }
+
     private function scheduleTimer(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -302,6 +459,36 @@ final class WorkflowExecutor
         $this->markRunWaiting($run, $task);
 
         return $timerTask;
+    }
+
+    private function childLinkForSequence(WorkflowRun $run, int $sequence): ?WorkflowLink
+    {
+        /** @var WorkflowLink|null $link */
+        $link = $run->childLinks
+            ->filter(
+                static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow'
+                    && $link->sequence === $sequence
+            )
+            ->sort(static function (WorkflowLink $left, WorkflowLink $right): int {
+                $leftRunNumber = $left->childRun?->run_number ?? 0;
+                $rightRunNumber = $right->childRun?->run_number ?? 0;
+
+                if ($leftRunNumber !== $rightRunNumber) {
+                    return $rightRunNumber <=> $leftRunNumber;
+                }
+
+                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? 0;
+                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? 0;
+
+                if ($leftCreatedAt !== $rightCreatedAt) {
+                    return $rightCreatedAt <=> $leftCreatedAt;
+                }
+
+                return $right->id <=> $left->id;
+            })
+            ->first();
+
+        return $link;
     }
 
     private function fireImmediateTimer(
@@ -453,6 +640,66 @@ final class WorkflowExecutor
         return $arguments;
     }
 
+    private function recordChildResolution(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        WorkflowLink $link,
+        WorkflowRun $childRun,
+    ): void {
+        $eventType = match ($childRun->status) {
+            RunStatus::Completed => HistoryEventType::ChildRunCompleted,
+            RunStatus::Cancelled => HistoryEventType::ChildRunCancelled,
+            RunStatus::Terminated => HistoryEventType::ChildRunTerminated,
+            default => HistoryEventType::ChildRunFailed,
+        };
+
+        $alreadyRecorded = $run->historyEvents->contains(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $eventType
+                && ($event->payload['sequence'] ?? null) === $sequence
+                && ($event->payload['child_workflow_run_id'] ?? null) === $childRun->id
+        );
+
+        if ($alreadyRecorded) {
+            return;
+        }
+
+        $failure = $childRun->failures->first();
+
+        WorkflowHistoryEvent::record($run, $eventType, array_filter([
+            'sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_workflow_instance_id' => $childRun->workflow_instance_id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+            'child_run_number' => $childRun->run_number,
+            'child_status' => $childRun->status->value,
+            'closed_reason' => $childRun->closed_reason,
+            'failure_id' => $failure?->id,
+            'exception_class' => $failure?->exception_class,
+            'message' => $failure?->message,
+        ], static fn ($value): bool => $value !== null), $task->id);
+    }
+
+    private function childException(WorkflowRun $childRun): Throwable
+    {
+        /** @var WorkflowFailure|null $failure */
+        $failure = $childRun->failures->first();
+
+        if ($failure !== null) {
+            return new RuntimeException(
+                sprintf('[%s] %s', $failure->exception_class, $failure->message),
+            );
+        }
+
+        return new RuntimeException(sprintf(
+            'Child workflow %s closed as %s.',
+            $childRun->id,
+            $childRun->status->value,
+        ));
+    }
+
     private function waitForNextResumeSource(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask
     {
         $this->markRunWaiting($run, $task);
@@ -479,6 +726,7 @@ final class WorkflowExecutor
     private function continueAsNew(
         WorkflowRun $run,
         WorkflowTask $task,
+        int $sequence,
         ContinueAsNewCall $continueAsNew,
     ): WorkflowTask {
         $now = now();
@@ -512,12 +760,31 @@ final class WorkflowExecutor
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
             'link_type' => 'continue_as_new',
+            'sequence' => $sequence,
             'parent_workflow_instance_id' => $run->workflow_instance_id,
             'parent_workflow_run_id' => $run->id,
             'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
             'child_workflow_run_id' => $continuedRun->id,
             'is_primary_parent' => true,
         ]);
+
+        $parentChildLinks = WorkflowLink::query()
+            ->where('child_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($parentChildLinks as $parentChildLink) {
+            WorkflowLink::query()->create([
+                'link_type' => 'child_workflow',
+                'sequence' => $parentChildLink->sequence,
+                'parent_workflow_instance_id' => $parentChildLink->parent_workflow_instance_id,
+                'parent_workflow_run_id' => $parentChildLink->parent_workflow_run_id,
+                'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+                'child_workflow_run_id' => $continuedRun->id,
+                'is_primary_parent' => $parentChildLink->is_primary_parent,
+            ]);
+        }
 
         $run->forceFill([
             'status' => RunStatus::Completed,
@@ -587,6 +854,8 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
+        $this->dispatchParentResumeTasks($run);
+
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
@@ -631,9 +900,72 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
+        $this->dispatchParentResumeTasks($run);
+
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+    }
+
+    private function dispatchParentResumeTasks(WorkflowRun $childRun): void
+    {
+        $parentLinks = WorkflowLink::query()
+            ->where('child_workflow_run_id', $childRun->id)
+            ->where('link_type', 'child_workflow')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($parentLinks as $parentLink) {
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = WorkflowRun::query()
+                ->lockForUpdate()
+                ->find($parentLink->parent_workflow_run_id);
+
+            if ($parentRun === null || in_array($parentRun->status, [
+                RunStatus::Completed,
+                RunStatus::Failed,
+                RunStatus::Cancelled,
+                RunStatus::Terminated,
+            ], true)) {
+                continue;
+            }
+
+            $hasOpenWorkflowTask = WorkflowTask::query()
+                ->where('workflow_run_id', $parentRun->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->exists();
+
+            if ($hasOpenWorkflowTask) {
+                continue;
+            }
+
+            /** @var WorkflowTask $parentTask */
+            $parentTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $parentRun->id,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => [],
+                'connection' => $parentRun->connection,
+                'queue' => $parentRun->queue,
+            ]);
+
+            TaskDispatcher::dispatch($parentTask);
+
+            RunSummaryProjector::project(
+                $parentRun->fresh([
+                    'instance',
+                    'tasks',
+                    'activityExecutions',
+                    'timers',
+                    'failures',
+                    'historyEvents',
+                    'childLinks.childRun.instance.currentRun',
+                    'childLinks.childRun.failures',
+                ])
+            );
+        }
     }
 
     private function activityException(ActivityExecution $execution): Throwable

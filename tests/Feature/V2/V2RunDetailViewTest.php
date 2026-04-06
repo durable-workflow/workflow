@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
@@ -264,6 +265,41 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('completed', $currentDetail['parents'][0]['status_bucket']);
         $this->assertSame('completed', $currentDetail['status']);
         $this->assertSame('completed', $currentDetail['closed_reason']);
+    }
+
+    public function testRunDetailViewIncludesChildWaitAndLineageForParentRun(): void
+    {
+        $workflow = WorkflowStub::make(TestParentWaitingOnChildWorkflow::class, 'detail-child-parent');
+        $workflow->start(60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'child');
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+
+        $detail = RunDetailView::forRun($run);
+        $childWait = $this->findWait($detail['waits'], 'child');
+
+        $this->assertSame('waiting', $detail['status']);
+        $this->assertSame('child', $detail['wait_kind']);
+        $this->assertSame('waiting_for_child', $detail['liveness_state']);
+        $this->assertSame('open', $childWait['status']);
+        $this->assertSame('waiting', $childWait['source_status']);
+        $this->assertStringStartsWith('Waiting for child workflow ', $childWait['summary']);
+        $this->assertFalse($childWait['task_backed']);
+        $this->assertFalse($childWait['external_only']);
+        $this->assertSame('child_workflow_run', $childWait['resume_source_kind']);
+        $this->assertNotNull($childWait['resume_source_id']);
+        $this->assertCount(0, $detail['parents']);
+        $this->assertCount(1, $detail['continuedWorkflows']);
+        $this->assertSame('child_workflow', $detail['continuedWorkflows'][0]['link_type']);
+        $this->assertSame(1, $detail['continuedWorkflows'][0]['sequence']);
+        $this->assertSame('waiting', $detail['continuedWorkflows'][0]['status']);
+        $this->assertSame('test-timer-workflow', $detail['continuedWorkflows'][0]['workflow_type']);
+        $this->assertFalse($detail['can_repair']);
     }
 
     public function testRunDetailViewIncludesTaskBackedTimerWaitForSelectedRun(): void

@@ -61,6 +61,28 @@ final class CommandContext
         ]);
     }
 
+    public static function workflow(
+        string $parentInstanceId,
+        string $parentRunId,
+        int $sequence,
+    ): self {
+        return new self('workflow', [
+            'caller' => [
+                'type' => 'workflow',
+                'label' => 'Workflow',
+            ],
+            'auth' => [
+                'status' => 'not_applicable',
+                'method' => 'none',
+            ],
+            'workflow' => [
+                'parent_instance_id' => $parentInstanceId,
+                'parent_run_id' => $parentRunId,
+                'sequence' => $sequence,
+            ],
+        ]);
+    }
+
     /**
      * @return array{source: string, context: array<string, mixed>}
      */

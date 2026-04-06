@@ -936,6 +936,14 @@ final class WorkflowStub
                     ->lockForUpdate()
                     ->get()
             );
+            $run->setRelation(
+                'childLinks',
+                \Workflow\V2\Models\WorkflowLink::query()
+                    ->where('parent_workflow_run_id', $run->id)
+                    ->oldest('created_at')
+                    ->lockForUpdate()
+                    ->get()
+            );
 
             $summary = RunSummaryProjector::project($run);
 
@@ -1065,9 +1073,11 @@ final class WorkflowStub
     ): CommandResult {
         /** @var WorkflowCommand|null $command */
         $command = null;
+        $parentTasks = [];
 
         DB::transaction(function () use (
             &$command,
+            &$parentTasks,
             $commandType,
             $terminalStatus,
             $requestedEventType,
@@ -1213,12 +1223,20 @@ final class WorkflowStub
                 'applied_at' => now(),
             ])->save();
 
+            $parentTasks = $this->createParentResumeTasks($run);
+
             RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
             );
         });
 
         $this->refresh();
+
+        foreach ($parentTasks as $task) {
+            if ($task instanceof WorkflowTask) {
+                TaskDispatcher::dispatch($task);
+            }
+        }
 
         if (! $command instanceof WorkflowCommand) {
             throw new LogicException(sprintf(
@@ -1406,6 +1424,14 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->get()
         );
+        $run->setRelation(
+            'childLinks',
+            \Workflow\V2\Models\WorkflowLink::query()
+                ->where('parent_workflow_run_id', $run->id)
+                ->oldest('created_at')
+                ->lockForUpdate()
+                ->get()
+        );
     }
 
     private function commandTargetScope(): string
@@ -1449,5 +1475,73 @@ final class WorkflowStub
         }
 
         return self::$updateMethodCache[$class][$method] ?? false;
+    }
+
+    /**
+     * @return list<WorkflowTask>
+     */
+    private function createParentResumeTasks(WorkflowRun $childRun): array
+    {
+        $tasks = [];
+
+        $parentLinks = \Workflow\V2\Models\WorkflowLink::query()
+            ->where('child_workflow_run_id', $childRun->id)
+            ->where('link_type', 'child_workflow')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($parentLinks as $parentLink) {
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = WorkflowRun::query()
+                ->lockForUpdate()
+                ->find($parentLink->parent_workflow_run_id);
+
+            if ($parentRun === null || in_array($parentRun->status, [
+                RunStatus::Completed,
+                RunStatus::Failed,
+                RunStatus::Cancelled,
+                RunStatus::Terminated,
+            ], true)) {
+                continue;
+            }
+
+            $hasOpenWorkflowTask = WorkflowTask::query()
+                ->where('workflow_run_id', $parentRun->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->exists();
+
+            if ($hasOpenWorkflowTask) {
+                continue;
+            }
+
+            /** @var WorkflowTask $task */
+            $task = WorkflowTask::query()->create([
+                'workflow_run_id' => $parentRun->id,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => [],
+                'connection' => $parentRun->connection,
+                'queue' => $parentRun->queue,
+            ]);
+
+            RunSummaryProjector::project(
+                $parentRun->fresh([
+                    'instance',
+                    'tasks',
+                    'activityExecutions',
+                    'timers',
+                    'failures',
+                    'historyEvents',
+                    'childLinks.childRun.instance.currentRun',
+                    'childLinks.childRun.failures',
+                ])
+            );
+
+            $tasks[] = $task;
+        }
+
+        return $tasks;
     }
 }

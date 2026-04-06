@@ -23,6 +23,7 @@ final class RunSummaryProjector
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
         $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
+        $run->loadMissing(['childLinks.childRun.instance.currentRun', 'childLinks.childRun.failures']);
 
         $isTerminal = in_array($run->status, [
             RunStatus::Completed,
@@ -49,7 +50,15 @@ final class RunSummaryProjector
             : $run->timers
                 ->first(static fn (WorkflowTimer $timer): bool => $timer->status === TimerStatus::Pending);
 
-        $openSignalWait = $isTerminal || $openActivity !== null || $openTimer !== null || $nextTask !== null
+        $openChildWait = $isTerminal || $openActivity !== null || $openTimer !== null || $nextTask !== null
+            ? null
+            : self::openChildWait($run);
+
+        $openSignalWait = $isTerminal
+            || $openActivity !== null
+            || $openTimer !== null
+            || $nextTask !== null
+            || $openChildWait !== null
             ? null
             : self::openSignalWait($run);
 
@@ -74,6 +83,10 @@ final class RunSummaryProjector
                 : 'Workflow task ready';
             $waitStartedAt = $nextTask->leased_at ?? $nextTask->available_at;
             $waitDeadlineAt = $nextTask->lease_expires_at;
+        } elseif ($openChildWait !== null) {
+            $waitKind = 'child';
+            $waitReason = sprintf('Waiting for child workflow %s', $openChildWait['label']);
+            $waitStartedAt = $openChildWait['opened_at'];
         } elseif ($openSignalWait !== null) {
             $waitKind = 'signal';
             $waitReason = sprintf('Waiting for signal %s', $openSignalWait['name']);
@@ -86,6 +99,7 @@ final class RunSummaryProjector
             $openActivity,
             $openTimer,
             $nextTask,
+            $openChildWait,
             $openSignalWait,
         );
 
@@ -201,6 +215,7 @@ final class RunSummaryProjector
         ?ActivityExecution $openActivity,
         ?WorkflowTimer $openTimer,
         ?WorkflowTask $nextTask,
+        ?array $openChildWait,
         ?array $openSignalWait,
     ): array {
         if ($isTerminal) {
@@ -241,6 +256,13 @@ final class RunSummaryProjector
 
         if ($nextTask !== null) {
             return self::taskLiveness($nextTask, 'Workflow');
+        }
+
+        if ($openChildWait !== null) {
+            return [
+                'waiting_for_child',
+                sprintf('Waiting for child workflow %s.', $openChildWait['label']),
+            ];
         }
 
         if ($openSignalWait !== null) {
@@ -301,6 +323,71 @@ final class RunSummaryProjector
         $signal = end($openSignals);
 
         return $signal;
+    }
+
+    /**
+     * @return array{label: string, opened_at: \Carbon\CarbonInterface}|null
+     */
+    private static function openChildWait(WorkflowRun $run): ?array
+    {
+        $openLinks = $run->childLinks
+            ->filter(static function ($link): bool {
+                $childRun = $link->childRun;
+
+                return $link->link_type === 'child_workflow'
+                    && $childRun !== null
+                    && in_array($childRun->status, [
+                        RunStatus::Pending,
+                        RunStatus::Running,
+                        RunStatus::Waiting,
+                    ], true);
+            })
+            ->sort(static function ($left, $right): int {
+                $leftSequence = $left->sequence ?? PHP_INT_MAX;
+                $rightSequence = $right->sequence ?? PHP_INT_MAX;
+
+                if ($leftSequence !== $rightSequence) {
+                    return $leftSequence <=> $rightSequence;
+                }
+
+                $leftRunNumber = $left->childRun?->run_number ?? 0;
+                $rightRunNumber = $right->childRun?->run_number ?? 0;
+
+                if ($leftRunNumber !== $rightRunNumber) {
+                    return $rightRunNumber <=> $leftRunNumber;
+                }
+
+                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? PHP_INT_MAX;
+                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? PHP_INT_MAX;
+
+                if ($leftCreatedAt !== $rightCreatedAt) {
+                    return $leftCreatedAt <=> $rightCreatedAt;
+                }
+
+                return $left->id <=> $right->id;
+            });
+
+        if ($openLinks->isEmpty()) {
+            return null;
+        }
+
+        $link = $openLinks->first();
+        $childRun = $link?->childRun;
+
+        if ($link === null || $childRun === null) {
+            return null;
+        }
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
+                && ($event->payload['workflow_link_id'] ?? null) === $link->id
+        );
+
+        return [
+            'label' => $childRun->workflow_type,
+            'opened_at' => $event?->recorded_at ?? $event?->created_at ?? $link->created_at,
+        ];
     }
 
     /**

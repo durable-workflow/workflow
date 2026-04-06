@@ -10,6 +10,9 @@ use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
+use Tests\Fixtures\V2\TestParentChildWorkflow;
+use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
@@ -326,6 +329,149 @@ final class V2WorkflowTest extends TestCase
             'WorkflowCompleted',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runs[2]->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testWorkflowCanWaitForChildWorkflowAndCompleteWithChildOutput(): void
+    {
+        $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'parent-child-instance');
+        $started = $workflow->start('Taylor');
+        $parentRunId = $started->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $this->assertSame(1, $link->sequence);
+        $this->assertSame('completed', $childRun->status->value);
+        $this->assertNotSame('parent-child-instance', $link->child_workflow_instance_id);
+        $this->assertNotSame($parentRunId, $childRun->id);
+        $this->assertSame([
+            'parent_workflow_id' => 'parent-child-instance',
+            'parent_run_id' => $parentRunId,
+            'child' => [
+                'greeting' => 'Hello, Taylor!',
+                'workflow_id' => $link->child_workflow_instance_id,
+                'run_id' => $childRun->id,
+            ],
+        ], $workflow->output());
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ChildWorkflowScheduled',
+            'ChildRunStarted',
+            'ChildRunCompleted',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $this->assertDatabaseHas('workflow_links', [
+            'id' => $link->id,
+            'link_type' => 'child_workflow',
+            'parent_workflow_instance_id' => 'parent-child-instance',
+            'parent_workflow_run_id' => $parentRunId,
+            'child_workflow_instance_id' => $link->child_workflow_instance_id,
+            'child_workflow_run_id' => $childRun->id,
+            'sequence' => 1,
+            'is_primary_parent' => true,
+        ]);
+    }
+
+    public function testWorkflowSummaryProjectsChildWaitAndHealthyRepairNoOp(): void
+    {
+        $workflow = WorkflowStub::make(TestParentWaitingOnChildWorkflow::class, 'parent-child-waiting');
+        $workflow->start(60);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'child');
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $summary = $workflow->summary();
+
+        $this->assertSame('waiting', $workflow->status());
+        $this->assertNotNull($summary);
+        $this->assertSame('child', $summary->wait_kind);
+        $this->assertSame(
+            sprintf('Waiting for child workflow %s', $childRun->workflow_type),
+            $summary->wait_reason,
+        );
+        $this->assertNull($summary->next_task_id);
+        $this->assertSame('waiting_for_child', $summary->liveness_state);
+        $this->assertSame(
+            sprintf('Waiting for child workflow %s.', $childRun->workflow_type),
+            $summary->liveness_reason,
+        );
+        $this->assertSame('waiting', $childRun->status->value);
+
+        $result = WorkflowStub::loadRun($parentRunId)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair_not_needed', $result->outcome());
+    }
+
+    public function testChildWorkflowFailurePropagatesToParentRun(): void
+    {
+        $workflow = WorkflowStub::make(TestParentFailingChildWorkflow::class, 'parent-child-failure');
+        $workflow->start();
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->failed());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        /** @var WorkflowFailure $parentFailure */
+        $parentFailure = WorkflowFailure::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('propagation_kind', 'terminal')
+            ->firstOrFail();
+
+        $this->assertSame('failed', $childRun->status->value);
+        $this->assertSame('failed', $workflow->status());
+        $this->assertNull($workflow->output());
+        $this->assertStringContainsString('boom', $parentFailure->message);
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ChildWorkflowScheduled',
+            'ChildRunStarted',
+            'ChildRunFailed',
+            'WorkflowFailed',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
             ->orderBy('sequence')
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)

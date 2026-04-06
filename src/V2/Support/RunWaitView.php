@@ -6,10 +6,12 @@ namespace Workflow\V2\Support;
 
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -21,7 +23,15 @@ final class RunWaitView
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $run->loadMissing(['historyEvents', 'commands', 'tasks', 'activityExecutions', 'timers']);
+        $run->loadMissing([
+            'historyEvents',
+            'commands',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'childLinks.childRun.summary',
+            'childLinks.childRun.failures',
+        ]);
 
         $taskByActivityExecutionId = [];
         $taskByTimerId = [];
@@ -69,6 +79,7 @@ final class RunWaitView
             );
         }
 
+        $waits = array_merge($waits, self::childWaits($run));
         $waits = array_merge($waits, self::signalWaits($run));
 
         usort($waits, static function (array $left, array $right): int {
@@ -299,6 +310,87 @@ final class RunWaitView
         }
 
         return array_values($waits);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function childWaits(WorkflowRun $run): array
+    {
+        $latestLinks = $run->childLinks
+            ->filter(static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow')
+            ->sort(static function (WorkflowLink $left, WorkflowLink $right): int {
+                $leftRunNumber = $left->childRun?->run_number ?? 0;
+                $rightRunNumber = $right->childRun?->run_number ?? 0;
+
+                if ($leftRunNumber !== $rightRunNumber) {
+                    return $rightRunNumber <=> $leftRunNumber;
+                }
+
+                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? 0;
+                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? 0;
+
+                if ($leftCreatedAt !== $rightCreatedAt) {
+                    return $rightCreatedAt <=> $leftCreatedAt;
+                }
+
+                return $right->id <=> $left->id;
+            })
+            ->unique(static fn (WorkflowLink $link): string => (string) ($link->sequence ?? $link->id));
+
+        return $latestLinks
+            ->map(static function (WorkflowLink $link) use ($run): array {
+                $childRun = $link->childRun;
+
+                /** @var WorkflowHistoryEvent|null $scheduledEvent */
+                $scheduledEvent = $run->historyEvents->first(
+                    static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
+                        && ($event->payload['sequence'] ?? null) === $link->sequence
+                );
+
+                $status = match ($childRun?->status) {
+                    RunStatus::Pending, RunStatus::Running, RunStatus::Waiting => 'open',
+                    RunStatus::Cancelled, RunStatus::Terminated => 'cancelled',
+                    default => 'resolved',
+                };
+
+                $label = $childRun?->workflow_type ?? $childRun?->workflow_class ?? 'child workflow';
+
+                $summary = match ($childRun?->status) {
+                    RunStatus::Completed => sprintf('Child workflow %s completed.', $label),
+                    RunStatus::Failed => sprintf('Child workflow %s failed.', $label),
+                    RunStatus::Cancelled => sprintf('Child workflow %s cancelled.', $label),
+                    RunStatus::Terminated => sprintf('Child workflow %s terminated.', $label),
+                    default => sprintf('Waiting for child workflow %s.', $label),
+                };
+
+                return [
+                    'id' => sprintf('child:%s', $link->id),
+                    'kind' => 'child',
+                    'sequence' => $link->sequence,
+                    'status' => $status,
+                    'source_status' => $childRun?->status?->value,
+                    'summary' => $summary,
+                    'opened_at' => $scheduledEvent?->recorded_at ?? $scheduledEvent?->created_at ?? $link->created_at,
+                    'deadline_at' => null,
+                    'resolved_at' => $childRun?->closed_at,
+                    'target_name' => $childRun?->workflow_instance_id,
+                    'target_type' => $label,
+                    'task_backed' => false,
+                    'external_only' => false,
+                    'resume_source_kind' => 'child_workflow_run',
+                    'resume_source_id' => $childRun?->id,
+                    'task_id' => null,
+                    'task_type' => null,
+                    'task_status' => null,
+                    'command_id' => null,
+                    'command_sequence' => null,
+                    'command_status' => null,
+                    'command_outcome' => null,
+                ];
+            })
+            ->values()
+            ->all();
     }
 
     /**

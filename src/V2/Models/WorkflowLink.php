@@ -22,6 +22,11 @@ class WorkflowLink extends Model
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
+    protected $casts = [
+        'sequence' => 'integer',
+        'is_primary_parent' => 'boolean',
+    ];
+
     public function parentRun(): BelongsTo
     {
         return $this->belongsTo(WorkflowRun::class, 'parent_workflow_run_id');

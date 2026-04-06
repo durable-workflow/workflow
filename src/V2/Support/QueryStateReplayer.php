@@ -12,11 +12,14 @@ use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
 
 final class QueryStateReplayer
@@ -39,7 +42,16 @@ final class QueryStateReplayer
 
     public function replayState(WorkflowRun $run): ReplayState
     {
-        $run->loadMissing(['instance', 'activityExecutions', 'timers', 'failures', 'commands', 'historyEvents']);
+        $run->loadMissing([
+            'instance',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'commands',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+        ]);
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         $workflow = new $workflowClass($run);
@@ -114,16 +126,71 @@ final class QueryStateReplayer
                 continue;
             }
 
+            if ($current instanceof ChildWorkflowCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                $childLink = $this->childLinkForSequence($run, $sequence);
+                $childRun = $childLink?->childRun;
+
+                if ($childRun === null || in_array($childRun->status, [
+                    RunStatus::Pending,
+                    RunStatus::Running,
+                    RunStatus::Waiting,
+                ], true)) {
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                if ($childRun->status === RunStatus::Completed) {
+                    $current = $result->send($childRun->workflowOutput());
+                } else {
+                    $current = $result->throw($this->childException($childRun));
+                }
+
+                ++$sequence;
+
+                continue;
+            }
+
             if ($current instanceof ContinueAsNewCall) {
                 return new ReplayState($workflow, $sequence, $current);
             }
 
             throw new UnsupportedWorkflowYieldException(sprintf(
-                'Workflow %s yielded %s. v2 currently supports activity(), timer(), awaitSignal(), and continueAsNew() only.',
+                'Workflow %s yielded %s. v2 currently supports activity(), child(), timer(), awaitSignal(), and continueAsNew() only.',
                 $run->workflow_class,
                 get_debug_type($current),
             ));
         }
+    }
+
+    private function childLinkForSequence(WorkflowRun $run, int $sequence): ?WorkflowLink
+    {
+        /** @var WorkflowLink|null $link */
+        $link = $run->childLinks
+            ->filter(
+                static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow'
+                    && $link->sequence === $sequence
+            )
+            ->sort(static function (WorkflowLink $left, WorkflowLink $right): int {
+                $leftRunNumber = $left->childRun?->run_number ?? 0;
+                $rightRunNumber = $right->childRun?->run_number ?? 0;
+
+                if ($leftRunNumber !== $rightRunNumber) {
+                    return $rightRunNumber <=> $leftRunNumber;
+                }
+
+                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? 0;
+                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? 0;
+
+                if ($leftCreatedAt !== $rightCreatedAt) {
+                    return $rightCreatedAt <=> $leftCreatedAt;
+                }
+
+                return $right->id <=> $left->id;
+            })
+            ->first();
+
+        return $link;
     }
 
     private function appliedSignalEvent(
@@ -163,6 +230,24 @@ final class QueryStateReplayer
             sprintf('[%s] %s', $payload['class'] ?? RuntimeException::class, $payload['message'] ?? 'Activity failed'),
             (int) ($payload['code'] ?? 0),
         );
+    }
+
+    private function childException(WorkflowRun $childRun): Throwable
+    {
+        /** @var WorkflowFailure|null $failure */
+        $failure = $childRun->failures->first();
+
+        if ($failure !== null) {
+            return new RuntimeException(
+                sprintf('[%s] %s', $failure->exception_class, $failure->message),
+            );
+        }
+
+        return new RuntimeException(sprintf(
+            'Child workflow %s closed as %s.',
+            $childRun->id,
+            $childRun->status->value,
+        ));
     }
 
     private function applyRecordedUpdates(
