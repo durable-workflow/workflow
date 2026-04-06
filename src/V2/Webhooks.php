@@ -19,6 +19,7 @@ use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Support\CommandResponse;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkflowInstanceId;
 
 final class Webhooks
 {
@@ -182,13 +183,30 @@ final class Webhooks
      */
     private static function resolveStartArguments(string $workflow, array $payload): array
     {
+        $hasInstanceId = array_key_exists('workflow_id', $payload);
         $instanceId = $payload['workflow_id'] ?? null;
         $onDuplicate = $payload['on_duplicate'] ?? DuplicateStartPolicy::RejectDuplicate->value;
 
-        if ($instanceId !== null && ! is_string($instanceId)) {
+        if ($hasInstanceId && ! is_string($instanceId)) {
             throw ValidationException::withMessages([
-                'workflow_id' => ['The workflow_id field must be a string.'],
+                'workflow_id' => [sprintf(
+                    'The workflow_id field must be a non-empty string no longer than %d characters.',
+                    WorkflowInstanceId::MAX_LENGTH,
+                )],
             ]);
+        }
+
+        if (is_string($instanceId)) {
+            try {
+                WorkflowInstanceId::assertValid($instanceId);
+            } catch (LogicException) {
+                throw ValidationException::withMessages([
+                    'workflow_id' => [sprintf(
+                        'The workflow_id field must be a non-empty string no longer than %d characters.',
+                        WorkflowInstanceId::MAX_LENGTH,
+                    )],
+                ]);
+            }
         }
 
         if (! is_string($onDuplicate)) {

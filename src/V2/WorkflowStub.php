@@ -40,6 +40,7 @@ use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\WorkflowMetadata;
 
@@ -108,6 +109,8 @@ final class WorkflowStub
             return new self($instance->fresh(['currentRun']));
         }
 
+        WorkflowInstanceId::assertValid($instanceId);
+
         try {
             /** @var WorkflowInstance $instance */
             $instance = WorkflowInstance::query()->create([
@@ -117,7 +120,11 @@ final class WorkflowStub
                 'reserved_at' => now(),
                 'run_count' => 0,
             ]);
-        } catch (QueryException) {
+        } catch (QueryException $exception) {
+            if (! self::duplicateInstanceReservation($exception)) {
+                throw $exception;
+            }
+
             /** @var WorkflowInstance $instance */
             $instance = WorkflowInstance::query()
                 ->with('currentRun')
@@ -1470,5 +1477,25 @@ final class WorkflowStub
         }
 
         return $tasks;
+    }
+
+    private static function duplicateInstanceReservation(QueryException $exception): bool
+    {
+        $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
+        $driverCode = $exception->errorInfo[1] ?? null;
+
+        if (in_array($sqlState, ['23000', '23505'], true)) {
+            return true;
+        }
+
+        if (in_array($driverCode, [19, 1062, 1555, 2067, 2601, 2627], true)) {
+            return true;
+        }
+
+        $message = strtolower($exception->getMessage());
+
+        return str_contains($message, 'duplicate')
+            || str_contains($message, 'unique constraint')
+            || str_contains($message, 'unique violation');
     }
 }

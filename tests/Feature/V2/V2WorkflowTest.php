@@ -209,6 +209,27 @@ final class V2WorkflowTest extends TestCase
         );
     }
 
+    public function testMakeRejectsBlankCallerSuppliedInstanceId(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Workflow instance ids must be non-empty strings no longer than 26 characters.');
+
+        WorkflowStub::make(TestGreetingWorkflow::class, '   ');
+    }
+
+    public function testMakeRejectsOverlongCallerSuppliedInstanceIdWithoutCreatingReservation(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Workflow instance ids must be non-empty strings no longer than 26 characters.');
+
+        try {
+            WorkflowStub::make(TestGreetingWorkflow::class, str_repeat('a', 27));
+        } finally {
+            $this->assertSame(0, WorkflowInstance::query()->count());
+            $this->assertSame(0, WorkflowCommand::query()->count());
+        }
+    }
+
     public function testConfiguredTypeMapPersistsWorkflowAliasOnStartedRuns(): void
     {
         $this->configureGreetingTypeMaps();

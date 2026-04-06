@@ -194,6 +194,44 @@ final class V2WebhookWorkflowTest extends TestCase
         $this->assertSame(0, WorkflowCommand::query()->count());
     }
 
+    public function testStartWebhookRejectsBlankWorkflowIdWithoutCreatingAnInstance(): void
+    {
+        $response = $this->postJson('/webhooks/start/test-greeting-workflow', [
+            'workflow_id' => '   ',
+            'name' => 'Taylor',
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['workflow_id'])
+            ->assertJsonPath(
+                'errors.workflow_id.0',
+                'The workflow_id field must be a non-empty string no longer than 26 characters.',
+            );
+
+        $this->assertSame(0, WorkflowInstance::query()->count());
+        $this->assertSame(0, WorkflowCommand::query()->count());
+    }
+
+    public function testStartWebhookRejectsOverlongWorkflowIdWithoutCreatingAnInstance(): void
+    {
+        $response = $this->postJson('/webhooks/start/test-greeting-workflow', [
+            'workflow_id' => str_repeat('a', 27),
+            'name' => 'Taylor',
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['workflow_id'])
+            ->assertJsonPath(
+                'errors.workflow_id.0',
+                'The workflow_id field must be a non-empty string no longer than 26 characters.',
+            );
+
+        $this->assertSame(0, WorkflowInstance::query()->count());
+        $this->assertSame(0, WorkflowCommand::query()->count());
+    }
+
     public function testStartWebhookCanInferConfiguredDurableTypeWithoutTypeAttribute(): void
     {
         config()->set('workflows.v2.types.workflows', [
