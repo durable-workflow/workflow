@@ -44,7 +44,11 @@ final class ChildRunHistory
     {
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, self::resolutionEventTypes(), true)
+            static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                self::resolutionEventTypes(),
+                true
+            )
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
 
@@ -163,12 +167,7 @@ final class ChildRunHistory
             ?? self::intValue(self::terminalEventForRun($childRun)?->payload['code'] ?? null)
             ?? 0;
 
-        return FailureFactory::restore(
-            $payload ?? [],
-            $fallbackClass,
-            $fallbackMessage,
-            $fallbackCode,
-        );
+        return FailureFactory::restore($payload ?? [], $fallbackClass, $fallbackMessage, $fallbackCode);
     }
 
     public static function exceptionForChildRun(?WorkflowRun $childRun): Throwable

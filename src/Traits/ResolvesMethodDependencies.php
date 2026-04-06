@@ -7,8 +7,13 @@ namespace Workflow\Traits;
 use ReflectionFunctionAbstract;
 use stdClass;
 
-if (! trait_exists(\Illuminate\Routing\ResolvesRouteDependencies::class) && trait_exists(\Illuminate\Routing\RouteDependencyResolverTrait::class)) {
-    class_alias(\Illuminate\Routing\RouteDependencyResolverTrait::class, \Illuminate\Routing\ResolvesRouteDependencies::class);
+if (! trait_exists(\Illuminate\Routing\ResolvesRouteDependencies::class) && trait_exists(
+    \Illuminate\Routing\RouteDependencyResolverTrait::class
+)) {
+    class_alias(
+        \Illuminate\Routing\RouteDependencyResolverTrait::class,
+        \Illuminate\Routing\ResolvesRouteDependencies::class
+    );
 }
 
 trait ResolvesMethodDependencies

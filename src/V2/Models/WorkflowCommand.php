@@ -12,6 +12,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Support\CommandSequence;
 
 class WorkflowCommand extends Model
 {
@@ -44,9 +45,7 @@ class WorkflowCommand extends Model
     public static function record(WorkflowInstance $instance, ?WorkflowRun $run, array $attributes): self
     {
         if ($run !== null) {
-            $attributes['command_sequence'] ??= (static::query()
-                ->where('workflow_run_id', $run->id)
-                ->max('command_sequence') ?? 0) + 1;
+            $attributes['command_sequence'] ??= CommandSequence::reserveNext($run);
         }
 
         $attributes['workflow_instance_id'] ??= $instance->id;

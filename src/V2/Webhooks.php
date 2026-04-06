@@ -118,7 +118,8 @@ final class Webhooks
                 ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
-                $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
+                $result->outcome() === CommandOutcome::RejectedUnknownUpdate
+->value => 404,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
                 default => 200,

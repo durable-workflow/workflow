@@ -33,7 +33,8 @@ final class QueryStateReplayer
 
     public function replay(WorkflowRun $run): \Workflow\V2\Workflow
     {
-        return $this->replayState($run)->workflow;
+        return $this->replayState($run)
+->workflow;
     }
 
     public function replayState(WorkflowRun $run): ReplayState
@@ -302,12 +303,7 @@ final class QueryStateReplayer
             ? $event->payload['code']
             : 0;
 
-        return FailureFactory::restore(
-            $payload,
-            $fallbackClass,
-            $fallbackMessage,
-            $fallbackCode,
-        );
+        return FailureFactory::restore($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
     }
 
     private function applyRecordedUpdates(

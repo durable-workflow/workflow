@@ -82,9 +82,7 @@ final class RunDetailView
             )
             ->keyBy('workflow_command_id');
         $failureEvents = $run->historyEvents
-            ->filter(
-                static fn ($event): bool => is_string($event->payload['failure_id'] ?? null)
-            )
+            ->filter(static fn ($event): bool => is_string($event->payload['failure_id'] ?? null))
             ->keyBy(static fn ($event): string => $event->payload['failure_id']);
         $tasks = RunTaskView::forRun($run);
         $waits = RunWaitView::forRun($run);
@@ -328,10 +326,7 @@ final class RunDetailView
     private static function exceptionPayload(WorkflowFailure $failure, mixed $payload): array
     {
         $trace = is_array($payload['trace'] ?? null)
-            ? array_values(array_filter(
-                $payload['trace'],
-                static fn (mixed $frame): bool => is_array($frame),
-            ))
+            ? array_values(array_filter($payload['trace'], static fn (mixed $frame): bool => is_array($frame)))
             : [];
 
         return [

@@ -32,17 +32,17 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\QueryStateReplayer;
-use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\RoutingResolver;
+use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateCommandGate;
+use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowInstanceId;
-use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowStub

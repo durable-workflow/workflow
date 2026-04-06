@@ -233,7 +233,10 @@ final class V2RunDetailViewTest extends TestCase
             static fn (array $wait): bool => ($wait['kind'] ?? null) === 'signal',
         ));
 
-        usort($signalWaits, static fn (array $left, array $right): int => ($left['sequence'] ?? 0) <=> ($right['sequence'] ?? 0));
+        usort(
+            $signalWaits,
+            static fn (array $left, array $right): int => ($left['sequence'] ?? 0) <=> ($right['sequence'] ?? 0)
+        );
 
         $this->assertCount(2, $signalWaits);
         $this->assertSame([1, 2], array_column($signalWaits, 'sequence'));
@@ -493,7 +496,7 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewPrefersOpenTimerTaskOverHistoricalClosedTimerTask(): void
     {
         $instance = WorkflowInstance::query()->create([
-            'id' => 'detail-timer-task-preference',
+            'id' => 'detail-timer-task-pref',
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 1,
@@ -542,7 +545,9 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Completed->value,
-            'payload' => ['timer_id' => $timer->id],
+            'payload' => [
+                'timer_id' => $timer->id,
+            ],
             'connection' => 'redis',
             'queue' => 'default',
             'available_at' => now()
@@ -558,7 +563,9 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Ready->value,
-            'payload' => ['timer_id' => $timer->id],
+            'payload' => [
+                'timer_id' => $timer->id,
+            ],
             'connection' => 'redis',
             'queue' => 'default',
             'available_at' => now()

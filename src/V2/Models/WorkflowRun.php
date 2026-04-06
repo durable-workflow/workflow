@@ -28,6 +28,7 @@ class WorkflowRun extends Model
 
     protected $casts = [
         'status' => RunStatus::class,
+        'last_command_sequence' => 'integer',
         'started_at' => 'datetime',
         'closed_at' => 'datetime',
         'last_progress_at' => 'datetime',

@@ -1210,12 +1210,7 @@ final class WorkflowExecutor
             ? $event->payload['code']
             : 0;
 
-        return FailureFactory::restore(
-            $payload,
-            $fallbackClass,
-            $fallbackMessage,
-            $fallbackCode,
-        );
+        return FailureFactory::restore($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
     }
 
     private function applyRecordedUpdates(

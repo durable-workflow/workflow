@@ -137,7 +137,7 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame('order-123', $propertyPayloads->get('orderId')['value'] ?? null);
         $this->assertSame('api', $propertyPayloads->get('channel')['value'] ?? null);
 
-        DB::transaction(function () use ($execution, $failure): void {
+        DB::transaction(static function () use ($execution, $failure): void {
             $execution->forceFill([
                 'status' => ActivityStatus::Completed,
                 'result' => Serializer::serialize('corrupted-result'),
@@ -231,7 +231,9 @@ final class V2QueryWorkflowTest extends TestCase
         $childRun->forceFill([
             'status' => RunStatus::Failed,
             'closed_reason' => 'failed',
-            'output' => Serializer::serialize(['greeting' => 'corrupted-child-output']),
+            'output' => Serializer::serialize([
+                'greeting' => 'corrupted-child-output',
+            ]),
             'closed_at' => now(),
         ])->save();
 

@@ -119,7 +119,8 @@ final class V2HistoryTimelineTest extends TestCase
 
         if ($timerTask->status === TaskStatus::Ready) {
             $timerTask->forceFill([
-                'available_at' => now()->subSecond(),
+                'available_at' => now()
+                    ->subSecond(),
             ])->save();
 
             $this->drainReadyTasks();

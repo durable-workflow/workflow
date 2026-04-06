@@ -275,9 +275,12 @@ final class RunWaitView
             ->keyBy(static fn (WorkflowHistoryEvent $event): string => (string) $event->payload['sequence']);
 
         $sequences = array_unique(array_merge(
-            $latestLinks->keys()->all(),
-            $scheduledEvents->keys()->all(),
-            $resolutionEvents->keys()->all(),
+            $latestLinks->keys()
+                ->all(),
+            $scheduledEvents->keys()
+                ->all(),
+            $resolutionEvents->keys()
+                ->all(),
         ));
 
         sort($sequences, SORT_NATURAL);
@@ -304,10 +307,18 @@ final class RunWaitView
                 ?? 'child workflow';
             $sourceStatus = $resolvedStatus?->value ?? $childRun?->status?->value;
             $status = match (true) {
-                $resolutionEvent !== null => in_array($resolvedStatus, [RunStatus::Cancelled, RunStatus::Terminated], true)
+                $resolutionEvent !== null => in_array(
+                    $resolvedStatus,
+                    [RunStatus::Cancelled, RunStatus::Terminated],
+                    true
+                )
                     ? 'cancelled'
                     : 'resolved',
-                in_array($childRun?->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true) => 'open',
+                in_array(
+                    $childRun?->status,
+                    [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting],
+                    true
+                ) => 'open',
                 in_array($childRun?->status, [RunStatus::Cancelled, RunStatus::Terminated], true) => 'cancelled',
                 default => 'resolved',
             };
@@ -431,9 +442,6 @@ final class RunWaitView
             return false;
         }
 
-        return in_array($task->status, [
-            TaskStatus::Ready,
-            TaskStatus::Leased,
-        ], true);
+        return in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true);
     }
 }

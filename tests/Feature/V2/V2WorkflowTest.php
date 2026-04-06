@@ -1630,7 +1630,7 @@ final class V2WorkflowTest extends TestCase
         Queue::fake();
 
         $instance = WorkflowInstance::query()->create([
-            'id' => 'repair-watchdog-missing-workflow',
+            'id' => 'repair-watchdog-missing-wf',
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
@@ -1697,7 +1697,7 @@ final class V2WorkflowTest extends TestCase
         Queue::fake();
 
         $instance = WorkflowInstance::query()->create([
-            'id' => 'repair-watchdog-missing-timer',
+            'id' => 'repair-watchdog-missing-tm',
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 1,
@@ -1778,7 +1778,7 @@ final class V2WorkflowTest extends TestCase
         Queue::fake();
 
         $instance = WorkflowInstance::query()->create([
-            'id' => 'repair-watchdog-running-activity',
+            'id' => 'repair-watchdog-run-act',
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,

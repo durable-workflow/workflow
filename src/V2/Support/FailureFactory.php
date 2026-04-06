@@ -278,12 +278,7 @@ final class FailureFactory
                 ? Serializer::unserializeModels($property['value'])
                 : null;
 
-            self::setThrowableProperty(
-                $throwable,
-                $property['declaring_class'],
-                $property['name'],
-                $value,
-            );
+            self::setThrowableProperty($throwable, $property['declaring_class'], $property['name'], $value);
         }
 
         return $throwable;
@@ -312,10 +307,7 @@ final class FailureFactory
             return [];
         }
 
-        return array_values(array_filter(
-            $trace,
-            static fn (mixed $frame): bool => is_array($frame),
-        ));
+        return array_values(array_filter($trace, static fn (mixed $frame): bool => is_array($frame)));
     }
 
     /**
@@ -330,9 +322,6 @@ final class FailureFactory
             return [];
         }
 
-        return array_values(array_filter(
-            $properties,
-            static fn (mixed $property): bool => is_array($property),
-        ));
+        return array_values(array_filter($properties, static fn (mixed $property): bool => is_array($property)));
     }
 }

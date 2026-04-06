@@ -9,6 +9,7 @@ use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -167,6 +168,75 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('resolved', $signalWait['status']);
         $this->assertSame('received', $signalWait['source_status']);
         $this->assertSame(2, $signalWait['command_sequence']);
+    }
+
+    public function testLegacyRunsBackfillCommandSequenceBeforeRecordingLaterCommands(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'legacy-update-seq');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowCommand::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->update([
+                'command_sequence' => null,
+            ]);
+
+        WorkflowRun::query()
+            ->whereKey($workflow->runId())
+            ->update([
+                'last_command_sequence' => 0,
+            ]);
+
+        Queue::fake();
+
+        $signal = $workflow->signal('name-provided', 'Taylor');
+        $update = $workflow->attemptUpdate('approve', true, 'api');
+
+        $this->assertSame(2, $signal->commandSequence());
+        $this->assertSame(3, $update->commandSequence());
+        $this->assertTrue($update->rejected());
+        $this->assertSame('rejected_pending_signal', $update->outcome());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        $this->assertSame(3, $run->last_command_sequence);
+        $this->assertSame(
+            [1, 2, 3],
+            WorkflowCommand::query()
+                ->where('workflow_run_id', $run->id)
+                ->orderBy('command_sequence')
+                ->pluck('command_sequence')
+                ->all(),
+        );
+        $this->assertSame(
+            ['start', 'signal', 'update'],
+            WorkflowCommand::query()
+                ->where('workflow_run_id', $run->id)
+                ->orderBy('command_sequence')
+                ->pluck('command_type')
+                ->map(static fn ($commandType) => $commandType->value)
+                ->all(),
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame([1, 2, 3], array_column($detail['commands'], 'sequence'));
+        $this->assertFalse($detail['can_update']);
+        $this->assertSame('earlier_signal_pending', $detail['update_blocked_reason']);
+
+        $timeline = HistoryTimeline::forRun($run->fresh());
+        $startAccepted = collect($timeline)
+            ->firstWhere('type', 'StartAccepted');
+        $signalReceived = collect($timeline)
+            ->firstWhere('type', 'SignalReceived');
+
+        $this->assertIsArray($startAccepted);
+        $this->assertIsArray($signalReceived);
+        $this->assertSame(1, $startAccepted['command_sequence']);
+        $this->assertSame(2, $signalReceived['command_sequence']);
     }
 
     public function testUpdateFailuresAreRecordedWithoutClosingTheRun(): void
