@@ -19,9 +19,9 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\TaskWatchdog;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2CompatibilityWorkflowTest extends TestCase
@@ -29,7 +29,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testStartAndContinueAsNewPreserveCompatibilityMarkerAcrossRunsAndTasks(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-2026-04');
-        config()->set('workflows.v2.compatibility.supported', ['build-2026-04']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-2026-04']);
 
         Queue::fake();
 
@@ -55,7 +56,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testChildRunsAndTasksInheritParentCompatibilityMarker(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-2026-04');
-        config()->set('workflows.v2.compatibility.supported', ['build-2026-04']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-2026-04']);
 
         Queue::fake();
 
@@ -85,7 +87,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testIncompatibleWorkerDoesNotClaimWorkflowTask(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         Queue::fake();
 
@@ -98,7 +101,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
             ->where('task_type', TaskType::Workflow->value)
             ->firstOrFail();
 
-        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-b']);
 
         $job = new RunWorkflowTask($task->id);
         $this->app->call([$job, 'handle']);
@@ -117,14 +121,17 @@ final class V2CompatibilityWorkflowTest extends TestCase
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
         Queue::fake();
 
-        $lastDispatchedAt = now()->subSeconds(30);
+        $lastDispatchedAt = now()
+            ->subSeconds(30);
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'compat-watchdog',
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
             'run_count' => 1,
         ]);
 
@@ -138,8 +145,10 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'payload_codec' => config('workflows.serializer'),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
             'last_history_sequence' => 0,
         ]);
 
@@ -152,7 +161,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subMinute(),
+            'available_at' => now()
+                ->subMinute(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -174,7 +184,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testRunDetailViewIncludesCompatibilityMetadata(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-b']);
 
         Queue::fake();
 
@@ -237,8 +248,10 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'id' => 'compat-overdue',
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
-            'reserved_at' => now()->subMinutes(2),
-            'started_at' => now()->subMinutes(2),
+            'reserved_at' => now()
+                ->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
             'run_count' => 1,
         ]);
 
@@ -252,8 +265,10 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'payload_codec' => config('workflows.serializer'),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(2),
-            'last_progress_at' => now()->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinutes(2),
             'last_history_sequence' => 0,
         ]);
 
@@ -266,12 +281,14 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subMinute(),
+            'available_at' => now()
+                ->subMinute(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'last_dispatched_at' => now()->subSeconds(30),
+            'last_dispatched_at' => now()
+                ->subSeconds(30),
         ]);
 
         $summary = RunSummaryProjector::project(
@@ -316,8 +333,10 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'id' => 'compat-expired-lease',
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
-            'reserved_at' => now()->subMinutes(2),
-            'started_at' => now()->subMinutes(2),
+            'reserved_at' => now()
+                ->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
             'run_count' => 1,
         ]);
 
@@ -331,8 +350,10 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'payload_codec' => config('workflows.serializer'),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(2),
-            'last_progress_at' => now()->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinutes(2),
             'last_history_sequence' => 0,
         ]);
 
@@ -345,15 +366,19 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subMinute(),
-            'leased_at' => now()->subMinutes(2),
+            'available_at' => now()
+                ->subMinute(),
+            'leased_at' => now()
+                ->subMinutes(2),
             'lease_owner' => 'worker-build-a',
-            'lease_expires_at' => now()->subMinute(),
+            'lease_expires_at' => now()
+                ->subMinute(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'last_dispatched_at' => now()->subMinutes(2),
+            'last_dispatched_at' => now()
+                ->subMinutes(2),
         ]);
 
         $summary = RunSummaryProjector::project(

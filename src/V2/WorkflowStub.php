@@ -56,7 +56,9 @@ final class WorkflowStub
     private static array $updateMethodCache = [];
 
     private ?WorkflowRun $run = null;
+
     private ?string $selectedRunId = null;
+
     private ?CommandContext $commandContext = null;
 
     private function __construct(
@@ -66,6 +68,25 @@ final class WorkflowStub
     ) {
         $this->run = $selectedRun ?? $this->instance->currentRun;
         $this->selectedRunId = $this->run?->id;
+    }
+
+    public function __call(string $method, array $arguments): mixed
+    {
+        $this->refresh();
+
+        $workflowClass = $this->run?->workflow_class ?? $this->instance->workflow_class;
+        $workflowType = $this->run?->workflow_type ?? $this->instance->workflow_type;
+        $resolvedClass = TypeRegistry::resolveWorkflowClass($workflowClass, $workflowType);
+
+        if (self::isQueryMethod($resolvedClass, $method)) {
+            return $this->query($method, ...$arguments);
+        }
+
+        if (self::isUpdateMethod($resolvedClass, $method)) {
+            return $this->update($method, ...$arguments);
+        }
+
+        throw new BadMethodCallException(sprintf('Call to undefined method [%s::%s].', static::class, $method));
     }
 
     /**
@@ -210,10 +231,7 @@ final class WorkflowStub
         $this->refresh();
 
         if ($this->run === null) {
-            throw new LogicException(sprintf(
-                'Workflow instance [%s] has not started yet.',
-                $this->instance->id,
-            ));
+            throw new LogicException(sprintf('Workflow instance [%s] has not started yet.', $this->instance->id));
         }
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($this->run->workflow_class, $this->run->workflow_type);
@@ -262,29 +280,6 @@ final class WorkflowStub
         $clone->commandContext = $commandContext;
 
         return $clone;
-    }
-
-    public function __call(string $method, array $arguments): mixed
-    {
-        $this->refresh();
-
-        $workflowClass = $this->run?->workflow_class ?? $this->instance->workflow_class;
-        $workflowType = $this->run?->workflow_type ?? $this->instance->workflow_type;
-        $resolvedClass = TypeRegistry::resolveWorkflowClass($workflowClass, $workflowType);
-
-        if (self::isQueryMethod($resolvedClass, $method)) {
-            return $this->query($method, ...$arguments);
-        }
-
-        if (self::isUpdateMethod($resolvedClass, $method)) {
-            return $this->update($method, ...$arguments);
-        }
-
-        throw new BadMethodCallException(sprintf(
-            'Call to undefined method [%s::%s].',
-            static::class,
-            $method,
-        ));
     }
 
     public function start(...$arguments): StartResult
@@ -1286,10 +1281,7 @@ final class WorkflowStub
      */
     private function commandAttributes(array $attributes): array
     {
-        return array_merge(
-            $this->resolvedCommandContext()->attributes(),
-            $attributes,
-        );
+        return array_merge($this->resolvedCommandContext() ->attributes(), $attributes);
     }
 
     private function resolvedCommandContext(): CommandContext

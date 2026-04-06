@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityExecution;
@@ -12,7 +13,6 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimer;
-use Workflow\Serializers\Serializer;
 
 final class RunDetailView
 {
@@ -45,11 +45,7 @@ final class RunDetailView
         ], true);
         $canRepair = $isCurrentRun
             && $summary?->liveness_state === 'repair_needed'
-            && in_array($run->status, [
-                RunStatus::Pending,
-                RunStatus::Running,
-                RunStatus::Waiting,
-            ], true);
+            && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
 
         $activities = $run->activityExecutions
             ->map(static fn (ActivityExecution $execution): array => [

@@ -30,7 +30,7 @@ final class RunTimerTask implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
-    public int $tries = 1;
+    public int $tries = 5;
 
     public function __construct(
         public readonly string $taskId,
@@ -40,7 +40,13 @@ final class RunTimerTask implements ShouldQueue
 
     public function handle(): void
     {
-        $timerId = $this->claimTask();
+        [$timerId, $releaseIn] = $this->claimTask();
+
+        if ($releaseIn !== null) {
+            $this->release($releaseIn);
+
+            return;
+        }
 
         if ($timerId === null) {
             return;
@@ -125,30 +131,35 @@ final class RunTimerTask implements ShouldQueue
         }
     }
 
-    private function claimTask(): ?string
+    /**
+     * @return array{0: ?string, 1: ?int}
+     */
+    private function claimTask(): array
     {
-        return DB::transaction(function (): ?string {
+        return DB::transaction(function (): array {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
                 ->find($this->taskId);
 
             if ($task === null || $task->task_type !== TaskType::Timer || $task->status !== TaskStatus::Ready) {
-                return null;
+                return [null, null];
             }
 
             if (! WorkerCompatibility::supports($task->compatibility)) {
-                return null;
+                return [null, null];
             }
 
             if ($task->available_at !== null && $task->available_at->isFuture()) {
-                return null;
+                $remainingMilliseconds = max(1, $task->available_at->getTimestampMs() - now()->getTimestampMs());
+
+                return [null, (int) ceil($remainingMilliseconds / 1000)];
             }
 
             $timerId = $task->payload['timer_id'] ?? null;
 
             if (! is_string($timerId)) {
-                return null;
+                return [null, null];
             }
 
             $task->forceFill([
@@ -168,7 +179,7 @@ final class RunTimerTask implements ShouldQueue
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
             );
 
-            return $timerId;
+            return [$timerId, null];
         });
     }
 }

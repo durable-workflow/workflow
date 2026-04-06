@@ -92,7 +92,9 @@ final class HistoryTimeline
             'command_type' => $command?->command_type?->value ?? self::stringValue($payload['command_type'] ?? null),
             'command_status' => $command?->status?->value,
             'command_outcome' => $command?->outcome?->value ?? self::stringValue($payload['outcome'] ?? null),
-            'command_rejection_reason' => $command?->rejection_reason ?? self::stringValue($payload['rejection_reason'] ?? null),
+            'command_rejection_reason' => $command?->rejection_reason ?? self::stringValue(
+                $payload['rejection_reason'] ?? null
+            ),
             'signal_name' => $command?->targetName() ?? self::stringValue($payload['signal_name'] ?? null),
             'update_name' => $command?->targetName() ?? self::stringValue($payload['update_name'] ?? null),
             'activity_execution_id' => $activity?->id ?? $activityId,
@@ -310,7 +312,9 @@ final class HistoryTimeline
             'request_fingerprint' => $command?->requestFingerprint(),
             'status' => $command?->status?->value,
             'outcome' => $command?->outcome?->value ?? self::stringValue($payload['outcome'] ?? null),
-            'rejection_reason' => $command?->rejection_reason ?? self::stringValue($payload['rejection_reason'] ?? null),
+            'rejection_reason' => $command?->rejection_reason ?? self::stringValue(
+                $payload['rejection_reason'] ?? null
+            ),
             'accepted_at' => self::timestamp($command?->accepted_at),
             'applied_at' => self::timestamp($command?->applied_at),
             'rejected_at' => self::timestamp($command?->rejected_at),

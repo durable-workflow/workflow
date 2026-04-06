@@ -17,9 +17,9 @@ use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
-use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
 
 final class QueryStateReplayer
@@ -27,17 +27,15 @@ final class QueryStateReplayer
     public function query(WorkflowRun $run, string $method, array $arguments = []): mixed
     {
         $workflow = $this->replay($run);
-        $parameters = $workflow->resolveMethodDependencies(
-            $arguments,
-            new ReflectionMethod($workflow, $method),
-        );
+        $parameters = $workflow->resolveMethodDependencies($arguments, new ReflectionMethod($workflow, $method));
 
         return $workflow->{$method}(...$parameters);
     }
 
     public function replay(WorkflowRun $run): \Workflow\V2\Workflow
     {
-        return $this->replayState($run)->workflow;
+        return $this->replayState($run)
+->workflow;
     }
 
     public function replayState(WorkflowRun $run): ReplayState
@@ -77,7 +75,11 @@ final class QueryStateReplayer
                 /** @var ActivityExecution|null $execution */
                 $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
 
-                if ($execution === null || in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                if ($execution === null || in_array(
+                    $execution->status,
+                    [ActivityStatus::Pending, ActivityStatus::Running],
+                    true
+                )) {
                     $this->applyRecordedUpdates($run, $workflow, $sequence);
 
                     return new ReplayState($workflow, $sequence, $current);
@@ -238,9 +240,7 @@ final class QueryStateReplayer
         $failure = $childRun->failures->first();
 
         if ($failure !== null) {
-            return new RuntimeException(
-                sprintf('[%s] %s', $failure->exception_class, $failure->message),
-            );
+            return new RuntimeException(sprintf('[%s] %s', $failure->exception_class, $failure->message));
         }
 
         return new RuntimeException(sprintf(
@@ -291,10 +291,8 @@ final class QueryStateReplayer
         }
     }
 
-    private function updateMethodName(
-        WorkflowHistoryEvent $event,
-        ?WorkflowCommand $command,
-    ): ?string {
+    private function updateMethodName(WorkflowHistoryEvent $event, ?WorkflowCommand $command): ?string
+    {
         $method = $event->payload['update_name'] ?? $command?->targetName();
 
         return is_string($method) && $method !== ''
@@ -305,10 +303,8 @@ final class QueryStateReplayer
     /**
      * @return array<int, mixed>
      */
-    private function updateArguments(
-        WorkflowHistoryEvent $event,
-        ?WorkflowCommand $command,
-    ): array {
+    private function updateArguments(WorkflowHistoryEvent $event, ?WorkflowCommand $command): array
+    {
         $serialized = $event->payload['arguments'] ?? null;
 
         if (is_string($serialized)) {

@@ -40,7 +40,9 @@ final class TaskWatchdog
                         return null;
                     }
 
-                    if (! TaskRepairPolicy::readyTaskNeedsRedispatch($task) && ! TaskRepairPolicy::leaseExpired($task)) {
+                    if (! TaskRepairPolicy::readyTaskNeedsRedispatch($task) && ! TaskRepairPolicy::leaseExpired(
+                        $task
+                    )) {
                         return null;
                     }
 
@@ -81,7 +83,8 @@ final class TaskWatchdog
     private static function candidateTaskIds(): array
     {
         $now = now();
-        $staleDispatchCutoff = $now->copy()->subSeconds(TaskRepairPolicy::REDISPATCH_AFTER_SECONDS);
+        $staleDispatchCutoff = $now->copy()
+            ->subSeconds(TaskRepairPolicy::REDISPATCH_AFTER_SECONDS);
 
         /** @var list<string> $ids */
         $ids = WorkflowTask::query()

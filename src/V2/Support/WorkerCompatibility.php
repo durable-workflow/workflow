@@ -86,10 +86,7 @@ final class WorkerCompatibility
             return [];
         }
 
-        $normalized = array_map(
-            static fn (mixed $item): ?string => self::normalize($item),
-            $value,
-        );
+        $normalized = array_map(static fn (mixed $item): ?string => self::normalize($item), $value);
 
         return array_values(array_unique(array_filter(
             $normalized,

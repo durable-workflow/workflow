@@ -73,10 +73,7 @@ final class RunWaitView
                 continue;
             }
 
-            $waits[] = self::timerWait(
-                $timer,
-                $taskByTimerId[$timer->id] ?? null,
-            );
+            $waits[] = self::timerWait($timer, $taskByTimerId[$timer->id] ?? null);
         }
 
         $waits = array_merge($waits, self::childWaits($run));
@@ -159,10 +156,8 @@ final class RunWaitView
     /**
      * @return array<string, mixed>
      */
-    private static function timerWait(
-        WorkflowTimer $timer,
-        ?WorkflowTask $task,
-    ): array {
+    private static function timerWait(WorkflowTimer $timer, ?WorkflowTask $task): array
+    {
         $status = match ($timer->status) {
             TimerStatus::Pending => 'open',
             TimerStatus::Cancelled => 'cancelled',

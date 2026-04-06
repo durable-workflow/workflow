@@ -9,8 +9,8 @@ use RuntimeException;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Type;
-use Workflow\V2\Workflow;
 use function Workflow\V2\awaitSignal;
+use Workflow\V2\Workflow;
 
 #[Type('test-update-workflow')]
 final class TestUpdateWorkflow extends Workflow
@@ -56,11 +56,7 @@ final class TestUpdateWorkflow extends Workflow
     public function approve(bool $approved, string $source = 'manual'): array
     {
         $this->approved = $approved;
-        $this->events[] = sprintf(
-            'approved:%s:%s',
-            $approved ? 'yes' : 'no',
-            $source,
-        );
+        $this->events[] = sprintf('approved:%s:%s', $approved ? 'yes' : 'no', $source);
 
         return [
             'approved' => $this->approved,

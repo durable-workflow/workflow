@@ -10,12 +10,12 @@ use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
-use Tests\Fixtures\V2\TestParentChildWorkflow;
-use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
-use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
+use Tests\Fixtures\V2\TestParentChildWorkflow;
+use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -40,9 +40,9 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
-use Workflow\V2\TaskWatchdog;
-use Workflow\V2\Support\RunSummarySortKey;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RunSummarySortKey;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowTest extends TestCase
@@ -131,13 +131,15 @@ final class V2WorkflowTest extends TestCase
 
     public function testAttemptStartReturnsRejectedResultForDuplicateStart(): void
     {
-        $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
-        $accepted = $workflow->attemptStart('Taylor');
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class);
+        $accepted = $workflow->attemptStart();
 
         $this->assertTrue($accepted->accepted());
         $this->assertSame('started_new', $accepted->outcome());
 
-        $rejected = $workflow->attemptStart('Jordan');
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $rejected = $workflow->attemptStart();
 
         $this->assertTrue($rejected->rejected());
         $this->assertTrue($rejected->rejectedDuplicate());
@@ -156,24 +158,29 @@ final class V2WorkflowTest extends TestCase
             'rejection_reason' => 'instance_already_started',
         ]);
 
-        $this->assertSame(['StartAccepted', 'WorkflowStarted', 'StartRejected'], WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $workflow->runId())
-            ->orderBy('sequence')
-            ->pluck('event_type')
-            ->map(static fn ($eventType) => $eventType->value)
-            ->all());
+        $this->assertSame(
+            ['StartAccepted', 'WorkflowStarted', 'SignalWaitOpened', 'StartRejected'],
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $workflow->runId())
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($eventType) => $eventType->value)
+                ->all()
+        );
     }
 
     public function testAttemptStartCanReturnExistingActiveRunWhenRequested(): void
     {
-        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'order-123');
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-123');
 
-        $accepted = $workflow->attemptStart('Taylor');
+        $accepted = $workflow->attemptStart();
 
         $this->assertTrue($accepted->accepted());
         $this->assertSame('started_new', $accepted->outcome());
 
-        $reused = $workflow->attemptStart('Jordan', StartOptions::returnExistingActive());
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $reused = $workflow->attemptStart(StartOptions::returnExistingActive());
 
         $this->assertTrue($reused->accepted());
         $this->assertTrue($reused->returnedExistingActive());
@@ -191,12 +198,15 @@ final class V2WorkflowTest extends TestCase
             'outcome' => 'returned_existing_active',
         ]);
 
-        $this->assertSame(['StartAccepted', 'WorkflowStarted', 'StartAccepted'], WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $accepted->runId())
-            ->orderBy('sequence')
-            ->pluck('event_type')
-            ->map(static fn ($eventType) => $eventType->value)
-            ->all());
+        $this->assertSame(
+            ['StartAccepted', 'WorkflowStarted', 'SignalWaitOpened', 'StartAccepted'],
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $accepted->runId())
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($eventType) => $eventType->value)
+                ->all()
+        );
     }
 
     public function testConfiguredTypeMapPersistsWorkflowAliasOnStartedRuns(): void
@@ -489,7 +499,8 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => 'Legacy\\GreetingWorkflow',
             'workflow_type' => 'config-greeting-workflow',
             'run_count' => 0,
-            'reserved_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
         ]);
 
         $workflow = WorkflowStub::make(TestConfiguredGreetingWorkflow::class, '01J0000000000000000000099');
@@ -511,8 +522,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => 'Legacy\\GreetingWorkflow',
             'workflow_type' => 'config-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -525,8 +538,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -539,9 +554,12 @@ final class V2WorkflowTest extends TestCase
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
             'payload' => [],
-            'available_at' => now()->subSeconds(5),
-            'leased_at' => now()->subSeconds(2),
-            'lease_expires_at' => now()->addMinutes(5),
+            'available_at' => now()
+                ->subSeconds(5),
+            'leased_at' => now()
+                ->subSeconds(2),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         $nextTask = app(\Workflow\V2\Support\WorkflowExecutor::class)->run(
@@ -569,8 +587,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestConfiguredGreetingWorkflow::class,
             'workflow_type' => 'config-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -583,8 +603,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -680,6 +702,8 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanWaitForTimerAndResume(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class);
         $workflow->start(3);
 
@@ -687,11 +711,18 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
-            && $workflow->summary()?->wait_kind === 'timer');
+        /** @var WorkflowTask $workflowTask */
+        $workflowTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole();
+
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+        $workflow->refresh();
 
         $summary = $workflow->summary();
 
+        $this->assertSame('waiting', $workflow->status());
         $this->assertSame('timer', $summary?->wait_kind);
         $this->assertNotNull($summary?->wait_deadline_at);
         $this->assertNotNull($summary?->next_task_id);
@@ -709,7 +740,11 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('pending', $timer->status->value);
         $this->assertSame(3, $timer->delay_seconds);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        sleep(4);
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
 
         $this->assertSame([
             'waited' => true,
@@ -751,11 +786,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('waiting_for_signal', $summary?->liveness_state);
         $this->assertSame('Waiting for signal name-provided.', $summary?->liveness_reason);
 
-        $this->assertSame([
-            'StartAccepted',
-            'WorkflowStarted',
-            'SignalWaitOpened',
-        ], WorkflowHistoryEvent::query()
+        $this->assertSame(['StartAccepted', 'WorkflowStarted', 'SignalWaitOpened'], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
             ->orderBy('sequence')
             ->pluck('event_type')
@@ -840,10 +871,7 @@ final class V2WorkflowTest extends TestCase
             ->pluck('command_sequence')
             ->all());
 
-        $this->assertSame([
-            $first->commandId(),
-            $second->commandId(),
-        ], WorkflowHistoryEvent::query()
+        $this->assertSame([$first->commandId(), $second->commandId()], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
             ->where('event_type', 'SignalApplied')
             ->orderBy('sequence')
@@ -955,8 +983,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -969,8 +999,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1003,7 +1035,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('redis', $task->connection);
         $this->assertSame('default', $task->queue);
 
-        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id);
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
 
         $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -1029,8 +1064,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1043,8 +1080,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1056,11 +1095,15 @@ final class V2WorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSeconds(20),
-            'leased_at' => now()->subSeconds(20),
+            'available_at' => now()
+                ->subSeconds(20),
+            'leased_at' => now()
+                ->subSeconds(20),
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->subSecond(),
-            'last_dispatched_at' => now()->subSeconds(20),
+            'lease_expires_at' => now()
+                ->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSeconds(20),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -1086,8 +1129,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1100,8 +1145,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1113,11 +1160,15 @@ final class V2WorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSeconds(25),
-            'leased_at' => now()->subSeconds(25),
+            'available_at' => now()
+                ->subSeconds(25),
+            'leased_at' => now()
+                ->subSeconds(25),
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->subSecond(),
-            'last_dispatched_at' => now()->subSeconds(25),
+            'lease_expires_at' => now()
+                ->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSeconds(25),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -1144,7 +1195,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame(1, $task->repair_count);
         $this->assertNotNull($task->last_dispatched_at);
 
-        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id);
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
 
         $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -1162,8 +1216,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1176,8 +1232,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([30]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1190,7 +1248,8 @@ final class V2WorkflowTest extends TestCase
             'sequence' => 1,
             'status' => 'pending',
             'delay_seconds' => 30,
-            'fire_at' => now()->addSeconds(25),
+            'fire_at' => now()
+                ->addSeconds(25),
         ]);
 
         $summary = RunSummaryProjector::project(
@@ -1212,7 +1271,9 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame(TaskType::Timer, $task->task_type);
         $this->assertSame(TaskStatus::Ready, $task->status);
-        $this->assertSame(['timer_id' => $timer->id], $task->payload);
+        $this->assertSame([
+            'timer_id' => $timer->id,
+        ], $task->payload);
         $this->assertSame(1, $task->repair_count);
         $this->assertSame($timer->fire_at?->toJSON(), $task->available_at?->toJSON());
 
@@ -1278,8 +1339,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1292,8 +1355,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1305,8 +1370,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSeconds(20),
-            'last_dispatched_at' => now()->subSeconds(20),
+            'available_at' => now()
+                ->subSeconds(20),
+            'last_dispatched_at' => now()
+                ->subSeconds(20),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -1320,7 +1387,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame(1, $task->repair_count);
         $this->assertNotNull($task->last_dispatched_at);
 
-        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id);
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -1337,8 +1407,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1351,8 +1423,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1369,7 +1443,8 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'activities',
-            'started_at' => now()->subSeconds(25),
+            'started_at' => now()
+                ->subSeconds(25),
         ]);
 
         /** @var WorkflowTask $task */
@@ -1377,11 +1452,15 @@ final class V2WorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSeconds(25),
-            'leased_at' => now()->subSeconds(25),
+            'available_at' => now()
+                ->subSeconds(25),
+            'leased_at' => now()
+                ->subSeconds(25),
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->subSecond(),
-            'last_dispatched_at' => now()->subSeconds(25),
+            'lease_expires_at' => now()
+                ->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSeconds(25),
             'payload' => [
                 'activity_execution_id' => $execution->id,
             ],
@@ -1399,7 +1478,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertNull($task->lease_expires_at);
         $this->assertSame(1, $task->repair_count);
 
-        Queue::assertPushed(RunActivityTask::class, static fn (RunActivityTask $job): bool => $job->taskId === $task->id);
+        Queue::assertPushed(
+            RunActivityTask::class,
+            static fn (RunActivityTask $job): bool => $job->taskId === $task->id
+        );
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -1417,8 +1499,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1431,8 +1515,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([30]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1445,7 +1531,8 @@ final class V2WorkflowTest extends TestCase
             'sequence' => 1,
             'status' => TimerStatus::Pending->value,
             'delay_seconds' => 30,
-            'fire_at' => now()->addSeconds(20),
+            'fire_at' => now()
+                ->addSeconds(20),
         ]);
 
         /** @var WorkflowTask $task */
@@ -1453,11 +1540,15 @@ final class V2WorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSeconds(10),
-            'leased_at' => now()->subSeconds(10),
+            'available_at' => now()
+                ->subSeconds(10),
+            'leased_at' => now()
+                ->subSeconds(10),
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->subSecond(),
-            'last_dispatched_at' => now()->subSeconds(10),
+            'lease_expires_at' => now()
+                ->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSeconds(10),
             'payload' => [
                 'timer_id' => $timer->id,
             ],
@@ -1704,8 +1795,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 2,
-            'reserved_at' => now()->subMinutes(10),
-            'started_at' => now()->subMinutes(10),
+            'reserved_at' => now()
+                ->subMinutes(10),
+            'started_at' => now()
+                ->subMinutes(10),
         ]);
 
         /** @var WorkflowRun $historicalRun */
@@ -1719,9 +1812,12 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([1]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(10),
-            'closed_at' => now()->subMinutes(9),
-            'last_progress_at' => now()->subMinutes(9),
+            'started_at' => now()
+                ->subMinutes(10),
+            'closed_at' => now()
+                ->subMinutes(9),
+            'last_progress_at' => now()
+                ->subMinutes(9),
         ]);
 
         /** @var WorkflowRun $currentRun */
@@ -1734,8 +1830,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([30]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -1866,8 +1964,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1880,8 +1980,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1920,12 +2022,17 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame(TaskType::Activity, $task->task_type);
         $this->assertSame(TaskStatus::Ready, $task->status);
-        $this->assertSame(['activity_execution_id' => $execution->id], $task->payload);
+        $this->assertSame([
+            'activity_execution_id' => $execution->id,
+        ], $task->payload);
         $this->assertSame(1, $task->repair_count);
         $this->assertSame('redis', $task->connection);
         $this->assertSame('activities', $task->queue);
 
-        Queue::assertPushed(RunActivityTask::class, static fn (RunActivityTask $job): bool => $job->taskId === $task->id);
+        Queue::assertPushed(
+            RunActivityTask::class,
+            static fn (RunActivityTask $job): bool => $job->taskId === $task->id
+        );
 
         $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -1961,8 +2068,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1975,8 +2084,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -1993,7 +2104,8 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'activities',
-            'started_at' => now()->subSeconds(20),
+            'started_at' => now()
+                ->subSeconds(20),
         ]);
 
         $summary = RunSummaryProjector::project(
@@ -2091,8 +2203,9 @@ final class V2WorkflowTest extends TestCase
             'config-greeting-workflow' => TestConfiguredGreetingWorkflow::class,
         ]);
 
-        config()->set('workflows.v2.types.activities', [
-            'config-greeting-activity' => TestConfiguredGreetingActivity::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.activities', [
+                'config-greeting-activity' => TestConfiguredGreetingActivity::class,
+            ]);
     }
 }

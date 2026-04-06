@@ -155,7 +155,8 @@ final class V2UpdateWorkflowTest extends TestCase
             'workflow_class' => TestUpdateWorkflow::class,
             'workflow_type' => 'test-update-workflow',
             'run_count' => 2,
-            'started_at' => now()->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $historicalRun */
@@ -169,9 +170,12 @@ final class V2UpdateWorkflowTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(5),
-            'closed_at' => now()->subMinutes(4),
-            'last_progress_at' => now()->subMinutes(4),
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => now()
+                ->subMinutes(4),
+            'last_progress_at' => now()
+                ->subMinutes(4),
         ]);
 
         /** @var WorkflowRun $currentRun */
@@ -184,8 +188,10 @@ final class V2UpdateWorkflowTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([

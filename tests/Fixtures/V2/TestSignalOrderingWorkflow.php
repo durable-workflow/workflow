@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Generator;
-use function Workflow\V2\awaitSignal;
 use Workflow\V2\Attributes\Type;
+use function Workflow\V2\awaitSignal;
 use Workflow\V2\Workflow;
 
 #[Type('test-signal-ordering-workflow')]

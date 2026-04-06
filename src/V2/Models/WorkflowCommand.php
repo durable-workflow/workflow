@@ -41,11 +41,8 @@ class WorkflowCommand extends Model
     /**
      * @param array<string, mixed> $attributes
      */
-    public static function record(
-        WorkflowInstance $instance,
-        ?WorkflowRun $run,
-        array $attributes,
-    ): self {
+    public static function record(WorkflowInstance $instance, ?WorkflowRun $run, array $attributes): self
+    {
         if ($run !== null) {
             $attributes['command_sequence'] ??= (static::query()
                 ->where('workflow_run_id', $run->id)

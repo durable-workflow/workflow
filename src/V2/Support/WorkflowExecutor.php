@@ -692,9 +692,7 @@ final class WorkflowExecutor
         $failure = $childRun->failures->first();
 
         if ($failure !== null) {
-            return new RuntimeException(
-                sprintf('[%s] %s', $failure->exception_class, $failure->message),
-            );
+            return new RuntimeException(sprintf('[%s] %s', $failure->exception_class, $failure->message));
         }
 
         return new RuntimeException(sprintf(

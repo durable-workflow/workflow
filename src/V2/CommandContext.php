@@ -61,11 +61,8 @@ final class CommandContext
         ]);
     }
 
-    public static function workflow(
-        string $parentInstanceId,
-        string $parentRunId,
-        int $sequence,
-    ): self {
+    public static function workflow(string $parentInstanceId, string $parentRunId, int $sequence): self
+    {
         return new self('workflow', [
             'caller' => [
                 'type' => 'workflow',
@@ -99,7 +96,7 @@ final class CommandContext
      */
     private static function requestMetadata(Request $request): array
     {
-        $path = '/'.ltrim($request->path(), '/');
+        $path = '/' . ltrim($request->path(), '/');
         $headers = array_filter([
             'x_request_id' => self::headerValue($request, 'X-Request-Id'),
             'x_correlation_id' => self::headerValue($request, 'X-Correlation-Id'),
@@ -128,7 +125,7 @@ final class CommandContext
             'correlation_id' => $headers['x_correlation_id'] ?? null,
             'fingerprint' => $encodedFingerprintPayload === false
                 ? null
-                : 'sha256:'.hash('sha256', $encodedFingerprintPayload),
+                : 'sha256:' . hash('sha256', $encodedFingerprintPayload),
             'headers' => $headers === [] ? null : $headers,
         ], static fn ($value): bool => $value !== null && $value !== '' && $value !== []);
     }

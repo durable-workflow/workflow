@@ -102,8 +102,12 @@ final class RunTaskView
         if (self::taskWaitingForCompatibleWorker($task)) {
             return match ($task->task_type) {
                 TaskType::Workflow => match (true) {
-                    TaskRepairPolicy::leaseExpired($task) => 'Workflow task lease expired and is waiting for a compatible worker.',
-                    TaskRepairPolicy::readyTaskNeedsRedispatch($task) => 'Workflow task is waiting for a compatible worker; dispatch is overdue.',
+                    TaskRepairPolicy::leaseExpired(
+                        $task
+                    ) => 'Workflow task lease expired and is waiting for a compatible worker.',
+                    TaskRepairPolicy::readyTaskNeedsRedispatch(
+                        $task
+                    ) => 'Workflow task is waiting for a compatible worker; dispatch is overdue.',
                     default => 'Workflow task is waiting for a compatible worker.',
                 },
                 TaskType::Activity => sprintf(
@@ -122,7 +126,11 @@ final class RunTaskView
                             : '%s is waiting for a compatible worker.'),
                     ucfirst($timer?->delay_seconds === null
                         ? 'timer task'
-                        : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
+                        : sprintf(
+                            'timer for %s second%s task',
+                            $timer->delay_seconds,
+                            $timer->delay_seconds === 1 ? '' : 's'
+                        )),
                 ),
             };
         }
@@ -138,7 +146,11 @@ final class RunTaskView
                     '%s lease expired; waiting for recovery.',
                     ucfirst($timer?->delay_seconds === null
                         ? 'timer task'
-                        : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
+                        : sprintf(
+                            'timer for %s second%s task',
+                            $timer->delay_seconds,
+                            $timer->delay_seconds === 1 ? '' : 's'
+                        )),
                 ),
             };
         }
@@ -154,7 +166,11 @@ final class RunTaskView
                     '%s is ready but dispatch is overdue.',
                     ucfirst($timer?->delay_seconds === null
                         ? 'timer task'
-                        : sprintf('timer for %s second%s task', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's')),
+                        : sprintf(
+                            'timer for %s second%s task',
+                            $timer->delay_seconds,
+                            $timer->delay_seconds === 1 ? '' : 's'
+                        )),
                 ),
             };
         }

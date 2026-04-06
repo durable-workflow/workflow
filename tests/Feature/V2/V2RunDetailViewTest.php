@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
+use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -128,7 +129,10 @@ final class V2RunDetailViewTest extends TestCase
         $activityWait = $this->findWait($detail['waits'], 'activity');
         $this->assertSame('resolved', $activityWait['status']);
         $this->assertSame('completed', $activityWait['source_status']);
-        $this->assertSame('Activity '.\Tests\Fixtures\V2\TestGreetingActivity::class.' completed.', $activityWait['summary']);
+        $this->assertSame(
+            'Activity ' . \Tests\Fixtures\V2\TestGreetingActivity::class . ' completed.',
+            $activityWait['summary']
+        );
         $this->assertTrue($activityWait['task_backed']);
         $this->assertSame('activity', $activityWait['task_type']);
         $this->assertSame('completed', $activityWait['task_status']);
@@ -155,8 +159,10 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 2,
-            'reserved_at' => now()->subMinutes(10),
-            'started_at' => now()->subMinutes(10),
+            'reserved_at' => now()
+                ->subMinutes(10),
+            'started_at' => now()
+                ->subMinutes(10),
         ]);
 
         /** @var WorkflowRun $historicalRun */
@@ -170,9 +176,12 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([1]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(10),
-            'closed_at' => now()->subMinutes(9),
-            'last_progress_at' => now()->subMinutes(9),
+            'started_at' => now()
+                ->subMinutes(10),
+            'closed_at' => now()
+                ->subMinutes(9),
+            'last_progress_at' => now()
+                ->subMinutes(9),
         ]);
 
         /** @var WorkflowRun $currentRun */
@@ -185,8 +194,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([30]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -239,9 +250,7 @@ final class V2RunDetailViewTest extends TestCase
         $historicalDetail = RunDetailView::forRun(
             $historicalRun->fresh(['summary', 'instance.currentRun.summary'])
         );
-        $currentDetail = RunDetailView::forRun(
-            $currentRun->fresh(['summary', 'instance.currentRun.summary'])
-        );
+        $currentDetail = RunDetailView::forRun($currentRun->fresh(['summary', 'instance.currentRun.summary']));
 
         $this->assertSame('completed', $historicalDetail['status']);
         $this->assertSame('continued', $historicalDetail['closed_reason']);
@@ -298,7 +307,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('child_workflow', $detail['continuedWorkflows'][0]['link_type']);
         $this->assertSame(1, $detail['continuedWorkflows'][0]['sequence']);
         $this->assertSame('waiting', $detail['continuedWorkflows'][0]['status']);
-        $this->assertSame('test-timer-workflow', $detail['continuedWorkflows'][0]['workflow_type']);
+        $this->assertSame(TestTimerWorkflow::class, $detail['continuedWorkflows'][0]['workflow_type']);
         $this->assertFalse($detail['can_repair']);
     }
 
@@ -356,7 +365,9 @@ final class V2RunDetailViewTest extends TestCase
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($runId);
-        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']));
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
         $timerWait = $this->findWait($detail['waits'], 'timer');
@@ -377,8 +388,10 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -391,8 +404,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -409,7 +424,8 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'activities',
-            'started_at' => now()->subSeconds(20),
+            'started_at' => now()
+                ->subSeconds(20),
         ]);
 
         RunSummaryProjector::project(

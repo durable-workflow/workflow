@@ -151,14 +151,12 @@ final class V2WebhookWorkflowTest extends TestCase
 
     public function testStartWebhookCanReturnExistingActiveRunWhenRequested(): void
     {
-        $first = $this->postJson('/webhooks/start/test-greeting-workflow', [
+        $first = $this->postJson('/webhooks/start/test-signal-workflow', [
             'workflow_id' => 'order-999',
-            'name' => 'Taylor',
         ]);
 
-        $second = $this->postJson('/webhooks/start/test-greeting-workflow', [
+        $second = $this->postJson('/webhooks/start/test-signal-workflow', [
             'workflow_id' => 'order-999',
-            'name' => 'Jordan',
             'on_duplicate' => 'return_existing_active',
         ]);
 
@@ -166,7 +164,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertStatus(200)
             ->assertJsonPath('outcome', 'returned_existing_active')
             ->assertJsonPath('workflow_id', 'order-999')
-            ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('workflow_type', 'test-signal-workflow')
             ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null)
@@ -202,9 +200,7 @@ final class V2WebhookWorkflowTest extends TestCase
             'configured-webhook-workflow' => TestConfiguredGreetingWorkflow::class,
         ]);
 
-        Webhooks::routes([
-            TestConfiguredGreetingWorkflow::class,
-        ], 'configured-webhooks');
+        Webhooks::routes([TestConfiguredGreetingWorkflow::class], 'configured-webhooks');
 
         $response = $this->postJson('/configured-webhooks/start/configured-webhook-workflow', [
             'workflow_id' => 'order-configured-webhook',
@@ -302,8 +298,10 @@ final class V2WebhookWorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
             'current_run_id' => '01JTESTFLOWRUNREPAIRWEB001',
         ]);
 
@@ -317,8 +315,10 @@ final class V2WebhookWorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $response = $this->postJson('/webhooks/instances/order-repair/repair');

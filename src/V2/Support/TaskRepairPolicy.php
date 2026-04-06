@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\CarbonInterface;
+use Carbon\CarbonInterface;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowTask;
 
 final class TaskRepairPolicy
 {
-    public const REDISPATCH_AFTER_SECONDS = 15;
+    public const REDISPATCH_AFTER_SECONDS = 3;
 
     public const LOOP_THROTTLE_SECONDS = 5;
 

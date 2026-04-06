@@ -6,8 +6,8 @@ namespace Tests\Fixtures\V2;
 
 use Generator;
 use function Workflow\V2\activity;
-use function Workflow\V2\continueAsNew;
 use Workflow\V2\Attributes\Type;
+use function Workflow\V2\continueAsNew;
 use Workflow\V2\Workflow;
 
 #[Type('test-continue-as-new-workflow')]

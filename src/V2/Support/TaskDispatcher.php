@@ -9,6 +9,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
 final class TaskDispatcher
@@ -18,6 +19,8 @@ final class TaskDispatcher
         $task->forceFill([
             'last_dispatched_at' => now(),
         ])->save();
+
+        self::refreshRunSummary($task);
 
         $dispatch = match ($task->task_type) {
             TaskType::Workflow => RunWorkflowTask::dispatch($task->id),
@@ -40,6 +43,16 @@ final class TaskDispatcher
 
         if ($task->task_type === TaskType::Timer && $task->available_at !== null) {
             $dispatch->delay($task->available_at);
+        }
+    }
+
+    private static function refreshRunSummary(WorkflowTask $task): void
+    {
+        /** @var WorkflowRun|null $run */
+        $run = WorkflowRun::query()->find($task->workflow_run_id);
+
+        if ($run instanceof WorkflowRun) {
+            RunSummaryProjector::project($run);
         }
     }
 }

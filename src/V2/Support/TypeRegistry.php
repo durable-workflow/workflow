@@ -42,24 +42,12 @@ final class TypeRegistry
 
     public static function resolveWorkflowClass(string $storedClass, ?string $workflowType): string
     {
-        return self::resolveClass(
-            $storedClass,
-            $workflowType,
-            Workflow::class,
-            'workflows',
-            'workflow',
-        );
+        return self::resolveClass($storedClass, $workflowType, Workflow::class, 'workflows', 'workflow');
     }
 
     public static function resolveActivityClass(string $storedClass, ?string $activityType): string
     {
-        return self::resolveClass(
-            $storedClass,
-            $activityType,
-            Activity::class,
-            'activities',
-            'activity',
-        );
+        return self::resolveClass($storedClass, $activityType, Activity::class, 'activities', 'activity');
     }
 
     private static function configuredTypeForClass(string $class): ?string

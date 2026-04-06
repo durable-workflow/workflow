@@ -169,8 +169,10 @@ final class WorkflowServiceProviderTest extends TestCase
             'workflow_class' => TestSimpleWorkflow::class,
             'workflow_type' => TestSimpleWorkflow::class,
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -183,8 +185,10 @@ final class WorkflowServiceProviderTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -196,8 +200,10 @@ final class WorkflowServiceProviderTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSeconds(20),
-            'last_dispatched_at' => now()->subSeconds(20),
+            'available_at' => now()
+                ->subSeconds(20),
+            'last_dispatched_at' => now()
+                ->subSeconds(20),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -205,7 +211,10 @@ final class WorkflowServiceProviderTest extends TestCase
 
         Event::dispatch(new Looping('redis', 'high,default'));
 
-        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id);
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
 
         $task->refresh();
 

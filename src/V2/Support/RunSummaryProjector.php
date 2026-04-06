@@ -119,11 +119,7 @@ final class RunSummaryProjector
             $durationMs = $run->closed_at->diffInMilliseconds($run->started_at);
         }
 
-        $sortTimestamp = RunSummarySortKey::timestamp(
-            $run->started_at,
-            $run->created_at,
-            $run->updated_at,
-        );
+        $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
 
         /** @var WorkflowRunSummary $summary */
         $summary = WorkflowRunSummary::query()->updateOrCreate(
@@ -254,7 +250,9 @@ final class RunSummaryProjector
 
         if ($openTimer !== null) {
             if ($nextTask !== null) {
-                if (TaskRepairPolicy::leaseExpired($nextTask) || TaskRepairPolicy::readyTaskNeedsRedispatch($nextTask)) {
+                if (TaskRepairPolicy::leaseExpired($nextTask) || TaskRepairPolicy::readyTaskNeedsRedispatch(
+                    $nextTask
+                )) {
                     return self::taskLiveness($nextTask, 'Timer');
                 }
 
@@ -278,17 +276,11 @@ final class RunSummaryProjector
         }
 
         if ($openChildWait !== null) {
-            return [
-                'waiting_for_child',
-                sprintf('Waiting for child workflow %s.', $openChildWait['label']),
-            ];
+            return ['waiting_for_child', sprintf('Waiting for child workflow %s.', $openChildWait['label'])];
         }
 
         if ($openSignalWait !== null) {
-            return [
-                'waiting_for_signal',
-                sprintf('Waiting for signal %s.', $openSignalWait['name']),
-            ];
+            return ['waiting_for_signal', sprintf('Waiting for signal %s.', $openSignalWait['name'])];
         }
 
         return ['repair_needed', 'Run is non-terminal but has no durable next-resume source.'];
