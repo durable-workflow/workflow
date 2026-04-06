@@ -133,7 +133,8 @@ final class V2RunDetailViewTest extends TestCase
             'Activity ' . \Tests\Fixtures\V2\TestGreetingActivity::class . ' completed.',
             $activityWait['summary']
         );
-        $this->assertTrue($activityWait['task_backed']);
+        $this->assertFalse($activityWait['task_backed']);
+        $this->assertNotNull($activityWait['task_id']);
         $this->assertSame('activity', $activityWait['task_type']);
         $this->assertSame('completed', $activityWait['task_status']);
         $activityTask = $this->findTask($detail['tasks'], 'activity');
@@ -154,7 +155,7 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewMarksReceivedSignalWithoutWorkflowTaskAsRepairNeeded(): void
     {
-        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-repair-needed');
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-repair');
         $workflow->start();
         $runId = $workflow->runId();
 
@@ -394,6 +395,98 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($timerWait['resume_source_id'], $timerTask['timer_id']);
         $this->assertSame(1, $timerTask['timer_sequence']);
         $this->assertNotNull($timerTask['timer_fire_at']);
+    }
+
+    public function testRunDetailViewPrefersOpenTimerTaskOverHistoricalClosedTimerTask(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'detail-timer-task-preference',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([60]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(10),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+            'run_count' => 1,
+        ])->save();
+
+        /** @var \Workflow\V2\Models\WorkflowTimer $timer */
+        $timer = \Workflow\V2\Models\WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'status' => \Workflow\V2\Enums\TimerStatus::Pending->value,
+            'delay_seconds' => 60,
+            'fire_at' => now()
+                ->addMinute(),
+            'created_at' => now()
+                ->subSeconds(40),
+            'updated_at' => now()
+                ->subSeconds(40),
+        ]);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Completed->value,
+            'payload' => ['timer_id' => $timer->id],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'available_at' => now()
+                ->subSeconds(35),
+            'created_at' => now()
+                ->subSeconds(35),
+            'updated_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        /** @var WorkflowTask $readyTask */
+        $readyTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Ready->value,
+            'payload' => ['timer_id' => $timer->id],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'available_at' => now()
+                ->subSeconds(5),
+            'created_at' => now()
+                ->subSeconds(5),
+            'updated_at' => now()
+                ->subSeconds(5),
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $timerWait = $this->findWait($detail['waits'], 'timer');
+
+        $this->assertTrue($timerWait['task_backed']);
+        $this->assertSame($readyTask->id, $timerWait['task_id']);
+        $this->assertSame('timer', $timerWait['task_type']);
+        $this->assertSame('ready', $timerWait['task_status']);
     }
 
     public function testRunDetailViewMarksRepairNeededTimerWaitAsNotTaskBacked(): void

@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -33,26 +34,8 @@ final class RunWaitView
             'childLinks.childRun.failures',
         ]);
 
-        $taskByActivityExecutionId = [];
-        $taskByTimerId = [];
-
-        foreach ($run->tasks as $task) {
-            if (! $task instanceof WorkflowTask) {
-                continue;
-            }
-
-            $activityExecutionId = self::stringValue($task->payload['activity_execution_id'] ?? null);
-
-            if ($activityExecutionId !== null && ! array_key_exists($activityExecutionId, $taskByActivityExecutionId)) {
-                $taskByActivityExecutionId[$activityExecutionId] = $task;
-            }
-
-            $timerId = self::stringValue($task->payload['timer_id'] ?? null);
-
-            if ($timerId !== null && ! array_key_exists($timerId, $taskByTimerId)) {
-                $taskByTimerId[$timerId] = $task;
-            }
-        }
+        $taskByActivityExecutionId = self::preferredTasksByPayloadKey($run, 'activity_execution_id');
+        $taskByTimerId = self::preferredTasksByPayloadKey($run, 'timer_id');
 
         $waits = [];
 
@@ -139,7 +122,7 @@ final class RunWaitView
             'resolved_at' => $execution->closed_at,
             'target_name' => null,
             'target_type' => $execution->activity_type,
-            'task_backed' => $task !== null,
+            'task_backed' => self::isOpenTask($task),
             'external_only' => false,
             'resume_source_kind' => 'activity_execution',
             'resume_source_id' => $execution->id,
@@ -180,7 +163,7 @@ final class RunWaitView
             'resolved_at' => $timer->fired_at,
             'target_name' => null,
             'target_type' => 'timer',
-            'task_backed' => $task !== null,
+            'task_backed' => self::isOpenTask($task),
             'external_only' => false,
             'resume_source_kind' => 'timer',
             'resume_source_id' => $timer->id,
@@ -442,5 +425,82 @@ final class RunWaitView
         return is_int($value)
             ? $value
             : null;
+    }
+
+    /**
+     * @return array<string, WorkflowTask>
+     */
+    private static function preferredTasksByPayloadKey(WorkflowRun $run, string $payloadKey): array
+    {
+        $tasks = [];
+
+        foreach ($run->tasks as $task) {
+            if (! $task instanceof WorkflowTask) {
+                continue;
+            }
+
+            $payloadId = self::stringValue($task->payload[$payloadKey] ?? null);
+
+            if ($payloadId === null) {
+                continue;
+            }
+
+            $current = $tasks[$payloadId] ?? null;
+
+            if (! $current instanceof WorkflowTask || self::taskPreference($task, $current) < 0) {
+                $tasks[$payloadId] = $task;
+            }
+        }
+
+        return $tasks;
+    }
+
+    private static function taskPreference(WorkflowTask $left, WorkflowTask $right): int
+    {
+        $leftPriority = self::taskPriority($left);
+        $rightPriority = self::taskPriority($right);
+
+        if ($leftPriority !== $rightPriority) {
+            return $leftPriority <=> $rightPriority;
+        }
+
+        $leftUpdatedAt = $left->updated_at?->getTimestampMs() ?? PHP_INT_MIN;
+        $rightUpdatedAt = $right->updated_at?->getTimestampMs() ?? PHP_INT_MIN;
+
+        if ($leftUpdatedAt !== $rightUpdatedAt) {
+            return $rightUpdatedAt <=> $leftUpdatedAt;
+        }
+
+        $leftCreatedAt = $left->created_at?->getTimestampMs() ?? PHP_INT_MIN;
+        $rightCreatedAt = $right->created_at?->getTimestampMs() ?? PHP_INT_MIN;
+
+        if ($leftCreatedAt !== $rightCreatedAt) {
+            return $rightCreatedAt <=> $leftCreatedAt;
+        }
+
+        return $right->id <=> $left->id;
+    }
+
+    private static function taskPriority(WorkflowTask $task): int
+    {
+        return match ($task->status) {
+            TaskStatus::Leased => 0,
+            TaskStatus::Ready => 1,
+            TaskStatus::Completed => 2,
+            TaskStatus::Failed => 3,
+            TaskStatus::Cancelled => 4,
+        };
+    }
+
+    private static function isOpenTask(?WorkflowTask $task): bool
+    {
+        if (! $task instanceof WorkflowTask) {
+            return false;
+        }
+
+        return in_array($task->status, [
+            TaskStatus::Ready,
+            TaskStatus::Leased,
+        ], true);
     }
 }
