@@ -291,6 +291,37 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testSignalWebhookReturnsTypedUnknownSignalResponse(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-signal-unknown');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-signal-unknown/signals/not-declared', [
+            'arguments' => ['Taylor'],
+        ]);
+
+        $response
+            ->assertStatus(404)
+            ->assertJsonPath('outcome', 'rejected_unknown_signal')
+            ->assertJsonPath('workflow_id', 'order-signal-unknown')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('workflow_type', 'test-signal-workflow')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'unknown_signal');
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-signal-unknown',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'signal',
+            'status' => 'rejected',
+            'outcome' => 'rejected_unknown_signal',
+            'rejection_reason' => 'unknown_signal',
+        ]);
+    }
+
     public function testUpdateWebhookReturnsTypedCompletedResponse(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook');
@@ -325,6 +356,40 @@ final class V2WebhookWorkflowTest extends TestCase
             'approved' => true,
             'events' => ['started', 'approved:yes:webhook'],
         ], $workflow->currentState());
+    }
+
+    public function testUpdateWebhookReturnsTypedUnknownUpdateResponse(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-web-unk');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-update-web-unk/updates/missing-update', [
+            'arguments' => [true, 'webhook'],
+        ]);
+
+        $response
+            ->assertStatus(404)
+            ->assertJsonPath('outcome', 'rejected_unknown_update')
+            ->assertJsonPath('workflow_id', 'order-update-web-unk')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('workflow_type', 'test-update-workflow')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'unknown_update')
+            ->assertJsonPath('result', null)
+            ->assertJsonPath('failure_id', null)
+            ->assertJsonPath('failure_message', null);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-web-unk',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_unknown_update',
+            'rejection_reason' => 'unknown_update',
+        ]);
     }
 
     public function testUpdateWebhookRejectsLaterUpdateWhenAnEarlierSignalIsPending(): void

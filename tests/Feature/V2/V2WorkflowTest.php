@@ -2154,6 +2154,33 @@ final class V2WorkflowTest extends TestCase
         ]);
     }
 
+    public function testAttemptSignalRejectsUnknownSignalName(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'unknown-signal-instance');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->attemptSignal('unknown-signal', 'Jordan');
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('signal', $result->type());
+        $this->assertSame('rejected_unknown_signal', $result->outcome());
+        $this->assertSame('unknown_signal', $result->rejectionReason());
+        $this->assertSame('unknown-signal-instance', $result->instanceId());
+        $this->assertSame($workflow->runId(), $result->runId());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'unknown-signal-instance',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'signal',
+            'status' => 'rejected',
+            'outcome' => 'rejected_unknown_signal',
+            'rejection_reason' => 'unknown_signal',
+        ]);
+    }
+
     public function testAttemptTerminateRejectsClosedRun(): void
     {
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'completed-instance');

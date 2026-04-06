@@ -7,11 +7,13 @@ namespace Tests\Fixtures\V2;
 use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
+use Workflow\V2\Attributes\Signal;
 use function Workflow\V2\awaitSignal;
 use function Workflow\V2\timer;
 use Workflow\V2\Workflow;
 
 #[Type('test-query-workflow')]
+#[Signal('name-provided')]
 final class TestQueryWorkflow extends Workflow
 {
     private string $stage = 'booting';

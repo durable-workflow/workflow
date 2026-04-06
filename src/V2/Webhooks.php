@@ -97,7 +97,10 @@ final class Webhooks
                 ))
                 ->attemptSignal($signal, ...self::resolveSignalArguments($request->all()));
 
-            return self::commandResponse($result, $result->accepted() ? 202 : 409);
+            return self::commandResponse($result, match ($result->outcome()) {
+                CommandOutcome::RejectedUnknownSignal->value => 404,
+                default => $result->accepted() ? 202 : 409,
+            });
         })->name('workflows.v2.signal');
 
         Route::post("{$basePath}/instances/{workflowId}/updates/{update}", static function (
@@ -107,18 +110,15 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            try {
-                $result = WorkflowStub::load($workflowId)
-                    ->withCommandContext(CommandContext::webhook(
-                        $request,
-                        (string) config('workflows.webhook_auth.method', 'none'),
-                    ))
-                    ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
-            } catch (LogicException) {
-                abort(404);
-            }
+            $result = WorkflowStub::load($workflowId)
+                ->withCommandContext(CommandContext::webhook(
+                    $request,
+                    (string) config('workflows.webhook_auth.method', 'none'),
+                ))
+                ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
+                $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
                 default => 200,

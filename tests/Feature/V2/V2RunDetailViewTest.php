@@ -122,7 +122,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
         $this->assertSame('resolved', $signalWait['status']);
-        $this->assertSame('received', $signalWait['source_status']);
+        $this->assertSame('applied', $signalWait['source_status']);
         $this->assertSame('Signal name-provided received.', $signalWait['summary']);
         $this->assertSame(2, $signalWait['command_sequence']);
         $this->assertSame('accepted', $signalWait['command_status']);

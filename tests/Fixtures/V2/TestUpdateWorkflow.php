@@ -8,11 +8,13 @@ use Generator;
 use RuntimeException;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
+use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\awaitSignal;
 use Workflow\V2\Workflow;
 
 #[Type('test-update-workflow')]
+#[Signal('name-provided')]
 final class TestUpdateWorkflow extends Workflow
 {
     private string $stage = 'booting';

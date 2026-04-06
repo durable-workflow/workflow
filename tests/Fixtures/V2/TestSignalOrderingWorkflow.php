@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Generator;
+use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\awaitSignal;
 use Workflow\V2\Workflow;
 
 #[Type('test-signal-ordering-workflow')]
+#[Signal('message')]
 final class TestSignalOrderingWorkflow extends Workflow
 {
     public function execute(): Generator

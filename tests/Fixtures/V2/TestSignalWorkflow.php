@@ -6,11 +6,13 @@ namespace Tests\Fixtures\V2;
 
 use Generator;
 use function Workflow\V2\activity;
+use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\awaitSignal;
 use Workflow\V2\Workflow;
 
 #[Type('test-signal-workflow')]
+#[Signal('name-provided')]
 final class TestSignalWorkflow extends Workflow
 {
     public function execute(): Generator

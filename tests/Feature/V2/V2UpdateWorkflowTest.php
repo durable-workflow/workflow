@@ -66,6 +66,8 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertTrue($detail['can_update']);
         $this->assertNull($detail['update_blocked_reason']);
         $this->assertTrue($detail['can_signal']);
+        $this->assertSame(['name-provided'], $detail['declared_signals']);
+        $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
         $this->assertCount(2, $detail['commands']);
         $this->assertSame('update', $detail['commands'][1]['type']);
         $this->assertSame('approve', $detail['commands'][1]['target_name']);
@@ -207,6 +209,36 @@ final class V2UpdateWorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+    }
+
+    public function testAttemptUpdateRejectsUnknownUpdateTarget(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-unknown');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->attemptUpdate('missingUpdate', true);
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('rejected_unknown_update', $result->outcome());
+        $this->assertSame('unknown_update', $result->rejectionReason());
+        $this->assertNull($result->result());
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->currentState());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'order-update-unknown',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_unknown_update',
+            'rejection_reason' => 'unknown_update',
+        ]);
     }
 
     public function testAttemptUpdateRejectsHistoricalSelectedRuns(): void

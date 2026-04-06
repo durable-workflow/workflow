@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace Workflow\Traits;
 
-use Illuminate\Routing\ResolvesRouteDependencies;
 use ReflectionFunctionAbstract;
 use stdClass;
 
+if (! trait_exists(\Illuminate\Routing\ResolvesRouteDependencies::class) && trait_exists(\Illuminate\Routing\RouteDependencyResolverTrait::class)) {
+    class_alias(\Illuminate\Routing\RouteDependencyResolverTrait::class, \Illuminate\Routing\ResolvesRouteDependencies::class);
+}
+
 trait ResolvesMethodDependencies
 {
-    use ResolvesRouteDependencies {
+    use \Illuminate\Routing\ResolvesRouteDependencies {
         resolveMethodDependencies as private resolveMethodDependenciesBase;
     }
 

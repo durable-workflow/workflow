@@ -13,6 +13,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\TypeRegistry;
 
 final class RunDetailView
 {
@@ -38,6 +39,7 @@ final class RunDetailView
         $currentRun = $run->instance?->currentRun;
         $currentSummary = $currentRun?->summary;
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
+        $resolvedWorkflowClass = self::resolvedWorkflowClass($run);
         $canIssueTerminalCommands = $isCurrentRun && in_array($run->status, [
             RunStatus::Pending,
             RunStatus::Running,
@@ -103,6 +105,12 @@ final class RunDetailView
             'queue' => $run->queue,
             'output' => $run->output === null ? serialize(null) : serialize($run->workflowOutput()),
             'status' => $run->status->value,
+            'declared_signals' => $resolvedWorkflowClass === null
+                ? []
+                : WorkflowDefinition::signalNames($resolvedWorkflowClass),
+            'declared_updates' => $resolvedWorkflowClass === null
+                ? []
+                : WorkflowDefinition::updateMethods($resolvedWorkflowClass),
             'status_bucket' => $summary?->status_bucket,
             'closed_reason' => $summary?->closed_reason ?? $run->closed_reason,
             'closed_at' => $summary?->closed_at ?? $run->closed_at,
@@ -269,6 +277,19 @@ final class RunDetailView
             )->values(),
             'chartData' => self::chartData($run),
         ];
+    }
+
+    private static function resolvedWorkflowClass(WorkflowRun $run): ?string
+    {
+        try {
+            $resolved = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        } catch (\LogicException) {
+            return null;
+        }
+
+        return is_string($resolved) && class_exists($resolved)
+            ? $resolved
+            : null;
     }
 
     /**
