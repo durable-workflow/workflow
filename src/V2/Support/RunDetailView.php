@@ -43,6 +43,9 @@ final class RunDetailView
             RunStatus::Running,
             RunStatus::Waiting,
         ], true);
+        $updateBlockedReason = $canIssueTerminalCommands
+            ? UpdateCommandGate::blockedReason($run)
+            : null;
         $canRepair = $isCurrentRun
             && $summary?->liveness_state === 'repair_needed'
             && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
@@ -119,7 +122,8 @@ final class RunDetailView
             'exceptions_count' => $summary?->exceptions_count ?? $run->failures->count(),
             'can_issue_terminal_commands' => $canIssueTerminalCommands,
             'can_signal' => $canIssueTerminalCommands,
-            'can_update' => $canIssueTerminalCommands,
+            'can_update' => $canIssueTerminalCommands && $updateBlockedReason === null,
+            'update_blocked_reason' => $updateBlockedReason,
             'can_repair' => $canRepair,
             'read_only_reason' => $canIssueTerminalCommands
                 ? null

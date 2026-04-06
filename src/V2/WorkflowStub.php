@@ -41,6 +41,7 @@ use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\UpdateCommandGate;
 use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\WorkflowMetadata;
@@ -593,6 +594,25 @@ final class WorkflowStub
             }
 
             $this->loadLockedRunRelations($run, $instance);
+
+            if (UpdateCommandGate::blockedReason($run) !== null) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Update,
+                    UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL,
+                    $this->commandTargetScope(),
+                    [
+                        'payload_codec' => config('workflows.serializer'),
+                        'payload' => Serializer::serialize([
+                            'name' => $method,
+                            'arguments' => $arguments,
+                        ]),
+                    ],
+                );
+
+                return;
+            }
 
             $replayState = (new QueryStateReplayer())->replayState($run);
 
@@ -1267,9 +1287,10 @@ final class WorkflowStub
         CommandType $commandType,
         string $reason,
         string $targetScope = 'instance',
+        array $attributes = [],
     ): WorkflowCommand {
         /** @var WorkflowCommand $command */
-        $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+        $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
             'command_type' => $commandType->value,
             'target_scope' => $targetScope,
             'status' => CommandStatus::Rejected->value,
@@ -1277,12 +1298,13 @@ final class WorkflowStub
                 'instance_not_started' => CommandOutcome::RejectedNotStarted->value,
                 'run_not_active' => CommandOutcome::RejectedNotActive->value,
                 'selected_run_not_current' => CommandOutcome::RejectedNotCurrent->value,
+                UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL => CommandOutcome::RejectedPendingSignal->value,
                 default => null,
             },
             'payload_codec' => config('workflows.serializer'),
             'rejection_reason' => $reason,
             'rejected_at' => now(),
-        ]));
+        ], $attributes)));
 
         return $command;
     }
@@ -1293,7 +1315,7 @@ final class WorkflowStub
      */
     private function commandAttributes(array $attributes): array
     {
-        return array_merge($this->resolvedCommandContext() ->attributes(), $attributes);
+        return array_merge($this->resolvedCommandContext()->attributes(), $attributes);
     }
 
     private function resolvedCommandContext(): CommandContext

@@ -97,4 +97,9 @@ class CommandResult
     {
         return $this->command->outcome === CommandOutcome::RejectedNotCurrent;
     }
+
+    public function rejectedPendingSignal(): bool
+    {
+        return $this->command->outcome === CommandOutcome::RejectedPendingSignal;
+    }
 }

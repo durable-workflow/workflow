@@ -327,6 +327,52 @@ final class V2WebhookWorkflowTest extends TestCase
         ], $workflow->currentState());
     }
 
+    public function testUpdateWebhookRejectsLaterUpdateWhenAnEarlierSignalIsPending(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-b');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        Queue::fake();
+
+        $signal = $this->postJson('/webhooks/instances/order-update-webhook-b/signals/name-provided', [
+            'arguments' => ['Taylor'],
+        ]);
+
+        $signal
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', 'signal_received')
+            ->assertJsonPath('command_sequence', 2);
+
+        $response = $this->postJson('/webhooks/instances/order-update-webhook-b/updates/approve', [
+            'arguments' => [true, 'webhook'],
+        ]);
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('outcome', 'rejected_pending_signal')
+            ->assertJsonPath('workflow_id', 'order-update-webhook-b')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('workflow_type', 'test-update-workflow')
+            ->assertJsonPath('command_sequence', 3)
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'earlier_signal_pending')
+            ->assertJsonPath('result', null)
+            ->assertJsonPath('failure_id', null)
+            ->assertJsonPath('failure_message', null);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-webhook-b',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_pending_signal',
+            'rejection_reason' => 'earlier_signal_pending',
+        ]);
+    }
+
     public function testRepairWebhookReturnsTypedAcceptedResponseWhenTaskIsRecreated(): void
     {
         Queue::fake();

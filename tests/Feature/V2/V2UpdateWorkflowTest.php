@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -30,6 +31,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertTrue($update->accepted());
         $this->assertTrue($update->completed());
         $this->assertSame('update_completed', $update->outcome());
+        $this->assertSame(2, $update->commandSequence());
         $this->assertSame([
             'approved' => true,
             'events' => ['started', 'approved:yes:api'],
@@ -62,6 +64,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh());
 
         $this->assertTrue($detail['can_update']);
+        $this->assertNull($detail['update_blocked_reason']);
         $this->assertTrue($detail['can_signal']);
         $this->assertCount(2, $detail['commands']);
         $this->assertSame('update', $detail['commands'][1]['type']);
@@ -72,7 +75,9 @@ final class V2UpdateWorkflowTest extends TestCase
             'events' => ['started', 'approved:yes:api'],
         ], unserialize($detail['commands'][1]['result']));
 
-        $workflow->signal('name-provided', 'Taylor');
+        $signal = $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertSame(3, $signal->commandSequence());
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
@@ -103,6 +108,62 @@ final class V2UpdateWorkflowTest extends TestCase
             'approved' => true,
             'events' => ['started', 'approved:yes:console'],
         ], $workflow->currentState());
+    }
+
+    public function testAttemptUpdateRejectsWhenAnEarlierSignalIsStillPending(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-blocked');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        Queue::fake();
+
+        $signal = $workflow->signal('name-provided', 'Taylor');
+        $result = $workflow->attemptUpdate('approve', true, 'api');
+
+        $this->assertTrue($signal->accepted());
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedPendingSignal());
+        $this->assertSame('rejected_pending_signal', $result->outcome());
+        $this->assertSame('earlier_signal_pending', $result->rejectionReason());
+        $this->assertSame(3, $result->commandSequence());
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->currentState());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'order-update-blocked',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_pending_signal',
+            'rejection_reason' => 'earlier_signal_pending',
+        ]);
+
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateAccepted')
+            ->count());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $signalWait = collect($detail['waits'])
+            ->first(static fn (array $wait): bool => ($wait['kind'] ?? null) === 'signal');
+
+        $this->assertSame('workflow-task', $detail['wait_kind']);
+        $this->assertSame('workflow_task_ready', $detail['liveness_state']);
+        $this->assertTrue($detail['can_signal']);
+        $this->assertFalse($detail['can_update']);
+        $this->assertSame('earlier_signal_pending', $detail['update_blocked_reason']);
+        $this->assertIsArray($signalWait);
+        $this->assertSame('resolved', $signalWait['status']);
+        $this->assertSame('received', $signalWait['source_status']);
+        $this->assertSame(2, $signalWait['command_sequence']);
     }
 
     public function testUpdateFailuresAreRecordedWithoutClosingTheRun(): void
