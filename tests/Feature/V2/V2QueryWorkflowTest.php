@@ -4,16 +4,26 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
+use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\WorkflowStub;
 
 final class V2QueryWorkflowTest extends TestCase
@@ -73,6 +83,114 @@ final class V2QueryWorkflowTest extends TestCase
         $historical = WorkflowStub::loadRun($firstRunId);
 
         $this->assertSame(1, $historical->currentCount());
+    }
+
+    public function testQueriesAndResumeUseTypedActivityFailureHistoryWhenMutableRowsDrift(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryReplayedFailureWorkflow::class, 'query-history-failure');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $expectedState = [
+            'stage' => 'waiting-for-resume',
+            'caught' => [
+                'class' => \Tests\Fixtures\V2\TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+                'order_id' => 'order-123',
+                'channel' => 'api',
+            ],
+        ];
+
+        $this->assertSame($expectedState, $workflow->currentState());
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('source_kind', 'activity_execution')
+            ->firstOrFail();
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'ActivityFailed')
+            ->firstOrFail();
+
+        $propertyPayloads = collect($event->payload['exception']['properties'] ?? [])
+            ->keyBy('name');
+
+        $this->assertSame(1, $event->payload['sequence'] ?? null);
+        $this->assertSame('order-123', $propertyPayloads->get('orderId')['value'] ?? null);
+        $this->assertSame('api', $propertyPayloads->get('channel')['value'] ?? null);
+
+        DB::transaction(function () use ($execution, $failure): void {
+            $execution->forceFill([
+                'status' => ActivityStatus::Completed,
+                'result' => Serializer::serialize('corrupted-result'),
+                'exception' => null,
+            ])->save();
+
+            $failure->forceFill([
+                'exception_class' => \RuntimeException::class,
+                'message' => 'corrupted failure row',
+            ])->save();
+        });
+
+        $this->assertSame($expectedState, $workflow->refresh()->currentState());
+
+        $workflow->signal('resume', 'go');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'completed',
+            'caught' => $expectedState['caught'],
+            'resume' => 'go',
+        ], $workflow->output());
+    }
+
+    public function testQueriesAndResumeUseTimerHistoryWhenTimerRowsDrift(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryTimerReplayWorkflow::class, 'query-history-timer');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame('after-timer', $workflow->currentStage());
+        $this->assertSame(['started', 'timer-fired'], $workflow->currentEvents());
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        $timer->forceFill([
+            'status' => TimerStatus::Pending,
+            'fired_at' => null,
+        ])->save();
+
+        $this->assertSame('after-timer', $workflow->refresh()->currentStage());
+        $this->assertSame(['started', 'timer-fired'], $workflow->currentEvents());
+
+        $workflow->signal('resume', 'ready');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'completed',
+            'events' => ['started', 'timer-fired', 'signal:ready'],
+        ], $workflow->output());
     }
 
     private function drainReadyTasks(): void

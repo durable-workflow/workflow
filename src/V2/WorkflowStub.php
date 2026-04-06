@@ -686,6 +686,8 @@ final class WorkflowStub
                     'failure_id' => $failure->id,
                     'exception_class' => $failure->exception_class,
                     'message' => $failure->message,
+                    'code' => $throwable->getCode(),
+                    'exception' => FailureFactory::payload($throwable),
                 ], null, $command->id);
 
                 $command->forceFill([

@@ -94,6 +94,38 @@ final class WorkflowExecutor
             if ($current instanceof ActivityCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
+                $activityCompletion = $this->activityCompletionEvent($run, $sequence);
+
+                if ($activityCompletion !== null) {
+                    try {
+                        if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
+                            $current = $result->send($this->activityResult($activityCompletion));
+                        } else {
+                            $failureId = $activityCompletion->payload['failure_id'] ?? null;
+
+                            if (is_string($failureId)) {
+                                /** @var WorkflowFailure|null $failure */
+                                $failure = $run->failures->firstWhere('id', $failureId);
+
+                                if ($failure !== null) {
+                                    $failure->forceFill([
+                                        'handled' => true,
+                                    ])->save();
+                                }
+                            }
+
+                            $current = $result->throw($this->activityException($activityCompletion, null, $run));
+                        }
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
+
                 /** @var ActivityExecution|null $execution */
                 $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
 
@@ -118,7 +150,7 @@ final class WorkflowExecutor
                             ])->save();
                         }
 
-                        $current = $result->throw($this->activityException($execution));
+                        $current = $result->throw($this->activityException(null, $execution, $run));
                     }
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -132,6 +164,19 @@ final class WorkflowExecutor
 
             if ($current instanceof TimerCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                if ($this->timerFiredEvent($run, $sequence) !== null) {
+                    try {
+                        $current = $result->send(true);
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
 
                 /** @var WorkflowTimer|null $timer */
                 $timer = $run->timers->firstWhere('sequence', $sequence);
@@ -1001,6 +1046,7 @@ final class WorkflowExecutor
             'source_id' => $sourceId,
             'exception_class' => $failure->exception_class,
             'message' => $failure->message,
+            'exception' => FailureFactory::payload($throwable),
         ], $task->id);
 
         $task->forceFill([
@@ -1077,16 +1123,82 @@ final class WorkflowExecutor
         }
     }
 
-    private function activityException(ActivityExecution $execution): Throwable
+    private function activityResult(WorkflowHistoryEvent $event): mixed
     {
-        /** @var array{class?: string, message?: string, code?: int} $payload */
-        $payload = is_string($execution->exception)
-            ? Serializer::unserialize($execution->exception)
-            : [];
+        $serialized = $event->payload['result'] ?? null;
 
-        return new RuntimeException(
-            sprintf('[%s] %s', $payload['class'] ?? RuntimeException::class, $payload['message'] ?? 'Activity failed'),
-            (int) ($payload['code'] ?? 0),
+        if (! is_string($serialized)) {
+            return null;
+        }
+
+        return Serializer::unserialize($serialized);
+    }
+
+    private function activityCompletionEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                [HistoryEventType::ActivityCompleted, HistoryEventType::ActivityFailed],
+                true,
+            ) && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function timerFiredEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function activityException(
+        ?WorkflowHistoryEvent $event = null,
+        ?ActivityExecution $execution = null,
+        ?WorkflowRun $run = null,
+    ): Throwable {
+        $payload = is_array($event?->payload['exception'] ?? null)
+            ? $event->payload['exception']
+            : (is_string($execution?->exception)
+                ? Serializer::unserialize($execution->exception)
+                : []);
+
+        if (! is_array($payload) && $event !== null && $run !== null) {
+            /** @var WorkflowFailure|null $failure */
+            $failure = ($event->payload['failure_id'] ?? null) === null
+                ? null
+                : $run->failures->firstWhere('id', $event->payload['failure_id']);
+
+            $payload = $failure === null
+                ? []
+                : [
+                    'class' => $failure->exception_class,
+                    'message' => $failure->message,
+                ];
+        }
+
+        $fallbackClass = is_string($event?->payload['exception_class'] ?? null)
+            ? $event->payload['exception_class']
+            : RuntimeException::class;
+        $fallbackMessage = is_string($event?->payload['message'] ?? null)
+            ? $event->payload['message']
+            : 'Activity failed';
+        $fallbackCode = is_int($event?->payload['code'] ?? null)
+            ? $event->payload['code']
+            : 0;
+
+        return FailureFactory::restore(
+            $payload,
+            $fallbackClass,
+            $fallbackMessage,
+            $fallbackCode,
         );
     }
 

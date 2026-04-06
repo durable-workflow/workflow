@@ -81,6 +81,11 @@ final class RunDetailView
                     && $event->workflow_command_id !== null
             )
             ->keyBy('workflow_command_id');
+        $failureEvents = $run->historyEvents
+            ->filter(
+                static fn ($event): bool => is_string($event->payload['failure_id'] ?? null)
+            )
+            ->keyBy(static fn ($event): string => $event->payload['failure_id']);
         $tasks = RunTaskView::forRun($run);
         $waits = RunWaitView::forRun($run);
 
@@ -206,13 +211,12 @@ final class RunDetailView
                 static fn (WorkflowFailure $failure): array => [
                     'id' => $failure->id,
                     'code' => $failure->trace_preview,
-                    'exception' => serialize([
-                        '__constructor' => $failure->exception_class,
-                        'message' => $failure->message,
-                        'file' => $failure->file,
-                        'line' => $failure->line,
-                        'trace' => [],
-                    ]),
+                    'exception' => serialize(self::exceptionPayload(
+                        $failure,
+                        is_object($failureEvents->get($failure->id))
+                            ? $failureEvents->get($failure->id)?->payload['exception'] ?? null
+                            : null,
+                    )),
                     'class' => $activityClasses[$failure->source_id]
                         ?? $failure->exception_class,
                     'created_at' => $failure->created_at,
@@ -332,5 +336,34 @@ final class RunDetailView
     private static function timestampToMilliseconds($timestamp): int
     {
         return $timestamp->getTimestampMs();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function exceptionPayload(WorkflowFailure $failure, mixed $payload): array
+    {
+        $trace = is_array($payload['trace'] ?? null)
+            ? array_values(array_filter(
+                $payload['trace'],
+                static fn (mixed $frame): bool => is_array($frame),
+            ))
+            : [];
+
+        return [
+            '__constructor' => is_string($payload['class'] ?? null)
+                ? $payload['class']
+                : $failure->exception_class,
+            'message' => is_string($payload['message'] ?? null)
+                ? $payload['message']
+                : $failure->message,
+            'file' => is_string($payload['file'] ?? null)
+                ? $payload['file']
+                : $failure->file,
+            'line' => is_int($payload['line'] ?? null)
+                ? $payload['line']
+                : $failure->line,
+            'trace' => $trace,
+        ];
     }
 }

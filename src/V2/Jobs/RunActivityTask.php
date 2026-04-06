@@ -116,9 +116,12 @@ final class RunActivityTask implements ShouldQueue
                     'activity_execution_id' => $lockedExecution->id,
                     'activity_class' => $lockedExecution->activity_class,
                     'activity_type' => $lockedExecution->activity_type,
+                    'sequence' => $lockedExecution->sequence,
                     'result' => $lockedExecution->result,
                 ], $task->id);
             } else {
+                $exceptionPayload = FailureFactory::payload($throwable);
+
                 /** @var WorkflowFailure $failure */
                 $failure = WorkflowFailure::query()->create(array_merge(
                     FailureFactory::make($throwable),
@@ -133,11 +136,7 @@ final class RunActivityTask implements ShouldQueue
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Failed,
-                    'exception' => Serializer::serialize([
-                        'class' => $throwable::class,
-                        'message' => $throwable->getMessage(),
-                        'code' => $throwable->getCode(),
-                    ]),
+                    'exception' => Serializer::serialize($exceptionPayload),
                     'closed_at' => now(),
                 ])->save();
 
@@ -145,9 +144,12 @@ final class RunActivityTask implements ShouldQueue
                     'activity_execution_id' => $lockedExecution->id,
                     'activity_class' => $lockedExecution->activity_class,
                     'activity_type' => $lockedExecution->activity_type,
+                    'sequence' => $lockedExecution->sequence,
                     'failure_id' => $failure->id,
                     'exception_class' => $failure->exception_class,
                     'message' => $failure->message,
+                    'code' => $throwable->getCode(),
+                    'exception' => $exceptionPayload,
                 ], $task->id);
             }
 

@@ -101,13 +101,31 @@ final class V2HistoryTimelineTest extends TestCase
 
     public function testTimelineIncludesTypedTimerEntriesForCompletedRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'timeline-timer');
-        $workflow->start(1);
+        $workflow->start(5);
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        $this->drainReadyTasks();
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Timer->value)
+            ->firstOrFail();
+
+        if ($timerTask->status === TaskStatus::Ready) {
+            $timerTask->forceFill([
+                'available_at' => now()->subSecond(),
+            ])->save();
+
+            $this->drainReadyTasks();
+        }
+
+        $this->assertTrue($workflow->refresh()->completed());
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($runId);
@@ -127,18 +145,18 @@ final class V2HistoryTimelineTest extends TestCase
         ], array_column($timeline, 'type'));
 
         $this->assertSame('timer', $timeline[2]['kind']);
-        $this->assertSame('Scheduled timer for 1 second.', $timeline[2]['summary']);
+        $this->assertSame('Scheduled timer for 5 seconds.', $timeline[2]['summary']);
         $this->assertSame($timer->id, $timeline[2]['timer_id']);
-        $this->assertSame(1, $timeline[2]['delay_seconds']);
+        $this->assertSame(5, $timeline[2]['delay_seconds']);
         $this->assertSame($timer->id, $timeline[2]['timer']['id']);
         $this->assertSame(1, $timeline[2]['timer']['sequence']);
         $this->assertSame('fired', $timeline[2]['timer']['status']);
-        $this->assertSame(1, $timeline[2]['timer']['delay_seconds']);
+        $this->assertSame(5, $timeline[2]['timer']['delay_seconds']);
         $this->assertSame($timer->fire_at?->toJSON(), $timeline[2]['timer']['fire_at']);
         $this->assertSame('workflow', $timeline[2]['task']['type']);
         $this->assertSame('completed', $timeline[2]['task']['status']);
 
-        $this->assertSame('Timer fired after 1 second.', $timeline[3]['summary']);
+        $this->assertSame('Timer fired after 5 seconds.', $timeline[3]['summary']);
         $this->assertSame($timer->id, $timeline[3]['timer_id']);
         $this->assertSame('timer', $timeline[3]['task']['type']);
         $this->assertSame('completed', $timeline[3]['task']['status']);
@@ -200,17 +218,17 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('failed', $timeline[3]['activity']['status']);
 
         $this->assertSame('workflow', $timeline[4]['kind']);
-        $this->assertSame('Workflow failed: [RuntimeException] boom.', $timeline[4]['summary']);
+        $this->assertSame('Workflow failed: boom.', $timeline[4]['summary']);
         $this->assertSame($terminalFailure->id, $timeline[4]['failure_id']);
         $this->assertSame(RuntimeException::class, $timeline[4]['exception_class']);
-        $this->assertSame('[RuntimeException] boom', $timeline[4]['message']);
+        $this->assertSame('boom', $timeline[4]['message']);
         $this->assertSame($terminalFailure->id, $timeline[4]['failure']['id']);
         $this->assertSame('workflow_run', $timeline[4]['failure']['source_kind']);
         $this->assertSame($runId, $timeline[4]['failure']['source_id']);
         $this->assertSame('terminal', $timeline[4]['failure']['propagation_kind']);
         $this->assertFalse($timeline[4]['failure']['handled']);
         $this->assertSame(RuntimeException::class, $timeline[4]['failure']['exception_class']);
-        $this->assertSame('[RuntimeException] boom', $timeline[4]['failure']['message']);
+        $this->assertSame('boom', $timeline[4]['failure']['message']);
         $this->assertSame('workflow', $timeline[4]['task']['type']);
         $this->assertSame('failed', $timeline[4]['task']['status']);
         $this->assertNull($timeline[4]['activity']);
