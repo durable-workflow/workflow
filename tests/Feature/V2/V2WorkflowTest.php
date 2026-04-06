@@ -1330,6 +1330,70 @@ final class V2WorkflowTest extends TestCase
         ]);
     }
 
+    public function testRepairRecreatesMissingWorkflowTaskAfterSignalIsReceived(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'repair-signal-received');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        Queue::fake();
+
+        $signal = $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertTrue($signal->accepted());
+        $this->assertSame('signal_received', $signal->outcome());
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertNull($summary->wait_kind);
+        $this->assertNull($summary->wait_reason);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame('Run is non-terminal but has no durable next-resume source.', $summary->liveness_reason);
+
+        $result = WorkflowStub::loadRun($runId)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair_dispatched', $result->outcome());
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame([], $task->payload);
+        $this->assertSame(1, $task->repair_count);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($runId);
+
+        $this->assertSame('workflow-task', $updatedSummary->wait_kind);
+        $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+        $this->assertSame('workflow', $updatedSummary->next_task_type);
+    }
+
     public function testTaskWatchdogRedispatchesReadyWorkflowTaskWhenDispatchIsOverdue(): void
     {
         Queue::fake();

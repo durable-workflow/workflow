@@ -152,6 +152,54 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame([1, 1, null, 2, 2, null, null, null], array_column($detail['timeline'], 'command_sequence'));
     }
 
+    public function testRunDetailViewMarksReceivedSignalWithoutWorkflowTaskAsRepairNeeded(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-repair-needed');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        Queue::fake();
+
+        $signal = $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertSame('signal_received', $signal->outcome());
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+
+        $this->assertNull($detail['wait_kind']);
+        $this->assertNull($detail['wait_reason']);
+        $this->assertSame('repair_needed', $detail['liveness_state']);
+        $this->assertSame('Run is non-terminal but has no durable next-resume source.', $detail['liveness_reason']);
+        $this->assertTrue($detail['can_repair']);
+        $this->assertSame('resolved', $signalWait['status']);
+        $this->assertSame('received', $signalWait['source_status']);
+        $this->assertSame('Signal name-provided received.', $signalWait['summary']);
+        $this->assertFalse($signalWait['task_backed']);
+        $this->assertSame('signal', $signalWait['resume_source_kind']);
+        $this->assertSame($signal->commandId(), $signalWait['resume_source_id']);
+        $this->assertSame(2, $signalWait['command_sequence']);
+        $this->assertSame('accepted', $signalWait['command_status']);
+        $this->assertSame('signal_received', $signalWait['command_outcome']);
+        $this->assertNull($this->findOpenTaskOrNull($detail['tasks'], 'workflow'));
+    }
+
     public function testRunDetailViewIncludesCurrentRunPointerForHistoricalRun(): void
     {
         $instance = WorkflowInstance::query()->create([
@@ -540,6 +588,17 @@ final class V2RunDetailViewTest extends TestCase
     {
         foreach ($tasks as $task) {
             if (($task['type'] ?? null) === $type) {
+                return $task;
+            }
+        }
+
+        return null;
+    }
+
+    private function findOpenTaskOrNull(array $tasks, string $type): ?array
+    {
+        foreach ($tasks as $task) {
+            if (($task['type'] ?? null) === $type && ($task['is_open'] ?? false) === true) {
                 return $task;
             }
         }
