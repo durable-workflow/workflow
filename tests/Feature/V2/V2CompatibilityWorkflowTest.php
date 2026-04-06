@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -170,7 +171,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'last_dispatched_at' => $lastDispatchedAt,
         ]);
 
-        TaskWatchdog::wake();
+        $this->wakeTaskWatchdog();
 
         $task->refresh();
 
@@ -179,6 +180,62 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame(0, $task->repair_count);
         $this->assertSame('build-a', $task->compatibility);
         $this->assertTrue($task->last_dispatched_at?->equalTo($lastDispatchedAt) ?? false);
+    }
+
+    public function testTaskWatchdogSkipsMissingTaskRecoveryForUnsupportedCompatibilityMarker(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'compat-missing-task',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'compatibility' => 'build-a',
+            'payload_codec' => config('workflows.serializer'),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertNull($summary->next_task_id);
+
+        $this->wakeTaskWatchdog();
+
+        Queue::assertNothingPushed();
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
+
+        $summary = $summary->fresh();
+
+        $this->assertNotNull($summary);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertNull($summary->next_task_id);
     }
 
     public function testRunDetailViewIncludesCompatibilityMetadata(): void
@@ -440,5 +497,11 @@ final class V2CompatibilityWorkflowTest extends TestCase
         }
 
         $this->fail('Timed out draining ready workflow tasks.');
+    }
+
+    private function wakeTaskWatchdog(): void
+    {
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+        TaskWatchdog::wake();
     }
 }
