@@ -55,17 +55,19 @@ final class ChildWorkflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQu
 
     public function handle()
     {
-        $workflow = $this->parentWorkflow->toWorkflow();
+        if (! $this->parentWorkflow->hasLogByIndex($this->index)) {
+            $this->parentWorkflow->toWorkflow()
+                ->next($this->index, $this->now, $this->storedWorkflow->class, $this->return, shouldSignal: false);
+        }
 
-        try {
-            if ($this->parentWorkflow->hasLogByIndex($this->index)) {
+        if ($this->shouldWakeParent()) {
+            $workflow = $this->parentWorkflow->toWorkflow();
+            try {
                 $workflow->resume();
-            } else {
-                $workflow->next($this->index, $this->now, $this->storedWorkflow->class, $this->return);
-            }
-        } catch (TransitionNotFound) {
-            if ($workflow->running()) {
-                $this->release();
+            } catch (TransitionNotFound) {
+                if ($workflow->running()) {
+                    $this->release();
+                }
             }
         }
     }
@@ -75,5 +77,24 @@ final class ChildWorkflow implements ShouldBeEncrypted, ShouldBeUnique, ShouldQu
         return [
             new WithoutOverlappingMiddleware($this->parentWorkflow->id, WithoutOverlappingMiddleware::ACTIVITY, 0, 15),
         ];
+    }
+
+    private function shouldWakeParent(): bool
+    {
+        $children = $this->parentWorkflow->children()
+            ->wherePivot('parent_index', '<', StoredWorkflow::ACTIVE_WORKFLOW_INDEX)
+            ->get();
+
+        if ($children->isEmpty()) {
+            return true;
+        }
+
+        $childIndices = $children->pluck('pivot.parent_index');
+
+        $logCount = $this->parentWorkflow->logs()
+            ->whereIn('index', $childIndices)
+            ->count();
+
+        return $logCount >= $childIndices->count();
     }
 }
