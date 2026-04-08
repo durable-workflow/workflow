@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use BadMethodCallException;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use LogicException;
 use ReflectionMethod;
@@ -102,42 +101,11 @@ final class WorkflowStub
 
         WorkflowInstanceId::assertValid($instanceId);
 
-        try {
-            /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()->create([
-                'id' => $instanceId,
-                'workflow_class' => $workflow,
-                'workflow_type' => $workflowType,
-                'reserved_at' => now(),
-                'run_count' => 0,
-            ]);
-        } catch (QueryException $exception) {
-            if (! self::duplicateInstanceReservation($exception)) {
-                throw $exception;
-            }
-
-            /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
-                ->with('currentRun')
-                ->findOrFail($instanceId);
-
-            if ($instance->workflow_type !== $workflowType) {
-                throw new LogicException(sprintf(
-                    'Workflow instance [%s] is reserved for durable type [%s] and cannot be reused for [%s].',
-                    $instanceId,
-                    $instance->workflow_type,
-                    $workflowType,
-                ));
-            }
-
-            if ($instance->workflow_class !== $workflow) {
-                $instance->forceFill([
-                    'workflow_class' => $workflow,
-                ])->save();
-            }
-
-            return new self($instance->fresh(['currentRun']));
-        }
+        $instance = self::reserveCallerSuppliedInstance(
+            workflow: $workflow,
+            workflowType: $workflowType,
+            instanceId: $instanceId,
+        );
 
         return new self($instance->fresh(['currentRun']));
     }
@@ -1529,23 +1497,47 @@ final class WorkflowStub
         return $tasks;
     }
 
-    private static function duplicateInstanceReservation(QueryException $exception): bool
+    /**
+     * @param class-string<Workflow> $workflow
+     */
+    private static function reserveCallerSuppliedInstance(
+        string $workflow,
+        string $workflowType,
+        string $instanceId,
+    ): WorkflowInstance
     {
-        $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
-        $driverCode = $exception->errorInfo[1] ?? null;
+        $now = now();
 
-        if (in_array($sqlState, ['23000', '23505'], true)) {
-            return true;
+        WorkflowInstance::query()->insertOrIgnore([
+            'id' => $instanceId,
+            'workflow_class' => $workflow,
+            'workflow_type' => $workflowType,
+            'reserved_at' => $now,
+            'run_count' => 0,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()
+            ->with('currentRun')
+            ->findOrFail($instanceId);
+
+        if ($instance->workflow_type !== $workflowType) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] is reserved for durable type [%s] and cannot be reused for [%s].',
+                $instanceId,
+                $instance->workflow_type,
+                $workflowType,
+            ));
         }
 
-        if (in_array($driverCode, [19, 1062, 1555, 2067, 2601, 2627], true)) {
-            return true;
+        if ($instance->workflow_class !== $workflow) {
+            $instance->forceFill([
+                'workflow_class' => $workflow,
+            ])->save();
         }
 
-        $message = strtolower($exception->getMessage());
-
-        return str_contains($message, 'duplicate')
-            || str_contains($message, 'unique constraint')
-            || str_contains($message, 'unique violation');
+        return $instance;
     }
 }

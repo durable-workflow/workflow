@@ -190,10 +190,7 @@ final class Webhooks
 
         if ($hasInstanceId && ! is_string($instanceId)) {
             throw ValidationException::withMessages([
-                'workflow_id' => [sprintf(
-                    'The workflow_id field must be a non-empty string no longer than %d characters.',
-                    WorkflowInstanceId::MAX_LENGTH,
-                )],
+                'workflow_id' => [WorkflowInstanceId::validationMessage('workflow_id')],
             ]);
         }
 
@@ -202,10 +199,7 @@ final class Webhooks
                 WorkflowInstanceId::assertValid($instanceId);
             } catch (LogicException) {
                 throw ValidationException::withMessages([
-                    'workflow_id' => [sprintf(
-                        'The workflow_id field must be a non-empty string no longer than %d characters.',
-                        WorkflowInstanceId::MAX_LENGTH,
-                    )],
+                    'workflow_id' => [WorkflowInstanceId::validationMessage('workflow_id')],
                 ]);
             }
         }

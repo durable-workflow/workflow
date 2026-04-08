@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Webhooks;
 use Workflow\V2\WorkflowStub;
+use Workflow\V2\Support\WorkflowInstanceId;
 
 final class V2WebhookWorkflowTest extends TestCase
 {
@@ -206,7 +207,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonValidationErrors(['workflow_id'])
             ->assertJsonPath(
                 'errors.workflow_id.0',
-                'The workflow_id field must be a non-empty string no longer than 26 characters.',
+                'The workflow_id field must be a non-empty URL-safe string up to 128 characters using only letters, numbers, ".", "_", "-", and ":".',
             );
 
         $this->assertSame(0, WorkflowInstance::query()->count());
@@ -216,7 +217,7 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testStartWebhookRejectsOverlongWorkflowIdWithoutCreatingAnInstance(): void
     {
         $response = $this->postJson('/webhooks/start/test-greeting-workflow', [
-            'workflow_id' => str_repeat('a', 27),
+            'workflow_id' => str_repeat('a', WorkflowInstanceId::MAX_LENGTH + 1),
             'name' => 'Taylor',
         ]);
 
@@ -225,11 +226,52 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonValidationErrors(['workflow_id'])
             ->assertJsonPath(
                 'errors.workflow_id.0',
-                'The workflow_id field must be a non-empty string no longer than 26 characters.',
+                'The workflow_id field must be a non-empty URL-safe string up to 128 characters using only letters, numbers, ".", "_", "-", and ":".',
             );
 
         $this->assertSame(0, WorkflowInstance::query()->count());
         $this->assertSame(0, WorkflowCommand::query()->count());
+    }
+
+    public function testStartWebhookRejectsWorkflowIdWithUnsupportedCharacters(): void
+    {
+        $response = $this->postJson('/webhooks/start/test-greeting-workflow', [
+            'workflow_id' => 'order/123',
+            'name' => 'Taylor',
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['workflow_id'])
+            ->assertJsonPath(
+                'errors.workflow_id.0',
+                'The workflow_id field must be a non-empty URL-safe string up to 128 characters using only letters, numbers, ".", "_", "-", and ":".',
+            );
+
+        $this->assertSame(0, WorkflowInstance::query()->count());
+        $this->assertSame(0, WorkflowCommand::query()->count());
+    }
+
+    public function testWebhookRoutesAcceptLongRouteSafeWorkflowIds(): void
+    {
+        $workflowId = 'tenant.alpha:' . str_repeat('x', WorkflowInstanceId::MAX_LENGTH - strlen('tenant.alpha:'));
+
+        $start = $this->postJson('/webhooks/start/test-signal-workflow', [
+            'workflow_id' => $workflowId,
+        ]);
+
+        $start
+            ->assertStatus(202)
+            ->assertJsonPath('workflow_id', $workflowId);
+
+        $signal = $this->postJson('/webhooks/instances/' . $workflowId . '/signals/name-provided', [
+            'arguments' => ['Taylor'],
+        ]);
+
+        $signal
+            ->assertStatus(202)
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('command_status', 'accepted');
     }
 
     public function testStartWebhookCanInferConfiguredDurableTypeWithoutTypeAttribute(): void

@@ -42,6 +42,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunSummarySortKey;
 use Workflow\V2\TaskWatchdog;
@@ -326,7 +327,9 @@ final class V2WorkflowTest extends TestCase
     public function testMakeRejectsBlankCallerSuppliedInstanceId(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('Workflow instance ids must be non-empty strings no longer than 26 characters.');
+        $this->expectExceptionMessage(
+            'Workflow instance ids must be non-empty URL-safe strings up to 128 characters using only letters, numbers, ".", "_", "-", and ":".'
+        );
 
         WorkflowStub::make(TestGreetingWorkflow::class, '   ');
     }
@@ -334,14 +337,40 @@ final class V2WorkflowTest extends TestCase
     public function testMakeRejectsOverlongCallerSuppliedInstanceIdWithoutCreatingReservation(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('Workflow instance ids must be non-empty strings no longer than 26 characters.');
+        $this->expectExceptionMessage(
+            'Workflow instance ids must be non-empty URL-safe strings up to 128 characters using only letters, numbers, ".", "_", "-", and ":".'
+        );
 
         try {
-            WorkflowStub::make(TestGreetingWorkflow::class, str_repeat('a', 27));
+            WorkflowStub::make(TestGreetingWorkflow::class, str_repeat('a', WorkflowInstanceId::MAX_LENGTH + 1));
         } finally {
             $this->assertSame(0, WorkflowInstance::query()->count());
             $this->assertSame(0, WorkflowCommand::query()->count());
         }
+    }
+
+    public function testMakeRejectsCallerSuppliedInstanceIdWithUnsupportedCharacters(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage(
+            'Workflow instance ids must be non-empty URL-safe strings up to 128 characters using only letters, numbers, ".", "_", "-", and ":".'
+        );
+
+        WorkflowStub::make(TestGreetingWorkflow::class, 'order/123');
+    }
+
+    public function testMakeAcceptsLongRouteSafeCallerSuppliedInstanceId(): void
+    {
+        $instanceId = 'tenant.alpha:' . str_repeat('a', WorkflowInstanceId::MAX_LENGTH - strlen('tenant.alpha:'));
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, $instanceId);
+        $result = $workflow->start('Taylor');
+
+        $this->assertSame($instanceId, $workflow->id());
+        $this->assertSame($instanceId, $result->instanceId());
+        $this->assertDatabaseHas('workflow_instances', [
+            'id' => $instanceId,
+        ]);
     }
 
     public function testConfiguredTypeMapPersistsWorkflowAliasOnStartedRuns(): void
