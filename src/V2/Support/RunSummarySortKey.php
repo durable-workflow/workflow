@@ -6,9 +6,18 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Builder;
 
 final class RunSummarySortKey
 {
+    public static function applyDescending(Builder $query): Builder
+    {
+        return $query
+            ->orderByRaw('case when sort_timestamp is null then 1 else 0 end asc')
+            ->orderByDesc('sort_timestamp')
+            ->orderByDesc('id');
+    }
+
     public static function timestamp(
         CarbonInterface|string|null $startedAt,
         CarbonInterface|string|null $createdAt = null,
