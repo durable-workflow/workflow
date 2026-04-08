@@ -62,9 +62,12 @@ final class V2HistoryTimelineTest extends TestCase
         ], array_column($timeline, 'type'));
 
         $this->assertSame('command', $timeline[0]['kind']);
+        $this->assertSame('point', $timeline[0]['entry_kind']);
+        $this->assertSame('workflow_command', $timeline[0]['source_kind']);
         $this->assertSame('Start accepted as started_new.', $timeline[0]['summary']);
         $this->assertNotNull($timeline[0]['recorded_at']);
         $this->assertSame($timeline[0]['command_id'], $timeline[0]['command']['id']);
+        $this->assertSame($timeline[0]['command_id'], $timeline[0]['source_id']);
         $this->assertSame('start', $timeline[0]['command_type']);
         $this->assertSame('accepted', $timeline[0]['command_status']);
         $this->assertSame('started_new', $timeline[0]['command_outcome']);
@@ -74,16 +77,20 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertNull($timeline[0]['task']);
 
         $this->assertSame('activity', $timeline[2]['kind']);
+        $this->assertSame('activity_execution', $timeline[2]['source_kind']);
+        $this->assertSame($activity->id, $timeline[2]['source_id']);
         $this->assertSame('Scheduled TestGreetingActivity.', $timeline[2]['summary']);
         $this->assertSame($activity->id, $timeline[2]['activity_execution_id']);
         $this->assertSame(TestGreetingActivity::class, $timeline[2]['activity_type']);
         $this->assertSame(TestGreetingActivity::class, $timeline[2]['activity_class']);
-        $this->assertSame('completed', $timeline[2]['activity_status']);
+        $this->assertSame('pending', $timeline[2]['activity_status']);
         $this->assertSame($activity->id, $timeline[2]['activity']['id']);
         $this->assertSame(1, $timeline[2]['activity']['sequence']);
         $this->assertSame(TestGreetingActivity::class, $timeline[2]['activity']['type']);
         $this->assertSame(TestGreetingActivity::class, $timeline[2]['activity']['class']);
-        $this->assertSame('completed', $timeline[2]['activity']['status']);
+        $this->assertSame('pending', $timeline[2]['activity']['status']);
+        $this->assertNull($timeline[2]['activity']['started_at']);
+        $this->assertNull($timeline[2]['activity']['closed_at']);
         $this->assertSame('workflow', $timeline[2]['task']['type']);
         $this->assertSame('completed', $timeline[2]['task']['status']);
 
@@ -146,14 +153,17 @@ final class V2HistoryTimelineTest extends TestCase
         ], array_column($timeline, 'type'));
 
         $this->assertSame('timer', $timeline[2]['kind']);
+        $this->assertSame('timer', $timeline[2]['source_kind']);
+        $this->assertSame($timer->id, $timeline[2]['source_id']);
         $this->assertSame('Scheduled timer for 5 seconds.', $timeline[2]['summary']);
         $this->assertSame($timer->id, $timeline[2]['timer_id']);
         $this->assertSame(5, $timeline[2]['delay_seconds']);
         $this->assertSame($timer->id, $timeline[2]['timer']['id']);
         $this->assertSame(1, $timeline[2]['timer']['sequence']);
-        $this->assertSame('fired', $timeline[2]['timer']['status']);
+        $this->assertSame('pending', $timeline[2]['timer']['status']);
         $this->assertSame(5, $timeline[2]['timer']['delay_seconds']);
         $this->assertSame($timer->fire_at?->toJSON(), $timeline[2]['timer']['fire_at']);
+        $this->assertNull($timeline[2]['timer']['fired_at']);
         $this->assertSame('workflow', $timeline[2]['task']['type']);
         $this->assertSame('completed', $timeline[2]['task']['status']);
 
@@ -202,6 +212,8 @@ final class V2HistoryTimelineTest extends TestCase
         ], array_column($timeline, 'type'));
 
         $this->assertSame('activity', $timeline[3]['kind']);
+        $this->assertSame('activity_execution', $timeline[3]['source_kind']);
+        $this->assertSame($activity->id, $timeline[3]['source_id']);
         $this->assertSame('Failed TestFailingActivity: boom.', $timeline[3]['summary']);
         $this->assertSame($activity->id, $timeline[3]['activity_execution_id']);
         $this->assertSame($activityFailure->id, $timeline[3]['failure_id']);
@@ -211,7 +223,7 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('activity_execution', $timeline[3]['failure']['source_kind']);
         $this->assertSame($activity->id, $timeline[3]['failure']['source_id']);
         $this->assertSame('activity', $timeline[3]['failure']['propagation_kind']);
-        $this->assertTrue($timeline[3]['failure']['handled']);
+        $this->assertFalse($timeline[3]['failure']['handled']);
         $this->assertSame(RuntimeException::class, $timeline[3]['failure']['exception_class']);
         $this->assertSame('boom', $timeline[3]['failure']['message']);
         $this->assertSame('activity', $timeline[3]['task']['type']);
@@ -219,6 +231,8 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('failed', $timeline[3]['activity']['status']);
 
         $this->assertSame('workflow', $timeline[4]['kind']);
+        $this->assertSame('workflow_run', $timeline[4]['source_kind']);
+        $this->assertSame($runId, $timeline[4]['source_id']);
         $this->assertSame('Workflow failed: boom.', $timeline[4]['summary']);
         $this->assertSame($terminalFailure->id, $timeline[4]['failure_id']);
         $this->assertSame(RuntimeException::class, $timeline[4]['exception_class']);
@@ -266,9 +280,11 @@ final class V2HistoryTimelineTest extends TestCase
         ], array_column($timeline, 'type'));
 
         $this->assertSame('signal', $timeline[2]['kind']);
+        $this->assertSame('signal_wait', $timeline[2]['source_kind']);
         $this->assertSame('Waiting for signal name-provided.', $timeline[2]['summary']);
         $this->assertSame('name-provided', $timeline[2]['signal_name']);
         $this->assertSame('command', $timeline[3]['kind']);
+        $this->assertSame('workflow_command', $timeline[3]['source_kind']);
         $this->assertSame('Signal name-provided received.', $timeline[3]['summary']);
         $this->assertSame(2, $timeline[3]['command_sequence']);
         $this->assertSame('signal', $timeline[3]['command_type']);
@@ -276,10 +292,13 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame(2, $timeline[3]['command']['sequence']);
         $this->assertSame('name-provided', $timeline[3]['command']['target_name']);
         $this->assertSame('signal', $timeline[4]['kind']);
+        $this->assertSame('signal_wait', $timeline[4]['source_kind']);
         $this->assertSame('Applied signal name-provided.', $timeline[4]['summary']);
         $this->assertSame('name-provided', $timeline[4]['signal_name']);
         $this->assertSame(2, $timeline[4]['command_sequence']);
         $this->assertSame('signal', $timeline[4]['command_type']);
+        $this->assertSame($timeline[2]['signal_wait_id'], $timeline[2]['source_id']);
+        $this->assertSame($timeline[2]['signal_wait_id'], $timeline[4]['source_id']);
     }
 
     public function testTimelineExposesSignalWaitIdentityForRepeatedSameNamedSignals(): void
@@ -360,6 +379,8 @@ final class V2HistoryTimelineTest extends TestCase
         ], array_column($timeline, 'type'));
 
         $this->assertSame('child', $timeline[2]['kind']);
+        $this->assertSame('child_workflow_run', $timeline[2]['source_kind']);
+        $this->assertSame($link->child_workflow_run_id, $timeline[2]['source_id']);
         $this->assertSame('Scheduled child workflow test-child-greeting-workflow.', $timeline[2]['summary']);
         $this->assertSame($link->child_workflow_instance_id, $timeline[2]['child_workflow_instance_id']);
         $this->assertSame($link->child_workflow_run_id, $timeline[2]['child_workflow_run_id']);
@@ -412,11 +433,23 @@ final class V2HistoryTimelineTest extends TestCase
         ])->save();
 
         $result = WorkflowStub::loadRun($run->id)->attemptRepair();
+        /** @var WorkflowTask $repairedTask */
+        $repairedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->sole();
+        WorkflowTask::query()
+            ->whereKey($repairedTask->id)
+            ->update([
+                'status' => TaskStatus::Completed->value,
+                'attempt_count' => 2,
+            ]);
 
         $timeline = HistoryTimeline::forRun($run->fresh());
 
         $this->assertSame(['RepairRequested'], array_column($timeline, 'type'));
         $this->assertSame('command', $timeline[0]['kind']);
+        $this->assertSame('workflow_command', $timeline[0]['source_kind']);
+        $this->assertSame($result->commandId(), $timeline[0]['source_id']);
         $this->assertSame('Repair recreated workflow task.', $timeline[0]['summary']);
         $this->assertSame('repair', $timeline[0]['command_type']);
         $this->assertSame('accepted', $timeline[0]['command_status']);
@@ -426,6 +459,7 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('repair_dispatched', $timeline[0]['command']['outcome']);
         $this->assertSame('workflow', $timeline[0]['task']['type']);
         $this->assertSame('ready', $timeline[0]['task']['status']);
+        $this->assertNull($timeline[0]['task']['attempt_count']);
     }
 
     private function waitFor(callable $condition): void

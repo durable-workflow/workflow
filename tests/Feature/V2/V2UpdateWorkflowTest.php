@@ -56,11 +56,20 @@ final class V2UpdateWorkflowTest extends TestCase
             ['UpdateAccepted', 'UpdateApplied', 'UpdateCompleted'],
             array_column($updateEntries, 'type'),
         );
+        $this->assertSame(['workflow_command', 'workflow_command', 'workflow_command'], array_column(
+            $updateEntries,
+            'source_kind',
+        ));
+        $this->assertSame([$update->commandId(), $update->commandId(), $update->commandId()], array_column(
+            $updateEntries,
+            'source_id',
+        ));
         $this->assertSame('command', $updateEntries[0]['kind']);
         $this->assertSame('update', $updateEntries[1]['kind']);
         $this->assertSame('approve', $updateEntries[0]['update_name']);
         $this->assertSame('approve', $updateEntries[1]['update_name']);
         $this->assertSame('approve', $updateEntries[2]['update_name']);
+        $this->assertSame([null, null, 'update_completed'], array_column($updateEntries, 'command_outcome'));
 
         $detail = RunDetailView::forRun($run->fresh());
 

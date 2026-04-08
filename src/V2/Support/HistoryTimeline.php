@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -78,48 +79,72 @@ final class HistoryTimeline
         $timer = $timerId === null ? null : $timers->get($timerId);
         /** @var WorkflowFailure|null $failure */
         $failure = $failureId === null ? null : $failures->get($failureId);
+        $commandMetadata = self::commandMetadata($event, $command, $payload, $commandId);
+        $taskMetadata = self::taskMetadata($event, $task, $payload, $taskId);
+        $activityMetadata = self::activityMetadata($event, $activity, $payload, $activityId, $failure);
+        $timerMetadata = self::timerMetadata($event, $timer, $payload, $timerId);
+        $childMetadata = self::childMetadata($event, $payload);
+        $failureMetadata = self::failureMetadata($event, $failure, $payload, $failureId);
 
         return [
             'id' => $event->id,
             'sequence' => $event->sequence,
             'type' => $event->event_type->value,
             'kind' => self::kindFor($event->event_type),
-            'summary' => self::summaryFor($event, $command, $task, $activity, $timer, $failure),
+            'entry_kind' => 'point',
+            'source_kind' => self::sourceKindFor($event),
+            'source_id' => self::sourceIdFor(
+                $event,
+                $commandMetadata,
+                $taskMetadata,
+                $activityMetadata,
+                $timerMetadata,
+                $childMetadata,
+                $failureMetadata,
+            ),
+            'summary' => self::summaryFor(
+                $event,
+                $payload,
+                $commandMetadata,
+                $taskMetadata,
+                $activityMetadata,
+                $timerMetadata,
+                $childMetadata,
+                $failureMetadata,
+            ),
             'recorded_at' => self::timestamp($event->recorded_at),
             'command_id' => $commandId,
-            'command_sequence' => $command?->command_sequence,
+            'command_sequence' => $commandMetadata['sequence'] ?? null,
             'task_id' => $taskId,
-            'command_type' => $command?->command_type?->value ?? self::stringValue($payload['command_type'] ?? null),
-            'command_status' => $command?->status?->value,
-            'command_outcome' => $command?->outcome?->value ?? self::stringValue($payload['outcome'] ?? null),
-            'command_rejection_reason' => $command?->rejection_reason ?? self::stringValue(
-                $payload['rejection_reason'] ?? null
-            ),
+            'command_type' => $commandMetadata['type'] ?? null,
+            'command_status' => $commandMetadata['status'] ?? null,
+            'command_outcome' => $commandMetadata['outcome'] ?? null,
+            'command_rejection_reason' => $commandMetadata['rejection_reason'] ?? null,
             'workflow_sequence' => self::intValue($payload['sequence'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
-            'signal_name' => $command?->targetName() ?? self::stringValue($payload['signal_name'] ?? null),
-            'update_name' => $command?->targetName() ?? self::stringValue($payload['update_name'] ?? null),
-            'activity_execution_id' => $activity?->id ?? $activityId,
-            'activity_type' => $activity?->activity_type ?? self::stringValue($payload['activity_type'] ?? null),
-            'activity_class' => $activity?->activity_class ?? self::stringValue($payload['activity_class'] ?? null),
-            'activity_status' => $activity?->status?->value,
-            'timer_id' => $timer?->id ?? $timerId,
-            'delay_seconds' => $timer?->delay_seconds ?? self::intValue($payload['delay_seconds'] ?? null),
-            'child_workflow_instance_id' => self::stringValue($payload['child_workflow_instance_id'] ?? null),
-            'child_workflow_run_id' => self::stringValue($payload['child_workflow_run_id'] ?? null),
-            'child_workflow_type' => self::stringValue($payload['child_workflow_type'] ?? null),
-            'child_workflow_class' => self::stringValue($payload['child_workflow_class'] ?? null),
-            'child_status' => self::stringValue($payload['child_status'] ?? null),
-            'failure_id' => $failure?->id ?? $failureId,
-            'exception_class' => $failure?->exception_class ?? self::stringValue($payload['exception_class'] ?? null),
-            'message' => $failure?->message ?? self::stringValue($payload['message'] ?? null),
+            'signal_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['signal_name'] ?? null),
+            'update_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['update_name'] ?? null),
+            'activity_execution_id' => $activityMetadata['id'] ?? null,
+            'activity_type' => $activityMetadata['type'] ?? null,
+            'activity_class' => $activityMetadata['class'] ?? null,
+            'activity_status' => $activityMetadata['status'] ?? null,
+            'timer_id' => $timerMetadata['id'] ?? null,
+            'delay_seconds' => $timerMetadata['delay_seconds'] ?? null,
+            'child_workflow_instance_id' => $childMetadata['instance_id'] ?? null,
+            'child_workflow_run_id' => $childMetadata['run_id'] ?? null,
+            'child_workflow_type' => $childMetadata['type'] ?? null,
+            'child_workflow_class' => $childMetadata['class'] ?? null,
+            'child_status' => $childMetadata['status'] ?? null,
+            'failure_id' => $failureMetadata['id'] ?? null,
+            'exception_class' => $failureMetadata['exception_class'] ?? null,
+            'message' => $failureMetadata['message'] ?? null,
             'closed_reason' => $payload['closed_reason'] ?? null,
-            'command' => self::commandMetadata($command, $payload, $commandId),
-            'task' => self::taskMetadata($task, $taskId),
-            'activity' => self::activityMetadata($activity, $payload, $activityId),
-            'timer' => self::timerMetadata($timer, $payload, $timerId),
-            'child' => self::childMetadata($payload),
-            'failure' => self::failureMetadata($failure, $payload, $failureId),
+            'command' => $commandMetadata,
+            'task' => $taskMetadata,
+            'activity' => $activityMetadata,
+            'timer' => $timerMetadata,
+            'child' => $childMetadata,
+            'failure' => $failureMetadata,
         ];
     }
 
@@ -154,31 +179,29 @@ final class HistoryTimeline
 
     private static function summaryFor(
         WorkflowHistoryEvent $event,
-        ?WorkflowCommand $command,
-        ?WorkflowTask $task,
-        ?ActivityExecution $activity,
-        ?WorkflowTimer $timer,
-        ?WorkflowFailure $failure,
+        array $payload,
+        ?array $command,
+        ?array $task,
+        ?array $activity,
+        ?array $timer,
+        ?array $child,
+        ?array $failure,
     ): string {
-        /** @var array<string, mixed> $payload */
-        $payload = is_array($event->payload) ? $event->payload : [];
         $activityLabel = self::displayLabel(
-            $activity?->activity_type
-            ?? $payload['activity_type']
-            ?? $activity?->activity_class
-            ?? $payload['activity_class']
+            $activity['type']
+            ?? $activity['class']
             ?? 'activity'
         );
-        $delaySeconds = $timer?->delay_seconds ?? $payload['delay_seconds'] ?? null;
-        $message = $failure?->message ?? $payload['message'] ?? null;
-        $outcome = $command?->outcome?->value ?? $payload['outcome'] ?? null;
-        $rejectionReason = $command?->rejection_reason ?? $payload['rejection_reason'] ?? null;
-        $signalName = $command?->targetName() ?? $payload['signal_name'] ?? null;
-        $updateName = $command?->targetName() ?? $payload['update_name'] ?? null;
+        $delaySeconds = $timer['delay_seconds'] ?? null;
+        $message = $failure['message'] ?? null;
+        $outcome = $command['outcome'] ?? null;
+        $rejectionReason = $command['rejection_reason'] ?? null;
+        $signalName = $command['target_name'] ?? self::stringValue($payload['signal_name'] ?? null);
+        $updateName = $command['target_name'] ?? self::stringValue($payload['update_name'] ?? null);
         $childLabel = self::displayLabel(
-            $payload['child_workflow_type']
-            ?? $payload['child_workflow_class']
-            ?? $payload['child_workflow_run_id']
+            $child['type']
+            ?? $child['class']
+            ?? $child['run_id']
             ?? 'child workflow'
         );
 
@@ -224,10 +247,9 @@ final class HistoryTimeline
                     : sprintf('Update %s failed: %s.', $updateName, $message)),
             HistoryEventType::RepairRequested => match ($outcome) {
                 'repair_dispatched' => sprintf(
-                    'Repair recreated %s task.',
-                    self::displayLabel(
-                        $task?->task_type?->value
-                        ?? self::stringValue($payload['task_type'] ?? null)
+                'Repair recreated %s task.',
+                self::displayLabel(
+                        $task['type']
                         ?? 'workflow'
                     ),
                 ),
@@ -260,13 +282,21 @@ final class HistoryTimeline
      * @param array<string, mixed> $payload
      * @return array<string, mixed>|null
      */
-    private static function childMetadata(array $payload): ?array
+    private static function childMetadata(WorkflowHistoryEvent $event, array $payload): ?array
     {
         if (
             ! array_key_exists('child_workflow_instance_id', $payload)
             && ! array_key_exists('child_workflow_run_id', $payload)
             && ! array_key_exists('child_workflow_type', $payload)
             && ! array_key_exists('child_workflow_class', $payload)
+            && ! in_array($event->event_type, [
+                HistoryEventType::ChildWorkflowScheduled,
+                HistoryEventType::ChildRunStarted,
+                HistoryEventType::ChildRunCompleted,
+                HistoryEventType::ChildRunFailed,
+                HistoryEventType::ChildRunCancelled,
+                HistoryEventType::ChildRunTerminated,
+            ], true)
         ) {
             return null;
         }
@@ -276,7 +306,14 @@ final class HistoryTimeline
             'run_id' => self::stringValue($payload['child_workflow_run_id'] ?? null),
             'type' => self::stringValue($payload['child_workflow_type'] ?? null),
             'class' => self::stringValue($payload['child_workflow_class'] ?? null),
-            'status' => self::stringValue($payload['child_status'] ?? null),
+            'status' => self::stringValue($payload['child_status'] ?? null)
+                ?? match ($event->event_type) {
+                    HistoryEventType::ChildRunCompleted => 'completed',
+                    HistoryEventType::ChildRunFailed => 'failed',
+                    HistoryEventType::ChildRunCancelled => 'cancelled',
+                    HistoryEventType::ChildRunTerminated => 'terminated',
+                    default => null,
+                },
             'run_number' => self::intValue($payload['child_run_number'] ?? null),
         ];
     }
@@ -285,7 +322,12 @@ final class HistoryTimeline
      * @param array<string, mixed> $payload
      * @return array<string, mixed>|null
      */
-    private static function commandMetadata(?WorkflowCommand $command, array $payload, ?string $commandId): ?array
+    private static function commandMetadata(
+        WorkflowHistoryEvent $event,
+        ?WorkflowCommand $command,
+        array $payload,
+        ?string $commandId,
+    ): ?array
     {
         if (
             $command === null
@@ -312,8 +354,8 @@ final class HistoryTimeline
             'request_path' => $command?->requestPath(),
             'request_route_name' => $command?->requestRouteName(),
             'request_fingerprint' => $command?->requestFingerprint(),
-            'status' => $command?->status?->value,
-            'outcome' => $command?->outcome?->value ?? self::stringValue($payload['outcome'] ?? null),
+            'status' => self::historicalCommandStatus($event, $command),
+            'outcome' => self::historicalCommandOutcome($event, $command, $payload),
             'rejection_reason' => $command?->rejection_reason ?? self::stringValue(
                 $payload['rejection_reason'] ?? null
             ),
@@ -326,16 +368,33 @@ final class HistoryTimeline
     /**
      * @return array<string, mixed>|null
      */
-    private static function taskMetadata(?WorkflowTask $task, ?string $taskId): ?array
+    private static function taskMetadata(
+        WorkflowHistoryEvent $event,
+        ?WorkflowTask $task,
+        array $payload,
+        ?string $taskId,
+    ): ?array
     {
         if ($task === null && $taskId === null) {
             return null;
         }
 
+        if ($event->event_type === HistoryEventType::RepairRequested) {
+            return [
+                'id' => $task?->id ?? $taskId,
+                'type' => self::stringValue($payload['task_type'] ?? null) ?? $task?->task_type?->value,
+                'status' => ($task?->id ?? $taskId) === null ? null : TaskStatus::Ready->value,
+                'available_at' => null,
+                'leased_at' => null,
+                'lease_expires_at' => null,
+                'attempt_count' => null,
+            ];
+        }
+
         return [
             'id' => $task?->id ?? $taskId,
-            'type' => $task?->task_type?->value,
-            'status' => $task?->status?->value,
+            'type' => $task?->task_type?->value ?? self::historicalTaskType($event, $taskId),
+            'status' => $task?->status?->value ?? self::historicalTaskStatus($event, $taskId),
             'available_at' => self::timestamp($task?->available_at),
             'leased_at' => self::timestamp($task?->leased_at),
             'lease_expires_at' => self::timestamp($task?->lease_expires_at),
@@ -347,7 +406,13 @@ final class HistoryTimeline
      * @param array<string, mixed> $payload
      * @return array<string, mixed>|null
      */
-    private static function activityMetadata(?ActivityExecution $activity, array $payload, ?string $activityId): ?array
+    private static function activityMetadata(
+        WorkflowHistoryEvent $event,
+        ?ActivityExecution $activity,
+        array $payload,
+        ?string $activityId,
+        ?WorkflowFailure $failure,
+    ): ?array
     {
         if (
             $activity === null
@@ -358,17 +423,39 @@ final class HistoryTimeline
             return null;
         }
 
+        $resolvedActivityId = $activity?->id
+            ?? $activityId
+            ?? (
+                $failure?->source_kind === 'activity_execution'
+                    ? self::stringValue($failure->source_id)
+                    : null
+            );
+
         return [
-            'id' => $activity?->id ?? $activityId,
+            'id' => $resolvedActivityId,
             'sequence' => $activity?->sequence ?? self::intValue($payload['sequence'] ?? null),
             'type' => $activity?->activity_type ?? self::stringValue($payload['activity_type'] ?? null),
             'class' => $activity?->activity_class ?? self::stringValue($payload['activity_class'] ?? null),
-            'status' => $activity?->status?->value,
-            'attempt_count' => $activity?->attempt_count,
+            'status' => match ($event->event_type) {
+                HistoryEventType::ActivityScheduled => 'pending',
+                HistoryEventType::ActivityCompleted => 'completed',
+                HistoryEventType::ActivityFailed => 'failed',
+                default => $activity?->status?->value,
+            },
+            'attempt_count' => $event->event_type === HistoryEventType::ActivityScheduled
+                ? ($activity?->attempt_count ?? 1)
+                : $activity?->attempt_count,
             'connection' => $activity?->connection,
             'queue' => $activity?->queue,
-            'started_at' => self::timestamp($activity?->started_at),
-            'closed_at' => self::timestamp($activity?->closed_at),
+            'started_at' => $event->event_type === HistoryEventType::ActivityScheduled
+                ? null
+                : self::timestamp($activity?->started_at),
+            'closed_at' => in_array($event->event_type, [
+                HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityFailed,
+            ], true)
+                ? self::timestamp($activity?->closed_at)
+                : null,
         ];
     }
 
@@ -376,7 +463,12 @@ final class HistoryTimeline
      * @param array<string, mixed> $payload
      * @return array<string, mixed>|null
      */
-    private static function timerMetadata(?WorkflowTimer $timer, array $payload, ?string $timerId): ?array
+    private static function timerMetadata(
+        WorkflowHistoryEvent $event,
+        ?WorkflowTimer $timer,
+        array $payload,
+        ?string $timerId,
+    ): ?array
     {
         if (
             $timer === null
@@ -391,10 +483,16 @@ final class HistoryTimeline
         return [
             'id' => $timer?->id ?? $timerId,
             'sequence' => $timer?->sequence ?? self::intValue($payload['sequence'] ?? null),
-            'status' => $timer?->status?->value,
+            'status' => match ($event->event_type) {
+                HistoryEventType::TimerScheduled => 'pending',
+                HistoryEventType::TimerFired => 'fired',
+                default => $timer?->status?->value,
+            },
             'delay_seconds' => $timer?->delay_seconds ?? self::intValue($payload['delay_seconds'] ?? null),
             'fire_at' => self::timestamp($timer?->fire_at ?? self::stringValue($payload['fire_at'] ?? null)),
-            'fired_at' => self::timestamp($timer?->fired_at ?? self::stringValue($payload['fired_at'] ?? null)),
+            'fired_at' => $event->event_type === HistoryEventType::TimerScheduled
+                ? null
+                : self::timestamp($timer?->fired_at ?? self::stringValue($payload['fired_at'] ?? null)),
         ];
     }
 
@@ -402,7 +500,12 @@ final class HistoryTimeline
      * @param array<string, mixed> $payload
      * @return array<string, mixed>|null
      */
-    private static function failureMetadata(?WorkflowFailure $failure, array $payload, ?string $failureId): ?array
+    private static function failureMetadata(
+        WorkflowHistoryEvent $event,
+        ?WorkflowFailure $failure,
+        array $payload,
+        ?string $failureId,
+    ): ?array
     {
         if (
             $failure === null
@@ -417,15 +520,159 @@ final class HistoryTimeline
 
         return [
             'id' => $failure?->id ?? $failureId,
-            'source_kind' => $failure?->source_kind ?? self::stringValue($payload['source_kind'] ?? null),
-            'source_id' => $failure?->source_id ?? self::stringValue($payload['source_id'] ?? null),
-            'propagation_kind' => $failure?->propagation_kind,
-            'handled' => $failure?->handled,
-            'exception_class' => $failure?->exception_class ?? self::stringValue($payload['exception_class'] ?? null),
-            'message' => $failure?->message ?? self::stringValue($payload['message'] ?? null),
+            'source_kind' => self::stringValue($payload['source_kind'] ?? null) ?? $failure?->source_kind,
+            'source_id' => self::stringValue($payload['source_id'] ?? null) ?? $failure?->source_id,
+            'propagation_kind' => match ($event->event_type) {
+                HistoryEventType::ActivityFailed => 'activity',
+                HistoryEventType::WorkflowFailed => 'terminal',
+                HistoryEventType::UpdateCompleted => ($failure?->id ?? $failureId) === null ? null : 'update',
+                default => $failure?->propagation_kind,
+            },
+            'handled' => match ($event->event_type) {
+                HistoryEventType::ActivityFailed,
+                HistoryEventType::WorkflowFailed => false,
+                HistoryEventType::UpdateCompleted => ($failure?->id ?? $failureId) === null ? null : false,
+                default => $failure?->handled,
+            },
+            'exception_class' => self::stringValue($payload['exception_class'] ?? null) ?? $failure?->exception_class,
+            'message' => self::stringValue($payload['message'] ?? null) ?? $failure?->message,
             'file' => $failure?->file,
             'line' => $failure?->line,
         ];
+    }
+
+    private static function sourceKindFor(WorkflowHistoryEvent $event): string
+    {
+        return match ($event->event_type) {
+            HistoryEventType::StartAccepted,
+            HistoryEventType::StartRejected,
+            HistoryEventType::SignalReceived,
+            HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateApplied,
+            HistoryEventType::UpdateCompleted,
+            HistoryEventType::RepairRequested,
+            HistoryEventType::CancelRequested,
+            HistoryEventType::TerminateRequested => 'workflow_command',
+            HistoryEventType::SignalWaitOpened,
+            HistoryEventType::SignalApplied => 'signal_wait',
+            HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildRunStarted,
+            HistoryEventType::ChildRunCompleted,
+            HistoryEventType::ChildRunFailed,
+            HistoryEventType::ChildRunCancelled,
+            HistoryEventType::ChildRunTerminated => 'child_workflow_run',
+            HistoryEventType::ActivityScheduled,
+            HistoryEventType::ActivityCompleted,
+            HistoryEventType::ActivityFailed => 'activity_execution',
+            HistoryEventType::TimerScheduled,
+            HistoryEventType::TimerFired => 'timer',
+            default => 'workflow_run',
+        };
+    }
+
+    /**
+     * @param array<string, mixed>|null $command
+     * @param array<string, mixed>|null $task
+     * @param array<string, mixed>|null $activity
+     * @param array<string, mixed>|null $timer
+     * @param array<string, mixed>|null $child
+     * @param array<string, mixed>|null $failure
+     */
+    private static function sourceIdFor(
+        WorkflowHistoryEvent $event,
+        ?array $command,
+        ?array $task,
+        ?array $activity,
+        ?array $timer,
+        ?array $child,
+        ?array $failure,
+    ): ?string {
+        return match (self::sourceKindFor($event)) {
+            'workflow_command' => self::stringValue($command['id'] ?? null),
+            'signal_wait' => self::stringValue($event->payload['signal_wait_id'] ?? null),
+            'child_workflow_run' => self::stringValue($child['run_id'] ?? null)
+                ?? self::stringValue($child['instance_id'] ?? null),
+            'activity_execution' => self::stringValue($activity['id'] ?? null)
+                ?? (
+                    self::stringValue($failure['source_kind'] ?? null) === 'activity_execution'
+                        ? self::stringValue($failure['source_id'] ?? null)
+                        : null
+                ),
+            'timer' => self::stringValue($timer['id'] ?? null),
+            'workflow_run' => self::stringValue($event->workflow_run_id),
+            default => self::stringValue($task['id'] ?? null),
+        };
+    }
+
+    private static function historicalCommandStatus(
+        WorkflowHistoryEvent $event,
+        ?WorkflowCommand $command,
+    ): ?string {
+        return match ($event->event_type) {
+            HistoryEventType::StartRejected => 'rejected',
+            HistoryEventType::StartAccepted,
+            HistoryEventType::SignalReceived,
+            HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateApplied,
+            HistoryEventType::UpdateCompleted,
+            HistoryEventType::RepairRequested,
+            HistoryEventType::CancelRequested,
+            HistoryEventType::TerminateRequested => 'accepted',
+            default => $command?->status?->value,
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function historicalCommandOutcome(
+        WorkflowHistoryEvent $event,
+        ?WorkflowCommand $command,
+        array $payload,
+    ): ?string {
+        $payloadOutcome = self::stringValue($payload['outcome'] ?? null);
+
+        if ($payloadOutcome !== null) {
+            return $payloadOutcome;
+        }
+
+        return match ($event->event_type) {
+            HistoryEventType::SignalReceived => 'signal_received',
+            HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateApplied => null,
+            HistoryEventType::UpdateCompleted => array_key_exists('failure_id', $payload)
+                ? 'update_failed'
+                : 'update_completed',
+            HistoryEventType::CancelRequested => 'cancelled',
+            HistoryEventType::TerminateRequested => 'terminated',
+            default => $command?->outcome?->value,
+        };
+    }
+
+    private static function historicalTaskType(WorkflowHistoryEvent $event, ?string $taskId): ?string
+    {
+        if ($taskId === null) {
+            return null;
+        }
+
+        return match ($event->event_type) {
+            HistoryEventType::ActivityCompleted,
+            HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::TimerFired => 'timer',
+            default => 'workflow',
+        };
+    }
+
+    private static function historicalTaskStatus(WorkflowHistoryEvent $event, ?string $taskId): ?string
+    {
+        if ($taskId === null) {
+            return null;
+        }
+
+        return match ($event->event_type) {
+            HistoryEventType::WorkflowFailed => 'failed',
+            default => 'completed',
+        };
     }
 
     private static function displayLabel(string $value): string
