@@ -501,7 +501,7 @@ final class V2WebhookWorkflowTest extends TestCase
         ], $workflow->currentState());
     }
 
-    public function testUpdateWebhookProcessesEarlierSignalBeforeApplyingLaterUpdate(): void
+    public function testUpdateWebhookRejectsLaterUpdateWhileAnEarlierSignalIsStillPending(): void
     {
         $workflow = WorkflowStub::make(TestSignalThenUpdateWorkflow::class, 'order-update-webhook-linearized');
         $workflow->start();
@@ -524,29 +524,22 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
 
         $response
-            ->assertStatus(200)
-            ->assertJsonPath('outcome', 'update_completed')
+            ->assertStatus(409)
+            ->assertJsonPath('outcome', 'rejected_pending_signal')
             ->assertJsonPath('workflow_id', 'order-update-webhook-linearized')
             ->assertJsonPath('run_id', $workflow->runId())
             ->assertJsonPath('target_scope', 'instance')
             ->assertJsonPath('workflow_type', 'test-signal-then-update-workflow')
             ->assertJsonPath('command_sequence', 3)
-            ->assertJsonPath('command_status', 'accepted')
-            ->assertJsonPath('rejection_reason', null)
-            ->assertJson([
-                'result' => [
-                    'stage' => 'waiting-for-finish',
-                    'name' => 'Taylor',
-                    'approved' => true,
-                    'events' => ['started', 'signal:Taylor', 'approved:yes:webhook'],
-                ],
-            ]);
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'earlier_signal_pending')
+            ->assertJsonPath('result', null);
 
         $this->assertSame([
-            'stage' => 'waiting-for-finish',
-            'name' => 'Taylor',
-            'approved' => true,
-            'events' => ['started', 'signal:Taylor', 'approved:yes:webhook'],
+            'stage' => 'waiting-for-advance',
+            'name' => null,
+            'approved' => false,
+            'events' => ['started'],
         ], $workflow->currentState());
     }
 
@@ -854,7 +847,7 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
-    public function testUpdateWebhookReplaysEarlierSignalBeforeRejectingClosedRun(): void
+    public function testUpdateWebhookRejectsPendingSignalInsteadOfInlineClosingTheRun(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-b');
         $workflow->start();
@@ -878,18 +871,18 @@ final class V2WebhookWorkflowTest extends TestCase
 
         $response
             ->assertStatus(409)
-            ->assertJsonPath('outcome', 'rejected_not_active')
+            ->assertJsonPath('outcome', 'rejected_pending_signal')
             ->assertJsonPath('workflow_id', 'order-update-webhook-b')
             ->assertJsonPath('run_id', $workflow->runId())
             ->assertJsonPath('workflow_type', 'test-update-workflow')
             ->assertJsonPath('command_sequence', 3)
             ->assertJsonPath('command_status', 'rejected')
-            ->assertJsonPath('rejection_reason', 'run_not_active')
+            ->assertJsonPath('rejection_reason', 'earlier_signal_pending')
             ->assertJsonPath('result', null)
             ->assertJsonPath('failure_id', null)
             ->assertJsonPath('failure_message', null);
 
-        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame('waiting', $workflow->refresh()->status());
 
         $this->assertDatabaseHas('workflow_commands', [
             'id' => $response->json('command_id'),
@@ -897,8 +890,8 @@ final class V2WebhookWorkflowTest extends TestCase
             'workflow_run_id' => $workflow->runId(),
             'command_type' => 'update',
             'status' => 'rejected',
-            'outcome' => 'rejected_not_active',
-            'rejection_reason' => 'run_not_active',
+            'outcome' => 'rejected_pending_signal',
+            'rejection_reason' => 'earlier_signal_pending',
         ]);
     }
 
