@@ -9,16 +9,16 @@ use Illuminate\Support\Facades\Schema;
 return new class() extends Migration {
     public function up(): void
     {
-        Schema::table('workflow_tasks', static function (Blueprint $table): void {
-            $table->string('compatibility')
-                ->nullable()
-                ->after('queue');
-        });
-
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
-            $table->string('compatibility')
+            $table->string('open_wait_id', 191)
                 ->nullable()
-                ->after('workflow_type');
+                ->after('wait_deadline_at');
+            $table->string('resume_source_kind')
+                ->nullable()
+                ->after('open_wait_id');
+            $table->string('resume_source_id', 191)
+                ->nullable()
+                ->after('resume_source_kind');
         });
     }
 
@@ -29,11 +29,11 @@ return new class() extends Migration {
         }
 
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
-            $table->dropColumn('compatibility');
-        });
-
-        Schema::table('workflow_tasks', static function (Blueprint $table): void {
-            $table->dropColumn('compatibility');
+            $table->dropColumn([
+                'open_wait_id',
+                'resume_source_kind',
+                'resume_source_id',
+            ]);
         });
     }
 };

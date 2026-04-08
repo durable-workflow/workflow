@@ -26,6 +26,10 @@ return new class() extends Migration {
             return;
         }
 
+        if (Schema::getConnection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         Schema::table('workflow_commands', static function (Blueprint $table): void {
             $table->dropColumn('outcome');
         });

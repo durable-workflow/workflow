@@ -18,6 +18,10 @@ return new class() extends Migration {
 
     public function down(): void
     {
+        if (Schema::getConnection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         Schema::table('workflow_commands', static function (Blueprint $table): void {
             $table->dropIndex('workflow_commands_command_sequence_index');
             $table->dropColumn('command_sequence');

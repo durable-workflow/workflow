@@ -69,16 +69,25 @@ final class RunSummaryProjector
         $waitReason = null;
         $waitStartedAt = null;
         $waitDeadlineAt = null;
+        $openWaitId = null;
+        $resumeSourceKind = null;
+        $resumeSourceId = null;
 
         if ($openActivity !== null) {
             $waitKind = 'activity';
             $waitReason = sprintf('Waiting for activity %s', $openActivity->activity_type);
             $waitStartedAt = $openActivity->started_at ?? $openActivity->created_at;
+            $openWaitId = sprintf('activity:%s', $openActivity->id);
+            $resumeSourceKind = 'activity_execution';
+            $resumeSourceId = $openActivity->id;
         } elseif ($openTimer !== null) {
             $waitKind = 'timer';
             $waitReason = 'Waiting for timer';
             $waitStartedAt = $openTimer->created_at;
             $waitDeadlineAt = $openTimer->fire_at;
+            $openWaitId = sprintf('timer:%s', $openTimer->id);
+            $resumeSourceKind = 'timer';
+            $resumeSourceId = $openTimer->id;
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
@@ -91,14 +100,23 @@ final class RunSummaryProjector
             };
             $waitStartedAt = $nextTask->leased_at ?? $nextTask->available_at;
             $waitDeadlineAt = $nextTask->lease_expires_at;
+            $openWaitId = sprintf('workflow-task:%s', $nextTask->id);
+            $resumeSourceKind = 'workflow_task';
+            $resumeSourceId = $nextTask->id;
         } elseif ($openChildWait !== null) {
             $waitKind = 'child';
             $waitReason = sprintf('Waiting for child workflow %s', $openChildWait['label']);
             $waitStartedAt = $openChildWait['opened_at'];
+            $openWaitId = $openChildWait['id'];
+            $resumeSourceKind = $openChildWait['resume_source_kind'];
+            $resumeSourceId = $openChildWait['resume_source_id'];
         } elseif ($openSignalWait !== null) {
             $waitKind = 'signal';
             $waitReason = sprintf('Waiting for signal %s', $openSignalWait['name']);
             $waitStartedAt = $openSignalWait['opened_at'];
+            $openWaitId = $openSignalWait['id'];
+            $resumeSourceKind = $openSignalWait['resume_source_kind'];
+            $resumeSourceId = $openSignalWait['resume_source_id'];
         }
 
         [$livenessState, $livenessReason] = self::liveness(
@@ -157,6 +175,9 @@ final class RunSummaryProjector
                 'wait_reason' => $waitReason,
                 'wait_started_at' => $waitStartedAt,
                 'wait_deadline_at' => $waitDeadlineAt,
+                'open_wait_id' => $openWaitId,
+                'resume_source_kind' => $resumeSourceKind,
+                'resume_source_id' => $resumeSourceId,
                 'next_task_at' => $nextTask?->available_at,
                 'liveness_state' => $livenessState,
                 'liveness_reason' => $livenessReason,
@@ -291,7 +312,13 @@ final class RunSummaryProjector
     }
 
     /**
-     * @return array{id: string, name: string, opened_at: \Carbon\CarbonInterface}|null
+     * @return array{
+     *     id: string,
+     *     name: string,
+     *     opened_at: \Carbon\CarbonInterface,
+     *     resume_source_kind: string,
+     *     resume_source_id: string|null
+     * }|null
      */
     private static function openSignalWait(WorkflowRun $run): ?array
     {
@@ -329,11 +356,19 @@ final class RunSummaryProjector
             'id' => $signal['signal_wait_id'],
             'name' => $signal['signal_name'],
             'opened_at' => $signal['opened_at'],
+            'resume_source_kind' => 'signal',
+            'resume_source_id' => null,
         ];
     }
 
     /**
-     * @return array{label: string, opened_at: \Carbon\CarbonInterface}|null
+     * @return array{
+     *     id: string,
+     *     label: string,
+     *     opened_at: \Carbon\CarbonInterface,
+     *     resume_source_kind: string,
+     *     resume_source_id: string|null
+     * }|null
      */
     private static function openChildWait(WorkflowRun $run): ?array
     {
@@ -368,8 +403,11 @@ final class RunSummaryProjector
             $link = ChildRunHistory::latestLinkForSequence($run, $sequence);
 
             return [
+                'id' => sprintf('child:%s', $link?->id ?? $sequence),
                 'label' => $childRun->workflow_type,
                 'opened_at' => $scheduledEvent?->recorded_at ?? $scheduledEvent?->created_at ?? $link?->created_at,
+                'resume_source_kind' => 'child_workflow_run',
+                'resume_source_id' => $childRun->id,
             ];
         }
 

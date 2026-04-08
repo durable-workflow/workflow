@@ -21,6 +21,10 @@ return new class() extends Migration {
 
     public function down(): void
     {
+        if (Schema::getConnection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         Schema::table('workflow_tasks', static function (Blueprint $table): void {
             $table->dropColumn([
                 'last_dispatch_attempt_at',

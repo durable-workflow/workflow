@@ -87,6 +87,17 @@ final class RunDetailView
             ->keyBy(static fn ($event): string => $event->payload['failure_id']);
         $tasks = RunTaskView::forRun($run);
         $waits = RunWaitView::forRun($run);
+        $currentOpenWait = self::currentOpenWait($waits);
+        $workflowTaskResumeSource = self::currentWorkflowTaskResumeSource($tasks, $summary?->next_task_id);
+        $openWaitId = $summary?->open_wait_id
+            ?? $currentOpenWait['id']
+            ?? $workflowTaskResumeSource['open_wait_id'];
+        $resumeSourceKind = $summary?->resume_source_kind
+            ?? $currentOpenWait['resume_source_kind']
+            ?? $workflowTaskResumeSource['resume_source_kind'];
+        $resumeSourceId = $summary?->resume_source_id
+            ?? $currentOpenWait['resume_source_id']
+            ?? $workflowTaskResumeSource['resume_source_id'];
 
         return [
             'id' => $run->id,
@@ -120,6 +131,9 @@ final class RunDetailView
             'wait_reason' => $summary?->wait_reason,
             'wait_started_at' => $summary?->wait_started_at,
             'wait_deadline_at' => $summary?->wait_deadline_at,
+            'open_wait_id' => $openWaitId,
+            'resume_source_kind' => $resumeSourceKind,
+            'resume_source_id' => $resumeSourceId,
             'next_task_at' => $summary?->next_task_at,
             'next_task_id' => $summary?->next_task_id,
             'next_task_type' => $summary?->next_task_type,
@@ -252,6 +266,63 @@ final class RunDetailView
             'parents' => RunLineageView::parentsForRun($run),
             'continuedWorkflows' => RunLineageView::continuedWorkflowsForRun($run),
             'chartData' => self::chartData($run),
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $waits
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function currentOpenWait(array $waits): ?array
+    {
+        foreach ($waits as $wait) {
+            if (($wait['status'] ?? null) === 'open') {
+                return $wait;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $tasks
+     *
+     * @return array{
+     *     open_wait_id: string|null,
+     *     resume_source_kind: string|null,
+     *     resume_source_id: string|null
+     * }
+     */
+    private static function currentWorkflowTaskResumeSource(array $tasks, ?string $nextTaskId): array
+    {
+        foreach ($tasks as $task) {
+            if (($task['type'] ?? null) !== 'workflow') {
+                continue;
+            }
+
+            $taskId = is_string($task['id'] ?? null) ? $task['id'] : null;
+            $isOpen = $task['is_open'] ?? false;
+
+            if ($taskId === null || $isOpen !== true) {
+                continue;
+            }
+
+            if ($nextTaskId !== null && $taskId !== $nextTaskId) {
+                continue;
+            }
+
+            return [
+                'open_wait_id' => sprintf('workflow-task:%s', $taskId),
+                'resume_source_kind' => 'workflow_task',
+                'resume_source_id' => $taskId,
+            ];
+        }
+
+        return [
+            'open_wait_id' => null,
+            'resume_source_kind' => null,
+            'resume_source_id' => null,
         ];
     }
 

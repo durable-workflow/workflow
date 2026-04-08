@@ -36,6 +36,30 @@ use Workflow\V2\WorkflowStub;
 
 final class V2RunDetailViewTest extends TestCase
 {
+    public function testRunDetailViewIncludesResumeSourceForReadyWorkflowTask(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'detail-ready-workflow-task');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+
+        $detail = RunDetailView::forRun($run);
+        $workflowTask = $this->findTask($detail['tasks'], 'workflow');
+
+        $this->assertSame('workflow-task', $detail['wait_kind']);
+        $this->assertSame('Workflow task ready', $detail['wait_reason']);
+        $this->assertSame('workflow-task:'.$workflowTask['id'], $detail['open_wait_id']);
+        $this->assertSame('workflow_task', $detail['resume_source_kind']);
+        $this->assertSame($workflowTask['id'], $detail['resume_source_id']);
+        $this->assertSame($workflowTask['id'], $detail['next_task_id']);
+    }
+
     public function testRunDetailViewIncludesWaitAndLivenessMetadataForSignalWaitingRun(): void
     {
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal');
@@ -75,6 +99,9 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('start', $detail['commands'][0]['type']);
         $this->assertSame('started_new', $detail['commands'][0]['outcome']);
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+        $this->assertSame($signalWait['signal_wait_id'], $detail['open_wait_id']);
+        $this->assertSame('signal', $detail['resume_source_kind']);
+        $this->assertNull($detail['resume_source_id']);
         $this->assertSame('open', $signalWait['status']);
         $this->assertSame('waiting', $signalWait['source_status']);
         $this->assertSame('Waiting for signal name-provided.', $signalWait['summary']);
