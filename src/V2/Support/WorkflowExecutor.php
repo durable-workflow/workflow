@@ -650,7 +650,7 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof ContinueAsNewCall) {
-                return $this->continueAsNew($run, $task, $sequence, $current);
+                return $this->continueAsNew($run, $task, $sequence, $current, $workflowClass);
             }
 
             $this->failRun(
@@ -1292,19 +1292,26 @@ final class WorkflowExecutor
         WorkflowTask $task,
         int $sequence,
         ContinueAsNewCall $continueAsNew,
+        string $workflowClass,
     ): WorkflowTask {
         $now = now();
-        $commandContract = RunCommandContract::snapshot($run->workflow_class);
+        $commandContract = RunCommandContract::snapshot($workflowClass);
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()
             ->lockForUpdate()
             ->findOrFail($run->workflow_instance_id);
 
+        if ($instance->workflow_class !== $workflowClass) {
+            $instance->forceFill([
+                'workflow_class' => $workflowClass,
+            ])->save();
+        }
+
         /** @var WorkflowRun $continuedRun */
         $continuedRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $run->workflow_instance_id,
             'run_number' => $run->run_number + 1,
-            'workflow_class' => $run->workflow_class,
+            'workflow_class' => $workflowClass,
             'workflow_type' => $run->workflow_type,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,

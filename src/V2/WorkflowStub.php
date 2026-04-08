@@ -351,18 +351,26 @@ final class WorkflowStub
                 return;
             }
 
+            $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
+
+            if ($instance->workflow_class !== $workflowClass) {
+                $instance->forceFill([
+                    'workflow_class' => $workflowClass,
+                ])->save();
+            }
+
             /** @var WorkflowRun $run */
             $run = WorkflowRun::query()->create([
                 'workflow_instance_id' => $instance->id,
                 'run_number' => $instance->run_count + 1,
-                'workflow_class' => $instance->workflow_class,
+                'workflow_class' => $workflowClass,
                 'workflow_type' => $instance->workflow_type,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => config('workflows.serializer'),
                 'arguments' => \Workflow\Serializers\Serializer::serialize($metadata->arguments),
-                'connection' => RoutingResolver::workflowConnection($instance->workflow_class, $metadata),
-                'queue' => RoutingResolver::workflowQueue($instance->workflow_class, $metadata),
+                'connection' => RoutingResolver::workflowConnection($workflowClass, $metadata),
+                'queue' => RoutingResolver::workflowQueue($workflowClass, $metadata),
                 'started_at' => now(),
                 'last_progress_at' => now(),
                 'last_history_sequence' => 0,
@@ -386,7 +394,7 @@ final class WorkflowStub
                 'run_count' => $run->run_number,
             ])->save();
 
-            $commandContract = RunCommandContract::snapshot($run->workflow_class);
+            $commandContract = RunCommandContract::snapshot($workflowClass);
 
             WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
                 'workflow_command_id' => $command->id,

@@ -9,7 +9,9 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use LogicException;
+use ReflectionException;
 use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
+use Tests\Fixtures\V2\TestConfiguredContinueSignalWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
@@ -33,6 +35,7 @@ use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -53,6 +56,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityLease;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunSummarySortKey;
@@ -1229,6 +1233,131 @@ final class V2WorkflowTest extends TestCase
             'activity_class' => TestConfiguredGreetingActivity::class,
             'activity_type' => 'config-greeting-activity',
         ]);
+    }
+
+    public function testStartCanResolveConfiguredTypeWhenReservedInstanceClassHasDrifted(): void
+    {
+        $this->configureGreetingTypeMaps();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'configured-start-from-load',
+            'workflow_class' => 'Legacy\\GreetingWorkflow',
+            'workflow_type' => 'config-greeting-workflow',
+            'run_count' => 0,
+            'reserved_at' => now()
+                ->subMinute(),
+        ]);
+
+        try {
+            WorkflowStub::load($instance->id)->attemptStart('Taylor');
+        } catch (ReflectionException $exception) {
+            $this->fail('Starting a reserved configured-type workflow should not reflect the stale class: ' . $exception->getMessage());
+        }
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', $instance->id)
+            ->firstOrFail();
+
+        $this->assertSame(TestConfiguredGreetingWorkflow::class, $instance->fresh()->workflow_class);
+        $this->assertSame(TestConfiguredGreetingWorkflow::class, $run->workflow_class);
+        $this->assertSame('config-greeting-workflow', $run->workflow_type);
+    }
+
+    public function testContinueAsNewPersistsResolvedWorkflowClassAndContractsAfterConfiguredTypeFallback(): void
+    {
+        $this->configureContinueSignalTypeMap();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'configured-continue-signal',
+            'workflow_class' => 'Legacy\\ContinueSignalWorkflow',
+            'workflow_type' => 'config-continue-signal-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'Legacy\\ContinueSignalWorkflow',
+            'workflow_type' => 'config-continue-signal-workflow',
+            'status' => RunStatus::Running->value,
+            'arguments' => Serializer::serialize([0]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'payload' => [],
+            'available_at' => now()
+                ->subSeconds(5),
+            'leased_at' => now()
+                ->subSeconds(2),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ]);
+
+        $nextTask = app(\Workflow\V2\Support\WorkflowExecutor::class)->run(
+            $run->fresh(['instance', 'activityExecutions', 'timers', 'failures', 'tasks', 'commands', 'historyEvents']),
+            $task->fresh(),
+        );
+
+        $this->assertInstanceOf(WorkflowTask::class, $nextTask);
+        $this->assertSame(TaskType::Workflow, $nextTask->task_type);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $instance->id)
+            ->where('run_number', 2)
+            ->firstOrFail();
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $this->assertSame(TestConfiguredContinueSignalWorkflow::class, $instance->fresh()->workflow_class);
+        $this->assertSame(TestConfiguredContinueSignalWorkflow::class, $continuedRun->workflow_class);
+        $this->assertSame(['name-provided'], $started->payload['declared_signals'] ?? null);
+        $this->assertSame('name-provided', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
+        $this->assertSame(['mark-approved'], $started->payload['declared_updates'] ?? null);
+        $this->assertSame('mark-approved', $started->payload['declared_update_contracts'][0]['name'] ?? null);
+
+        $this->app->call([new RunWorkflowTask($nextTask->id), 'handle']);
+
+        $continuedRun->refresh();
+
+        $this->assertSame('waiting', $continuedRun->status->value);
+
+        WorkflowRun::query()->whereKey($continuedRun->id)->update([
+            'workflow_class' => 'Missing\\Workflow\\ConfiguredContinueSignalWorkflow',
+        ]);
+
+        $signal = WorkflowStub::loadRun($continuedRun->id)->attemptSignal('name-provided', 'Taylor');
+        $detail = RunDetailView::forRun($continuedRun->fresh());
+
+        $this->assertTrue($signal->accepted());
+        $this->assertSame('signal_received', $signal->outcome());
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertSame(['name-provided'], $detail['declared_signals']);
+        $this->assertSame(['mark-approved'], $detail['declared_updates']);
     }
 
     public function testRunActivityTaskCanResolveConfiguredTypeWhenStoredActivityClassHasDrifted(): void
@@ -3680,5 +3809,12 @@ final class V2WorkflowTest extends TestCase
             ->set('workflows.v2.types.activities', [
                 'config-greeting-activity' => TestConfiguredGreetingActivity::class,
             ]);
+    }
+
+    private function configureContinueSignalTypeMap(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'config-continue-signal-workflow' => TestConfiguredContinueSignalWorkflow::class,
+        ]);
     }
 }
