@@ -93,10 +93,11 @@ final class Webhooks
 
             $result = self::selectionStub($workflowId, $runId)
                 ->withCommandContext(self::commandContext($request))
-                ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
+                ->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
                 $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
+                $result->outcome() === CommandOutcome::RejectedInvalidArguments->value => 422,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
                 default => 200,
@@ -112,10 +113,11 @@ final class Webhooks
 
             $result = self::selectionStub($workflowId)
                 ->withCommandContext(self::commandContext($request))
-                ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
+                ->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
                 $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
+                $result->outcome() === CommandOutcome::RejectedInvalidArguments->value => 422,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
                 default => 200,
@@ -330,6 +332,29 @@ final class Webhooks
         }
 
         return array_values($arguments);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<int|string, mixed>
+     */
+    private static function resolveUpdateArguments(array $payload): array
+    {
+        if (! array_key_exists('arguments', $payload)) {
+            return [];
+        }
+
+        $arguments = $payload['arguments'];
+
+        if (! is_array($arguments)) {
+            throw ValidationException::withMessages([
+                'arguments' => ['The arguments field must be an array.'],
+            ]);
+        }
+
+        return array_is_list($arguments)
+            ? array_values($arguments)
+            : $arguments;
     }
 
     /**

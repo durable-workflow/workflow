@@ -25,6 +25,7 @@ final class CommandResponse
             'command_status' => $result->status(),
             'command_source' => $result->source(),
             'rejection_reason' => $result->rejectionReason(),
+            'validation_errors' => $result->validationErrors(),
         ];
 
         if ($result instanceof UpdateResult) {

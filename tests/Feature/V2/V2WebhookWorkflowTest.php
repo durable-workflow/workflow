@@ -475,6 +475,51 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('rejection_reason', 'unknown_update');
     }
 
+    public function testUpdateWebhookAcceptsNamedArgumentsUsingTheDeclaredContract(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-named');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-update-webhook-named/updates/approve', [
+            'arguments' => [
+                'approved' => true,
+            ],
+        ]);
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('outcome', 'update_completed')
+            ->assertJsonPath('validation_errors', [])
+            ->assertJson([
+                'result' => [
+                    'approved' => true,
+                    'events' => ['started', 'approved:yes:manual'],
+                ],
+            ]);
+
+        $accepted = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+
+        $this->assertSame([
+            'name' => 'approve',
+            'arguments' => [
+                'approved' => true,
+            ],
+            'validation_errors' => [],
+        ], Serializer::unserialize($accepted->payload));
+
+        $acceptedEvent = \Workflow\V2\Models\WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateAccepted')
+            ->sole();
+
+        $this->assertSame(
+            [true, 'manual'],
+            Serializer::unserialize($acceptedEvent->payload['arguments'] ?? serialize([])),
+        );
+    }
+
     public function testRunTargetedUpdateWebhookRejectsHistoricalSelectedRun(): void
     {
         $instance = WorkflowInstance::query()->create([
@@ -581,6 +626,42 @@ final class V2WebhookWorkflowTest extends TestCase
             'status' => 'rejected',
             'outcome' => 'rejected_unknown_update',
             'rejection_reason' => 'unknown_update',
+        ]);
+    }
+
+    public function testUpdateWebhookReturnsTypedInvalidArgumentResponse(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-web-invalid');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-update-web-invalid/updates/approve', [
+            'arguments' => [
+                'source' => 'webhook',
+                'extra' => 'unexpected',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonPath('outcome', 'rejected_invalid_arguments')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'invalid_update_arguments')
+            ->assertJsonPath('validation_errors.approved.0', 'The approved argument is required.')
+            ->assertJsonPath('validation_errors.extra.0', 'Unknown argument [extra].')
+            ->assertJsonPath('result', null)
+            ->assertJsonPath('failure_id', null)
+            ->assertJsonPath('failure_message', null);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-web-invalid',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_invalid_arguments',
+            'rejection_reason' => 'invalid_update_arguments',
         ]);
     }
 

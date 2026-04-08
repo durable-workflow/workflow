@@ -21,5 +21,6 @@ enum CommandOutcome: string
     case RejectedNotCurrent = 'rejected_not_current';
     case RejectedUnknownSignal = 'rejected_unknown_signal';
     case RejectedUnknownUpdate = 'rejected_unknown_update';
+    case RejectedInvalidArguments = 'rejected_invalid_arguments';
     case RejectedPendingSignal = 'rejected_pending_signal';
 }

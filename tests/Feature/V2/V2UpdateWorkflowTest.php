@@ -159,6 +159,13 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('repair_not_needed', $detail['repair_blocked_reason']);
         $this->assertSame(['name-provided'], $detail['declared_signals']);
         $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
+        $this->assertSame('approve', $detail['declared_update_contracts'][0]['name']);
+        $this->assertSame('approved', $detail['declared_update_contracts'][0]['parameters'][0]['name']);
+        $this->assertTrue($detail['declared_update_contracts'][0]['parameters'][0]['required']);
+        $this->assertSame('bool', $detail['declared_update_contracts'][0]['parameters'][0]['type']);
+        $this->assertSame('source', $detail['declared_update_contracts'][0]['parameters'][1]['name']);
+        $this->assertFalse($detail['declared_update_contracts'][0]['parameters'][1]['required']);
+        $this->assertSame('manual', $detail['declared_update_contracts'][0]['parameters'][1]['default']);
         $this->assertSame('durable_history', $detail['declared_contract_source']);
         $this->assertCount(2, $detail['commands']);
         $this->assertSame('update', $detail['commands'][1]['type']);
@@ -202,6 +209,82 @@ final class V2UpdateWorkflowTest extends TestCase
             'approved' => true,
             'events' => ['started', 'approved:yes:console'],
         ], $workflow->currentState());
+    }
+
+    public function testAttemptUpdateCanonicalizesDefaultArgumentsInDurableHistory(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-defaults');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->attemptUpdate('approve', true);
+
+        $this->assertTrue($result->accepted());
+        $this->assertTrue($result->completed());
+        $this->assertSame([
+            'approved' => true,
+            'events' => ['started', 'approved:yes:manual'],
+        ], $result->result());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        $accepted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', 'UpdateAccepted')
+            ->sole();
+        $applied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', 'UpdateApplied')
+            ->sole();
+
+        $this->assertSame(
+            [true, 'manual'],
+            Serializer::unserialize($accepted->payload['arguments'] ?? serialize([])),
+        );
+        $this->assertSame(
+            [true, 'manual'],
+            Serializer::unserialize($applied->payload['arguments'] ?? serialize([])),
+        );
+    }
+
+    public function testAttemptUpdateRejectsInvalidArgumentsBeforeApplication(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-invalid');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->attemptUpdate('approve');
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedInvalidArguments());
+        $this->assertSame('rejected_invalid_arguments', $result->outcome());
+        $this->assertSame('invalid_update_arguments', $result->rejectionReason());
+        $this->assertSame([
+            'approved' => ['The approved argument is required.'],
+        ], $result->validationErrors());
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->currentState());
+
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateAccepted')
+            ->count());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('approve', $detail['commands'][1]['target_name']);
+        $this->assertSame('invalid_update_arguments', $detail['commands'][1]['rejection_reason']);
+        $this->assertSame([
+            'approved' => ['The approved argument is required.'],
+        ], $detail['commands'][1]['validation_errors']);
     }
 
     public function testAttemptUpdateRejectsWhenAnEarlierSignalIsStillPending(): void

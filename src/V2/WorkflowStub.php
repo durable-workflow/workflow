@@ -403,6 +403,7 @@ final class WorkflowStub
                 'workflow_command_id' => $command->id,
                 'declared_signals' => $commandContract['signals'],
                 'declared_updates' => $commandContract['updates'],
+                'declared_update_contracts' => $commandContract['update_contracts'],
             ], null, $command);
 
             /** @var WorkflowTask $task */
@@ -495,6 +496,14 @@ final class WorkflowStub
     }
 
     public function attemptUpdate(string $method, ...$arguments): UpdateResult
+    {
+        return $this->attemptUpdateWithArguments($method, $arguments);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    public function attemptUpdateWithArguments(string $method, array $arguments): UpdateResult
     {
         $this->refresh();
 
@@ -591,6 +600,35 @@ final class WorkflowStub
                 return;
             }
 
+            $validatedArguments = $this->validatedUpdateArgumentsForRun($run, $updateName, $arguments);
+
+            if ($validatedArguments['validation_errors'] !== []) {
+                $updateCommandAttributes = $this->updateCommandPayloadAttributes(
+                    $updateName,
+                    $arguments,
+                    $validatedArguments['validation_errors'],
+                );
+
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Update,
+                    'invalid_update_arguments',
+                    $this->commandTargetScope(),
+                    $updateCommandAttributes,
+                    HistoryEventType::UpdateRejected,
+                    $this->updateRejectedEventPayload(
+                        $instance,
+                        $run,
+                        $updateName,
+                        $arguments,
+                        $validatedArguments['validation_errors'],
+                    ),
+                );
+
+                return;
+            }
+
             if (UpdateCommandGate::blockedReason($run) !== null) {
                 $command = $this->rejectCommand(
                     $instance,
@@ -606,6 +644,7 @@ final class WorkflowStub
                 return;
             }
 
+            $arguments = $validatedArguments['arguments'];
             $updateMethod = $this->resolveUpdateTargetForRun($run, $updateName)['method'];
             $replayState = (new QueryStateReplayer())->replayState($run);
 
@@ -1330,6 +1369,7 @@ final class WorkflowStub
                 'selected_run_not_current' => CommandOutcome::RejectedNotCurrent->value,
                 'unknown_signal' => CommandOutcome::RejectedUnknownSignal->value,
                 'unknown_update' => CommandOutcome::RejectedUnknownUpdate->value,
+                'invalid_update_arguments' => CommandOutcome::RejectedInvalidArguments->value,
                 UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL => CommandOutcome::RejectedPendingSignal->value,
                 default => null,
             },
@@ -1356,22 +1396,29 @@ final class WorkflowStub
     }
 
     /**
-     * @param array<int, mixed> $arguments
+     * @param array<int|string, mixed> $arguments
+     * @param array<string, list<string>> $validationErrors
      * @return array<string, mixed>
      */
-    private function updateCommandPayloadAttributes(string $method, array $arguments): array
+    private function updateCommandPayloadAttributes(
+        string $method,
+        array $arguments,
+        array $validationErrors = [],
+    ): array
     {
         return [
             'payload_codec' => config('workflows.serializer'),
             'payload' => Serializer::serialize([
                 'name' => $method,
                 'arguments' => $arguments,
+                'validation_errors' => $validationErrors,
             ]),
         ];
     }
 
     /**
-     * @param array<int, mixed> $arguments
+     * @param array<int|string, mixed> $arguments
+     * @param array<string, list<string>> $validationErrors
      * @return array<string, mixed>
      */
     private function updateRejectedEventPayload(
@@ -1379,12 +1426,14 @@ final class WorkflowStub
         WorkflowRun $run,
         string $updateName,
         array $arguments,
+        array $validationErrors = [],
     ): array {
         return [
             'workflow_instance_id' => $instance->id,
             'workflow_run_id' => $run->id,
             'update_name' => $updateName,
             'arguments' => Serializer::serialize($arguments),
+            'validation_errors' => $validationErrors,
         ];
     }
 
@@ -1405,6 +1454,167 @@ final class WorkflowStub
         return WorkflowDefinition::resolveUpdateTarget($workflowClass, $target) ?? [
             'name' => $target,
             'method' => $target,
+        ];
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
+    private function validatedUpdateArgumentsForRun(WorkflowRun $run, string $updateName, array $arguments): array
+    {
+        if (array_is_list($arguments)) {
+            $normalized = array_values($arguments);
+        } else {
+            $normalized = [];
+        }
+
+        try {
+            $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        } catch (LogicException) {
+            return array_is_list($arguments)
+                ? ['arguments' => $normalized, 'validation_errors' => []]
+                : [
+                    'arguments' => [],
+                    'validation_errors' => [
+                        'arguments' => ['Named arguments require a loadable workflow update contract.'],
+                    ],
+                ];
+        }
+
+        $contract = WorkflowDefinition::updateContract($workflowClass, $updateName);
+
+        if ($contract === null) {
+            return array_is_list($arguments)
+                ? ['arguments' => $normalized, 'validation_errors' => []]
+                : [
+                    'arguments' => [],
+                    'validation_errors' => [
+                        'arguments' => [sprintf('Unknown update [%s].', $updateName)],
+                    ],
+                ];
+        }
+
+        return array_is_list($arguments)
+            ? $this->normalizePositionalUpdateArguments($contract, $arguments)
+            : $this->normalizeNamedUpdateArguments($contract, $arguments);
+    }
+
+    /**
+     * @param array{name: string, parameters: list<array<string, mixed>>} $contract
+     * @param array<int, mixed> $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
+    private function normalizePositionalUpdateArguments(array $contract, array $arguments): array
+    {
+        $normalized = [];
+        $errors = [];
+        $providedCount = count($arguments);
+        $consumed = 0;
+
+        foreach ($contract['parameters'] as $parameter) {
+            if (($parameter['variadic'] ?? false) === true) {
+                while ($consumed < $providedCount) {
+                    $normalized[] = $arguments[$consumed];
+                    $consumed++;
+                }
+
+                continue;
+            }
+
+            if ($consumed < $providedCount) {
+                $normalized[] = $arguments[$consumed];
+                $consumed++;
+
+                continue;
+            }
+
+            if (($parameter['default_available'] ?? false) === true) {
+                $normalized[] = $parameter['default'] ?? null;
+
+                continue;
+            }
+
+            if (($parameter['required'] ?? false) === true) {
+                $errors[$parameter['name']][] = sprintf(
+                    'The %s argument is required.',
+                    $parameter['name'],
+                );
+            }
+        }
+
+        if ($consumed < $providedCount) {
+            $errors['arguments'][] = sprintf(
+                'Too many arguments were provided for update [%s].',
+                $contract['name'],
+            );
+        }
+
+        return [
+            'arguments' => $normalized,
+            'validation_errors' => $errors,
+        ];
+    }
+
+    /**
+     * @param array{name: string, parameters: list<array<string, mixed>>} $contract
+     * @param array<string, mixed> $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
+    private function normalizeNamedUpdateArguments(array $contract, array $arguments): array
+    {
+        $normalized = [];
+        $errors = [];
+        $knownParameters = [];
+
+        foreach ($contract['parameters'] as $parameter) {
+            $name = $parameter['name'];
+            $knownParameters[] = $name;
+
+            if (($parameter['variadic'] ?? false) === true) {
+                if (! array_key_exists($name, $arguments)) {
+                    continue;
+                }
+
+                $values = $arguments[$name];
+
+                if (is_array($values)) {
+                    array_push($normalized, ...array_values($values));
+                } else {
+                    $normalized[] = $values;
+                }
+
+                continue;
+            }
+
+            if (array_key_exists($name, $arguments)) {
+                $normalized[] = $arguments[$name];
+
+                continue;
+            }
+
+            if (($parameter['default_available'] ?? false) === true) {
+                $normalized[] = $parameter['default'] ?? null;
+
+                continue;
+            }
+
+            if (($parameter['required'] ?? false) === true) {
+                $errors[$name][] = sprintf('The %s argument is required.', $name);
+            }
+        }
+
+        foreach (array_keys($arguments) as $name) {
+            if (in_array($name, $knownParameters, true)) {
+                continue;
+            }
+
+            $errors[(string) $name][] = sprintf('Unknown argument [%s].', (string) $name);
+        }
+
+        return [
+            'arguments' => $normalized,
+            'validation_errors' => $errors,
         ];
     }
 

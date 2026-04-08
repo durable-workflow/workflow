@@ -83,6 +83,14 @@ class CommandResult
         return $this->command->commandContext();
     }
 
+    /**
+     * @return array<string, list<string>>
+     */
+    public function validationErrors(): array
+    {
+        return $this->command->validationErrors();
+    }
+
     public function accepted(): bool
     {
         return $this->command->status === CommandStatus::Accepted;
@@ -101,5 +109,10 @@ class CommandResult
     public function rejectedPendingSignal(): bool
     {
         return $this->command->outcome === CommandOutcome::RejectedPendingSignal;
+    }
+
+    public function rejectedInvalidArguments(): bool
+    {
+        return $this->command->outcome === CommandOutcome::RejectedInvalidArguments;
     }
 }

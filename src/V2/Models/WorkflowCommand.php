@@ -79,21 +79,19 @@ class WorkflowCommand extends Model
      */
     public function payloadArguments(): array
     {
-        if ($this->payload === null) {
-            return [];
-        }
-
-        $payload = Serializer::unserialize($this->payload);
+        $payload = $this->payloadData();
 
         if (! is_array($payload)) {
             return [];
         }
 
         if (array_key_exists('arguments', $payload) && is_array($payload['arguments'])) {
-            /** @var array<int, mixed> $arguments */
+            /** @var array<int|string, mixed> $arguments */
             $arguments = $payload['arguments'];
 
-            return $arguments;
+            return array_is_list($arguments)
+                ? $arguments
+                : array_values($arguments);
         }
 
         /** @var array<int, mixed> $arguments */
@@ -104,11 +102,7 @@ class WorkflowCommand extends Model
 
     public function targetName(): ?string
     {
-        if ($this->payload === null) {
-            return null;
-        }
-
-        $payload = Serializer::unserialize($this->payload);
+        $payload = $this->payloadData();
 
         if (! is_array($payload)) {
             return null;
@@ -119,6 +113,40 @@ class WorkflowCommand extends Model
         return is_string($targetName) && $targetName !== ''
             ? $targetName
             : null;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    public function validationErrors(): array
+    {
+        $payload = $this->payloadData();
+        $errors = is_array($payload) ? ($payload['validation_errors'] ?? null) : null;
+
+        if (! is_array($errors)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($errors as $field => $messages) {
+            if (! is_string($field) || ! is_array($messages)) {
+                continue;
+            }
+
+            $normalizedMessages = array_values(array_filter(
+                $messages,
+                static fn (mixed $message): bool => is_string($message) && $message !== '',
+            ));
+
+            if ($normalizedMessages === []) {
+                continue;
+            }
+
+            $normalized[$field] = $normalizedMessages;
+        }
+
+        return $normalized;
     }
 
     /**
@@ -237,6 +265,22 @@ class WorkflowCommand extends Model
 
         return is_array($request) && is_string($request['correlation_id'] ?? null)
             ? $request['correlation_id']
+            : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function payloadData(): ?array
+    {
+        if ($this->payload === null) {
+            return null;
+        }
+
+        $payload = Serializer::unserialize($this->payload);
+
+        return is_array($payload)
+            ? $payload
             : null;
     }
 }

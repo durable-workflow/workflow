@@ -715,6 +715,7 @@ final class WorkflowExecutor
             'workflow_link_id' => $link->id,
             'declared_signals' => $commandContract['signals'],
             'declared_updates' => $commandContract['updates'],
+            'declared_update_contracts' => $commandContract['update_contracts'],
         ], null, $startCommand);
 
         /** @var WorkflowTask $childTask */
@@ -1214,6 +1215,7 @@ final class WorkflowExecutor
             'workflow_link_id' => $link->id,
             'declared_signals' => $commandContract['signals'],
             'declared_updates' => $commandContract['updates'],
+            'declared_update_contracts' => $commandContract['update_contracts'],
             'parent_workflow_instance_id' => $parentReference['parent_workflow_instance_id'] ?? null,
             'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
             'parent_sequence' => $parentReference['parent_sequence'] ?? null,

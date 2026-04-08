@@ -18,20 +18,24 @@ final class RunCommandContract
     public const SOURCE_UNAVAILABLE = 'unavailable';
 
     /**
-     * @return array{signals: list<string>, updates: list<string>, source: string}
+     * @return array{
+     *     signals: list<string>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>,
+     *     source: string
+     * }
      */
     public static function forRun(WorkflowRun $run): array
     {
         $contract = self::contractFromHistory($run);
+        $event = self::workflowStartedEvent($run);
 
-        if ($contract !== null) {
+        if ($contract !== null && ! self::historyContractNeedsBackfill($event)) {
             return [
                 ...$contract,
                 'source' => self::SOURCE_DURABLE_HISTORY,
             ];
         }
-
-        $event = self::workflowStartedEvent($run);
 
         if ($event instanceof WorkflowHistoryEvent) {
             $contract = self::backfillContractFromDefinition($run, $event);
@@ -44,12 +48,20 @@ final class RunCommandContract
             }
         }
 
+        if ($contract !== null) {
+            return [
+                ...$contract,
+                'source' => self::SOURCE_DURABLE_HISTORY,
+            ];
+        }
+
         try {
             $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         } catch (LogicException) {
             return [
                 'signals' => [],
                 'updates' => [],
+                'update_contracts' => [],
                 'source' => self::SOURCE_UNAVAILABLE,
             ];
         }
@@ -72,7 +84,11 @@ final class RunCommandContract
 
     /**
      * @param class-string $workflowClass
-     * @return array{signals: list<string>, updates: list<string>}
+     * @return array{
+     *     signals: list<string>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * }
      */
     public static function snapshot(string $workflowClass): array
     {
@@ -80,7 +96,11 @@ final class RunCommandContract
     }
 
     /**
-     * @return array{signals: list<string>, updates: list<string>}|null
+     * @return array{
+     *     signals: list<string>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * }|null
      */
     private static function contractFromHistory(WorkflowRun $run): ?array
     {
@@ -92,19 +112,28 @@ final class RunCommandContract
 
         $signals = self::normalizeList($event->payload['declared_signals'] ?? null);
         $updates = self::normalizeList($event->payload['declared_updates'] ?? null);
+        $hasUpdateContracts = is_array($event->payload) && array_key_exists('declared_update_contracts', $event->payload);
+        $updateContracts = $hasUpdateContracts
+            ? self::normalizeUpdateContracts($event->payload['declared_update_contracts'] ?? null)
+            : [];
 
-        if ($signals === null || $updates === null) {
+        if ($signals === null || $updates === null || ($hasUpdateContracts && $updateContracts === null)) {
             return null;
         }
 
         return [
             'signals' => $signals,
             'updates' => $updates,
+            'update_contracts' => $updateContracts ?? [],
         ];
     }
 
     /**
-     * @return array{signals: list<string>, updates: list<string>}|null
+     * @return array{
+     *     signals: list<string>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * }|null
      */
     private static function backfillContractFromDefinition(
         WorkflowRun $run,
@@ -121,6 +150,7 @@ final class RunCommandContract
 
         $payload['declared_signals'] = $snapshot['signals'];
         $payload['declared_updates'] = $snapshot['updates'];
+        $payload['declared_update_contracts'] = $snapshot['update_contracts'];
 
         $event->forceFill([
             'payload' => $payload,
@@ -165,6 +195,49 @@ final class RunCommandContract
         )));
 
         sort($normalized);
+
+        return $normalized;
+    }
+
+    private static function historyContractNeedsBackfill(?WorkflowHistoryEvent $event): bool
+    {
+        return $event instanceof WorkflowHistoryEvent
+            && is_array($event->payload)
+            && ! array_key_exists('declared_update_contracts', $event->payload);
+    }
+
+    /**
+     * @return list<array<string, mixed>>|null
+     */
+    private static function normalizeUpdateContracts(mixed $value): ?array
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $normalized = [];
+
+        foreach ($value as $contract) {
+            if (! is_array($contract) || ! is_string($contract['name'] ?? null)) {
+                return null;
+            }
+
+            $parameters = $contract['parameters'] ?? [];
+
+            if (! is_array($parameters)) {
+                return null;
+            }
+
+            $normalized[] = [
+                'name' => $contract['name'],
+                'parameters' => array_values(array_filter(
+                    $parameters,
+                    static fn (mixed $parameter): bool => is_array($parameter),
+                )),
+            ];
+        }
+
+        usort($normalized, static fn (array $left, array $right): int => $left['name'] <=> $right['name']);
 
         return $normalized;
     }

@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use LogicException;
 use ReflectionClass;
+use ReflectionMethod;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
@@ -34,6 +35,11 @@ final class WorkflowDefinition
     private static array $updateTargets = [];
 
     /**
+     * @var array<class-string, list<array{name: string, parameters: list<array{name: string, position: int, required: bool, variadic: bool, default_available: bool, default: mixed, type: ?string, allows_null: bool}>}>>
+     */
+    private static array $updateContracts = [];
+
+    /**
      * @param class-string $class
      * @return list<string>
      */
@@ -52,13 +58,30 @@ final class WorkflowDefinition
 
     /**
      * @param class-string $class
-     * @return array{signals: list<string>, updates: list<string>}
+     * @return array{
+     *     signals: list<string>,
+     *     updates: list<string>,
+     *     update_contracts: list<array{
+     *         name: string,
+     *         parameters: list<array{
+     *             name: string,
+     *             position: int,
+     *             required: bool,
+     *             variadic: bool,
+     *             default_available: bool,
+     *             default: mixed,
+     *             type: ?string,
+     *             allows_null: bool
+     *         }>
+     *     }>
+     * }
      */
     public static function commandContract(string $class): array
     {
         return [
             'signals' => self::signalNames($class),
             'updates' => self::updateMethods($class),
+            'update_contracts' => self::updateContracts($class),
         ];
     }
 
@@ -103,6 +126,103 @@ final class WorkflowDefinition
         }
 
         return self::$updateMethods[$class];
+    }
+
+    /**
+     * @param class-string $class
+     * @return list<array{
+     *     name: string,
+     *     parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: ?string,
+     *         allows_null: bool
+     *     }>
+     * }>
+     */
+    public static function updateContracts(string $class): array
+    {
+        if (! self::isWorkflowClass($class)) {
+            return [];
+        }
+
+        if (! array_key_exists($class, self::$updateContracts)) {
+            $reflection = new ReflectionClass($class);
+            $contracts = [];
+
+            foreach (self::updateTargets($class) as $name => $method) {
+                /** @var ReflectionMethod $reflectionMethod */
+                $reflectionMethod = $reflection->getMethod($method);
+                $parameters = [];
+                $position = 0;
+
+                foreach ($reflectionMethod->getParameters() as $parameter) {
+                    if (self::isContainerInjected($parameter)) {
+                        continue;
+                    }
+
+                    $parameters[] = [
+                        'name' => $parameter->getName(),
+                        'position' => $position,
+                        'required' => ! $parameter->isDefaultValueAvailable() && ! $parameter->isVariadic(),
+                        'variadic' => $parameter->isVariadic(),
+                        'default_available' => $parameter->isDefaultValueAvailable(),
+                        'default' => $parameter->isDefaultValueAvailable()
+                            ? $parameter->getDefaultValue()
+                            : null,
+                        'type' => self::typeString($parameter),
+                        'allows_null' => $parameter->getType()?->allowsNull() ?? true,
+                    ];
+                    $position++;
+                }
+
+                $contracts[] = [
+                    'name' => $name,
+                    'parameters' => $parameters,
+                ];
+            }
+
+            self::$updateContracts[$class] = $contracts;
+        }
+
+        return self::$updateContracts[$class];
+    }
+
+    /**
+     * @param class-string $class
+     * @return array{
+     *     name: string,
+     *     parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: ?string,
+     *         allows_null: bool
+     *     }>
+     * }|null
+     */
+    public static function updateContract(string $class, string $target): ?array
+    {
+        $resolved = self::resolveUpdateTarget($class, $target);
+
+        if ($resolved === null) {
+            return null;
+        }
+
+        foreach (self::updateContracts($class) as $contract) {
+            if ($contract['name'] === $resolved['name']) {
+                return $contract;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -220,6 +340,23 @@ final class WorkflowDefinition
         sort($methods);
 
         return $methods;
+    }
+
+    private static function isContainerInjected(\ReflectionParameter $parameter): bool
+    {
+        $type = $parameter->getType();
+
+        return $type instanceof \ReflectionNamedType
+            && ! $type->isBuiltin();
+    }
+
+    private static function typeString(\ReflectionParameter $parameter): ?string
+    {
+        $type = $parameter->getType();
+
+        return $type === null
+            ? null
+            : (string) $type;
     }
 
     /**
