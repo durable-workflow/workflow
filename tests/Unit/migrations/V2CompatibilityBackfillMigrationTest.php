@@ -36,7 +36,7 @@ final class V2CompatibilityBackfillMigrationTest extends TestCase
         ])->save();
 
         $task = WorkflowTask::query()->create([
-            'id' => '01JTESTFLOWTASKBACKFILL0001',
+            'id' => '01JTESTFLOWTASKBACKFILL001',
             'workflow_run_id' => $run->id,
             'task_type' => 'workflow',
             'status' => 'ready',

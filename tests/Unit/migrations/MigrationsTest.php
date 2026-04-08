@@ -20,6 +20,7 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_commands'));
         $this->assertTrue(Schema::hasTable('workflow_links'));
         $this->assertTrue(Schema::hasTable('activity_attempts'));
+        $this->assertTrue(Schema::hasColumn('activity_executions', 'current_attempt_id'));
         $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_timestamp'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_key'));

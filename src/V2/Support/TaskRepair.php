@@ -205,11 +205,17 @@ final class TaskRepair
 
         $execution = self::activityExecutionForTask($task);
 
-        if (! $execution instanceof ActivityExecution || ! is_string($execution->current_attempt_id)) {
+        if (! $execution instanceof ActivityExecution) {
             return;
         }
 
-        self::closeActivityAttempt($execution->current_attempt_id, ActivityAttemptStatus::Expired);
+        $attempt = ActivityAttemptNormalizer::ensureCurrentAttempt($execution, $task);
+
+        if (! $attempt instanceof ActivityAttempt) {
+            return;
+        }
+
+        self::closeActivityAttempt($attempt->id, ActivityAttemptStatus::Expired);
     }
 
     private static function closeTerminalActivityAttempt(WorkflowTask $task, WorkflowRun $run): void
@@ -223,11 +229,17 @@ final class TaskRepair
 
         $execution = self::activityExecutionForTask($task);
 
-        if (! $execution instanceof ActivityExecution || ! is_string($execution->current_attempt_id)) {
+        if (! $execution instanceof ActivityExecution) {
             return;
         }
 
-        self::closeActivityAttempt($execution->current_attempt_id, ActivityAttemptStatus::Cancelled);
+        $attempt = ActivityAttemptNormalizer::ensureCurrentAttempt($execution, $task);
+
+        if (! $attempt instanceof ActivityAttempt) {
+            return;
+        }
+
+        self::closeActivityAttempt($attempt->id, ActivityAttemptStatus::Cancelled);
     }
 
     private static function activityExecutionForTask(WorkflowTask $task): ?ActivityExecution

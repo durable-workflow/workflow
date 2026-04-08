@@ -14,6 +14,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityAttemptNormalizer;
 use Workflow\V2\Support\ActivityLease;
 
 abstract class Activity
@@ -62,22 +63,26 @@ abstract class Activity
 
     public function heartbeat(): void
     {
-        $attemptId = $this->attemptId();
-
-        if ($attemptId === null) {
-            return;
-        }
-
-        DB::transaction(function () use ($attemptId): void {
+        DB::transaction(function (): void {
             /** @var ActivityExecution $execution */
             $execution = ActivityExecution::query()
                 ->lockForUpdate()
                 ->findOrFail($this->execution->id);
 
-            if (
-                $execution->status !== ActivityStatus::Running
-                || $execution->current_attempt_id !== $attemptId
-            ) {
+            if ($execution->status !== ActivityStatus::Running) {
+                return;
+            }
+
+            /** @var WorkflowTask|null $task */
+            $task = $this->taskId === null
+                ? null
+                : WorkflowTask::query()
+                    ->lockForUpdate()
+                    ->find($this->taskId);
+
+            $attempt = ActivityAttemptNormalizer::ensureCurrentAttempt($execution, $task);
+
+            if (! $attempt instanceof ActivityAttempt) {
                 return;
             }
 
@@ -88,14 +93,8 @@ abstract class Activity
                 'last_heartbeat_at' => $heartbeatAt,
             ])->save();
 
-            /** @var ActivityAttempt|null $attempt */
-            $attempt = ActivityAttempt::query()
-                ->lockForUpdate()
-                ->find($attemptId);
-
             if (
-                $attempt instanceof ActivityAttempt
-                && $attempt->activity_execution_id === $execution->id
+                $attempt->activity_execution_id === $execution->id
                 && $attempt->status === ActivityAttemptStatus::Running
             ) {
                 $attempt->forceFill([
@@ -104,21 +103,17 @@ abstract class Activity
             }
 
             $this->execution->forceFill([
+                'current_attempt_id' => $attempt->id,
+                'attempt_count' => $execution->attempt_count,
                 'last_heartbeat_at' => $execution->last_heartbeat_at,
             ]);
 
-            if ($this->taskId === null) {
+            if (! $task instanceof WorkflowTask) {
                 return;
             }
 
-            /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
-                ->lockForUpdate()
-                ->find($this->taskId);
-
             if (
-                ! $task instanceof WorkflowTask
-                || $task->workflow_run_id !== $execution->workflow_run_id
+                $task->workflow_run_id !== $execution->workflow_run_id
                 || $task->status !== TaskStatus::Leased
                 || ($task->payload['activity_execution_id'] ?? null) !== $execution->id
                 || $task->attempt_count !== $this->attemptCount()

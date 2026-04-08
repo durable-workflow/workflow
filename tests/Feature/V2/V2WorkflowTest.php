@@ -301,6 +301,120 @@ final class V2WorkflowTest extends TestCase
         }
     }
 
+    public function testActivityHeartbeatBackfillsLegacyCurrentAttemptIdentity(): void
+    {
+        $startedAt = Carbon::parse('2026-04-08 12:00:00');
+        Carbon::setTestNow($startedAt);
+
+        try {
+            $runId = (string) Str::ulid();
+            $executionId = (string) Str::ulid();
+            $taskId = (string) Str::ulid();
+
+            $instance = WorkflowInstance::query()->create([
+                'id' => 'heartbeat-legacy-attempt-instance',
+                'workflow_class' => TestHeartbeatWorkflow::class,
+                'workflow_type' => 'test-heartbeat-workflow',
+                'run_count' => 1,
+            ]);
+
+            $run = WorkflowRun::query()->create([
+                'id' => $runId,
+                'workflow_instance_id' => $instance->id,
+                'run_number' => 1,
+                'workflow_class' => TestHeartbeatWorkflow::class,
+                'workflow_type' => 'test-heartbeat-workflow',
+                'status' => RunStatus::Running->value,
+                'compatibility' => 'build-heartbeat',
+                'payload_codec' => config('workflows.serializer'),
+                'connection' => 'redis',
+                'queue' => 'default',
+                'started_at' => $startedAt,
+                'last_progress_at' => $startedAt,
+            ]);
+
+            $instance->forceFill([
+                'current_run_id' => $run->id,
+                'started_at' => $startedAt,
+            ])->save();
+
+            $execution = ActivityExecution::query()->create([
+                'id' => $executionId,
+                'workflow_run_id' => $run->id,
+                'sequence' => 1,
+                'activity_class' => TestHeartbeatActivity::class,
+                'activity_type' => TestHeartbeatActivity::class,
+                'status' => ActivityStatus::Running->value,
+                'connection' => 'redis',
+                'queue' => 'default',
+                'attempt_count' => 0,
+                'started_at' => $startedAt,
+            ]);
+
+            $task = WorkflowTask::query()->create([
+                'id' => $taskId,
+                'workflow_run_id' => $run->id,
+                'task_type' => TaskType::Activity->value,
+                'status' => TaskStatus::Leased->value,
+                'payload' => [
+                    'activity_execution_id' => $execution->id,
+                ],
+                'connection' => 'redis',
+                'queue' => 'default',
+                'compatibility' => 'build-heartbeat',
+                'leased_at' => $startedAt,
+                'lease_owner' => 'legacy-heartbeat-owner',
+                'lease_expires_at' => ActivityLease::expiresAt(),
+                'attempt_count' => 1,
+            ]);
+
+            RunSummaryProjector::project($run->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+            ]));
+
+            $heartbeatAt = $startedAt->copy()->addMinutes(2);
+            $leaseExpiresAt = $heartbeatAt->copy()->addMinutes(ActivityLease::DURATION_MINUTES);
+            Carbon::setTestNow($heartbeatAt);
+
+            $activity = new TestHeartbeatActivity($execution->fresh(), $run->fresh(), $task->id);
+            $activity->heartbeat();
+
+            $execution->refresh();
+            $task->refresh();
+
+            /** @var ActivityAttempt $attempt */
+            $attempt = ActivityAttempt::query()
+                ->where('activity_execution_id', $execution->id)
+                ->firstOrFail();
+
+            /** @var WorkflowRunSummary $summary */
+            $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+            $this->assertNotNull($execution->current_attempt_id);
+            $this->assertSame($execution->current_attempt_id, $activity->attemptId());
+            $this->assertSame($execution->current_attempt_id, $attempt->id);
+            $this->assertSame(1, $execution->attempt_count);
+            $this->assertSame(1, $task->attempt_count);
+            $this->assertSame(1, $activity->attemptCount());
+            $this->assertSame(1, $attempt->attempt_number);
+            $this->assertSame('running', $attempt->status->value);
+            $this->assertSame($task->id, $attempt->workflow_task_id);
+            $this->assertSame('legacy-heartbeat-owner', $attempt->lease_owner);
+            $this->assertSame($heartbeatAt->jsonSerialize(), $execution->last_heartbeat_at?->jsonSerialize());
+            $this->assertSame($heartbeatAt->jsonSerialize(), $attempt->last_heartbeat_at?->jsonSerialize());
+            $this->assertSame($leaseExpiresAt->jsonSerialize(), $attempt->lease_expires_at?->jsonSerialize());
+            $this->assertSame($leaseExpiresAt->jsonSerialize(), $task->lease_expires_at?->jsonSerialize());
+            $this->assertSame($leaseExpiresAt->jsonSerialize(), $summary->next_task_lease_expires_at?->jsonSerialize());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testParentCompletesAfterChildContinuesAsNewWithoutWorkflowLinks(): void
     {
         Queue::fake();
@@ -2310,12 +2424,27 @@ final class V2WorkflowTest extends TestCase
         $this->wakeTaskWatchdog();
 
         $task->refresh();
+        $execution->refresh();
+
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()
+            ->where('activity_execution_id', $execution->id)
+            ->firstOrFail();
 
         $this->assertSame(TaskStatus::Ready, $task->status);
         $this->assertNull($task->leased_at);
         $this->assertNull($task->lease_owner);
         $this->assertNull($task->lease_expires_at);
+        $this->assertSame(1, $task->attempt_count);
         $this->assertSame(1, $task->repair_count);
+        $this->assertNotNull($execution->current_attempt_id);
+        $this->assertSame(1, $execution->attempt_count);
+        $this->assertSame($execution->current_attempt_id, $attempt->id);
+        $this->assertSame(1, $attempt->attempt_number);
+        $this->assertSame('expired', $attempt->status->value);
+        $this->assertSame($task->id, $attempt->workflow_task_id);
+        $this->assertSame('worker-1', $attempt->lease_owner);
+        $this->assertNotNull($attempt->closed_at);
 
         Queue::assertPushed(
             RunActivityTask::class,
