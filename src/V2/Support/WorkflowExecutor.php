@@ -262,17 +262,17 @@ final class WorkflowExecutor
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
                 $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
-                $childLink = ChildRunHistory::latestLinkForSequence($run, $sequence);
+                $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
 
                 if ($resolutionEvent !== null) {
                     try {
                         if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                             $current = $result->send(
-                                ChildRunHistory::outputForResolution($resolutionEvent, $childLink?->childRun)
+                                ChildRunHistory::outputForResolution($resolutionEvent, $childRun)
                             );
                         } else {
                             $current = $result->throw(
-                                ChildRunHistory::exceptionForResolution($resolutionEvent, $childLink?->childRun)
+                                ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun)
                             );
                         }
                     } catch (Throwable $throwable) {
@@ -285,14 +285,18 @@ final class WorkflowExecutor
                     continue;
                 }
 
-                if ($childLink === null) {
+                if ($childRun === null) {
+                    if (ChildRunHistory::scheduledEventForSequence($run, $sequence) !== null
+                        || ChildRunHistory::startedEventForSequence($run, $sequence) !== null) {
+                        return $this->waitForNextResumeSource($run, $task);
+                    }
+
                     return $this->scheduleChildWorkflow($run, $task, $sequence, $current);
                 }
 
-                $childRun = $childLink->childRun;
                 $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
 
-                if ($childRun === null || in_array($childStatus, [
+                if (in_array($childStatus, [
                     RunStatus::Pending,
                     RunStatus::Running,
                     RunStatus::Waiting,
@@ -300,7 +304,7 @@ final class WorkflowExecutor
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
-                $resolutionEvent = $this->recordChildResolution($run, $task, $sequence, $childLink, $childRun);
+                $resolutionEvent = $this->recordChildResolution($run, $task, $sequence, $childRun);
 
                 try {
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
@@ -737,9 +741,9 @@ final class WorkflowExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         int $sequence,
-        WorkflowLink $link,
         WorkflowRun $childRun,
     ): WorkflowHistoryEvent {
+        $link = ChildRunHistory::latestLinkForSequence($run, $sequence);
         $eventType = match (ChildRunHistory::resolvedStatus(null, $childRun)) {
             RunStatus::Completed => HistoryEventType::ChildRunCompleted,
             RunStatus::Cancelled => HistoryEventType::ChildRunCancelled,
@@ -779,7 +783,7 @@ final class WorkflowExecutor
 
         return WorkflowHistoryEvent::record($run, $eventType, array_filter([
             'sequence' => $sequence,
-            'workflow_link_id' => $link->id,
+            'workflow_link_id' => $link?->id,
             'child_workflow_instance_id' => $childRun->workflow_instance_id,
             'child_workflow_run_id' => $childRun->id,
             'child_workflow_class' => $childRun->workflow_class,
@@ -911,11 +915,14 @@ final class WorkflowExecutor
         ])->save();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
+            'sequence' => $sequence,
             'continued_to_run_id' => $continuedRun->id,
             'continued_to_run_number' => $continuedRun->run_number,
             'workflow_link_id' => $link->id,
             'closed_reason' => 'continued',
         ], $task->id);
+
+        $parentReference = ChildRunHistory::parentReferenceForRun($run);
 
         WorkflowHistoryEvent::record($continuedRun, HistoryEventType::StartAccepted, [
             'workflow_command_id' => $startCommand->id,
@@ -936,6 +943,9 @@ final class WorkflowExecutor
             'workflow_link_id' => $link->id,
             'declared_signals' => $commandContract['signals'],
             'declared_updates' => $commandContract['updates'],
+            'parent_workflow_instance_id' => $parentReference['parent_workflow_instance_id'] ?? null,
+            'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
+            'parent_sequence' => $parentReference['parent_sequence'] ?? null,
         ], null, $startCommand->id);
 
         /** @var WorkflowTask $continuedTask */
@@ -1085,11 +1095,26 @@ final class WorkflowExecutor
             ->lockForUpdate()
             ->get();
 
-        foreach ($parentLinks as $parentLink) {
+        $parentRunIds = $parentLinks
+            ->pluck('parent_workflow_run_id')
+            ->filter(static fn (mixed $id): bool => is_string($id) && $id !== '')
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($parentRunIds === []) {
+            $parentReference = ChildRunHistory::parentReferenceForRun($childRun);
+
+            if ($parentReference !== null) {
+                $parentRunIds = [$parentReference['parent_workflow_run_id']];
+            }
+        }
+
+        foreach ($parentRunIds as $parentRunId) {
             /** @var WorkflowRun|null $parentRun */
             $parentRun = WorkflowRun::query()
                 ->lockForUpdate()
-                ->find($parentLink->parent_workflow_run_id);
+                ->find($parentRunId);
 
             if ($parentRun === null || in_array($parentRun->status, [
                 RunStatus::Completed,

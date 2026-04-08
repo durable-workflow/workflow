@@ -11,6 +11,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -36,6 +37,20 @@ final class ChildRunHistory
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
+
+        return $event;
+    }
+
+    public static function startedEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted
+                    && ($event->payload['sequence'] ?? null) === $sequence
+            )
+            ->sortByDesc('sequence')
+            ->first();
 
         return $event;
     }
@@ -83,6 +98,63 @@ final class ChildRunHistory
             ->first();
 
         return $link;
+    }
+
+    public static function childRunForSequence(WorkflowRun $run, int $sequence): ?WorkflowRun
+    {
+        $resolutionEvent = self::resolutionEventForSequence($run, $sequence);
+        $startedEvent = self::startedEventForSequence($run, $sequence);
+        $scheduledEvent = self::scheduledEventForSequence($run, $sequence);
+        $link = self::latestLinkForSequence($run, $sequence);
+
+        $childRunId = self::stringValue($resolutionEvent?->payload['child_workflow_run_id'] ?? null)
+            ?? self::stringValue($startedEvent?->payload['child_workflow_run_id'] ?? null)
+            ?? self::stringValue($scheduledEvent?->payload['child_workflow_run_id'] ?? null)
+            ?? $link?->child_workflow_run_id;
+        $childInstanceId = self::stringValue($resolutionEvent?->payload['child_workflow_instance_id'] ?? null)
+            ?? self::stringValue($startedEvent?->payload['child_workflow_instance_id'] ?? null)
+            ?? self::stringValue($scheduledEvent?->payload['child_workflow_instance_id'] ?? null)
+            ?? $link?->child_workflow_instance_id;
+
+        $childRun = $childRunId === null
+            ? $link?->childRun
+            : self::loadRun($childRunId);
+
+        if (! $childRun instanceof WorkflowRun && $childInstanceId !== null) {
+            $childRun = self::loadCurrentRunForInstance($childInstanceId);
+        }
+
+        return self::followContinuedRun($childRun);
+    }
+
+    /**
+     * @return array{
+     *     parent_workflow_instance_id: string,
+     *     parent_workflow_run_id: string,
+     *     parent_sequence: int|null
+     * }|null
+     */
+    public static function parentReferenceForRun(WorkflowRun $run): ?array
+    {
+        $startedEvent = self::workflowStartedEvent($run);
+        $parentRunId = self::stringValue($startedEvent?->payload['parent_workflow_run_id'] ?? null);
+
+        if ($parentRunId === null) {
+            return null;
+        }
+
+        return [
+            'parent_workflow_instance_id' => self::stringValue(
+                $startedEvent?->payload['parent_workflow_instance_id'] ?? null
+            ) ?? $run->workflow_instance_id,
+            'parent_workflow_run_id' => $parentRunId,
+            'parent_sequence' => self::intValue($startedEvent?->payload['parent_sequence'] ?? null),
+        ];
+    }
+
+    public static function continuedFromRunId(WorkflowRun $run): ?string
+    {
+        return self::stringValue(self::workflowStartedEvent($run)?->payload['continued_from_run_id'] ?? null);
     }
 
     public static function resolvedStatus(
@@ -218,6 +290,18 @@ final class ChildRunHistory
         return $event;
     }
 
+    private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent
+    {
+        $run->loadMissing('historyEvents');
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::WorkflowStarted
+        );
+
+        return $event;
+    }
+
     private static function outputPayloadForChildRun(?WorkflowRun $childRun): ?string
     {
         if (! $childRun instanceof WorkflowRun) {
@@ -268,6 +352,65 @@ final class ChildRunHistory
         $failure = $childRun->failures->first();
 
         return $failure;
+    }
+
+    private static function loadRun(?string $runId): ?WorkflowRun
+    {
+        if ($runId === null) {
+            return null;
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = WorkflowRun::query()
+            ->with([
+                'summary',
+                'instance.currentRun.summary',
+                'failures',
+                'historyEvents',
+            ])
+            ->find($runId);
+
+        return $run;
+    }
+
+    private static function loadCurrentRunForInstance(string $instanceId): ?WorkflowRun
+    {
+        /** @var WorkflowInstance|null $instance */
+        $instance = WorkflowInstance::query()
+            ->with('currentRun.summary', 'currentRun.failures', 'currentRun.historyEvents', 'currentRun.instance.currentRun')
+            ->find($instanceId);
+
+        return $instance?->currentRun;
+    }
+
+    private static function followContinuedRun(?WorkflowRun $childRun): ?WorkflowRun
+    {
+        $visited = [];
+
+        while ($childRun instanceof WorkflowRun) {
+            $childRun->loadMissing('instance.currentRun.summary');
+
+            if ($childRun->closed_reason !== 'continued') {
+                return $childRun;
+            }
+
+            $currentRun = $childRun->instance?->currentRun;
+
+            if (! $currentRun instanceof WorkflowRun || $currentRun->id === $childRun->id || isset($visited[$childRun->id])) {
+                return $childRun;
+            }
+
+            $visited[$childRun->id] = true;
+            $currentRun->loadMissing([
+                'summary',
+                'failures',
+                'historyEvents',
+                'instance.currentRun.summary',
+            ]);
+            $childRun = $currentRun;
+        }
+
+        return $childRun;
     }
 
     private static function stringValue(mixed $value): ?string

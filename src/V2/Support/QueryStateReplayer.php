@@ -154,8 +154,7 @@ final class QueryStateReplayer
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
                 $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
-                $childLink = ChildRunHistory::latestLinkForSequence($run, $sequence);
-                $childRun = $childLink?->childRun;
+                $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
 
                 if ($resolutionEvent !== null) {
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {

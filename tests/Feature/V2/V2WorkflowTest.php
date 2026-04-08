@@ -16,6 +16,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
@@ -113,6 +114,82 @@ final class V2WorkflowTest extends TestCase
             'status' => 'accepted',
             'outcome' => 'started_new',
         ]);
+    }
+
+    public function testParentCompletesAfterChildContinuesAsNewWithoutWorkflowLinks(): void
+    {
+        Queue::fake();
+
+        $instanceId = 'child-continue-history';
+
+        $workflow = WorkflowStub::make(
+            TestParentWaitingOnContinuingChildWorkflow::class,
+            $instanceId
+        );
+        $workflow->start(0, 1);
+
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $deadline = microtime(true) + 10;
+
+        while (WorkflowRun::query()
+            ->where('workflow_type', 'test-continue-as-new-workflow')
+            ->count() < 2) {
+            if (microtime(true) >= $deadline) {
+                $this->fail('Timed out waiting for the child workflow to continue as new.');
+            }
+
+            $this->runNextReadyTask();
+        }
+
+        /** @var WorkflowHistoryEvent $childStarted */
+        $childStarted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildRunStarted')
+            ->orderBy('sequence')
+            ->firstOrFail();
+        $childInstanceId = $childStarted->payload['child_workflow_instance_id'] ?? null;
+
+        $this->assertIsString($childInstanceId);
+
+        /** @var WorkflowRun $currentChildRun */
+        $currentChildRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $childInstanceId)
+            ->orderByDesc('run_number')
+            ->firstOrFail();
+
+        WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->delete();
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+        $this->assertSame(2, WorkflowRun::query()
+            ->where('workflow_instance_id', $childInstanceId)
+            ->count());
+        $this->assertSame([
+            'parent_workflow_id' => $instanceId,
+            'parent_run_id' => $parentRunId,
+            'child' => [
+                'count' => 1,
+                'workflow_id' => $childInstanceId,
+                'run_id' => $currentChildRun->id,
+            ],
+        ], $workflow->output());
+
+        /** @var WorkflowHistoryEvent $childCompleted */
+        $childCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildRunCompleted')
+            ->orderByDesc('sequence')
+            ->firstOrFail();
+
+        $this->assertSame($currentChildRun->id, $childCompleted->payload['child_workflow_run_id'] ?? null);
     }
 
     public function testLoadSelectionCanPinHistoricalRunWithinOneInstance(): void
@@ -2707,6 +2784,27 @@ final class V2WorkflowTest extends TestCase
         }
 
         $this->fail('Timed out draining ready workflow tasks.');
+    }
+
+    private function runNextReadyTask(): void
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->first();
+
+        if ($task === null) {
+            $this->fail('Expected a ready workflow task.');
+        }
+
+        $job = match ($task->task_type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
+
+        $this->app->call([$job, 'handle']);
     }
 
     private function wakeTaskWatchdog(): void

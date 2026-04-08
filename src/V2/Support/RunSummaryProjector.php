@@ -334,64 +334,43 @@ final class RunSummaryProjector
      */
     private static function openChildWait(WorkflowRun $run): ?array
     {
-        $openLinks = $run->childLinks
-            ->filter(static function ($link): bool {
-                $childRun = $link->childRun;
+        $sequences = array_values(array_unique(array_merge(
+            $run->historyEvents
+                ->filter(
+                    static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
+                        && is_int($event->payload['sequence'] ?? null)
+                )
+                ->map(static fn (WorkflowHistoryEvent $event): int => $event->payload['sequence'])
+                ->all(),
+            $run->childLinks
+                ->filter(static fn ($link): bool => $link->link_type === 'child_workflow' && $link->sequence !== null)
+                ->map(static fn ($link): int => (int) $link->sequence)
+                ->all(),
+        )));
 
-                return $link->link_type === 'child_workflow'
-                    && $childRun !== null
-                    && in_array($childRun->status, [
-                        RunStatus::Pending,
-                        RunStatus::Running,
-                        RunStatus::Waiting,
-                    ], true);
-            })
-            ->sort(static function ($left, $right): int {
-                $leftSequence = $left->sequence ?? PHP_INT_MAX;
-                $rightSequence = $right->sequence ?? PHP_INT_MAX;
+        sort($sequences);
 
-                if ($leftSequence !== $rightSequence) {
-                    return $leftSequence <=> $rightSequence;
-                }
+        foreach ($sequences as $sequence) {
+            $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
 
-                $leftRunNumber = $left->childRun?->run_number ?? 0;
-                $rightRunNumber = $right->childRun?->run_number ?? 0;
+            if (! $childRun instanceof WorkflowRun || ! in_array($childRun->status, [
+                RunStatus::Pending,
+                RunStatus::Running,
+                RunStatus::Waiting,
+            ], true)) {
+                continue;
+            }
 
-                if ($leftRunNumber !== $rightRunNumber) {
-                    return $rightRunNumber <=> $leftRunNumber;
-                }
+            $scheduledEvent = ChildRunHistory::scheduledEventForSequence($run, $sequence);
+            $link = ChildRunHistory::latestLinkForSequence($run, $sequence);
 
-                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? PHP_INT_MAX;
-                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? PHP_INT_MAX;
-
-                if ($leftCreatedAt !== $rightCreatedAt) {
-                    return $leftCreatedAt <=> $rightCreatedAt;
-                }
-
-                return $left->id <=> $right->id;
-            });
-
-        if ($openLinks->isEmpty()) {
-            return null;
+            return [
+                'label' => $childRun->workflow_type,
+                'opened_at' => $scheduledEvent?->recorded_at ?? $scheduledEvent?->created_at ?? $link?->created_at,
+            ];
         }
 
-        $link = $openLinks->first();
-        $childRun = $link?->childRun;
-
-        if ($link === null || $childRun === null) {
-            return null;
-        }
-
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
-                && ($event->payload['workflow_link_id'] ?? null) === $link->id
-        );
-
-        return [
-            'label' => $childRun->workflow_type,
-            'opened_at' => $event?->recorded_at ?? $event?->created_at ?? $link->created_at,
-        ];
+        return null;
     }
 
     /**
