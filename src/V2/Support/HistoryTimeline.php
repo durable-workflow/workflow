@@ -364,10 +364,22 @@ final class HistoryTimeline
             'type' => self::stringValue($snapshot['type'] ?? null)
                 ?? $command?->command_type?->value
                 ?? self::stringValue($payload['command_type'] ?? null),
+            'target_scope' => self::stringValue($snapshot['target_scope'] ?? null)
+                ?? $command?->target_scope,
             'target_name' => self::stringValue($snapshot['target_name'] ?? null)
                 ?? $command?->targetName()
                 ?? self::stringValue($payload['signal_name'] ?? null)
                 ?? self::stringValue($payload['update_name'] ?? null),
+            'payload_codec' => self::stringValue($snapshot['payload_codec'] ?? null)
+                ?? (is_string($command?->payload_codec ?? null) ? $command->payload_codec : null),
+            'payload_available' => CommandPayloadPreview::available(
+                self::stringValue($snapshot['payload'] ?? null)
+                ?? (is_string($command?->payload ?? null) ? $command->payload : null)
+            ),
+            'payload' => CommandPayloadPreview::preview(
+                self::stringValue($snapshot['payload'] ?? null)
+                ?? (is_string($command?->payload ?? null) ? $command->payload : null)
+            ),
             'source' => self::stringValue($snapshot['source'] ?? null) ?? $command?->source,
             'caller_label' => self::stringValue($snapshot['caller_label'] ?? null) ?? $command?->callerLabel(),
             'auth_status' => self::stringValue($snapshot['auth_status'] ?? null) ?? $command?->authStatus(),

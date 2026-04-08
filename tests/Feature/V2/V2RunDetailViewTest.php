@@ -147,9 +147,18 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertCount(2, $detail['commands']);
         $this->assertSame(1, $detail['commands'][0]['sequence']);
         $this->assertSame('start', $detail['commands'][0]['type']);
+        $this->assertSame(config('workflows.serializer'), $detail['commands'][0]['payload_codec']);
+        $this->assertTrue($detail['commands'][0]['payload_available']);
+        $this->assertSame(serialize([]), $detail['commands'][0]['payload']);
         $this->assertSame(2, $detail['commands'][1]['sequence']);
         $this->assertSame('signal', $detail['commands'][1]['type']);
         $this->assertSame('name-provided', $detail['commands'][1]['target_name']);
+        $this->assertSame(config('workflows.serializer'), $detail['commands'][1]['payload_codec']);
+        $this->assertTrue($detail['commands'][1]['payload_available']);
+        $this->assertSame(serialize([
+            'name' => 'name-provided',
+            'arguments' => ['Taylor'],
+        ]), $detail['commands'][1]['payload']);
         $this->assertSame('signal_received', $detail['commands'][1]['outcome']);
         $this->assertCount(1, $detail['activities']);
         $this->assertSame('completed', $detail['activities'][0]['status']);

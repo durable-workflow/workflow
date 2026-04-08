@@ -130,6 +130,8 @@ class WorkflowHistoryEvent extends Model
             'type' => $command->command_type?->value,
             'target_scope' => $command->target_scope,
             'target_name' => $command->targetName(),
+            'payload_codec' => $command->payload_codec,
+            'payload' => $command->payload,
             'source' => $command->source,
             'caller_label' => $command->callerLabel(),
             'auth_status' => $command->authStatus(),

@@ -411,7 +411,14 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertIsArray($signalReceived);
         $this->assertIsArray($activityCompleted);
         $this->assertSame($originalCommandSequence, $signalReceived['command_sequence']);
+        $this->assertSame('instance', $signalReceived['command']['target_scope']);
         $this->assertSame('name-provided', $signalReceived['command']['target_name']);
+        $this->assertSame(config('workflows.serializer'), $signalReceived['command']['payload_codec']);
+        $this->assertTrue($signalReceived['command']['payload_available']);
+        $this->assertSame(serialize([
+            'name' => 'name-provided',
+            'arguments' => ['Taylor'],
+        ]), $signalReceived['command']['payload']);
         $this->assertSame($originalCommandSource, $signalReceived['command']['source']);
         $this->assertSame($originalTaskAvailableAt, $activityCompleted['task']['available_at']);
         $this->assertSame($originalTaskAttemptCount, $activityCompleted['task']['attempt_count']);
