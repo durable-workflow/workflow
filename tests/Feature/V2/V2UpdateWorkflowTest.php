@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -20,6 +21,79 @@ use Workflow\V2\WorkflowStub;
 
 final class V2UpdateWorkflowTest extends TestCase
 {
+    public function testAttemptUpdateUsesDeclaredAliasAsTheDurableTarget(): void
+    {
+        $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-alias');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $update = $workflow->attemptUpdate('mark-approved', true, 'api');
+
+        $this->assertTrue($update->accepted());
+        $this->assertTrue($update->completed());
+        $this->assertSame('update_completed', $update->outcome());
+        $this->assertSame([
+            'approved' => true,
+            'events' => ['started', 'approved:yes:api'],
+        ], $update->result());
+
+        $command = WorkflowCommand::query()->findOrFail($update->commandId());
+        $this->assertSame('mark-approved', $command->targetName());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run->fresh());
+        $timeline = HistoryTimeline::forRun($run);
+        $updateEntries = array_values(array_filter(
+            $timeline,
+            static fn (array $entry): bool => str_starts_with($entry['type'], 'Update'),
+        ));
+
+        $this->assertSame(['mark-approved'], $detail['declared_updates']);
+        $this->assertSame('mark-approved', $detail['commands'][1]['target_name']);
+        $this->assertSame(['mark-approved', 'mark-approved', 'mark-approved'], array_column(
+            $updateEntries,
+            'update_name',
+        ));
+    }
+
+    public function testCallingAliasedUpdateMethodRecordsTheDeclaredAlias(): void
+    {
+        $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-aliased-method');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->applyApproval(true, 'console');
+
+        $this->assertSame([
+            'approved' => true,
+            'events' => ['started', 'approved:yes:console'],
+        ], $result);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run->fresh());
+
+        $this->assertSame(['mark-approved'], $detail['declared_updates']);
+        $this->assertSame('mark-approved', $detail['commands'][1]['target_name']);
+    }
+
+    public function testAttemptUpdateRejectsPhpMethodNameWhenAnAliasIsDeclared(): void
+    {
+        $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-aliased-reject');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->attemptUpdate('applyApproval', true, 'api');
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('rejected_unknown_update', $result->outcome());
+        $this->assertSame('unknown_update', $result->rejectionReason());
+    }
+
     public function testAttemptUpdateAppliesDurableStateAndReturnsTypedResult(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update');

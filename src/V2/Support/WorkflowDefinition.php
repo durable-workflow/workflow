@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use LogicException;
 use ReflectionClass;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
@@ -26,6 +27,11 @@ final class WorkflowDefinition
      * @var array<class-string, list<string>>
      */
     private static array $updateMethods = [];
+
+    /**
+     * @var array<class-string, array<string, string>>
+     */
+    private static array $updateTargets = [];
 
     /**
      * @param class-string $class
@@ -93,10 +99,37 @@ final class WorkflowDefinition
         }
 
         if (! array_key_exists($class, self::$updateMethods)) {
-            self::$updateMethods[$class] = self::methodNamesWithAttribute($class, UpdateMethod::class);
+            self::$updateMethods[$class] = array_keys(self::updateTargets($class));
         }
 
         return self::$updateMethods[$class];
+    }
+
+    /**
+     * @param class-string $class
+     * @return array{name: string, method: string}|null
+     */
+    public static function resolveUpdateTarget(string $class, string $target): ?array
+    {
+        $targets = self::updateTargets($class);
+
+        if (array_key_exists($target, $targets)) {
+            return [
+                'name' => $target,
+                'method' => $targets[$target],
+            ];
+        }
+
+        foreach ($targets as $name => $method) {
+            if ($method === $target) {
+                return [
+                    'name' => $name,
+                    'method' => $method,
+                ];
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -120,7 +153,52 @@ final class WorkflowDefinition
      */
     public static function hasUpdateMethod(string $class, string $method): bool
     {
-        return in_array($method, self::updateMethods($class), true);
+        return self::resolveUpdateTarget($class, $method) !== null;
+    }
+
+    /**
+     * @param class-string $class
+     * @return array<string, string>
+     */
+    private static function updateTargets(string $class): array
+    {
+        if (! self::isWorkflowClass($class)) {
+            return [];
+        }
+
+        if (! array_key_exists($class, self::$updateTargets)) {
+            $targets = [];
+
+            foreach ((new ReflectionClass($class))->getMethods() as $method) {
+                $attributes = $method->getAttributes(UpdateMethod::class);
+
+                if ($attributes === []) {
+                    continue;
+                }
+
+                /** @var UpdateMethod $attribute */
+                $attribute = $attributes[0]->newInstance();
+                $name = $attribute->name ?? $method->getName();
+
+                if (array_key_exists($name, $targets) && $targets[$name] !== $method->getName()) {
+                    throw new LogicException(sprintf(
+                        'Workflow [%s] declares duplicate durable update name [%s] on methods [%s] and [%s].',
+                        $class,
+                        $name,
+                        $targets[$name],
+                        $method->getName(),
+                    ));
+                }
+
+                $targets[$name] = $method->getName();
+            }
+
+            ksort($targets);
+
+            self::$updateTargets[$class] = $targets;
+        }
+
+        return self::$updateTargets[$class];
     }
 
     /**

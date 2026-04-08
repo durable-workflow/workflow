@@ -1340,14 +1340,16 @@ final class WorkflowExecutor
                 ? null
                 : $run->commands->firstWhere('id', $event->workflow_command_id);
 
-            $method = $event->payload['update_name'] ?? $command?->targetName();
+            $target = $event->payload['update_name'] ?? $command?->targetName();
 
-            if (! is_string($method) || $method === '') {
+            if (! is_string($target) || $target === '') {
                 throw new LogicException(sprintf(
                     'Workflow update event [%s] is missing an update method name.',
                     $event->id,
                 ));
             }
+
+            $method = WorkflowDefinition::resolveUpdateTarget($workflow::class, $target)['method'] ?? $target;
 
             $serializedArguments = $event->payload['arguments'] ?? null;
             $arguments = is_string($serializedArguments)

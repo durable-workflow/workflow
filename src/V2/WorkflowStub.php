@@ -75,7 +75,9 @@ final class WorkflowStub
         }
 
         if (WorkflowDefinition::hasUpdateMethod($resolvedClass, $method)) {
-            return $this->update($method, ...$arguments);
+            $target = WorkflowDefinition::resolveUpdateTarget($resolvedClass, $method);
+
+            return $this->update($target['name'] ?? $method, ...$arguments);
         }
 
         throw new BadMethodCallException(sprintf('Call to undefined method [%s::%s].', static::class, $method));
@@ -499,8 +501,6 @@ final class WorkflowStub
         $result = null;
 
         DB::transaction(function () use ($method, $arguments, &$command, &$failure, &$result): void {
-            $updateCommandAttributes = $this->updateCommandPayloadAttributes($method, $arguments);
-
             /** @var WorkflowInstance $instance */
             $instance = WorkflowInstance::query()
                 ->lockForUpdate()
@@ -515,7 +515,7 @@ final class WorkflowStub
                     CommandType::Update,
                     'instance_not_started',
                     $this->commandTargetScope(),
-                    $updateCommandAttributes,
+                    $this->updateCommandPayloadAttributes($method, $arguments),
                 );
 
                 return;
@@ -526,6 +526,8 @@ final class WorkflowStub
                 $run = WorkflowRun::query()
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
+                $updateName = $method;
+                $updateCommandAttributes = $this->updateCommandPayloadAttributes($updateName, $arguments);
 
                 if ($run->id !== $currentRun->id) {
                     $command = $this->rejectCommand(
@@ -536,13 +538,15 @@ final class WorkflowStub
                         $this->commandTargetScope(),
                         $updateCommandAttributes,
                         HistoryEventType::UpdateRejected,
-                        $this->updateRejectedEventPayload($instance, $run, $method, $arguments),
+                        $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                     );
 
                     return;
                 }
             } else {
                 $run = $currentRun;
+                $updateName = $method;
+                $updateCommandAttributes = $this->updateCommandPayloadAttributes($updateName, $arguments);
             }
 
             if (in_array($run->status, [
@@ -559,7 +563,7 @@ final class WorkflowStub
                     $this->commandTargetScope(),
                     $updateCommandAttributes,
                     HistoryEventType::UpdateRejected,
-                    $this->updateRejectedEventPayload($instance, $run, $method, $arguments),
+                    $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                 );
 
                 return;
@@ -567,7 +571,7 @@ final class WorkflowStub
 
             $this->loadLockedRunRelations($run, $instance);
 
-            if (! RunCommandContract::hasUpdateMethod($run, $method)) {
+            if (! RunCommandContract::hasUpdateMethod($run, $updateName)) {
                 $command = $this->rejectCommand(
                     $instance,
                     $run,
@@ -576,7 +580,7 @@ final class WorkflowStub
                     $this->commandTargetScope(),
                     $updateCommandAttributes,
                     HistoryEventType::UpdateRejected,
-                    $this->updateRejectedEventPayload($instance, $run, $method, $arguments),
+                    $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                 );
 
                 return;
@@ -591,13 +595,13 @@ final class WorkflowStub
                     $this->commandTargetScope(),
                     $updateCommandAttributes,
                     HistoryEventType::UpdateRejected,
-                    $this->updateRejectedEventPayload($instance, $run, $method, $arguments),
+                    $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                 );
 
                 return;
             }
 
-            $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+            $updateMethod = $this->resolveUpdateTargetForRun($run, $updateName)['method'];
             $replayState = (new QueryStateReplayer())->replayState($run);
 
             /** @var WorkflowCommand $command */
@@ -612,7 +616,7 @@ final class WorkflowStub
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
-                'update_name' => $method,
+                'update_name' => $updateName,
                 'arguments' => Serializer::serialize($arguments),
                 'sequence' => $replayState->sequence,
             ], null, $command);
@@ -620,15 +624,15 @@ final class WorkflowStub
             try {
                 $parameters = $replayState->workflow->resolveMethodDependencies(
                     $arguments,
-                    new ReflectionMethod($replayState->workflow, $method),
+                    new ReflectionMethod($replayState->workflow, $updateMethod),
                 );
-                $result = $replayState->workflow->{$method}(...$parameters);
+                $result = $replayState->workflow->{$updateMethod}(...$parameters);
 
                 WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
                     'workflow_command_id' => $command->id,
                     'workflow_instance_id' => $instance->id,
                     'workflow_run_id' => $run->id,
-                    'update_name' => $method,
+                    'update_name' => $updateName,
                     'arguments' => Serializer::serialize($arguments),
                     'sequence' => $replayState->sequence,
                 ], null, $command);
@@ -637,7 +641,7 @@ final class WorkflowStub
                     'workflow_command_id' => $command->id,
                     'workflow_instance_id' => $instance->id,
                     'workflow_run_id' => $run->id,
-                    'update_name' => $method,
+                    'update_name' => $updateName,
                     'sequence' => $replayState->sequence,
                     'result' => Serializer::serialize($result),
                 ], null, $command);
@@ -663,7 +667,7 @@ final class WorkflowStub
                     'workflow_command_id' => $command->id,
                     'workflow_instance_id' => $instance->id,
                     'workflow_run_id' => $run->id,
-                    'update_name' => $method,
+                    'update_name' => $updateName,
                     'sequence' => $replayState->sequence,
                     'failure_id' => $failure->id,
                     'exception_class' => $failure->exception_class,
@@ -1347,14 +1351,34 @@ final class WorkflowStub
     private function updateRejectedEventPayload(
         WorkflowInstance $instance,
         WorkflowRun $run,
-        string $method,
+        string $updateName,
         array $arguments,
     ): array {
         return [
             'workflow_instance_id' => $instance->id,
             'workflow_run_id' => $run->id,
-            'update_name' => $method,
+            'update_name' => $updateName,
             'arguments' => Serializer::serialize($arguments),
+        ];
+    }
+
+    /**
+     * @return array{name: string, method: string}
+     */
+    private function resolveUpdateTargetForRun(WorkflowRun $run, string $target): array
+    {
+        try {
+            $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        } catch (LogicException) {
+            return [
+                'name' => $target,
+                'method' => $target,
+            ];
+        }
+
+        return WorkflowDefinition::resolveUpdateTarget($workflowClass, $target) ?? [
+            'name' => $target,
+            'method' => $target,
         ];
     }
 

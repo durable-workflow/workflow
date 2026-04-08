@@ -365,7 +365,7 @@ final class QueryStateReplayer
                 ? null
                 : $run->commands->firstWhere('id', $event->workflow_command_id);
 
-            $method = $this->updateMethodName($event, $command);
+            $method = $this->updateMethodName($workflow, $event, $command);
 
             if ($method === null) {
                 throw new LogicException(sprintf(
@@ -384,13 +384,19 @@ final class QueryStateReplayer
         }
     }
 
-    private function updateMethodName(WorkflowHistoryEvent $event, ?WorkflowCommand $command): ?string
+    private function updateMethodName(
+        \Workflow\V2\Workflow $workflow,
+        WorkflowHistoryEvent $event,
+        ?WorkflowCommand $command,
+    ): ?string
     {
-        $method = $event->payload['update_name'] ?? $command?->targetName();
+        $target = $event->payload['update_name'] ?? $command?->targetName();
 
-        return is_string($method) && $method !== ''
-            ? $method
-            : null;
+        if (! is_string($target) || $target === '') {
+            return null;
+        }
+
+        return WorkflowDefinition::resolveUpdateTarget($workflow::class, $target)['method'] ?? $target;
     }
 
     /**

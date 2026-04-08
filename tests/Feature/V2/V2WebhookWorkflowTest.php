@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
@@ -35,6 +36,7 @@ final class V2WebhookWorkflowTest extends TestCase
             TestGreetingWorkflow::class,
             TestSignalWorkflow::class,
             'test-timer-workflow' => TestTimerWorkflow::class,
+            TestAliasedUpdateWorkflow::class,
             TestUpdateWorkflow::class,
         ]);
     }
@@ -437,6 +439,40 @@ final class V2WebhookWorkflowTest extends TestCase
             'approved' => true,
             'events' => ['started', 'approved:yes:webhook'],
         ], $workflow->currentState());
+    }
+
+    public function testUpdateWebhookUsesTheDeclaredAliasAsThePublicTarget(): void
+    {
+        $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-webhook-alias');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $accepted = $this->postJson('/webhooks/instances/order-update-webhook-alias/updates/mark-approved', [
+            'arguments' => [true, 'webhook'],
+        ]);
+
+        $accepted
+            ->assertStatus(200)
+            ->assertJsonPath('outcome', 'update_completed')
+            ->assertJsonPath('workflow_id', 'order-update-webhook-alias')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('workflow_type', 'test-aliased-update-workflow')
+            ->assertJson([
+                'result' => [
+                    'approved' => true,
+                    'events' => ['started', 'approved:yes:webhook'],
+                ],
+            ]);
+
+        $rejected = $this->postJson('/webhooks/instances/order-update-webhook-alias/updates/applyApproval', [
+            'arguments' => [true, 'webhook'],
+        ]);
+
+        $rejected
+            ->assertStatus(404)
+            ->assertJsonPath('outcome', 'rejected_unknown_update')
+            ->assertJsonPath('rejection_reason', 'unknown_update');
     }
 
     public function testRunTargetedUpdateWebhookRejectsHistoricalSelectedRun(): void
