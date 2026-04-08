@@ -376,7 +376,7 @@ final class WorkflowExecutor
             'activity_class' => $execution->activity_class,
             'activity_type' => $execution->activity_type,
             'sequence' => $sequence,
-        ], $task->id);
+        ], $task);
 
         /** @var WorkflowTask $activityTask */
         $activityTask = WorkflowTask::query()->create([
@@ -465,7 +465,7 @@ final class WorkflowExecutor
             'child_workflow_run_id' => $childRun->id,
             'child_workflow_class' => $childRun->workflow_class,
             'child_workflow_type' => $childRun->workflow_type,
-        ], $task->id);
+        ], $task);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
             'sequence' => $sequence,
@@ -475,7 +475,7 @@ final class WorkflowExecutor
             'child_workflow_class' => $childRun->workflow_class,
             'child_workflow_type' => $childRun->workflow_type,
             'child_run_number' => $childRun->run_number,
-        ], $task->id);
+        ], $task);
 
         WorkflowHistoryEvent::record($childRun, HistoryEventType::StartAccepted, [
             'workflow_command_id' => $startCommand->id,
@@ -484,7 +484,7 @@ final class WorkflowExecutor
             'workflow_class' => $childRun->workflow_class,
             'workflow_type' => $childRun->workflow_type,
             'outcome' => $startCommand->outcome?->value,
-        ], null, $startCommand->id);
+        ], null, $startCommand);
 
         WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $childRun->workflow_class,
@@ -498,7 +498,7 @@ final class WorkflowExecutor
             'workflow_link_id' => $link->id,
             'declared_signals' => $commandContract['signals'],
             'declared_updates' => $commandContract['updates'],
-        ], null, $startCommand->id);
+        ], null, $startCommand);
 
         /** @var WorkflowTask $childTask */
         $childTask = WorkflowTask::query()->create([
@@ -553,7 +553,7 @@ final class WorkflowExecutor
             'sequence' => $sequence,
             'delay_seconds' => $timer->delay_seconds,
             'fire_at' => $timer->fire_at?->toJSON(),
-        ], $task->id);
+        ], $task);
 
         /** @var WorkflowTask $timerTask */
         $timerTask = WorkflowTask::query()->create([
@@ -597,14 +597,14 @@ final class WorkflowExecutor
             'sequence' => $sequence,
             'delay_seconds' => $timer->delay_seconds,
             'fire_at' => $timer->fire_at?->toJSON(),
-        ], $task->id);
+        ], $task);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
             'timer_id' => $timer->id,
             'sequence' => $sequence,
             'delay_seconds' => $timer->delay_seconds,
             'fired_at' => $timer->fired_at?->toJSON(),
-        ], $task->id);
+        ], $task);
     }
 
     private function appliedSignalEvent(
@@ -674,7 +674,7 @@ final class WorkflowExecutor
             'signal_wait_id' => $signalWaitId,
             'sequence' => $sequence,
             'value' => Serializer::serialize($value),
-        ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task->id, $command->id);
+        ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
     }
 
     private function recordSignalWait(
@@ -698,7 +698,7 @@ final class WorkflowExecutor
             'signal_name' => $signalCall->name,
             'signal_wait_id' => $signalWaitId ?? (string) Str::ulid(),
             'sequence' => $sequence,
-        ], $task->id);
+        ], $task);
     }
 
     private function signalWaitIdForCommand(WorkflowRun $run, WorkflowCommand $command, string $signalName): string
@@ -822,7 +822,7 @@ final class WorkflowExecutor
             'code' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
                 ? $childTerminalEvent->payload['code'] ?? null
                 : null,
-        ], static fn ($value): bool => $value !== null), $task->id);
+        ], static fn ($value): bool => $value !== null), $task);
     }
 
     private function waitForNextResumeSource(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask
@@ -934,7 +934,7 @@ final class WorkflowExecutor
             'continued_to_run_number' => $continuedRun->run_number,
             'workflow_link_id' => $link->id,
             'closed_reason' => 'continued',
-        ], $task->id);
+        ], $task);
 
         $parentReference = ChildRunHistory::parentReferenceForRun($run);
 
@@ -945,7 +945,7 @@ final class WorkflowExecutor
             'workflow_class' => $continuedRun->workflow_class,
             'workflow_type' => $continuedRun->workflow_type,
             'outcome' => $startCommand->outcome?->value,
-        ], null, $startCommand->id);
+        ], null, $startCommand);
 
         WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $continuedRun->workflow_class,
@@ -960,7 +960,7 @@ final class WorkflowExecutor
             'parent_workflow_instance_id' => $parentReference['parent_workflow_instance_id'] ?? null,
             'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
             'parent_sequence' => $parentReference['parent_sequence'] ?? null,
-        ], null, $startCommand->id);
+        ], null, $startCommand);
 
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([
@@ -1001,7 +1001,7 @@ final class WorkflowExecutor
 
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
             'output' => $run->output,
-        ], $task->id);
+        ], $task);
 
         $task->forceFill([
             'status' => TaskStatus::Completed,
@@ -1087,7 +1087,7 @@ final class WorkflowExecutor
             'exception_class' => $failure->exception_class,
             'message' => $failure->message,
             'exception' => FailureFactory::payload($throwable),
-        ], $task->id);
+        ], $task);
 
         $task->forceFill([
             'status' => TaskStatus::Failed,

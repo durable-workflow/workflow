@@ -23,6 +23,7 @@ use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
@@ -347,6 +348,65 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame(array_column($opened, 'signal_wait_id'), array_column($received, 'signal_wait_id'));
         $this->assertSame(array_column($opened, 'signal_wait_id'), array_column($applied, 'signal_wait_id'));
         $this->assertNotSame($opened[0]['signal_wait_id'], $opened[1]['signal_wait_id']);
+    }
+
+    public function testTimelineKeepsCommandAndTaskSnapshotsWhenRowsDrift(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'timeline-history-snapshots');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $workflow->signal('name-provided', 'Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        /** @var WorkflowCommand $signalCommand */
+        $signalCommand = WorkflowCommand::query()
+            ->where('workflow_run_id', $runId)
+            ->where('command_type', 'signal')
+            ->firstOrFail();
+        /** @var WorkflowTask $activityTask */
+        $activityTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->firstOrFail();
+
+        $originalCommandSequence = $signalCommand->command_sequence;
+        $originalCommandSource = $signalCommand->source;
+        $originalTaskAvailableAt = $activityTask->available_at?->toJSON();
+        $originalTaskAttemptCount = $activityTask->attempt_count;
+
+        $signalCommand->forceFill([
+            'command_sequence' => 99,
+            'payload' => Serializer::serialize([
+                'name' => 'tampered',
+                'arguments' => ['Mallory'],
+            ]),
+            'source' => 'webhook',
+        ])->save();
+
+        $activityTask->forceFill([
+            'available_at' => now()->addDay(),
+            'attempt_count' => $originalTaskAttemptCount + 10,
+        ])->save();
+
+        $timeline = HistoryTimeline::forRun($run->fresh());
+        $signalReceived = collect($timeline)->firstWhere('type', 'SignalReceived');
+        $activityCompleted = collect($timeline)->firstWhere('type', 'ActivityCompleted');
+
+        $this->assertIsArray($signalReceived);
+        $this->assertIsArray($activityCompleted);
+        $this->assertSame($originalCommandSequence, $signalReceived['command_sequence']);
+        $this->assertSame('name-provided', $signalReceived['command']['target_name']);
+        $this->assertSame($originalCommandSource, $signalReceived['command']['source']);
+        $this->assertSame($originalTaskAvailableAt, $activityCompleted['task']['available_at']);
+        $this->assertSame($originalTaskAttemptCount, $activityCompleted['task']['attempt_count']);
     }
 
     public function testTimelineIncludesTypedChildWorkflowEntriesForCompletedParentRun(): void

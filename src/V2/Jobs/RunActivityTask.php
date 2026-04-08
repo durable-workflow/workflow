@@ -118,7 +118,7 @@ final class RunActivityTask implements ShouldQueue
                     'activity_type' => $lockedExecution->activity_type,
                     'sequence' => $lockedExecution->sequence,
                     'result' => $lockedExecution->result,
-                ], $task->id);
+                ], $task);
             } else {
                 $exceptionPayload = FailureFactory::payload($throwable);
 
@@ -150,7 +150,7 @@ final class RunActivityTask implements ShouldQueue
                     'message' => $failure->message,
                     'code' => $throwable->getCode(),
                     'exception' => $exceptionPayload,
-                ], $task->id);
+                ], $task);
             }
 
             $task->forceFill([

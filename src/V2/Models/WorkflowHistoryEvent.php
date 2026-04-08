@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Models;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -46,9 +47,13 @@ class WorkflowHistoryEvent extends Model
         WorkflowRun $run,
         HistoryEventType $eventType,
         array $payload = [],
-        ?string $taskId = null,
-        ?string $commandId = null,
+        WorkflowTask|string|null $task = null,
+        WorkflowCommand|string|null $command = null,
     ): self {
+        $taskModel = $task instanceof WorkflowTask ? $task : null;
+        $commandModel = $command instanceof WorkflowCommand ? $command : null;
+        $taskId = $taskModel?->id ?? (is_string($task) ? $task : null);
+        $commandId = $commandModel?->id ?? (is_string($command) ? $command : null);
         $sequence = $run->last_history_sequence + 1;
 
         /** @var self $event */
@@ -56,7 +61,7 @@ class WorkflowHistoryEvent extends Model
             'workflow_run_id' => $run->id,
             'sequence' => $sequence,
             'event_type' => $eventType->value,
-            'payload' => $payload,
+            'payload' => self::snapshotPayload($payload, $taskModel, $commandModel),
             'workflow_task_id' => $taskId,
             'workflow_command_id' => $commandId,
             'recorded_at' => now(),
@@ -68,5 +73,90 @@ class WorkflowHistoryEvent extends Model
         ])->save();
 
         return $event;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     *
+     * @return array<string, mixed>
+     */
+    private static function snapshotPayload(
+        array $payload,
+        ?WorkflowTask $task,
+        ?WorkflowCommand $command,
+    ): array {
+        if ($task !== null && ! array_key_exists('task', $payload)) {
+            $payload['task'] = self::taskSnapshot($task);
+        }
+
+        if ($command !== null && ! array_key_exists('command', $payload)) {
+            $payload['command'] = self::commandSnapshot($command);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function taskSnapshot(WorkflowTask $task): array
+    {
+        return array_filter([
+            'id' => $task->id,
+            'type' => $task->task_type?->value,
+            'status' => $task->status?->value,
+            'available_at' => self::timestamp($task->available_at),
+            'leased_at' => self::timestamp($task->leased_at),
+            'lease_expires_at' => self::timestamp($task->lease_expires_at),
+            'attempt_count' => $task->attempt_count,
+            'repair_count' => $task->repair_count,
+            'connection' => $task->connection,
+            'queue' => $task->queue,
+            'compatibility' => $task->compatibility,
+            'last_dispatch_attempt_at' => self::timestamp($task->last_dispatch_attempt_at),
+            'last_dispatched_at' => self::timestamp($task->last_dispatched_at),
+            'last_dispatch_error' => $task->last_dispatch_error,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function commandSnapshot(WorkflowCommand $command): array
+    {
+        return array_filter([
+            'id' => $command->id,
+            'sequence' => $command->command_sequence,
+            'type' => $command->command_type?->value,
+            'target_scope' => $command->target_scope,
+            'target_name' => $command->targetName(),
+            'source' => $command->source,
+            'caller_label' => $command->callerLabel(),
+            'auth_status' => $command->authStatus(),
+            'auth_method' => $command->authMethod(),
+            'request_method' => $command->requestMethod(),
+            'request_path' => $command->requestPath(),
+            'request_route_name' => $command->requestRouteName(),
+            'request_fingerprint' => $command->requestFingerprint(),
+            'request_id' => $command->requestId(),
+            'correlation_id' => $command->correlationId(),
+            'status' => $command->status?->value,
+            'outcome' => $command->outcome?->value,
+            'rejection_reason' => $command->rejection_reason,
+            'accepted_at' => self::timestamp($command->accepted_at),
+            'applied_at' => self::timestamp($command->applied_at),
+            'rejected_at' => self::timestamp($command->rejected_at),
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    private static function timestamp(mixed $value): ?string
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value->toJSON();
+        }
+
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 }

@@ -100,7 +100,7 @@ final class RunTimerTask implements ShouldQueue
                 'sequence' => $timer->sequence,
                 'delay_seconds' => $timer->delay_seconds,
                 'fired_at' => $timer->fired_at?->toJSON(),
-            ], $task->id);
+            ], $task);
 
             $task->forceFill([
                 'status' => TaskStatus::Completed,

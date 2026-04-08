@@ -334,7 +334,7 @@ final class WorkflowStub
                         'workflow_type' => $run->workflow_type,
                         'outcome' => $command->outcome?->value,
                         'rejection_reason' => $command->rejection_reason,
-                    ], null, $command->id);
+                    ], null, $command);
 
                 RunSummaryProjector::project(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
@@ -387,7 +387,7 @@ final class WorkflowStub
                 'workflow_class' => $run->workflow_class,
                 'workflow_type' => $run->workflow_type,
                 'outcome' => $command->outcome?->value,
-            ], null, $command->id);
+            ], null, $command);
 
             WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
                 'workflow_class' => $run->workflow_class,
@@ -397,7 +397,7 @@ final class WorkflowStub
                 'workflow_command_id' => $command->id,
                 'declared_signals' => $commandContract['signals'],
                 'declared_updates' => $commandContract['updates'],
-            ], null, $command->id);
+            ], null, $command);
 
             /** @var WorkflowTask $task */
             $task = WorkflowTask::query()->create([
@@ -619,7 +619,7 @@ final class WorkflowStub
                 'update_name' => $method,
                 'arguments' => Serializer::serialize($arguments),
                 'sequence' => $replayState->sequence,
-            ], null, $command->id);
+            ], null, $command);
 
             try {
                 $parameters = $replayState->workflow->resolveMethodDependencies(
@@ -635,7 +635,7 @@ final class WorkflowStub
                     'update_name' => $method,
                     'arguments' => Serializer::serialize($arguments),
                     'sequence' => $replayState->sequence,
-                ], null, $command->id);
+                ], null, $command);
 
                 WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
                     'workflow_command_id' => $command->id,
@@ -644,7 +644,7 @@ final class WorkflowStub
                     'update_name' => $method,
                     'sequence' => $replayState->sequence,
                     'result' => Serializer::serialize($result),
-                ], null, $command->id);
+                ], null, $command);
 
                 $command->forceFill([
                     'outcome' => CommandOutcome::UpdateCompleted->value,
@@ -674,7 +674,7 @@ final class WorkflowStub
                     'message' => $failure->message,
                     'code' => $throwable->getCode(),
                     'exception' => FailureFactory::payload($throwable),
-                ], null, $command->id);
+                ], null, $command);
 
                 $command->forceFill([
                     'outcome' => CommandOutcome::UpdateFailed->value,
@@ -829,7 +829,7 @@ final class WorkflowStub
                 'workflow_run_id' => $run->id,
                 'signal_name' => $name,
                 'signal_wait_id' => $signalWaitId,
-            ], static fn (mixed $value): bool => $value !== null), null, $command->id);
+            ], static fn (mixed $value): bool => $value !== null), null, $command);
 
             if (! $this->hasOpenTask($run->id)) {
                 /** @var WorkflowTask $task */
@@ -1019,7 +1019,7 @@ final class WorkflowStub
                 'wait_kind' => $summary->wait_kind,
                 'task_id' => $task?->id,
                 'task_type' => $task?->task_type?->value,
-            ], $task?->id, $command->id);
+            ], $task, $command);
 
             RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
@@ -1216,7 +1216,7 @@ final class WorkflowStub
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'command_type' => $commandType->value,
-            ], null, $command->id);
+            ], null, $command);
 
             foreach ($openTasks as $task) {
                 $task->forceFill([
@@ -1251,7 +1251,7 @@ final class WorkflowStub
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'closed_reason' => $closedReason,
-            ], null, $command->id);
+            ], null, $command);
 
             $command->forceFill([
                 'applied_at' => now(),

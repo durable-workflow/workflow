@@ -329,9 +329,15 @@ final class HistoryTimeline
         ?string $commandId,
     ): ?array
     {
+        $snapshot = self::arrayValue($payload['command'] ?? null);
+        $resolvedCommandId = $command?->id
+            ?? $commandId
+            ?? self::stringValue($snapshot['id'] ?? null);
+
         if (
             $command === null
-            && $commandId === null
+            && $resolvedCommandId === null
+            && $snapshot === null
             && ! array_key_exists('outcome', $payload)
             && ! array_key_exists('rejection_reason', $payload)
             && ! array_key_exists('command_type', $payload)
@@ -340,28 +346,33 @@ final class HistoryTimeline
         }
 
         return [
-            'id' => $command?->id ?? $commandId,
-            'sequence' => $command?->command_sequence,
-            'type' => $command?->command_type?->value ?? self::stringValue($payload['command_type'] ?? null),
-            'target_name' => $command?->targetName()
+            'id' => $resolvedCommandId,
+            'sequence' => self::intValue($snapshot['sequence'] ?? null) ?? $command?->command_sequence,
+            'type' => self::stringValue($snapshot['type'] ?? null)
+                ?? $command?->command_type?->value
+                ?? self::stringValue($payload['command_type'] ?? null),
+            'target_name' => self::stringValue($snapshot['target_name'] ?? null)
+                ?? $command?->targetName()
                 ?? self::stringValue($payload['signal_name'] ?? null)
                 ?? self::stringValue($payload['update_name'] ?? null),
-            'source' => $command?->source,
-            'caller_label' => $command?->callerLabel(),
-            'auth_status' => $command?->authStatus(),
-            'auth_method' => $command?->authMethod(),
-            'request_method' => $command?->requestMethod(),
-            'request_path' => $command?->requestPath(),
-            'request_route_name' => $command?->requestRouteName(),
-            'request_fingerprint' => $command?->requestFingerprint(),
+            'source' => self::stringValue($snapshot['source'] ?? null) ?? $command?->source,
+            'caller_label' => self::stringValue($snapshot['caller_label'] ?? null) ?? $command?->callerLabel(),
+            'auth_status' => self::stringValue($snapshot['auth_status'] ?? null) ?? $command?->authStatus(),
+            'auth_method' => self::stringValue($snapshot['auth_method'] ?? null) ?? $command?->authMethod(),
+            'request_method' => self::stringValue($snapshot['request_method'] ?? null) ?? $command?->requestMethod(),
+            'request_path' => self::stringValue($snapshot['request_path'] ?? null) ?? $command?->requestPath(),
+            'request_route_name' => self::stringValue($snapshot['request_route_name'] ?? null)
+                ?? $command?->requestRouteName(),
+            'request_fingerprint' => self::stringValue($snapshot['request_fingerprint'] ?? null)
+                ?? $command?->requestFingerprint(),
             'status' => self::historicalCommandStatus($event, $command),
             'outcome' => self::historicalCommandOutcome($event, $command, $payload),
-            'rejection_reason' => $command?->rejection_reason ?? self::stringValue(
-                $payload['rejection_reason'] ?? null
-            ),
-            'accepted_at' => self::timestamp($command?->accepted_at),
-            'applied_at' => self::timestamp($command?->applied_at),
-            'rejected_at' => self::timestamp($command?->rejected_at),
+            'rejection_reason' => self::stringValue($snapshot['rejection_reason'] ?? null)
+                ?? $command?->rejection_reason
+                ?? self::stringValue($payload['rejection_reason'] ?? null),
+            'accepted_at' => self::timestamp($snapshot['accepted_at'] ?? null) ?? self::timestamp($command?->accepted_at),
+            'applied_at' => self::timestamp($snapshot['applied_at'] ?? null) ?? self::timestamp($command?->applied_at),
+            'rejected_at' => self::timestamp($snapshot['rejected_at'] ?? null) ?? self::timestamp($command?->rejected_at),
         ];
     }
 
@@ -375,30 +386,48 @@ final class HistoryTimeline
         ?string $taskId,
     ): ?array
     {
-        if ($task === null && $taskId === null) {
+        $snapshot = self::arrayValue($payload['task'] ?? null);
+        $resolvedTaskId = $task?->id
+            ?? $taskId
+            ?? self::stringValue($snapshot['id'] ?? null);
+
+        if ($task === null && $resolvedTaskId === null && $snapshot === null) {
             return null;
         }
 
         if ($event->event_type === HistoryEventType::RepairRequested) {
             return [
-                'id' => $task?->id ?? $taskId,
-                'type' => self::stringValue($payload['task_type'] ?? null) ?? $task?->task_type?->value,
-                'status' => ($task?->id ?? $taskId) === null ? null : TaskStatus::Ready->value,
-                'available_at' => null,
-                'leased_at' => null,
-                'lease_expires_at' => null,
+                'id' => $resolvedTaskId,
+                'type' => self::stringValue($payload['task_type'] ?? null)
+                    ?? self::stringValue($snapshot['type'] ?? null)
+                    ?? $task?->task_type?->value,
+                'status' => $resolvedTaskId === null ? null : TaskStatus::Ready->value,
+                'available_at' => self::timestamp($snapshot['available_at'] ?? null) ?? self::timestamp($task?->available_at),
+                'leased_at' => self::timestamp($snapshot['leased_at'] ?? null) ?? self::timestamp($task?->leased_at),
+                'lease_expires_at' => self::timestamp($snapshot['lease_expires_at'] ?? null)
+                    ?? self::timestamp($task?->lease_expires_at),
                 'attempt_count' => null,
             ];
         }
 
+        $historicalType = self::historicalTaskType($event, $resolvedTaskId);
+        $historicalStatus = self::historicalTaskStatus($event, $resolvedTaskId);
+
         return [
-            'id' => $task?->id ?? $taskId,
-            'type' => $task?->task_type?->value ?? self::historicalTaskType($event, $taskId),
-            'status' => $task?->status?->value ?? self::historicalTaskStatus($event, $taskId),
-            'available_at' => self::timestamp($task?->available_at),
-            'leased_at' => self::timestamp($task?->leased_at),
-            'lease_expires_at' => self::timestamp($task?->lease_expires_at),
-            'attempt_count' => $task?->attempt_count,
+            'id' => $resolvedTaskId,
+            'type' => $historicalType
+                ?? self::stringValue($snapshot['type'] ?? null)
+                ?? $task?->task_type?->value,
+            'status' => $historicalStatus
+                ?? self::stringValue($snapshot['status'] ?? null)
+                ?? $task?->status?->value,
+            'available_at' => self::timestamp($snapshot['available_at'] ?? null) ?? self::timestamp($task?->available_at),
+            'leased_at' => self::timestamp($snapshot['leased_at'] ?? null) ?? self::timestamp($task?->leased_at),
+            'lease_expires_at' => self::timestamp($snapshot['lease_expires_at'] ?? null)
+                ?? self::timestamp($task?->lease_expires_at),
+            'attempt_count' => array_key_exists('attempt_count', $snapshot ?? [])
+                ? self::intValue($snapshot['attempt_count'])
+                : $task?->attempt_count,
         ];
     }
 
@@ -692,6 +721,16 @@ final class HistoryTimeline
     private static function stringValue(mixed $value): ?string
     {
         return is_string($value) && $value !== ''
+            ? $value
+            : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function arrayValue(mixed $value): ?array
+    {
+        return is_array($value)
             ? $value
             : null;
     }

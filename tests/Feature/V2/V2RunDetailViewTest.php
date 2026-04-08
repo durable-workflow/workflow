@@ -189,6 +189,41 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame([1, 1, null, 2, 2, null, null, null], array_column($detail['timeline'], 'command_sequence'));
     }
 
+    public function testRunDetailViewKeepsSignalWaitCommandMetadataWhenCommandRowsDrift(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-history-snapshot');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $workflow->signal('name-provided', 'Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowCommand $signalCommand */
+        $signalCommand = WorkflowCommand::query()
+            ->where('workflow_run_id', $runId)
+            ->where('command_type', 'signal')
+            ->firstOrFail();
+
+        $originalCommandSequence = $signalCommand->command_sequence;
+        $signalCommand->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+        $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+
+        $this->assertSame('resolved', $signalWait['status']);
+        $this->assertSame('applied', $signalWait['source_status']);
+        $this->assertSame($originalCommandSequence, $signalWait['command_sequence']);
+        $this->assertSame('accepted', $signalWait['command_status']);
+        $this->assertSame('signal_received', $signalWait['command_outcome']);
+    }
+
     public function testRunDetailViewMarksReceivedSignalWithoutWorkflowTaskAsRepairNeeded(): void
     {
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-repair');

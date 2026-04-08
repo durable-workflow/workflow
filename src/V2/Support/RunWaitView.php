@@ -224,9 +224,9 @@ final class RunWaitView
                 'task_type' => null,
                 'task_status' => null,
                 'command_id' => $wait['command_id'],
-                'command_sequence' => $command?->command_sequence,
-                'command_status' => $command?->status?->value,
-                'command_outcome' => $command?->outcome?->value,
+                'command_sequence' => $wait['command_sequence'] ?? $command?->command_sequence,
+                'command_status' => $wait['command_status'] ?? $command?->status?->value,
+                'command_outcome' => $wait['command_outcome'] ?? $command?->outcome?->value,
             ];
         }, SignalWaits::forRun($run)));
     }

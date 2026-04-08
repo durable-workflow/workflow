@@ -25,7 +25,10 @@ final class SignalWaits
      *     source_status: string,
      *     opened_at: \Carbon\CarbonInterface|null,
      *     resolved_at: \Carbon\CarbonInterface|null,
-     *     command_id: string|null
+     *     command_id: string|null,
+     *     command_sequence: int|null,
+     *     command_status: string|null,
+     *     command_outcome: string|null
      * }>
      */
     public static function forRun(WorkflowRun $run): array
@@ -63,6 +66,9 @@ final class SignalWaits
                     'opened_at' => $event->recorded_at ?? $event->created_at,
                     'resolved_at' => null,
                     'command_id' => null,
+                    'command_sequence' => null,
+                    'command_status' => null,
+                    'command_outcome' => null,
                 ];
 
                 $openWaitIdsByName[$signalName] ??= [];
@@ -94,7 +100,12 @@ final class SignalWaits
                     ? 'applied'
                     : 'received';
                 $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
-                $waits[$waitId]['command_id'] = self::stringValue($event->workflow_command_id);
+                $waits[$waitId]['command_id'] = self::stringValue($event->workflow_command_id)
+                    ?? self::stringValue($event->payload['workflow_command_id'] ?? null)
+                    ?? self::stringValue(self::commandSnapshot($event)['id'] ?? null);
+                $waits[$waitId]['command_sequence'] = self::commandSequence($event);
+                $waits[$waitId]['command_status'] = self::commandStatus($event);
+                $waits[$waitId]['command_outcome'] = self::commandOutcome($event);
 
                 continue;
             }
@@ -232,8 +243,52 @@ final class SignalWaits
 
     private static function intValue(mixed $value): ?int
     {
-        return is_int($value)
-            ? $value
+        if (is_int($value)) {
+            return $value;
+        }
+
+        return is_string($value) && is_numeric($value)
+            ? (int) $value
             : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function commandSnapshot(WorkflowHistoryEvent $event): array
+    {
+        $snapshot = $event->payload['command'] ?? null;
+
+        return is_array($snapshot)
+            ? $snapshot
+            : [];
+    }
+
+    private static function commandSequence(WorkflowHistoryEvent $event): ?int
+    {
+        return self::intValue(self::commandSnapshot($event)['sequence'] ?? null);
+    }
+
+    private static function commandStatus(WorkflowHistoryEvent $event): ?string
+    {
+        $status = self::stringValue(self::commandSnapshot($event)['status'] ?? null);
+
+        return match ($event->event_type) {
+            HistoryEventType::SignalReceived,
+            HistoryEventType::SignalApplied => 'accepted',
+            default => $status,
+        };
+    }
+
+    private static function commandOutcome(WorkflowHistoryEvent $event): ?string
+    {
+        $outcome = self::stringValue($event->payload['outcome'] ?? null)
+            ?? self::stringValue(self::commandSnapshot($event)['outcome'] ?? null);
+
+        return $outcome ?? match ($event->event_type) {
+            HistoryEventType::SignalReceived,
+            HistoryEventType::SignalApplied => 'signal_received',
+            default => null,
+        };
     }
 }
