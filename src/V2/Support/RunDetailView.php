@@ -301,8 +301,19 @@ final class RunDetailView
      */
     private static function exceptionPayload(WorkflowFailure $failure, mixed $payload): array
     {
+        if (is_string($payload)) {
+            $payload = Serializer::unserialize($payload);
+        }
+
+        if (! is_array($payload)) {
+            $payload = [];
+        }
+
         $trace = is_array($payload['trace'] ?? null)
             ? array_values(array_filter($payload['trace'], static fn (mixed $frame): bool => is_array($frame)))
+            : [];
+        $properties = is_array($payload['properties'] ?? null)
+            ? array_values(array_filter($payload['properties'], static fn (mixed $property): bool => is_array($property)))
             : [];
 
         return [
@@ -312,6 +323,9 @@ final class RunDetailView
             'message' => is_string($payload['message'] ?? null)
                 ? $payload['message']
                 : $failure->message,
+            'code' => is_int($payload['code'] ?? null)
+                ? $payload['code']
+                : 0,
             'file' => is_string($payload['file'] ?? null)
                 ? $payload['file']
                 : $failure->file,
@@ -319,6 +333,7 @@ final class RunDetailView
                 ? $payload['line']
                 : $failure->line,
             'trace' => $trace,
+            'properties' => $properties,
         ];
     }
 }

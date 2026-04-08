@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
@@ -21,6 +22,8 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
@@ -204,6 +207,53 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('accepted', $signalWait['command_status']);
         $this->assertSame('signal_received', $signalWait['command_outcome']);
         $this->assertNull($this->findOpenTaskOrNull($detail['tasks'], 'workflow'));
+    }
+
+    public function testRunDetailViewKeepsTypedFailureCodeAndPropertiesWhenFailureRowsDrift(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryReplayedFailureWorkflow::class, 'detail-history-failure');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('source_kind', 'activity_execution')
+            ->firstOrFail();
+
+        $execution->forceFill([
+            'result' => Serializer::serialize('corrupted-result'),
+            'exception' => null,
+        ])->save();
+
+        $failure->forceFill([
+            'exception_class' => \RuntimeException::class,
+            'message' => 'corrupted failure row',
+            'file' => __FILE__,
+            'line' => 999,
+        ])->save();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $exception = unserialize($detail['exceptions'][0]['exception']);
+        $properties = collect($exception['properties'] ?? [])->keyBy('name');
+
+        $this->assertSame(\Tests\Fixtures\V2\TestReplayedDomainException::class, $exception['__constructor']);
+        $this->assertSame('Order order-123 rejected via api', $exception['message']);
+        $this->assertSame(422, $exception['code']);
+        $this->assertSame('order-123', $properties->get('orderId')['value'] ?? null);
+        $this->assertSame('api', $properties->get('channel')['value'] ?? null);
+        $this->assertNotEmpty($exception['trace']);
     }
 
     public function testRunDetailViewDistinguishesRepeatedSameNamedSignalWaits(): void
