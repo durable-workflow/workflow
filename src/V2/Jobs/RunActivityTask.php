@@ -24,6 +24,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -70,7 +71,7 @@ final class RunActivityTask implements ShouldQueue
             ->findOrFail($activityExecutionId);
 
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
-        $activity = new $activityClass($execution, $execution->run);
+        $activity = new $activityClass($execution, $execution->run, $this->taskId);
         $arguments = $activity->resolveMethodDependencies(
             $execution->activityArguments(),
             new ReflectionMethod($activity, 'execute'),
@@ -252,8 +253,7 @@ final class RunActivityTask implements ShouldQueue
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
                 'lease_owner' => $this->taskId,
-                'lease_expires_at' => now()
-                    ->addMinutes(5),
+                'lease_expires_at' => ActivityLease::expiresAt(),
                 'attempt_count' => $task->attempt_count + 1,
             ])->save();
 

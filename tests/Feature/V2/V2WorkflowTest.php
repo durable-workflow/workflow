@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use LogicException;
@@ -13,6 +15,8 @@ use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestHeartbeatActivity;
+use Tests\Fixtures\V2\TestHeartbeatWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
@@ -43,6 +47,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunSummarySortKey;
@@ -145,6 +150,130 @@ final class V2WorkflowTest extends TestCase
             'status' => 'accepted',
             'outcome' => 'started_new',
         ]);
+    }
+
+    public function testWorkflowActivityHeartbeatPersistsAttemptMetadata(): void
+    {
+        $workflow = WorkflowStub::make(TestHeartbeatWorkflow::class, 'heartbeat-runtime');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        $this->assertNotNull($execution->last_heartbeat_at);
+        $this->assertSame([
+            'workflow_id' => $workflow->id(),
+            'run_id' => $workflow->runId(),
+            'activity_id' => $execution->id,
+            'attempt_id' => $execution->current_attempt_id,
+            'attempt_count' => 1,
+        ], $workflow->output());
+    }
+
+    public function testActivityHeartbeatRenewsCurrentAttemptLease(): void
+    {
+        $startedAt = Carbon::parse('2026-04-08 12:00:00');
+        Carbon::setTestNow($startedAt);
+
+        try {
+            $runId = (string) Str::ulid();
+            $executionId = (string) Str::ulid();
+            $taskId = (string) Str::ulid();
+            $attemptId = (string) Str::ulid();
+
+            $instance = WorkflowInstance::query()->create([
+                'id' => 'heartbeat-lease-instance',
+                'workflow_class' => TestHeartbeatWorkflow::class,
+                'workflow_type' => 'test-heartbeat-workflow',
+                'run_count' => 1,
+            ]);
+
+            $run = WorkflowRun::query()->create([
+                'id' => $runId,
+                'workflow_instance_id' => $instance->id,
+                'run_number' => 1,
+                'workflow_class' => TestHeartbeatWorkflow::class,
+                'workflow_type' => 'test-heartbeat-workflow',
+                'status' => RunStatus::Running->value,
+                'compatibility' => 'build-heartbeat',
+                'payload_codec' => config('workflows.serializer'),
+                'connection' => 'redis',
+                'queue' => 'default',
+                'started_at' => $startedAt,
+                'last_progress_at' => $startedAt,
+            ]);
+
+            $instance->forceFill([
+                'current_run_id' => $run->id,
+                'started_at' => $startedAt,
+            ])->save();
+
+            $execution = ActivityExecution::query()->create([
+                'id' => $executionId,
+                'workflow_run_id' => $run->id,
+                'sequence' => 1,
+                'activity_class' => TestHeartbeatActivity::class,
+                'activity_type' => TestHeartbeatActivity::class,
+                'status' => ActivityStatus::Running->value,
+                'connection' => 'redis',
+                'queue' => 'default',
+                'attempt_count' => 1,
+                'current_attempt_id' => $attemptId,
+                'started_at' => $startedAt,
+            ]);
+
+            $task = WorkflowTask::query()->create([
+                'id' => $taskId,
+                'workflow_run_id' => $run->id,
+                'task_type' => TaskType::Activity->value,
+                'status' => TaskStatus::Leased->value,
+                'payload' => [
+                    'activity_execution_id' => $execution->id,
+                ],
+                'connection' => 'redis',
+                'queue' => 'default',
+                'compatibility' => 'build-heartbeat',
+                'leased_at' => $startedAt,
+                'lease_owner' => 'lease-owner-heartbeat',
+                'lease_expires_at' => ActivityLease::expiresAt(),
+                'attempt_count' => 1,
+            ]);
+
+            RunSummaryProjector::project($run->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+            ]));
+
+            $heartbeatAt = $startedAt->copy()->addMinutes(2);
+            $leaseExpiresAt = $heartbeatAt->copy()->addMinutes(ActivityLease::DURATION_MINUTES);
+            Carbon::setTestNow($heartbeatAt);
+
+            $activity = new TestHeartbeatActivity($execution->fresh(), $run->fresh(), $task->id);
+            $activity->heartbeat();
+
+            $this->assertSame($attemptId, $activity->attemptId());
+            $this->assertSame(1, $activity->attemptCount());
+
+            $execution->refresh();
+            $task->refresh();
+
+            /** @var WorkflowRunSummary $summary */
+            $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+            $this->assertSame($heartbeatAt->jsonSerialize(), $execution->last_heartbeat_at?->jsonSerialize());
+            $this->assertSame($leaseExpiresAt->jsonSerialize(), $task->lease_expires_at?->jsonSerialize());
+            $this->assertSame($leaseExpiresAt->jsonSerialize(), $summary->next_task_lease_expires_at?->jsonSerialize());
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function testParentCompletesAfterChildContinuesAsNewWithoutWorkflowLinks(): void
