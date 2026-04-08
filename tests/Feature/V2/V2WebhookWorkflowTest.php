@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestSignalThenUpdateWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
@@ -37,6 +38,7 @@ final class V2WebhookWorkflowTest extends TestCase
             TestSignalWorkflow::class,
             'test-timer-workflow' => TestTimerWorkflow::class,
             TestAliasedUpdateWorkflow::class,
+            TestSignalThenUpdateWorkflow::class,
             TestUpdateWorkflow::class,
         ]);
     }
@@ -499,6 +501,55 @@ final class V2WebhookWorkflowTest extends TestCase
         ], $workflow->currentState());
     }
 
+    public function testUpdateWebhookProcessesEarlierSignalBeforeApplyingLaterUpdate(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalThenUpdateWorkflow::class, 'order-update-webhook-linearized');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        Queue::fake();
+
+        $signal = $this->postJson('/webhooks/instances/order-update-webhook-linearized/signals/advance', [
+            'arguments' => ['Taylor'],
+        ]);
+
+        $signal
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', 'signal_received')
+            ->assertJsonPath('command_sequence', 2);
+
+        $response = $this->postJson('/webhooks/instances/order-update-webhook-linearized/updates/approve', [
+            'arguments' => [true, 'webhook'],
+        ]);
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('outcome', 'update_completed')
+            ->assertJsonPath('workflow_id', 'order-update-webhook-linearized')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('workflow_type', 'test-signal-then-update-workflow')
+            ->assertJsonPath('command_sequence', 3)
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('rejection_reason', null)
+            ->assertJson([
+                'result' => [
+                    'stage' => 'waiting-for-finish',
+                    'name' => 'Taylor',
+                    'approved' => true,
+                    'events' => ['started', 'signal:Taylor', 'approved:yes:webhook'],
+                ],
+            ]);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-finish',
+            'name' => 'Taylor',
+            'approved' => true,
+            'events' => ['started', 'signal:Taylor', 'approved:yes:webhook'],
+        ], $workflow->currentState());
+    }
+
     public function testUpdateWebhookUsesTheDeclaredAliasAsThePublicTarget(): void
     {
         $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-webhook-alias');
@@ -803,7 +854,7 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
-    public function testUpdateWebhookRejectsLaterUpdateWhenAnEarlierSignalIsPending(): void
+    public function testUpdateWebhookReplaysEarlierSignalBeforeRejectingClosedRun(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-b');
         $workflow->start();
@@ -827,16 +878,18 @@ final class V2WebhookWorkflowTest extends TestCase
 
         $response
             ->assertStatus(409)
-            ->assertJsonPath('outcome', 'rejected_pending_signal')
+            ->assertJsonPath('outcome', 'rejected_not_active')
             ->assertJsonPath('workflow_id', 'order-update-webhook-b')
             ->assertJsonPath('run_id', $workflow->runId())
             ->assertJsonPath('workflow_type', 'test-update-workflow')
             ->assertJsonPath('command_sequence', 3)
             ->assertJsonPath('command_status', 'rejected')
-            ->assertJsonPath('rejection_reason', 'earlier_signal_pending')
+            ->assertJsonPath('rejection_reason', 'run_not_active')
             ->assertJsonPath('result', null)
             ->assertJsonPath('failure_id', null)
             ->assertJsonPath('failure_message', null);
+
+        $this->assertTrue($workflow->refresh()->completed());
 
         $this->assertDatabaseHas('workflow_commands', [
             'id' => $response->json('command_id'),
@@ -844,8 +897,8 @@ final class V2WebhookWorkflowTest extends TestCase
             'workflow_run_id' => $workflow->runId(),
             'command_type' => 'update',
             'status' => 'rejected',
-            'outcome' => 'rejected_pending_signal',
-            'rejection_reason' => 'earlier_signal_pending',
+            'outcome' => 'rejected_not_active',
+            'rejection_reason' => 'run_not_active',
         ]);
     }
 

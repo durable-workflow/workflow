@@ -435,6 +435,7 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame(serialize([
             'name' => 'name-provided',
             'arguments' => ['Taylor'],
+            'validation_errors' => [],
         ]), $signalReceived['command']['payload']);
         $this->assertSame($originalCommandSource, $signalReceived['command']['source']);
         $this->assertSame($originalTaskAvailableAt, $activityCompleted['task']['available_at']);

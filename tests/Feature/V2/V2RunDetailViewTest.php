@@ -264,6 +264,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(serialize([
             'name' => 'name-provided',
             'arguments' => ['Taylor'],
+            'validation_errors' => [],
         ]), $detail['commands'][1]['payload']);
         $this->assertSame('signal_received', $detail['commands'][1]['outcome']);
         $this->assertCount(1, $detail['activities']);
