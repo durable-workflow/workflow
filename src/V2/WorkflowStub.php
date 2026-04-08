@@ -1469,20 +1469,24 @@ final class WorkflowStub
             $normalized = [];
         }
 
-        try {
-            $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
-        } catch (LogicException) {
-            return array_is_list($arguments)
-                ? ['arguments' => $normalized, 'validation_errors' => []]
-                : [
-                    'arguments' => [],
-                    'validation_errors' => [
-                        'arguments' => ['Named arguments require a loadable workflow update contract.'],
-                    ],
-                ];
-        }
+        $contract = RunCommandContract::updateContract($run, $updateName);
 
-        $contract = WorkflowDefinition::updateContract($workflowClass, $updateName);
+        if ($contract === null) {
+            try {
+                $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+            } catch (LogicException) {
+                return array_is_list($arguments)
+                    ? ['arguments' => $normalized, 'validation_errors' => []]
+                    : [
+                        'arguments' => [],
+                        'validation_errors' => [
+                            'arguments' => ['Named arguments require a durable or loadable workflow update contract.'],
+                        ],
+                    ];
+            }
+
+            $contract = WorkflowDefinition::updateContract($workflowClass, $updateName);
+        }
 
         if ($contract === null) {
             return array_is_list($arguments)
@@ -1490,7 +1494,7 @@ final class WorkflowStub
                 : [
                     'arguments' => [],
                     'validation_errors' => [
-                        'arguments' => [sprintf('Unknown update [%s].', $updateName)],
+                        'arguments' => ['Named arguments require a durable or loadable workflow update contract.'],
                     ],
                 ];
         }

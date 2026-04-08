@@ -83,6 +83,23 @@ final class RunCommandContract
     }
 
     /**
+     * @return array{
+     *     name: string,
+     *     parameters: list<array<string, mixed>>
+     * }|null
+     */
+    public static function updateContract(WorkflowRun $run, string $target): ?array
+    {
+        foreach (self::forRun($run)['update_contracts'] as $contract) {
+            if (($contract['name'] ?? null) === $target) {
+                return $contract;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @param class-string $workflowClass
      * @return array{
      *     signals: list<string>,

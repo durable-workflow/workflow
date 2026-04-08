@@ -668,6 +668,42 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('unknown_update', $result->rejectionReason());
     }
 
+    public function testNamedUpdateValidationUsesDurableRunContractWhenWorkflowDefinitionCannotBeResolved(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-ct-update-validation');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+            'workflow_type' => 'missing-update-workflow',
+        ]);
+
+        $result = $workflow->attemptUpdateWithArguments('approve', [
+            'source' => 'api',
+        ]);
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedInvalidArguments());
+        $this->assertSame('rejected_invalid_arguments', $result->outcome());
+        $this->assertSame('invalid_update_arguments', $result->rejectionReason());
+        $this->assertSame([
+            'approved' => ['The approved argument is required.'],
+        ], $result->validationErrors());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run->fresh());
+
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertSame('approve', $detail['commands'][1]['target_name']);
+        $this->assertSame('invalid_update_arguments', $detail['commands'][1]['rejection_reason']);
+        $this->assertSame([
+            'approved' => ['The approved argument is required.'],
+        ], $detail['commands'][1]['validation_errors']);
+    }
+
     public function testAttemptUpdateRejectsHistoricalSelectedRuns(): void
     {
         $instance = WorkflowInstance::query()->create([
