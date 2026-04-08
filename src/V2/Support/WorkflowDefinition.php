@@ -20,6 +20,16 @@ final class WorkflowDefinition
     private static array $queryMethods = [];
 
     /**
+     * @var array<class-string, array<string, string>>
+     */
+    private static array $queryTargets = [];
+
+    /**
+     * @var array<class-string, list<array{name: string, parameters: list<array{name: string, position: int, required: bool, variadic: bool, default_available: bool, default: mixed, type: ?string, allows_null: bool}>}>>
+     */
+    private static array $queryContracts = [];
+
+    /**
      * @var array<class-string, list<string>>
      */
     private static array $signalNames = [];
@@ -67,7 +77,7 @@ final class WorkflowDefinition
         }
 
         if (! array_key_exists($class, self::$queryMethods)) {
-            self::$queryMethods[$class] = self::methodNamesWithAttribute($class, QueryMethod::class);
+            self::$queryMethods[$class] = array_keys(self::queryTargets($class));
         }
 
         return self::$queryMethods[$class];
@@ -75,7 +85,145 @@ final class WorkflowDefinition
 
     /**
      * @param class-string $class
+     * @return list<array{
+     *     name: string,
+     *     parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: ?string,
+     *         allows_null: bool
+     *     }>
+     * }>
+     */
+    public static function queryContracts(string $class): array
+    {
+        if (! self::isWorkflowClass($class)) {
+            return [];
+        }
+
+        if (! array_key_exists($class, self::$queryContracts)) {
+            $reflection = new ReflectionClass($class);
+            $contracts = [];
+
+            foreach (self::queryTargets($class) as $name => $method) {
+                /** @var ReflectionMethod $reflectionMethod */
+                $reflectionMethod = $reflection->getMethod($method);
+                $parameters = [];
+                $position = 0;
+
+                foreach ($reflectionMethod->getParameters() as $parameter) {
+                    if (self::isContainerInjected($parameter)) {
+                        continue;
+                    }
+
+                    $parameters[] = [
+                        'name' => $parameter->getName(),
+                        'position' => $position,
+                        'required' => ! $parameter->isDefaultValueAvailable() && ! $parameter->isVariadic(),
+                        'variadic' => $parameter->isVariadic(),
+                        'default_available' => $parameter->isDefaultValueAvailable(),
+                        'default' => $parameter->isDefaultValueAvailable()
+                            ? $parameter->getDefaultValue()
+                            : null,
+                        'type' => self::typeString($parameter),
+                        'allows_null' => $parameter->getType()?->allowsNull() ?? true,
+                    ];
+                    $position++;
+                }
+
+                $contracts[] = [
+                    'name' => $name,
+                    'parameters' => $parameters,
+                ];
+            }
+
+            self::$queryContracts[$class] = $contracts;
+        }
+
+        return self::$queryContracts[$class];
+    }
+
+    /**
+     * @param class-string $class
      * @return array{
+     *     name: string,
+     *     parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: ?string,
+     *         allows_null: bool
+     *     }>
+     * }|null
+     */
+    public static function queryContract(string $class, string $target): ?array
+    {
+        $resolved = self::resolveQueryTarget($class, $target);
+
+        if ($resolved === null) {
+            return null;
+        }
+
+        foreach (self::queryContracts($class) as $contract) {
+            if ($contract['name'] === $resolved['name']) {
+                return $contract;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param class-string $class
+     * @return array{name: string, method: string}|null
+     */
+    public static function resolveQueryTarget(string $class, string $target): ?array
+    {
+        $targets = self::queryTargets($class);
+
+        if (array_key_exists($target, $targets)) {
+            return [
+                'name' => $target,
+                'method' => $targets[$target],
+            ];
+        }
+
+        foreach ($targets as $name => $method) {
+            if ($method === $target) {
+                return [
+                    'name' => $name,
+                    'method' => $method,
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param class-string $class
+     * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array{
+     *         name: string,
+     *         parameters: list<array{
+     *             name: string,
+     *             position: int,
+     *             required: bool,
+     *             variadic: bool,
+     *             default_available: bool,
+     *             default: mixed,
+     *             type: ?string,
+     *             allows_null: bool
+     *         }>
+     *     }>,
      *     signals: list<string>,
      *     signal_contracts: list<array{
      *         name: string,
@@ -109,6 +257,8 @@ final class WorkflowDefinition
     public static function commandContract(string $class): array
     {
         return [
+            'queries' => self::queryMethods($class),
+            'query_contracts' => self::queryContracts($class),
             'signals' => self::signalNames($class),
             'signal_contracts' => self::signalContracts($class),
             'updates' => self::updateMethods($class),
@@ -382,7 +532,7 @@ final class WorkflowDefinition
      */
     public static function hasQueryMethod(string $class, string $method): bool
     {
-        return in_array($method, self::queryMethods($class), true);
+        return self::resolveQueryTarget($class, $method) !== null;
     }
 
     /**
@@ -444,6 +594,51 @@ final class WorkflowDefinition
         }
 
         return self::$updateTargets[$class];
+    }
+
+    /**
+     * @param class-string $class
+     * @return array<string, string>
+     */
+    private static function queryTargets(string $class): array
+    {
+        if (! self::isWorkflowClass($class)) {
+            return [];
+        }
+
+        if (! array_key_exists($class, self::$queryTargets)) {
+            $targets = [];
+
+            foreach ((new ReflectionClass($class))->getMethods() as $method) {
+                $attributes = $method->getAttributes(QueryMethod::class);
+
+                if ($attributes === []) {
+                    continue;
+                }
+
+                /** @var QueryMethod $attribute */
+                $attribute = $attributes[0]->newInstance();
+                $name = $attribute->name ?? $method->getName();
+
+                if (array_key_exists($name, $targets) && $targets[$name] !== $method->getName()) {
+                    throw new LogicException(sprintf(
+                        'Workflow [%s] declares duplicate durable query name [%s] on methods [%s] and [%s].',
+                        $class,
+                        $name,
+                        $targets[$name],
+                        $method->getName(),
+                    ));
+                }
+
+                $targets[$name] = $method->getName();
+            }
+
+            ksort($targets);
+
+            self::$queryTargets[$class] = $targets;
+        }
+
+        return self::$queryTargets[$class];
     }
 
     /**

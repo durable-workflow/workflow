@@ -144,6 +144,15 @@ final class V2RunDetailViewTest extends TestCase
 
         $detail = RunDetailView::forRun($run);
 
+        $this->assertSame(['approval-stage', 'approvalMatches'], $detail['declared_queries']);
+        $this->assertCount(2, $detail['declared_query_targets']);
+        $this->assertSame('approval-stage', $detail['declared_query_targets'][0]['name']);
+        $this->assertTrue($detail['declared_query_targets'][0]['has_contract']);
+        $this->assertSame([], $detail['declared_query_targets'][0]['parameters']);
+        $this->assertSame('approvalMatches', $detail['declared_query_targets'][1]['name']);
+        $this->assertTrue($detail['declared_query_targets'][1]['has_contract']);
+        $this->assertSame('stage', $detail['declared_query_targets'][1]['parameters'][0]['name']);
+        $this->assertSame('string', $detail['declared_query_targets'][1]['parameters'][0]['type']);
         $this->assertSame(['approved-by', 'rejected-by'], $detail['declared_signals']);
         $this->assertCount(2, $detail['declared_signal_targets']);
         $this->assertSame('approved-by', $detail['declared_signal_targets'][0]['name']);
@@ -188,6 +197,9 @@ final class V2RunDetailViewTest extends TestCase
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
+        $this->assertSame([], $detail['declared_queries']);
+        $this->assertSame([], $detail['declared_query_contracts']);
+        $this->assertSame([], $detail['declared_query_targets']);
         $this->assertSame([], $detail['declared_signals']);
         $this->assertSame([], $detail['declared_signal_contracts']);
         $this->assertSame([], $detail['declared_signal_targets']);

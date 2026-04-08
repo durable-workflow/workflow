@@ -1335,6 +1335,8 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame(TestConfiguredContinueSignalWorkflow::class, $instance->fresh()->workflow_class);
         $this->assertSame(TestConfiguredContinueSignalWorkflow::class, $continuedRun->workflow_class);
+        $this->assertSame(['current-count'], $started->payload['declared_queries'] ?? null);
+        $this->assertSame('current-count', $started->payload['declared_query_contracts'][0]['name'] ?? null);
         $this->assertSame(['name-provided'], $started->payload['declared_signals'] ?? null);
         $this->assertSame('name-provided', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
         $this->assertSame(['mark-approved'], $started->payload['declared_updates'] ?? null);
@@ -1356,6 +1358,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertTrue($signal->accepted());
         $this->assertSame('signal_received', $signal->outcome());
         $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertSame(['current-count'], $detail['declared_queries']);
         $this->assertSame(['name-provided'], $detail['declared_signals']);
         $this->assertSame(['mark-approved'], $detail['declared_updates']);
     }

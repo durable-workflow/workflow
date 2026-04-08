@@ -20,6 +20,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -220,6 +221,14 @@ final class WorkflowStub
 
     public function query(string $method, ...$arguments): mixed
     {
+        return $this->queryWithArguments($method, $arguments);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    public function queryWithArguments(string $method, array $arguments): mixed
+    {
         $this->refresh();
 
         if ($this->run === null) {
@@ -227,8 +236,9 @@ final class WorkflowStub
         }
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($this->run->workflow_class, $this->run->workflow_type);
+        $resolvedTarget = WorkflowDefinition::resolveQueryTarget($workflowClass, $method);
 
-        if (! WorkflowDefinition::hasQueryMethod($workflowClass, $method)) {
+        if ($resolvedTarget === null) {
             throw new LogicException(sprintf(
                 'Method [%s::%s] is not a v2 query method.',
                 $workflowClass,
@@ -236,7 +246,13 @@ final class WorkflowStub
             ));
         }
 
-        return (new QueryStateReplayer())->query($this->run, $method, $arguments);
+        $validatedArguments = $this->validatedQueryArgumentsForRun($this->run, $resolvedTarget['name'], $arguments);
+
+        if ($validatedArguments['validation_errors'] !== []) {
+            throw new InvalidQueryArgumentsException($resolvedTarget['name'], $validatedArguments['validation_errors']);
+        }
+
+        return (new QueryStateReplayer())->query($this->run, $resolvedTarget['method'], $validatedArguments['arguments']);
     }
 
     public function summary(): ?WorkflowRunSummary
@@ -411,6 +427,8 @@ final class WorkflowStub
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'workflow_command_id' => $command->id,
+                'declared_queries' => $commandContract['queries'],
+                'declared_query_contracts' => $commandContract['query_contracts'],
                 'declared_signals' => $commandContract['signals'],
                 'declared_signal_contracts' => $commandContract['signal_contracts'],
                 'declared_updates' => $commandContract['updates'],
@@ -1564,6 +1582,53 @@ final class WorkflowStub
 
         return $contract === null
             ? ['arguments' => [$arguments], 'validation_errors' => []]
+            : $this->normalizeNamedCommandArguments($contract, $arguments);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
+    private function validatedQueryArgumentsForRun(WorkflowRun $run, string $queryName, array $arguments): array
+    {
+        if (array_is_list($arguments)) {
+            $normalized = array_values($arguments);
+        } else {
+            $normalized = [];
+        }
+
+        $contract = RunCommandContract::queryContract($run, $queryName);
+
+        if ($contract === null) {
+            try {
+                $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+            } catch (LogicException) {
+                return array_is_list($arguments)
+                    ? ['arguments' => $normalized, 'validation_errors' => []]
+                    : [
+                        'arguments' => [],
+                        'validation_errors' => [
+                            'arguments' => ['Named arguments require a durable or loadable workflow query contract.'],
+                        ],
+                    ];
+            }
+
+            $contract = WorkflowDefinition::queryContract($workflowClass, $queryName);
+        }
+
+        if ($contract === null) {
+            return array_is_list($arguments)
+                ? ['arguments' => $normalized, 'validation_errors' => []]
+                : [
+                    'arguments' => [],
+                    'validation_errors' => [
+                        'arguments' => ['Named arguments require a durable or loadable workflow query contract.'],
+                    ],
+                ];
+        }
+
+        return array_is_list($arguments)
+            ? $this->normalizePositionalCommandArguments($contract, $arguments, 'query')
             : $this->normalizeNamedCommandArguments($contract, $arguments);
     }
 

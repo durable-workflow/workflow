@@ -59,4 +59,10 @@ final class TestQueryWorkflow extends Workflow
             static fn (string $event): bool => str_starts_with($event, $prefix),
         ));
     }
+
+    #[QueryMethod('events-starting-with')]
+    public function countEventsByPrefix(string $prefix): int
+    {
+        return $this->countEventsMatching($prefix);
+    }
 }

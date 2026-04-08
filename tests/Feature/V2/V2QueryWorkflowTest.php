@@ -18,6 +18,7 @@ use Tests\Fixtures\V2\TestSideEffectWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -57,6 +58,36 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame('waiting-for-name', $workflow->currentStage());
         $this->assertSame(1, $workflow->query('countEventsMatching', 'start'));
         $this->assertSame(0, $workflow->query('countEventsMatching', 'name:'));
+    }
+
+    public function testQueriesSupportAliasedTargetsNamedArgumentMapsAndDurableContracts(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestQueryWorkflow::class, 'query-aliased-target');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $this->assertSame(1, $workflow->query('events-starting-with', 'start'));
+        $this->assertSame(1, $workflow->queryWithArguments('events-starting-with', [
+            'prefix' => 'start',
+        ]));
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $contracts = collect($started->payload['declared_query_contracts'] ?? [])
+            ->keyBy('name');
+
+        $this->assertContains('events-starting-with', $started->payload['declared_queries'] ?? []);
+        $this->assertSame('events-starting-with', $contracts->get('events-starting-with')['name'] ?? null);
+        $this->assertSame('prefix', $contracts->get('events-starting-with')['parameters'][0]['name'] ?? null);
+        $this->assertSame('string', $contracts->get('events-starting-with')['parameters'][0]['type'] ?? null);
     }
 
     public function testQueriesIgnorePendingAcceptedSignalsUntilTheyAreApplied(): void

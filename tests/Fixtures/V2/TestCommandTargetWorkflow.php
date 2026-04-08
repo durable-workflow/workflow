@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Generator;
+use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
@@ -26,6 +27,18 @@ final class TestCommandTargetWorkflow extends Workflow
             'workflow_id' => $this->workflowId(),
             'run_id' => $this->runId(),
         ];
+    }
+
+    #[QueryMethod('approval-stage')]
+    public function approvalStage(): string
+    {
+        return 'waiting-for-approval';
+    }
+
+    #[QueryMethod]
+    public function approvalMatches(string $stage): bool
+    {
+        return $stage === 'waiting-for-approval';
     }
 
     #[UpdateMethod('mark-approved')]

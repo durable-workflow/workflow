@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Generator;
+use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
 use function Workflow\V2\awaitSignal;
@@ -16,8 +17,12 @@ use Workflow\V2\Workflow;
 ])]
 final class TestConfiguredContinueSignalWorkflow extends Workflow
 {
+    private int $count = 0;
+
     public function execute(int $count = 0): Generator
     {
+        $this->count = $count;
+
         if ($count === 0) {
             return yield continueAsNew($count + 1);
         }
@@ -29,6 +34,12 @@ final class TestConfiguredContinueSignalWorkflow extends Workflow
             'workflow_id' => $this->workflowId(),
             'run_id' => $this->runId(),
         ];
+    }
+
+    #[QueryMethod('current-count')]
+    public function currentCount(): int
+    {
+        return $this->count;
     }
 
     #[UpdateMethod('mark-approved')]

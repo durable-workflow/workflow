@@ -19,6 +19,9 @@ final class RunCommandContract
 
     /**
      * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     query_targets: list<array<string, mixed>>,
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     signal_targets: list<array<string, mixed>>,
@@ -63,6 +66,8 @@ final class RunCommandContract
         } catch (LogicException) {
             return [
                 ...self::withTargets([
+                    'queries' => [],
+                    'query_contracts' => [],
                     'signals' => [],
                     'signal_contracts' => [],
                     'updates' => [],
@@ -81,6 +86,28 @@ final class RunCommandContract
     public static function hasSignal(WorkflowRun $run, string $name): bool
     {
         return in_array($name, self::forRun($run)['signals'], true);
+    }
+
+    public static function hasQueryMethod(WorkflowRun $run, string $name): bool
+    {
+        return in_array($name, self::forRun($run)['queries'], true);
+    }
+
+    /**
+     * @return array{
+     *     name: string,
+     *     parameters: list<array<string, mixed>>
+     * }|null
+     */
+    public static function queryContract(WorkflowRun $run, string $target): ?array
+    {
+        foreach (self::forRun($run)['query_contracts'] as $contract) {
+            if (($contract['name'] ?? null) === $target) {
+                return $contract;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -125,6 +152,8 @@ final class RunCommandContract
     /**
      * @param class-string $workflowClass
      * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
@@ -138,6 +167,8 @@ final class RunCommandContract
 
     /**
      * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
@@ -152,6 +183,14 @@ final class RunCommandContract
             return null;
         }
 
+        $hasQueries = is_array($event->payload) && array_key_exists('declared_queries', $event->payload);
+        $queries = $hasQueries
+            ? self::normalizeList($event->payload['declared_queries'] ?? null)
+            : [];
+        $hasQueryContracts = is_array($event->payload) && array_key_exists('declared_query_contracts', $event->payload);
+        $queryContracts = $hasQueryContracts
+            ? self::normalizeCommandContracts($event->payload['declared_query_contracts'] ?? null)
+            : [];
         $signals = self::normalizeList($event->payload['declared_signals'] ?? null);
         $hasSignalContracts = is_array($event->payload) && array_key_exists('declared_signal_contracts', $event->payload);
         $signalContracts = $hasSignalContracts
@@ -164,7 +203,9 @@ final class RunCommandContract
             : [];
 
         if (
-            $signals === null
+            ($hasQueries && $queries === null)
+            || ($hasQueryContracts && $queryContracts === null)
+            || $signals === null
             || $updates === null
             || ($hasSignalContracts && $signalContracts === null)
             || ($hasUpdateContracts && $updateContracts === null)
@@ -173,6 +214,8 @@ final class RunCommandContract
         }
 
         return [
+            'queries' => $queries ?? [],
+            'query_contracts' => $queryContracts ?? [],
             'signals' => $signals,
             'signal_contracts' => $signalContracts ?? [],
             'updates' => $updates,
@@ -182,6 +225,8 @@ final class RunCommandContract
 
     /**
      * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
@@ -201,6 +246,8 @@ final class RunCommandContract
         $snapshot = WorkflowDefinition::commandContract($resolvedClass);
         $payload = is_array($event->payload) ? $event->payload : [];
 
+        $payload['declared_queries'] = $snapshot['queries'];
+        $payload['declared_query_contracts'] = $snapshot['query_contracts'];
         $payload['declared_signals'] = $snapshot['signals'];
         $payload['declared_signal_contracts'] = $snapshot['signal_contracts'];
         $payload['declared_updates'] = $snapshot['updates'];
@@ -255,12 +302,17 @@ final class RunCommandContract
 
     /**
      * @param array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>
      * } $contract
      * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     query_targets: list<array<string, mixed>>,
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     signal_targets: list<array<string, mixed>>,
@@ -273,6 +325,10 @@ final class RunCommandContract
     {
         return [
             ...$contract,
+            'query_targets' => self::normalizeTargets(
+                $contract['queries'],
+                $contract['query_contracts'],
+            ),
             'signal_targets' => self::normalizeTargets(
                 $contract['signals'],
                 $contract['signal_contracts'],
@@ -338,7 +394,9 @@ final class RunCommandContract
         return $event instanceof WorkflowHistoryEvent
             && is_array($event->payload)
             && (
-                ! array_key_exists('declared_signal_contracts', $event->payload)
+                ! array_key_exists('declared_queries', $event->payload)
+                || ! array_key_exists('declared_query_contracts', $event->payload)
+                || ! array_key_exists('declared_signal_contracts', $event->payload)
                 || ! array_key_exists('declared_update_contracts', $event->payload)
             );
     }
