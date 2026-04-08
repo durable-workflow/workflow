@@ -122,6 +122,7 @@ final class HistoryTimeline
             'command_rejection_reason' => $commandMetadata['rejection_reason'] ?? null,
             'workflow_sequence' => self::intValue($payload['sequence'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
+            'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
             'signal_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['signal_name'] ?? null),
             'update_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['update_name'] ?? null),
             'activity_execution_id' => $activityMetadata['id'] ?? null,
@@ -129,7 +130,7 @@ final class HistoryTimeline
             'activity_class' => $activityMetadata['class'] ?? null,
             'activity_status' => $activityMetadata['status'] ?? null,
             'timer_id' => $timerMetadata['id'] ?? null,
-            'delay_seconds' => $timerMetadata['delay_seconds'] ?? null,
+            'delay_seconds' => self::intValue($payload['timeout_seconds'] ?? null) ?? $timerMetadata['delay_seconds'] ?? null,
             'child_workflow_instance_id' => $childMetadata['instance_id'] ?? null,
             'child_workflow_run_id' => $childMetadata['run_id'] ?? null,
             'child_workflow_type' => $childMetadata['type'] ?? null,
@@ -169,6 +170,9 @@ final class HistoryTimeline
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child',
+            HistoryEventType::ConditionWaitOpened,
+            HistoryEventType::ConditionWaitSatisfied,
+            HistoryEventType::ConditionWaitTimedOut => 'condition',
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityCompleted,
@@ -201,6 +205,7 @@ final class HistoryTimeline
         $rejectionReason = $command['rejection_reason'] ?? null;
         $signalName = $command['target_name'] ?? self::stringValue($payload['signal_name'] ?? null);
         $updateName = $command['target_name'] ?? self::stringValue($payload['update_name'] ?? null);
+        $timerKind = self::stringValue($payload['timer_kind'] ?? null);
         $childLabel = self::displayLabel(
             $child['type']
             ?? $child['class']
@@ -228,6 +233,17 @@ final class HistoryTimeline
                 : sprintf('Child workflow %s failed: %s.', $childLabel, $message),
             HistoryEventType::ChildRunCancelled => sprintf('Child workflow %s cancelled.', $childLabel),
             HistoryEventType::ChildRunTerminated => sprintf('Child workflow %s terminated.', $childLabel),
+            HistoryEventType::ConditionWaitOpened => ($payload['timeout_seconds'] ?? null) === null
+                ? 'Waiting for condition.'
+                : sprintf(
+                    'Waiting for condition or timeout after %s.',
+                    self::durationLabel(self::intValue($payload['timeout_seconds'] ?? null) ?? 0),
+                ),
+            HistoryEventType::ConditionWaitSatisfied => 'Condition satisfied.',
+            HistoryEventType::ConditionWaitTimedOut => sprintf(
+                'Condition timed out after %s.',
+                self::durationLabel(self::intValue($payload['timeout_seconds'] ?? null) ?? $delaySeconds ?? 0),
+            ),
             HistoryEventType::SignalWaitOpened => $signalName === null
                 ? 'Waiting for signal.'
                 : sprintf('Waiting for signal %s.', $signalName),
@@ -280,12 +296,20 @@ final class HistoryTimeline
                 ? sprintf('Failed %s.', $activityLabel)
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
             HistoryEventType::SideEffectRecorded => 'Recorded side effect.',
-            HistoryEventType::TimerScheduled => $delaySeconds === null
-                ? 'Scheduled timer.'
-                : sprintf('Scheduled timer for %s.', self::durationLabel($delaySeconds)),
-            HistoryEventType::TimerFired => $delaySeconds === null
-                ? 'Timer fired.'
-                : sprintf('Timer fired after %s.', self::durationLabel($delaySeconds)),
+            HistoryEventType::TimerScheduled => $timerKind === 'condition_timeout'
+                ? ($delaySeconds === null
+                    ? 'Scheduled condition timeout.'
+                    : sprintf('Scheduled condition timeout for %s.', self::durationLabel($delaySeconds)))
+                : ($delaySeconds === null
+                    ? 'Scheduled timer.'
+                    : sprintf('Scheduled timer for %s.', self::durationLabel($delaySeconds))),
+            HistoryEventType::TimerFired => $timerKind === 'condition_timeout'
+                ? ($delaySeconds === null
+                    ? 'Condition timeout fired.'
+                    : sprintf('Condition timeout fired after %s.', self::durationLabel($delaySeconds)))
+                : ($delaySeconds === null
+                    ? 'Timer fired.'
+                    : sprintf('Timer fired after %s.', self::durationLabel($delaySeconds))),
             HistoryEventType::WorkflowCompleted => 'Workflow completed.',
             HistoryEventType::WorkflowFailed => $message === null
                 ? 'Workflow failed.'
@@ -643,6 +667,9 @@ final class HistoryTimeline
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child_workflow_run',
+            HistoryEventType::ConditionWaitOpened,
+            HistoryEventType::ConditionWaitSatisfied,
+            HistoryEventType::ConditionWaitTimedOut => 'condition_wait',
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityCompleted,
@@ -673,6 +700,7 @@ final class HistoryTimeline
         return match (self::sourceKindFor($event)) {
             'workflow_command' => self::stringValue($command['id'] ?? null),
             'signal_wait' => self::stringValue($event->payload['signal_wait_id'] ?? null),
+            'condition_wait' => self::stringValue($event->payload['condition_wait_id'] ?? null),
             'child_workflow_run' => self::stringValue($child['run_id'] ?? null)
                 ?? self::stringValue($child['instance_id'] ?? null),
             'activity_execution' => self::stringValue($activity['id'] ?? null)

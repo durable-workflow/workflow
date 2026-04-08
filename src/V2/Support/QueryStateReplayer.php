@@ -110,6 +110,24 @@ final class QueryStateReplayer
                 continue;
             }
 
+            if ($current instanceof AwaitCall || $current instanceof AwaitWithTimeoutCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
+
+                if ($resolutionEvent === null) {
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                $current = $result->send(
+                    $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied
+                );
+
+                ++$sequence;
+
+                continue;
+            }
+
             if ($current instanceof TimerCall) {
                 if ($this->timerFiredEvent($run, $sequence) !== null) {
                     $current = $result->send(true);
@@ -214,7 +232,7 @@ final class QueryStateReplayer
             }
 
             throw new UnsupportedWorkflowYieldException(sprintf(
-                'Workflow %s yielded %s. v2 currently supports activity(), child(), sideEffect(), timer(), awaitSignal(), and continueAsNew() only.',
+                'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), sideEffect(), timer(), awaitSignal(), and continueAsNew() only.',
                 $run->workflow_class,
                 get_debug_type($current),
             ));
@@ -267,6 +285,20 @@ final class QueryStateReplayer
         }
 
         return Serializer::unserialize($serialized);
+    }
+
+    private function conditionWaitResolutionEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                [HistoryEventType::ConditionWaitSatisfied, HistoryEventType::ConditionWaitTimedOut],
+                true,
+            ) && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
     }
 
     private function activityCompletionEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent

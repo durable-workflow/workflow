@@ -37,6 +37,11 @@ final class RunWaitView
 
         $taskByActivityExecutionId = self::preferredTasksByPayloadKey($run, 'activity_execution_id');
         $taskByTimerId = self::preferredTasksByPayloadKey($run, 'timer_id');
+        $conditionWaits = ConditionWaits::forRun($run);
+        $conditionTimerIds = array_values(array_filter(
+            array_map(static fn (array $wait): ?string => self::stringValue($wait['timer_id'] ?? null), $conditionWaits),
+            static fn (?string $timerId): bool => $timerId !== null,
+        ));
 
         $waits = [];
 
@@ -51,8 +56,14 @@ final class RunWaitView
             );
         }
 
+        $waits = array_merge($waits, self::conditionWaits($run, $conditionWaits, $taskByTimerId));
+
         foreach ($run->timers as $timer) {
             if (! $timer instanceof WorkflowTimer) {
+                continue;
+            }
+
+            if (in_array($timer->id, $conditionTimerIds, true)) {
                 continue;
             }
 
@@ -235,6 +246,84 @@ final class RunWaitView
     }
 
     /**
+     * @param list<array<string, mixed>> $conditionWaits
+     * @param array<string, WorkflowTask> $taskByTimerId
+     * @return list<array<string, mixed>>
+     */
+    private static function conditionWaits(
+        WorkflowRun $run,
+        array $conditionWaits,
+        array $taskByTimerId,
+    ): array {
+        $timersBySequence = $run->timers
+            ->filter(static fn (WorkflowTimer $timer): bool => $timer->sequence !== null)
+            ->keyBy(static fn (WorkflowTimer $timer): string => (string) $timer->sequence);
+
+        return array_values(array_map(
+            static function (array $wait) use ($timersBySequence, $taskByTimerId): array {
+                $sequence = self::intValue($wait['sequence'] ?? null);
+                /** @var WorkflowTimer|null $timer */
+                $timer = $sequence === null ? null : $timersBySequence->get((string) $sequence);
+                $task = $timer?->id === null ? null : ($taskByTimerId[$timer->id] ?? null);
+                $timeoutSeconds = self::intValue($wait['timeout_seconds'] ?? null) ?? $timer?->delay_seconds;
+                $summary = match ($wait['status']) {
+                    'open' => $timeoutSeconds === null
+                        ? 'Waiting for condition.'
+                        : sprintf(
+                            'Waiting for condition or timeout after %s.',
+                            self::durationLabel($timeoutSeconds),
+                        ),
+                    'cancelled' => match ($wait['source_status']) {
+                        'cancelled' => 'Condition wait ended when the run was cancelled.',
+                        'terminated' => 'Condition wait ended when the run was terminated.',
+                        'continued' => 'Condition wait ended when the run continued as new.',
+                        'closed' => 'Condition wait ended when the run closed.',
+                        default => 'Condition wait ended when the run failed.',
+                    },
+                    default => $wait['source_status'] === 'timed_out'
+                        ? sprintf(
+                            'Condition wait timed out after %s.',
+                            self::durationLabel($timeoutSeconds ?? 0),
+                        )
+                        : 'Condition satisfied.',
+                };
+
+                return [
+                    'id' => $wait['condition_wait_id'],
+                    'condition_wait_id' => $wait['condition_wait_id'],
+                    'kind' => 'condition',
+                    'sequence' => $sequence,
+                    'status' => $wait['status'],
+                    'source_status' => $wait['source_status'],
+                    'summary' => $summary,
+                    'opened_at' => $wait['opened_at'],
+                    'deadline_at' => $timer?->fire_at,
+                    'resolved_at' => $wait['resolved_at'],
+                    'target_name' => null,
+                    'target_type' => 'condition',
+                    'task_backed' => self::isOpenTask($task),
+                    'external_only' => true,
+                    'resume_source_kind' => $wait['status'] === 'resolved' && $wait['source_status'] === 'timed_out'
+                        ? 'timer'
+                        : ($timer?->id === null ? 'external_input' : 'timer'),
+                    'resume_source_id' => $wait['status'] === 'resolved' && $wait['source_status'] !== 'timed_out'
+                        ? null
+                        : $timer?->id,
+                    'task_id' => $task?->id,
+                    'task_type' => $task?->task_type?->value,
+                    'task_status' => $task?->status?->value,
+                    'command_id' => null,
+                    'command_sequence' => null,
+                    'command_status' => null,
+                    'command_outcome' => null,
+                    'timeout_seconds' => $timeoutSeconds,
+                ];
+            },
+            $conditionWaits,
+        ));
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     private static function childWaits(WorkflowRun $run): array
@@ -360,6 +449,22 @@ final class RunWaitView
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        return is_string($value) && is_numeric($value)
+            ? (int) $value
+            : null;
+    }
+
+    private static function durationLabel(int $seconds): string
+    {
+        return sprintf('%d second%s', $seconds, $seconds === 1 ? '' : 's');
     }
 
     /**

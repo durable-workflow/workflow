@@ -29,6 +29,8 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\AwaitCall;
+use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\QueryStateReplayer;
@@ -499,8 +501,9 @@ final class WorkflowStub
         /** @var WorkflowFailure|null $failure */
         $failure = null;
         $result = null;
+        $resumeTask = null;
 
-        DB::transaction(function () use ($method, $arguments, &$command, &$failure, &$result): void {
+        DB::transaction(function () use ($method, $arguments, &$command, &$failure, &$result, &$resumeTask): void {
             /** @var WorkflowInstance $instance */
             $instance = WorkflowInstance::query()
                 ->lockForUpdate()
@@ -686,12 +689,33 @@ final class WorkflowStub
                 'last_progress_at' => now(),
             ])->save();
 
+            if (
+                ! $this->hasOpenWorkflowTask($run->id)
+                && ($replayState->current instanceof AwaitCall || $replayState->current instanceof AwaitWithTimeoutCall)
+            ) {
+                /** @var WorkflowTask $resumeTask */
+                $resumeTask = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => now(),
+                    'payload' => [],
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
+                ]);
+            }
+
             RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
             );
         });
 
         $this->refresh();
+
+        if ($resumeTask instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($resumeTask);
+        }
 
         if (! $command instanceof WorkflowCommand) {
             throw new LogicException(sprintf(
@@ -1413,6 +1437,15 @@ final class WorkflowStub
     {
         return WorkflowTask::query()
             ->where('workflow_run_id', $runId)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->exists();
+    }
+
+    private function hasOpenWorkflowTask(string $runId): bool
+    {
+        return WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
             ->exists();
     }

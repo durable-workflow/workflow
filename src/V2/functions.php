@@ -6,6 +6,8 @@ namespace Workflow\V2;
 
 use Carbon\CarbonInterval;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\AwaitCall;
+use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\SideEffectCall;
@@ -16,6 +18,26 @@ if (! function_exists(__NAMESPACE__ . '\\activity')) {
     function activity(string $activity, ...$arguments): ActivityCall
     {
         return new ActivityCall($activity, $arguments);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\await')) {
+    function await(callable $condition): AwaitCall
+    {
+        return new AwaitCall(\Closure::fromCallable($condition));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\awaitWithTimeout')) {
+    function awaitWithTimeout(int|string|CarbonInterval $duration, callable $condition): AwaitWithTimeoutCall
+    {
+        if ($duration instanceof CarbonInterval) {
+            $duration = (int) ceil($duration->totalSeconds);
+        } elseif (is_string($duration)) {
+            $duration = (int) ceil(CarbonInterval::fromString($duration)->totalSeconds);
+        }
+
+        return new AwaitWithTimeoutCall(max(0, $duration), \Closure::fromCallable($condition));
     }
 }
 

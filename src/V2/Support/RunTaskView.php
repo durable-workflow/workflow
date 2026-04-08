@@ -55,6 +55,7 @@ final class RunTaskView
                 static function (WorkflowTask $task) use ($activities, $run, $timers): array {
                     $activityExecutionId = self::stringValue($task->payload['activity_execution_id'] ?? null);
                     $timerId = self::stringValue($task->payload['timer_id'] ?? null);
+                    $conditionWaitId = self::stringValue($task->payload['condition_wait_id'] ?? null);
                     $compatibility = TaskCompatibility::resolve($task, $run);
 
                     /** @var array<string, mixed>|null $activity */
@@ -95,6 +96,7 @@ final class RunTaskView
                         'timer_id' => $timerId,
                         'timer_sequence' => $timer?->sequence,
                         'timer_fire_at' => $timer?->fire_at,
+                        'condition_wait_id' => $conditionWaitId,
                         'created_at' => $task->created_at,
                         'updated_at' => $task->updated_at,
                     ];
@@ -142,13 +144,7 @@ final class RunTaskView
                             : (TaskRepairPolicy::dispatchOverdue($task)
                             ? '%s is waiting for a compatible worker; dispatch is overdue.'
                             : '%s is waiting for a compatible worker.')),
-                    ucfirst($timer?->delay_seconds === null
-                        ? 'timer task'
-                        : sprintf(
-                            'timer for %s second%s task',
-                            $timer->delay_seconds,
-                            $timer->delay_seconds === 1 ? '' : 's'
-                        )),
+                    ucfirst(self::timerLabel($task, $timer) . ' task'),
                 ),
             };
         }
@@ -162,13 +158,7 @@ final class RunTaskView
                 ),
                 TaskType::Timer => sprintf(
                     '%s lease expired; waiting for recovery.',
-                    ucfirst($timer?->delay_seconds === null
-                        ? 'timer task'
-                        : sprintf(
-                            'timer for %s second%s task',
-                            $timer->delay_seconds,
-                            $timer->delay_seconds === 1 ? '' : 's'
-                        )),
+                    ucfirst(self::timerLabel($task, $timer) . ' task'),
                 ),
             };
         }
@@ -182,13 +172,7 @@ final class RunTaskView
                 ),
                 TaskType::Timer => sprintf(
                     '%s dispatch failed; waiting for recovery.',
-                    ucfirst($timer?->delay_seconds === null
-                        ? 'timer task'
-                        : sprintf(
-                            'timer for %s second%s task',
-                            $timer->delay_seconds,
-                            $timer->delay_seconds === 1 ? '' : 's'
-                        )),
+                    ucfirst(self::timerLabel($task, $timer) . ' task'),
                 ),
             };
         }
@@ -202,13 +186,7 @@ final class RunTaskView
                 ),
                 TaskType::Timer => sprintf(
                     '%s is ready but dispatch is overdue.',
-                    ucfirst($timer?->delay_seconds === null
-                        ? 'timer task'
-                        : sprintf(
-                            'timer for %s second%s task',
-                            $timer->delay_seconds,
-                            $timer->delay_seconds === 1 ? '' : 's'
-                        )),
+                    ucfirst(self::timerLabel($task, $timer) . ' task'),
                 ),
             };
         }
@@ -241,9 +219,7 @@ final class RunTaskView
 
     private static function timerSummary(WorkflowTask $task, ?WorkflowTimer $timer): string
     {
-        $label = $timer?->delay_seconds === null
-            ? 'timer'
-            : sprintf('timer for %s second%s', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's');
+        $label = self::timerLabel($task, $timer);
 
         return match ($task->status) {
             TaskStatus::Ready => sprintf('%s task ready.', ucfirst($label)),
@@ -305,6 +281,23 @@ final class RunTaskView
         return self::stringValue($activity['type'] ?? null)
             ?? self::stringValue($activity['class'] ?? null)
             ?? 'activity';
+    }
+
+    private static function timerLabel(WorkflowTask $task, ?WorkflowTimer $timer): string
+    {
+        if (self::stringValue($task->payload['condition_wait_id'] ?? null) !== null) {
+            return $timer?->delay_seconds === null
+                ? 'condition timeout'
+                : sprintf(
+                    'condition timeout for %s second%s',
+                    $timer->delay_seconds,
+                    $timer->delay_seconds === 1 ? '' : 's',
+                );
+        }
+
+        return $timer?->delay_seconds === null
+            ? 'timer'
+            : sprintf('timer for %s second%s', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's');
     }
 
     private static function stringValue(mixed $value): ?string

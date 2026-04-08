@@ -49,17 +49,25 @@ final class RunSummaryProjector
             ? null
             : self::nextOpenTask($run);
 
+        $openConditionWait = $isTerminal || $openActivity !== null || ($nextTask?->task_type === TaskType::Workflow)
+            ? null
+            : self::openConditionWait($run);
+
         $openTimer = $isTerminal
             ? null
             : $run->timers
-                ->first(static fn (WorkflowTimer $timer): bool => $timer->status === TimerStatus::Pending);
+                ->first(
+                    static fn (WorkflowTimer $timer): bool => $timer->status === TimerStatus::Pending
+                        && $timer->id !== ($openConditionWait['timer_id'] ?? null)
+                );
 
-        $openChildWait = $isTerminal || $openActivity !== null || $openTimer !== null || $nextTask !== null
+        $openChildWait = $isTerminal || $openActivity !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
             ? null
             : self::openChildWait($run);
 
         $openSignalWait = $isTerminal
             || $openActivity !== null
+            || $openConditionWait !== null
             || $openTimer !== null
             || $nextTask !== null
             || $openChildWait !== null
@@ -105,6 +113,16 @@ final class RunSummaryProjector
             $openWaitId = sprintf('workflow-task:%s', $nextTask->id);
             $resumeSourceKind = 'workflow_task';
             $resumeSourceId = $nextTask->id;
+        } elseif ($openConditionWait !== null) {
+            $waitKind = 'condition';
+            $waitReason = $openConditionWait['timer_id'] === null
+                ? 'Waiting for condition'
+                : 'Waiting for condition or timeout';
+            $waitStartedAt = $openConditionWait['opened_at'];
+            $waitDeadlineAt = $openConditionWait['deadline_at'];
+            $openWaitId = $openConditionWait['id'];
+            $resumeSourceKind = $openConditionWait['resume_source_kind'];
+            $resumeSourceId = $openConditionWait['resume_source_id'];
         } elseif ($openChildWait !== null) {
             $waitKind = 'child';
             $waitReason = sprintf('Waiting for child workflow %s', $openChildWait['label']);
@@ -125,6 +143,7 @@ final class RunSummaryProjector
             $run,
             $isTerminal,
             $openActivity,
+            $openConditionWait,
             $openTimer,
             $nextTask,
             $openChildWait,
@@ -241,6 +260,7 @@ final class RunSummaryProjector
         WorkflowRun $run,
         bool $isTerminal,
         ?array $openActivity,
+        ?array $openConditionWait,
         ?WorkflowTimer $openTimer,
         ?WorkflowTask $nextTask,
         ?array $openChildWait,
@@ -273,6 +293,36 @@ final class RunSummaryProjector
                     $openActivity['status'] ?? ActivityStatus::Pending->value,
                 ),
             ];
+        }
+
+        if ($openConditionWait !== null) {
+            if ($openConditionWait['timer_id'] !== null) {
+                if ($nextTask !== null) {
+                    if (TaskRepairPolicy::leaseExpired($nextTask) || TaskRepairPolicy::readyTaskNeedsRedispatch(
+                        $nextTask
+                    )) {
+                        return self::taskLiveness($nextTask, $run, 'Condition timeout');
+                    }
+
+                    return [
+                        'waiting_for_condition',
+                        sprintf(
+                            'Waiting for condition-changing input or timeout at %s.',
+                            $openConditionWait['deadline_at']?->toJSON() ?? 'an unknown time',
+                        ),
+                    ];
+                }
+
+                return [
+                    'repair_needed',
+                    sprintf(
+                        'Condition wait %s is open without an open timeout task.',
+                        $openConditionWait['id'],
+                    ),
+                ];
+            }
+
+            return ['waiting_for_condition', 'Waiting for a condition-changing durable input.'];
         }
 
         if ($openTimer !== null) {
@@ -311,6 +361,64 @@ final class RunSummaryProjector
         }
 
         return ['repair_needed', 'Run is non-terminal but has no durable next-resume source.'];
+    }
+
+    /**
+     * @return array{
+     *     id: string,
+     *     opened_at: \Carbon\CarbonInterface|null,
+     *     deadline_at: \Carbon\CarbonInterface|null,
+     *     timer_id: string|null,
+     *     timeout_seconds: int|null,
+     *     resume_source_kind: string,
+     *     resume_source_id: string|null
+     * }|null
+     */
+    private static function openConditionWait(WorkflowRun $run): ?array
+    {
+        $openConditions = array_values(array_filter(
+            ConditionWaits::forRun($run),
+            static fn (array $wait): bool => $wait['status'] === 'open',
+        ));
+
+        if ($openConditions === []) {
+            return null;
+        }
+
+        usort($openConditions, static function (array $left, array $right): int {
+            $leftSequence = $left['sequence'] ?? PHP_INT_MIN;
+            $rightSequence = $right['sequence'] ?? PHP_INT_MIN;
+
+            if ($leftSequence !== $rightSequence) {
+                return $leftSequence <=> $rightSequence;
+            }
+
+            $leftOpenedAt = $left['opened_at']?->getTimestampMs() ?? PHP_INT_MIN;
+            $rightOpenedAt = $right['opened_at']?->getTimestampMs() ?? PHP_INT_MIN;
+
+            if ($leftOpenedAt !== $rightOpenedAt) {
+                return $leftOpenedAt <=> $rightOpenedAt;
+            }
+
+            return $left['condition_wait_id'] <=> $right['condition_wait_id'];
+        });
+
+        /** @var array{id: string, condition_wait_id: string, sequence: int|null, opened_at: \Carbon\CarbonInterface|null, timer_id: string|null, timeout_seconds: int|null} $condition */
+        $condition = end($openConditions);
+        /** @var WorkflowTimer|null $timer */
+        $timer = $condition['sequence'] === null
+            ? null
+            : $run->timers->firstWhere('sequence', $condition['sequence']);
+
+        return [
+            'id' => $condition['condition_wait_id'],
+            'opened_at' => $condition['opened_at'],
+            'deadline_at' => $timer?->fire_at,
+            'timer_id' => $timer?->id ?? $condition['timer_id'],
+            'timeout_seconds' => $timer?->delay_seconds ?? $condition['timeout_seconds'],
+            'resume_source_kind' => $timer?->id === null ? 'external_input' : 'timer',
+            'resume_source_id' => $timer?->id,
+        ];
     }
 
     /**
