@@ -239,7 +239,18 @@ final class WorkflowExecutor
                 $signalCommand = $this->pendingSignalCommand($run, $current);
 
                 if ($signalCommand !== null) {
-                    $signalEvent = $this->applySignal($run, $task, $sequence, $current, $signalCommand);
+                    $signalWaitId = $this->signalWaitIdForCommand($run, $signalCommand, $current->name);
+
+                    $this->recordSignalWait($run, $task, $sequence, $current, $signalWaitId);
+
+                    $signalEvent = $this->applySignal(
+                        $run,
+                        $task,
+                        $sequence,
+                        $current,
+                        $signalCommand,
+                        $signalWaitId,
+                    );
 
                     try {
                         $current = $result->send($this->signalValue($signalEvent));
@@ -649,9 +660,9 @@ final class WorkflowExecutor
         int $sequence,
         SignalCall $signalCall,
         WorkflowCommand $command,
+        string $signalWaitId,
     ): WorkflowHistoryEvent {
         $value = $this->signalPayloadValue($command);
-        $signalWaitId = $this->signalWaitId($run, $command, $signalCall->name);
 
         $command->forceFill([
             'applied_at' => now(),
@@ -671,6 +682,7 @@ final class WorkflowExecutor
         WorkflowTask $task,
         int $sequence,
         SignalCall $signalCall,
+        ?string $signalWaitId = null,
     ): void {
         $alreadyRecorded = $run->historyEvents->contains(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SignalWaitOpened
@@ -684,12 +696,12 @@ final class WorkflowExecutor
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SignalWaitOpened, [
             'signal_name' => $signalCall->name,
-            'signal_wait_id' => (string) Str::ulid(),
+            'signal_wait_id' => $signalWaitId ?? (string) Str::ulid(),
             'sequence' => $sequence,
         ], $task->id);
     }
 
-    private function signalWaitId(WorkflowRun $run, WorkflowCommand $command, string $signalName): ?string
+    private function signalWaitIdForCommand(WorkflowRun $run, WorkflowCommand $command, string $signalName): string
     {
         /** @var WorkflowHistoryEvent|null $receivedEvent */
         $receivedEvent = $run->historyEvents->first(
@@ -701,7 +713,9 @@ final class WorkflowExecutor
             ? null
             : $this->stringValue($receivedEvent->payload['signal_wait_id'] ?? null);
 
-        return $signalWaitId ?? SignalWaits::openWaitIdForName($run, $signalName);
+        return $signalWaitId
+            ?? SignalWaits::openWaitIdForName($run, $signalName)
+            ?? SignalWaits::bufferedWaitIdForCommandId($command->id);
     }
 
     private function stringValue(mixed $value): ?string

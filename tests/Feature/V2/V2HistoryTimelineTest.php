@@ -296,10 +296,6 @@ final class V2HistoryTimelineTest extends TestCase
         $workflow->refresh();
 
         $workflow->signal('message', 'first');
-
-        $this->drainReadyTasks();
-        $workflow->refresh();
-
         $workflow->signal('message', 'second');
 
         $this->drainReadyTasks();

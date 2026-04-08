@@ -1101,6 +1101,65 @@ final class V2WorkflowTest extends TestCase
             ->all());
     }
 
+    public function testBufferedSameNamedSignalsKeepDurableWaitIdsBeforeLaterWaitsOpen(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalOrderingWorkflow::class, 'signal-buffered-wait-ids');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $first = $workflow->signal('message', 'first');
+        $second = $workflow->signal('message', 'second');
+
+        $receivedWaitIds = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalReceived')
+            ->orderBy('sequence')
+            ->get()
+            ->mapWithKeys(static fn (WorkflowHistoryEvent $event): array => [
+                $event->workflow_command_id => $event->payload['signal_wait_id'] ?? null,
+            ]);
+
+        $this->assertSame([$first->commandId(), $second->commandId()], $receivedWaitIds->keys()->all());
+        $this->assertCount(2, array_filter($receivedWaitIds->all(), static fn (?string $waitId): bool => is_string($waitId)));
+        $this->assertNotSame($receivedWaitIds[$first->commandId()], $receivedWaitIds[$second->commandId()]);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+
+        $openedWaitIds = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalWaitOpened')
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): ?string => $event->payload['signal_wait_id'] ?? null)
+            ->all();
+
+        $appliedWaitIds = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'SignalApplied')
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): ?string => $event->payload['signal_wait_id'] ?? null)
+            ->all();
+
+        $this->assertSame(array_values($receivedWaitIds->all()), $openedWaitIds);
+        $this->assertSame($openedWaitIds, $appliedWaitIds);
+        $this->assertSame([
+            'messages' => ['first', 'second'],
+            'workflow_id' => 'signal-buffered-wait-ids',
+            'run_id' => $runId,
+        ], $workflow->output());
+    }
+
     public function testRepeatedSameNamedSignalWaitsUseDurableWaitIds(): void
     {
         Queue::fake();

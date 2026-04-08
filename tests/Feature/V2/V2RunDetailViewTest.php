@@ -301,6 +301,52 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertIsString($signalWaits[1]['signal_wait_id']);
     }
 
+    public function testRunDetailViewPreservesWaitIdsForBufferedSameNamedSignals(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalOrderingWorkflow::class, 'detail-buffered-signal-order');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $firstSignal = $workflow->signal('message', 'first');
+        $secondSignal = $workflow->signal('message', 'second');
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+
+        $detail = RunDetailView::forRun($run);
+        $signalWaits = array_values(array_filter(
+            $detail['waits'],
+            static fn (array $wait): bool => ($wait['kind'] ?? null) === 'signal',
+        ));
+
+        usort(
+            $signalWaits,
+            static fn (array $left, array $right): int => ($left['sequence'] ?? 0) <=> ($right['sequence'] ?? 0)
+        );
+
+        $this->assertCount(2, $signalWaits);
+        $this->assertSame([1, 2], array_column($signalWaits, 'sequence'));
+        $this->assertSame(['resolved', 'resolved'], array_column($signalWaits, 'status'));
+        $this->assertSame(['applied', 'applied'], array_column($signalWaits, 'source_status'));
+        $this->assertSame([$firstSignal->commandId(), $secondSignal->commandId()], array_column($signalWaits, 'command_id'));
+        $this->assertSame([2, 3], array_column($signalWaits, 'command_sequence'));
+        $this->assertNotSame($signalWaits[0]['signal_wait_id'], $signalWaits[1]['signal_wait_id']);
+        $this->assertIsString($signalWaits[0]['signal_wait_id']);
+        $this->assertIsString($signalWaits[1]['signal_wait_id']);
+    }
+
     public function testRunDetailViewIncludesCurrentRunPointerForHistoricalRun(): void
     {
         $instance = WorkflowInstance::query()->create([

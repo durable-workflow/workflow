@@ -814,8 +814,6 @@ final class WorkflowStub
                 return;
             }
 
-            $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name);
-
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Signal->value,
@@ -829,6 +827,8 @@ final class WorkflowStub
                 ]),
                 'accepted_at' => now(),
             ]));
+
+            $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name, $command->id);
 
             WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
                 'workflow_command_id' => $command->id,
@@ -1407,7 +1407,7 @@ final class WorkflowStub
         );
     }
 
-    private function signalWaitIdForAcceptedCommand(WorkflowRun $run, string $name): ?string
+    private function signalWaitIdForAcceptedCommand(WorkflowRun $run, string $name, string $commandId): string
     {
         $hasEarlierPendingSignal = $run->commands->contains(
             static fn (WorkflowCommand $command): bool => $command->command_type === CommandType::Signal
@@ -1417,10 +1417,11 @@ final class WorkflowStub
         );
 
         if ($hasEarlierPendingSignal) {
-            return null;
+            return SignalWaits::bufferedWaitIdForCommandId($commandId);
         }
 
-        return SignalWaits::openWaitIdForName($run, $name);
+        return SignalWaits::openWaitIdForName($run, $name)
+            ?? SignalWaits::bufferedWaitIdForCommandId($commandId);
     }
 
     private function commandTargetScope(): string

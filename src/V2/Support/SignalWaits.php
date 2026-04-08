@@ -10,6 +10,11 @@ use Workflow\V2\Models\WorkflowRun;
 
 final class SignalWaits
 {
+    public static function bufferedWaitIdForCommandId(string $commandId): string
+    {
+        return sprintf('signal-command:%s', $commandId);
+    }
+
     /**
      * @return list<array{
      *     id: string,
