@@ -7,7 +7,6 @@ namespace Workflow\V2\Support;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
-use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
@@ -54,29 +53,8 @@ final class RunDetailView
             && $summary?->liveness_state === 'repair_needed'
             && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
 
-        $activities = $run->activityExecutions
-            ->map(static fn (ActivityExecution $execution): array => [
-                'id' => $execution->id,
-                'sequence' => $execution->sequence,
-                'type' => $execution->activity_type,
-                'class' => $execution->activity_class,
-                'status' => $execution->status->value,
-                'attempt_count' => $execution->attempt_count,
-                'connection' => $execution->connection,
-                'queue' => $execution->queue,
-                'last_heartbeat_at' => $execution->last_heartbeat_at,
-                'created_at' => $execution->created_at,
-                'started_at' => $execution->started_at,
-                'closed_at' => $execution->closed_at,
-                'arguments' => serialize($execution->activityArguments()),
-                'result' => $execution->result === null ? serialize(null) : serialize($execution->activityResult()),
-            ])
-            ->values()
-            ->all();
-
-        $activityClasses = $run->activityExecutions
-            ->keyBy('id')
-            ->map(static fn (ActivityExecution $execution): string => $execution->activity_class);
+        $activities = RunActivityView::activitiesForRun($run);
+        $activityClasses = collect(RunActivityView::classesFromActivities($activities));
         $updateCompletions = $run->historyEvents
             ->filter(
                 static fn ($event): bool => $event->event_type === HistoryEventType::UpdateCompleted
@@ -231,16 +209,7 @@ final class RunDetailView
             'tasks' => $tasks,
             'timeline_scope' => 'selected_run',
             'timeline' => HistoryTimeline::forRun($run),
-            'logs' => $run->activityExecutions->map(
-                static fn (ActivityExecution $execution): array => [
-                    'id' => $execution->id,
-                    'index' => $execution->sequence - 1,
-                    'now' => $execution->started_at ?? $execution->created_at,
-                    'class' => $execution->activity_class,
-                    'result' => $execution->result === null ? serialize(null) : serialize($execution->activityResult()),
-                    'created_at' => $execution->closed_at ?? $execution->updated_at,
-                ]
-            )->values(),
+            'logs' => RunActivityView::logsFromActivities($activities),
             'exceptions' => $run->failures->map(
                 static fn (WorkflowFailure $failure): array => [
                     'id' => $failure->id,
@@ -269,7 +238,7 @@ final class RunDetailView
             )->values(),
             'parents' => RunLineageView::parentsForRun($run),
             'continuedWorkflows' => RunLineageView::continuedWorkflowsForRun($run),
-            'chartData' => self::chartData($run),
+            'chartData' => self::chartData($run, $activities),
         ];
     }
 
@@ -358,7 +327,7 @@ final class RunDetailView
     /**
      * @return list<array<string, mixed>>
      */
-    private static function chartData(WorkflowRun $run): array
+    private static function chartData(WorkflowRun $run, array $activities): array
     {
         $start = self::timestampToMilliseconds($run->started_at ?? $run->created_at);
         $end = self::timestampToMilliseconds($run->closed_at ?? $run->last_progress_at ?? $run->updated_at);
@@ -369,13 +338,19 @@ final class RunDetailView
             'y' => [$start, $end],
         ]];
 
-        foreach ($run->activityExecutions as $execution) {
+        foreach ($activities as $activity) {
             $entries[] = [
-                'x' => $execution->activity_class,
+                'x' => $activity['class'],
                 'type' => 'Activity',
                 'y' => [
-                    self::timestampToMilliseconds($execution->started_at ?? $execution->created_at),
-                    self::timestampToMilliseconds($execution->closed_at ?? $execution->updated_at),
+                    self::timestampToMilliseconds($activity['started_at'] ?? $activity['created_at'] ?? null),
+                    self::timestampToMilliseconds(
+                        $activity['closed_at']
+                        ?? $activity['last_heartbeat_at']
+                        ?? $activity['started_at']
+                        ?? $activity['created_at']
+                        ?? null
+                    ),
                 ],
             ];
         }
@@ -392,9 +367,17 @@ final class RunDetailView
         return serialize(Serializer::unserialize($result));
     }
 
-    private static function timestampToMilliseconds($timestamp): int
+    private static function timestampToMilliseconds(mixed $timestamp): int
     {
-        return $timestamp->getTimestampMs();
+        if ($timestamp instanceof \Carbon\CarbonInterface) {
+            return $timestamp->getTimestampMs();
+        }
+
+        if (is_string($timestamp) && $timestamp !== '') {
+            return \Illuminate\Support\Carbon::parse($timestamp)->getTimestampMs();
+        }
+
+        return 0;
     }
 
     /**

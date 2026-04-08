@@ -456,8 +456,11 @@ final class HistoryTimeline
         ?WorkflowFailure $failure,
     ): ?array
     {
+        $snapshot = ActivitySnapshot::fromEvent($event);
+
         if (
-            $activity === null
+            $snapshot === null
+            && $activity === null
             && $activityId === null
             && ! array_key_exists('activity_type', $payload)
             && ! array_key_exists('activity_class', $payload)
@@ -474,29 +477,40 @@ final class HistoryTimeline
             );
 
         return [
-            'id' => $resolvedActivityId,
-            'sequence' => $activity?->sequence ?? self::intValue($payload['sequence'] ?? null),
-            'type' => $activity?->activity_type ?? self::stringValue($payload['activity_type'] ?? null),
-            'class' => $activity?->activity_class ?? self::stringValue($payload['activity_class'] ?? null),
-            'status' => match ($event->event_type) {
-                HistoryEventType::ActivityScheduled => 'pending',
-                HistoryEventType::ActivityCompleted => 'completed',
-                HistoryEventType::ActivityFailed => 'failed',
-                default => $activity?->status?->value,
-            },
-            'attempt_count' => $event->event_type === HistoryEventType::ActivityScheduled
-                ? ($activity?->attempt_count ?? 1)
-                : $activity?->attempt_count,
-            'connection' => $activity?->connection,
-            'queue' => $activity?->queue,
+            'id' => self::stringValue($snapshot['id'] ?? null)
+                ?? $resolvedActivityId,
+            'sequence' => self::intValue($snapshot['sequence'] ?? null)
+                ?? $activity?->sequence
+                ?? self::intValue($payload['sequence'] ?? null),
+            'type' => self::stringValue($snapshot['type'] ?? null)
+                ?? $activity?->activity_type
+                ?? self::stringValue($payload['activity_type'] ?? null),
+            'class' => self::stringValue($snapshot['class'] ?? null)
+                ?? $activity?->activity_class
+                ?? self::stringValue($payload['activity_class'] ?? null),
+            'status' => self::stringValue($snapshot['status'] ?? null)
+                ?? match ($event->event_type) {
+                    HistoryEventType::ActivityScheduled => 'pending',
+                    HistoryEventType::ActivityCompleted => 'completed',
+                    HistoryEventType::ActivityFailed => 'failed',
+                    default => $activity?->status?->value,
+                },
+            'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null)
+                ?? ($event->event_type === HistoryEventType::ActivityScheduled
+                    ? ($activity?->attempt_count ?? 1)
+                    : $activity?->attempt_count),
+            'connection' => self::stringValue($snapshot['connection'] ?? null)
+                ?? $activity?->connection,
+            'queue' => self::stringValue($snapshot['queue'] ?? null)
+                ?? $activity?->queue,
             'started_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? null
-                : self::timestamp($activity?->started_at),
+                : self::timestamp($activity?->started_at ?? self::stringValue($snapshot['started_at'] ?? null)),
             'closed_at' => in_array($event->event_type, [
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
             ], true)
-                ? self::timestamp($activity?->closed_at)
+                ? self::timestamp($activity?->closed_at ?? self::stringValue($snapshot['closed_at'] ?? null))
                 : null,
         ];
     }

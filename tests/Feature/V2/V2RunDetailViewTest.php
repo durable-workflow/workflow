@@ -189,6 +189,84 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame([1, 1, null, 2, 2, null, null, null], array_column($detail['timeline'], 'command_sequence'));
     }
 
+    public function testRunDetailViewKeepsActivityDetailWhenActivityRowDrifts(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-activity-row-drift');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $workflow->signal('name-provided', 'Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        $execution->forceFill([
+            'activity_class' => 'MutatedActivityClass',
+            'activity_type' => 'mutated.activity',
+            'status' => 'failed',
+            'arguments' => Serializer::serialize(['mutated']),
+            'result' => Serializer::serialize('Mutated'),
+        ])->save();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['class']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
+        $this->assertSame('completed', $detail['activities'][0]['status']);
+        $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
+        $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['logs'][0]['class']);
+        $this->assertSame('Hello, Taylor!', unserialize($detail['logs'][0]['result']));
+        $this->assertSame('Activity', $detail['chartData'][1]['type']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['chartData'][1]['x']);
+    }
+
+    public function testRunDetailViewFallsBackToTypedActivityHistoryWhenActivityRowIsMissing(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-activity-row-missing');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $workflow->signal('name-provided', 'Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+
+        $this->assertCount(1, $detail['activities']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['class']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
+        $this->assertSame('completed', $detail['activities'][0]['status']);
+        $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
+        $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
+        $this->assertCount(1, $detail['logs']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['logs'][0]['class']);
+        $this->assertSame('Hello, Taylor!', unserialize($detail['logs'][0]['result']));
+        $this->assertCount(2, $detail['chartData']);
+        $this->assertSame('Activity', $detail['chartData'][1]['type']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['chartData'][1]['x']);
+    }
+
     public function testRunDetailViewKeepsSignalWaitCommandMetadataWhenCommandRowsDrift(): void
     {
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-history-snapshot');

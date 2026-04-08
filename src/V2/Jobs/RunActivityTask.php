@@ -23,6 +23,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskCompatibility;
@@ -124,6 +125,7 @@ final class RunActivityTask implements ShouldQueue
                     'activity_type' => $lockedExecution->activity_type,
                     'sequence' => $lockedExecution->sequence,
                     'result' => $lockedExecution->result,
+                    'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $task);
             } else {
                 $exceptionPayload = FailureFactory::payload($throwable);
@@ -156,6 +158,7 @@ final class RunActivityTask implements ShouldQueue
                     'message' => $failure->message,
                     'code' => $throwable->getCode(),
                     'exception' => $exceptionPayload,
+                    'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $task);
             }
 

@@ -397,6 +397,7 @@ final class WorkflowExecutor
             'activity_class' => $execution->activity_class,
             'activity_type' => $execution->activity_type,
             'sequence' => $sequence,
+            'activity' => ActivitySnapshot::fromExecution($execution),
         ], $task);
 
         /** @var WorkflowTask $activityTask */
