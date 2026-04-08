@@ -19,6 +19,7 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_relationships'));
         $this->assertTrue(Schema::hasTable('workflow_commands'));
         $this->assertTrue(Schema::hasTable('workflow_links'));
+        $this->assertTrue(Schema::hasTable('activity_attempts'));
         $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_timestamp'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_key'));
@@ -42,5 +43,6 @@ final class MigrationsTest extends TestCase
         $this->assertFalse(Schema::hasTable('workflow_relationships'));
         $this->assertFalse(Schema::hasTable('workflow_commands'));
         $this->assertFalse(Schema::hasTable('workflow_links'));
+        $this->assertFalse(Schema::hasTable('activity_attempts'));
     }
 }

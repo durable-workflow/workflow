@@ -36,6 +36,7 @@ use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -163,8 +164,17 @@ final class V2WorkflowTest extends TestCase
         $execution = ActivityExecution::query()
             ->where('workflow_run_id', $workflow->runId())
             ->firstOrFail();
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()
+            ->where('activity_execution_id', $execution->id)
+            ->firstOrFail();
 
         $this->assertNotNull($execution->last_heartbeat_at);
+        $this->assertSame($execution->current_attempt_id, $attempt->id);
+        $this->assertSame(1, $attempt->attempt_number);
+        $this->assertSame('completed', $attempt->status->value);
+        $this->assertSame($execution->last_heartbeat_at?->jsonSerialize(), $attempt->last_heartbeat_at?->jsonSerialize());
+        $this->assertNotNull($attempt->closed_at);
         $this->assertSame([
             'workflow_id' => $workflow->id(),
             'run_id' => $workflow->runId(),
@@ -226,6 +236,18 @@ final class V2WorkflowTest extends TestCase
                 'started_at' => $startedAt,
             ]);
 
+            $attempt = ActivityAttempt::query()->create([
+                'id' => $attemptId,
+                'workflow_run_id' => $run->id,
+                'activity_execution_id' => $execution->id,
+                'workflow_task_id' => $taskId,
+                'attempt_number' => 1,
+                'status' => 'running',
+                'lease_owner' => 'lease-owner-heartbeat',
+                'started_at' => $startedAt,
+                'lease_expires_at' => ActivityLease::expiresAt(),
+            ]);
+
             $task = WorkflowTask::query()->create([
                 'id' => $taskId,
                 'workflow_run_id' => $run->id,
@@ -263,12 +285,15 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame(1, $activity->attemptCount());
 
             $execution->refresh();
+            $attempt->refresh();
             $task->refresh();
 
             /** @var WorkflowRunSummary $summary */
             $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
             $this->assertSame($heartbeatAt->jsonSerialize(), $execution->last_heartbeat_at?->jsonSerialize());
+            $this->assertSame($heartbeatAt->jsonSerialize(), $attempt->last_heartbeat_at?->jsonSerialize());
+            $this->assertSame($leaseExpiresAt->jsonSerialize(), $attempt->lease_expires_at?->jsonSerialize());
             $this->assertSame($leaseExpiresAt->jsonSerialize(), $task->lease_expires_at?->jsonSerialize());
             $this->assertSame($leaseExpiresAt->jsonSerialize(), $summary->next_task_lease_expires_at?->jsonSerialize());
         } finally {
@@ -2386,12 +2411,18 @@ final class V2WorkflowTest extends TestCase
 
         $task->refresh();
         $execution->refresh();
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()
+            ->where('activity_execution_id', $execution->id)
+            ->firstOrFail();
 
         $this->assertSame(TaskStatus::Leased, $task->status);
         $this->assertSame(2, $task->attempt_count);
         $this->assertSame(ActivityStatus::Running, $execution->status);
         $this->assertSame(2, $execution->attempt_count);
         $this->assertSame('01JTESTATTEMPT000000000002', $execution->current_attempt_id);
+        $this->assertSame('expired', $attempt->status->value);
+        $this->assertNotNull($attempt->closed_at);
         $this->assertSame(1, WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
             ->where('event_type', 'ActivityStarted')

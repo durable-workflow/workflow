@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Illuminate\Support\Facades\DB;
+use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\Traits\ResolvesMethodDependencies;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -86,6 +88,21 @@ abstract class Activity
                 'last_heartbeat_at' => $heartbeatAt,
             ])->save();
 
+            /** @var ActivityAttempt|null $attempt */
+            $attempt = ActivityAttempt::query()
+                ->lockForUpdate()
+                ->find($attemptId);
+
+            if (
+                $attempt instanceof ActivityAttempt
+                && $attempt->activity_execution_id === $execution->id
+                && $attempt->status === ActivityAttemptStatus::Running
+            ) {
+                $attempt->forceFill([
+                    'last_heartbeat_at' => $heartbeatAt,
+                ])->save();
+            }
+
             $this->execution->forceFill([
                 'last_heartbeat_at' => $execution->last_heartbeat_at,
             ]);
@@ -112,6 +129,16 @@ abstract class Activity
             $task->forceFill([
                 'lease_expires_at' => $leaseExpiresAt,
             ])->save();
+
+            if (
+                $attempt instanceof ActivityAttempt
+                && $attempt->activity_execution_id === $execution->id
+                && $attempt->status === ActivityAttemptStatus::Running
+            ) {
+                $attempt->forceFill([
+                    'lease_expires_at' => $leaseExpiresAt,
+                ])->save();
+            }
 
             WorkflowRunSummary::query()
                 ->whereKey($execution->workflow_run_id)

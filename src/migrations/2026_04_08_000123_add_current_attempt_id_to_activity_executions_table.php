@@ -18,6 +18,10 @@ return new class() extends Migration {
 
     public function down(): void
     {
+        if (Schema::getConnection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         Schema::table('activity_executions', static function (Blueprint $table): void {
             $table->dropColumn('current_attempt_id');
         });

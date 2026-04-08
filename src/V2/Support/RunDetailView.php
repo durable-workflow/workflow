@@ -23,7 +23,7 @@ final class RunDetailView
             'summary',
             'commands',
             'tasks',
-            'activityExecutions',
+            'activityExecutions.attempts',
             'timers',
             'failures',
             'historyEvents',

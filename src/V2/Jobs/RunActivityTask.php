@@ -14,11 +14,13 @@ use Illuminate\Support\Str;
 use ReflectionMethod;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -116,6 +118,8 @@ final class RunActivityTask implements ShouldQueue
                 || $lockedExecution->attempt_count !== $attemptCount
                 || $lockedExecution->current_attempt_id !== $attemptId
             ) {
+                self::closeAttemptIfStale($run, $attemptId);
+
                 return null;
             }
 
@@ -124,6 +128,8 @@ final class RunActivityTask implements ShouldQueue
                     'status' => ActivityStatus::Cancelled,
                     'closed_at' => $lockedExecution->closed_at ?? now(),
                 ])->save();
+
+                self::closeAttempt($attemptId, ActivityAttemptStatus::Cancelled);
 
                 $task->forceFill([
                     'status' => $task->status === TaskStatus::Cancelled ? TaskStatus::Cancelled : TaskStatus::Completed,
@@ -150,6 +156,8 @@ final class RunActivityTask implements ShouldQueue
                     'result' => $lockedExecution->result,
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $task);
+
+                self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
             } else {
                 $exceptionPayload = FailureFactory::payload($throwable);
 
@@ -183,6 +191,8 @@ final class RunActivityTask implements ShouldQueue
                     'exception' => $exceptionPayload,
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $task);
+
+                self::closeAttempt($attemptId, ActivityAttemptStatus::Failed);
             }
 
             $task->forceFill([
@@ -268,6 +278,18 @@ final class RunActivityTask implements ShouldQueue
                 'last_heartbeat_at' => null,
             ])->save();
 
+            ActivityAttempt::query()->create([
+                'id' => $attemptId,
+                'workflow_run_id' => $run->id,
+                'activity_execution_id' => $execution->id,
+                'workflow_task_id' => $task->id,
+                'attempt_number' => $attemptCount,
+                'status' => ActivityAttemptStatus::Running->value,
+                'lease_owner' => $task->lease_owner,
+                'started_at' => $execution->started_at ?? now(),
+                'lease_expires_at' => $task->lease_expires_at,
+            ]);
+
             WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, [
                 'activity_execution_id' => $execution->id,
                 'activity_class' => $execution->activity_class,
@@ -284,5 +306,32 @@ final class RunActivityTask implements ShouldQueue
                 'attempt_count' => $attemptCount,
             ];
         });
+    }
+
+    private static function closeAttempt(string $attemptId, ActivityAttemptStatus $status): void
+    {
+        /** @var ActivityAttempt|null $attempt */
+        $attempt = ActivityAttempt::query()
+            ->lockForUpdate()
+            ->find($attemptId);
+
+        if (! $attempt instanceof ActivityAttempt || $attempt->status !== ActivityAttemptStatus::Running) {
+            return;
+        }
+
+        $attempt->forceFill([
+            'status' => $status,
+            'lease_expires_at' => null,
+            'closed_at' => $attempt->closed_at ?? now(),
+        ])->save();
+    }
+
+    private static function closeAttemptIfStale(WorkflowRun $run, string $attemptId): void
+    {
+        $status = in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)
+            ? ActivityAttemptStatus::Cancelled
+            : ActivityAttemptStatus::Expired;
+
+        self::closeAttempt($attemptId, $status);
     }
 }

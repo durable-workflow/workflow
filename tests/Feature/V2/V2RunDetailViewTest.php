@@ -191,6 +191,11 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('completed', $detail['activities'][0]['status']);
         $this->assertSame(1, $detail['activities'][0]['attempt_count']);
         $this->assertSame($execution->current_attempt_id, $detail['activities'][0]['attempt_id']);
+        $this->assertCount(1, $detail['activities'][0]['attempts']);
+        $this->assertSame($execution->current_attempt_id, $detail['activities'][0]['attempts'][0]['id']);
+        $this->assertSame(1, $detail['activities'][0]['attempts'][0]['attempt_number']);
+        $this->assertSame('completed', $detail['activities'][0]['attempts'][0]['status']);
+        $this->assertNotNull($detail['activities'][0]['attempts'][0]['closed_at']);
         $this->assertNotNull($detail['activities'][0]['created_at']);
         $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');

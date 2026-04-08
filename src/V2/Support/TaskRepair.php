@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -58,6 +60,8 @@ final class TaskRepair
             if (! TaskRepairPolicy::leaseExpired($task)) {
                 return null;
             }
+
+            self::closeExpiredActivityAttempt($task);
 
             $task->forceFill([
                 'status' => TaskStatus::Ready,
@@ -178,6 +182,8 @@ final class TaskRepair
 
     private static function settleTerminalTask(WorkflowTask $task, WorkflowRun $run): void
     {
+        self::closeTerminalActivityAttempt($task, $run);
+
         $task->forceFill([
             'status' => $task->status === TaskStatus::Cancelled
                 ? TaskStatus::Cancelled
@@ -188,6 +194,73 @@ final class TaskRepair
             'leased_at' => null,
             'lease_owner' => null,
             'lease_expires_at' => null,
+        ])->save();
+    }
+
+    private static function closeExpiredActivityAttempt(WorkflowTask $task): void
+    {
+        if ($task->task_type !== TaskType::Activity) {
+            return;
+        }
+
+        $execution = self::activityExecutionForTask($task);
+
+        if (! $execution instanceof ActivityExecution || ! is_string($execution->current_attempt_id)) {
+            return;
+        }
+
+        self::closeActivityAttempt($execution->current_attempt_id, ActivityAttemptStatus::Expired);
+    }
+
+    private static function closeTerminalActivityAttempt(WorkflowTask $task, WorkflowRun $run): void
+    {
+        if ($task->task_type !== TaskType::Activity || ! in_array($run->status, [
+            RunStatus::Cancelled,
+            RunStatus::Terminated,
+        ], true)) {
+            return;
+        }
+
+        $execution = self::activityExecutionForTask($task);
+
+        if (! $execution instanceof ActivityExecution || ! is_string($execution->current_attempt_id)) {
+            return;
+        }
+
+        self::closeActivityAttempt($execution->current_attempt_id, ActivityAttemptStatus::Cancelled);
+    }
+
+    private static function activityExecutionForTask(WorkflowTask $task): ?ActivityExecution
+    {
+        $executionId = $task->payload['activity_execution_id'] ?? null;
+
+        if (! is_string($executionId)) {
+            return null;
+        }
+
+        /** @var ActivityExecution|null $execution */
+        $execution = ActivityExecution::query()
+            ->lockForUpdate()
+            ->find($executionId);
+
+        return $execution;
+    }
+
+    private static function closeActivityAttempt(string $attemptId, ActivityAttemptStatus $status): void
+    {
+        /** @var ActivityAttempt|null $attempt */
+        $attempt = ActivityAttempt::query()
+            ->lockForUpdate()
+            ->find($attemptId);
+
+        if (! $attempt instanceof ActivityAttempt || $attempt->status !== ActivityAttemptStatus::Running) {
+            return;
+        }
+
+        $attempt->forceFill([
+            'status' => $status,
+            'lease_expires_at' => null,
+            'closed_at' => $attempt->closed_at ?? now(),
         ])->save();
     }
 }

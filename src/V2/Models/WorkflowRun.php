@@ -65,6 +65,14 @@ class WorkflowRun extends Model
             ->orderBy('sequence');
     }
 
+    public function activityAttempts(): HasMany
+    {
+        return $this->hasMany(ActivityAttempt::class, 'workflow_run_id')
+            ->orderBy('attempt_number')
+            ->oldest('started_at')
+            ->oldest('id');
+    }
+
     public function timers(): HasMany
     {
         return $this->hasMany(WorkflowTimer::class)
