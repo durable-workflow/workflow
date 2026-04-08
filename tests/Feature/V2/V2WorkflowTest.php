@@ -20,6 +20,8 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHeartbeatActivity;
 use Tests\Fixtures\V2\TestHeartbeatWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
+use Tests\Fixtures\V2\TestMixedParallelFailureWorkflow;
+use Tests\Fixtures\V2\TestMixedParallelWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
@@ -1243,6 +1245,133 @@ final class V2WorkflowTest extends TestCase
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame([
             'stage' => 'caught-activity-failure',
+            'message' => 'boom',
+        ], $workflow->output());
+    }
+
+    public function testMixedAllWaitsForChildWhenActivityCompletesFirst(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestMixedParallelWorkflow::class, 'mixed-all-activity-first');
+        $workflow->start('Taylor', 0);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        /** @var WorkflowHistoryEvent $activityScheduled */
+        $activityScheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ActivityScheduled')
+            ->firstOrFail();
+
+        /** @var WorkflowHistoryEvent $childScheduled */
+        $childScheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildWorkflowScheduled')
+            ->firstOrFail();
+
+        $this->assertSame('parallel-calls:1:2', $activityScheduled->payload['parallel_group_id'] ?? null);
+        $this->assertSame('mixed', $activityScheduled->payload['parallel_group_kind'] ?? null);
+        $this->assertSame('parallel-calls:1:2', $childScheduled->payload['parallel_group_id'] ?? null);
+        $this->assertSame('mixed', $childScheduled->payload['parallel_group_kind'] ?? null);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        $this->runReadyTaskForRun($link->child_workflow_run_id, TaskType::Workflow);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame('completed', $workflow->output()['stage'] ?? null);
+        $this->assertSame('Hello, Taylor!', $workflow->output()['results'][0] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $workflow->output()['results'][1]['run_id'] ?? null);
+    }
+
+    public function testMixedAllWaitsForActivityWhenChildCompletesFirst(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestMixedParallelWorkflow::class, 'mixed-all-child-first');
+        $workflow->start('Taylor', 0);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        $this->runReadyTaskForRun($link->child_workflow_run_id, TaskType::Workflow);
+
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame('completed', $workflow->output()['stage'] ?? null);
+        $this->assertSame('Hello, Taylor!', $workflow->output()['results'][0] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $workflow->output()['results'][1]['run_id'] ?? null);
+    }
+
+    public function testMixedAllResumesParentImmediatelyOnActivityFailure(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestMixedParallelFailureWorkflow::class, 'mixed-all-failure');
+        $workflow->start(60);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'caught-mixed-failure',
             'message' => 'boom',
         ], $workflow->output());
     }

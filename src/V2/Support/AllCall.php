@@ -38,13 +38,12 @@ final class AllCall implements YieldedCommand
                 ));
             }
 
-            if ($kind !== null && $kind !== $callKind) {
-                throw new LogicException(
-                    'Workflow\\V2\\all() currently supports homogeneous groups of activity() calls or child() calls. Mixed groups are not yet supported.',
-                );
+            if ($kind === null) {
+                $kind = $callKind;
+            } elseif ($kind !== $callKind) {
+                $kind = 'mixed';
             }
 
-            $kind ??= $callKind;
             $normalized[] = $call;
         }
 

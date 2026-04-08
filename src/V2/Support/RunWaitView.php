@@ -450,6 +450,7 @@ final class RunWaitView
                 'command_sequence' => null,
                 'command_status' => null,
                 'command_outcome' => null,
+                'parallel_group_kind' => $parallelMetadata['parallel_group_kind'] ?? null,
                 'parallel_group_id' => $parallelMetadata['parallel_group_id'] ?? null,
                 'parallel_group_base_sequence' => $parallelMetadata['parallel_group_base_sequence'] ?? null,
                 'parallel_group_size' => $parallelMetadata['parallel_group_size'] ?? null,

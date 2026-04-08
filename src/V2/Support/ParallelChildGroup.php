@@ -138,11 +138,66 @@ final class ParallelChildGroup
         array $metadata,
         RunStatus $closedChildStatus,
     ): bool {
-        if ($closedChildStatus !== RunStatus::Completed) {
+        return self::shouldWakeParentOnClosure($parentRun, $metadata, 'child', $closedChildStatus);
+    }
+
+    public static function shouldWakeParentOnActivityClosure(
+        WorkflowRun $parentRun,
+        array $metadata,
+        ActivityStatus $closedActivityStatus,
+    ): bool {
+        return self::shouldWakeParentOnClosure($parentRun, $metadata, 'activity', $closedActivityStatus);
+    }
+
+    /**
+     * @param array{
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int
+     * } $metadata
+     */
+    private static function shouldWakeParentOnClosure(
+        WorkflowRun $parentRun,
+        array $metadata,
+        string $closedKind,
+        ActivityStatus|RunStatus $closedStatus,
+    ): bool {
+        if (
+            ($closedKind === 'activity' && $closedStatus !== ActivityStatus::Completed)
+            || ($closedKind === 'child' && $closedStatus !== RunStatus::Completed)
+        ) {
             return true;
         }
 
+        $parentRun->unsetRelation('historyEvents');
+        $parentRun->unsetRelation('activityExecutions');
+        $parentRun->unsetRelation('childLinks');
+
+        $activitiesBySequence = collect(RunActivityView::activitiesForRun($parentRun))
+            ->filter(static fn (array $activity): bool => is_int($activity['sequence'] ?? null))
+            ->keyBy(static fn (array $activity): string => (string) $activity['sequence']);
+
         foreach (self::sequences($metadata) as $sequence) {
+            $activity = $activitiesBySequence->get((string) $sequence);
+
+            if (is_array($activity)) {
+                $status = is_string($activity['status'] ?? null)
+                    ? $activity['status']
+                    : null;
+
+                if ($status === null || in_array($status, [
+                    ActivityStatus::Pending->value,
+                    ActivityStatus::Running->value,
+                ], true)) {
+                    return false;
+                }
+
+                if ($status !== ActivityStatus::Completed->value) {
+                    return true;
+                }
+
+                continue;
+            }
+
             $childRun = ChildRunHistory::childRunForSequence($parentRun, $sequence);
             $childStatus = ChildRunHistory::resolvedStatus(
                 ChildRunHistory::resolutionEventForSequence($parentRun, $sequence),
@@ -158,43 +213,6 @@ final class ParallelChildGroup
             }
 
             if ($childStatus !== RunStatus::Completed) {
-                return true;
-            }
-        }
-
-        return true;
-    }
-
-    public static function shouldWakeParentOnActivityClosure(
-        WorkflowRun $parentRun,
-        array $metadata,
-        ActivityStatus $closedActivityStatus,
-    ): bool {
-        if ($closedActivityStatus !== ActivityStatus::Completed) {
-            return true;
-        }
-
-        $parentRun->unsetRelation('historyEvents');
-        $parentRun->unsetRelation('activityExecutions');
-
-        $activitiesBySequence = collect(RunActivityView::activitiesForRun($parentRun))
-            ->filter(static fn (array $activity): bool => is_int($activity['sequence'] ?? null))
-            ->keyBy(static fn (array $activity): string => (string) $activity['sequence']);
-
-        foreach (self::sequences($metadata) as $sequence) {
-            $activity = $activitiesBySequence->get((string) $sequence);
-            $status = is_string($activity['status'] ?? null)
-                ? $activity['status']
-                : null;
-
-            if ($status === null || in_array($status, [
-                ActivityStatus::Pending->value,
-                ActivityStatus::Running->value,
-            ], true)) {
-                return false;
-            }
-
-            if ($status !== ActivityStatus::Completed->value) {
                 return true;
             }
         }

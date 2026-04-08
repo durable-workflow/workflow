@@ -518,20 +518,18 @@ final class WorkflowExecutor
                     continue;
                 }
 
-                if ($current->kind === 'activity') {
-                    $scheduledTasks = [];
-                    $pending = false;
-                    $results = [];
-                    $failure = null;
-                    $groupSize = count($current->calls);
+                $scheduledTasks = [];
+                $pending = false;
+                $results = [];
+                $failure = null;
+                $groupSize = count($current->calls);
+                $groupKind = $current->kind ?? 'activity';
 
-                    foreach ($current->calls as $index => $activityCall) {
-                        if (! $activityCall instanceof ActivityCall) {
-                            continue;
-                        }
+                foreach ($current->calls as $index => $call) {
+                    $itemSequence = $sequence + $index;
+                    $parallelMetadata = ParallelChildGroup::itemMetadata($sequence, $groupSize, $index, $groupKind);
 
-                        $itemSequence = $sequence + $index;
-                        $parallelMetadata = ParallelChildGroup::itemMetadata($sequence, $groupSize, $index, 'activity');
+                    if ($call instanceof ActivityCall) {
                         $activityCompletion = $this->activityCompletionEvent($run, $itemSequence);
 
                         if ($activityCompletion !== null) {
@@ -561,7 +559,7 @@ final class WorkflowExecutor
                                 $run,
                                 $task,
                                 $itemSequence,
-                                $activityCall,
+                                $call,
                                 $parallelMetadata,
                                 false,
                             );
@@ -591,56 +589,17 @@ final class WorkflowExecutor
                             $this->activityException(null, $execution, $run),
                             $execution->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
                         );
-                    }
-
-                    if ($failure !== null) {
-                        try {
-                            $current = $result->throw($failure['exception']);
-                        } catch (Throwable $throwable) {
-                            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-
-                            return null;
-                        }
-
-                        $sequence += $groupSize;
 
                         continue;
                     }
 
-                    if (! $pending) {
-                        ksort($results);
-
-                        try {
-                            $current = $result->send(array_values($results));
-                        } catch (Throwable $throwable) {
-                            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-
-                            return null;
-                        }
-
-                        $sequence += $groupSize;
-
-                        continue;
+                    if (! $call instanceof ChildWorkflowCall) {
+                        throw new LogicException(sprintf(
+                            'Workflow\\V2\\all() encountered unsupported call [%s].',
+                            get_debug_type($call),
+                        ));
                     }
 
-                    $this->markRunWaiting($run, $task);
-
-                    foreach ($scheduledTasks as $scheduledTask) {
-                        TaskDispatcher::dispatch($scheduledTask);
-                    }
-
-                    return null;
-                }
-
-                $scheduledTasks = [];
-                $pending = false;
-                $results = [];
-                $failure = null;
-                $groupSize = count($current->calls);
-
-                foreach ($current->calls as $index => $childCall) {
-                    $itemSequence = $sequence + $index;
-                    $parallelMetadata = ParallelChildGroup::itemMetadata($sequence, $groupSize, $index);
                     $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $itemSequence);
                     $childRun = ChildRunHistory::childRunForSequence($run, $itemSequence);
 
@@ -689,7 +648,7 @@ final class WorkflowExecutor
                             $run,
                             $task,
                             $itemSequence,
-                            $childCall,
+                            $call,
                             $parallelMetadata,
                             false,
                         );

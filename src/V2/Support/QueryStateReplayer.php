@@ -255,18 +255,15 @@ final class QueryStateReplayer
                     continue;
                 }
 
-                if ($current->kind === 'activity') {
-                    $pending = false;
-                    $results = [];
-                    $failure = null;
-                    $groupSize = count($current->calls);
+                $pending = false;
+                $results = [];
+                $failure = null;
+                $groupSize = count($current->calls);
 
-                    foreach ($current->calls as $index => $activityCall) {
-                        if (! $activityCall instanceof ActivityCall) {
-                            continue;
-                        }
+                foreach ($current->calls as $index => $call) {
+                    $itemSequence = $sequence + $index;
 
-                        $itemSequence = $sequence + $index;
+                    if ($call instanceof ActivityCall) {
                         $activityCompletion = $this->activityCompletionEvent($run, $itemSequence);
 
                         if ($activityCompletion !== null) {
@@ -318,33 +315,17 @@ final class QueryStateReplayer
                             $this->activityException(null, $execution, $run),
                             $execution->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
                         );
-                    }
-
-                    if ($failure !== null) {
-                        $current = $result->throw($failure['exception']);
-                        $sequence += $groupSize;
 
                         continue;
                     }
 
-                    if ($pending) {
-                        return new ReplayState($workflow, $sequence, $current);
+                    if (! $call instanceof ChildWorkflowCall) {
+                        throw new LogicException(sprintf(
+                            'Workflow\\V2\\all() encountered unsupported call [%s].',
+                            get_debug_type($call),
+                        ));
                     }
 
-                    ksort($results);
-                    $current = $result->send(array_values($results));
-                    $sequence += $groupSize;
-
-                    continue;
-                }
-
-                $pending = false;
-                $results = [];
-                $failure = null;
-                $groupSize = count($current->calls);
-
-                foreach ($current->calls as $index => $childCall) {
-                    $itemSequence = $sequence + $index;
                     $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $itemSequence);
                     $childRun = ChildRunHistory::childRunForSequence($run, $itemSequence);
 

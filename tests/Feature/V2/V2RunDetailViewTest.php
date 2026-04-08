@@ -9,6 +9,7 @@ use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
+use Tests\Fixtures\V2\TestMixedParallelWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
@@ -1176,6 +1177,8 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertCount(2, $childWaits);
         $this->assertSame('parallel-children:1:2', $childWaits[0]['parallel_group_id']);
         $this->assertSame('parallel-children:1:2', $childWaits[1]['parallel_group_id']);
+        $this->assertSame('child', $childWaits[0]['parallel_group_kind']);
+        $this->assertSame('child', $childWaits[1]['parallel_group_kind']);
         $this->assertSame(2, $childWaits[0]['parallel_group_size']);
         $this->assertSame(2, $childWaits[1]['parallel_group_size']);
         $this->assertSame(0, $childWaits[0]['parallel_group_index']);
@@ -1213,6 +1216,39 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(2, $activityWaits[1]['parallel_group_size']);
         $this->assertSame(0, $activityWaits[0]['parallel_group_index']);
         $this->assertSame(1, $activityWaits[1]['parallel_group_index']);
+    }
+
+    public function testRunDetailViewCountsOpenMixedBarrierWaitsAndExposesMixedGroupMetadata(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestMixedParallelWorkflow::class, 'detail-mixed-barrier');
+        $workflow->start('Taylor', 60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runNextReadyTask();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $openWaits = array_values(array_filter(
+            $detail['waits'],
+            static fn (array $wait): bool => ($wait['status'] ?? null) === 'open',
+        ));
+
+        $this->assertSame('activity', $detail['wait_kind']);
+        $this->assertSame(2, $detail['open_wait_count']);
+        $this->assertCount(2, $openWaits);
+        $this->assertSame('parallel-calls:1:2', $openWaits[0]['parallel_group_id']);
+        $this->assertSame('parallel-calls:1:2', $openWaits[1]['parallel_group_id']);
+        $this->assertSame('mixed', $openWaits[0]['parallel_group_kind']);
+        $this->assertSame('mixed', $openWaits[1]['parallel_group_kind']);
+        $this->assertSame(2, $openWaits[0]['parallel_group_size']);
+        $this->assertSame(2, $openWaits[1]['parallel_group_size']);
+        $this->assertSame([0, 1], array_column($openWaits, 'parallel_group_index'));
+        $this->assertSame(['activity', 'child'], array_column($openWaits, 'kind'));
     }
 
     public function testRunDetailViewIncludesTaskBackedTimerWaitForSelectedRun(): void

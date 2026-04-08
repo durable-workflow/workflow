@@ -10,6 +10,8 @@ use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
+use Tests\Fixtures\V2\TestMixedParallelFailureWorkflow;
+use Tests\Fixtures\V2\TestMixedParallelWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
@@ -488,6 +490,43 @@ final class V2QueryWorkflowTest extends TestCase
 
         $this->assertSame([
             'stage' => 'caught-activity-failure',
+            'message' => 'boom',
+        ], $workflow->currentState());
+    }
+
+    public function testQueriesKeepMixedAllWaitingUntilEveryMemberCompletes(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestMixedParallelWorkflow::class, 'query-mixed-parallel');
+        $workflow->start('Taylor', 0);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-mixed-group',
+        ], $workflow->currentState());
+    }
+
+    public function testQueriesReplayMixedFailureBeforeParentWorkflowTaskRuns(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestMixedParallelFailureWorkflow::class, 'query-mixed-parallel-failure');
+        $workflow->start(60);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame([
+            'stage' => 'caught-mixed-failure',
             'message' => 'boom',
         ], $workflow->currentState());
     }

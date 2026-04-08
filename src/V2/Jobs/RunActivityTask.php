@@ -236,7 +236,6 @@ final class RunActivityTask implements ShouldQueue
 
             if (
                 $parallelMetadata !== null
-                && ($parallelMetadata['parallel_group_kind'] ?? null) === 'activity'
                 && ! \Workflow\V2\Support\ParallelChildGroup::shouldWakeParentOnActivityClosure(
                     $run,
                     $parallelMetadata,
