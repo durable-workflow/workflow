@@ -171,6 +171,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::SideEffectRecorded => 'side_effect',
             HistoryEventType::TimerScheduled,
             HistoryEventType::TimerFired => 'timer',
             default => 'workflow',
@@ -265,6 +266,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityFailed => $message === null
                 ? sprintf('Failed %s.', $activityLabel)
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
+            HistoryEventType::SideEffectRecorded => 'Recorded side effect.',
             HistoryEventType::TimerScheduled => $delaySeconds === null
                 ? 'Scheduled timer.'
                 : sprintf('Scheduled timer for %s.', self::durationLabel($delaySeconds)),

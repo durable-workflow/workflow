@@ -11,6 +11,7 @@ use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
+use Tests\Fixtures\V2\TestSideEffectWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -35,6 +36,13 @@ use Workflow\V2\WorkflowStub;
 
 final class V2HistoryTimelineTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        TestSideEffectWorkflow::resetCounter();
+
+        parent::tearDown();
+    }
+
     public function testTimelineIncludesTypedActivityEntriesForCompletedRun(): void
     {
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'timeline-greeting');
@@ -520,6 +528,49 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('workflow', $timeline[0]['task']['type']);
         $this->assertSame('ready', $timeline[0]['task']['status']);
         $this->assertNull($timeline[0]['task']['attempt_count']);
+    }
+
+    public function testTimelineIncludesTypedSideEffectEntriesForWaitingRun(): void
+    {
+        Queue::fake();
+
+        TestSideEffectWorkflow::resetCounter();
+
+        $workflow = WorkflowStub::make(TestSideEffectWorkflow::class, 'timeline-side-effect');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+
+        $timeline = HistoryTimeline::forRun($run);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SideEffectRecorded',
+            'SignalWaitOpened',
+        ], array_column($timeline, 'type'));
+
+        $this->assertSame('side_effect', $timeline[2]['kind']);
+        $this->assertSame('workflow_run', $timeline[2]['source_kind']);
+        $this->assertSame($runId, $timeline[2]['source_id']);
+        $this->assertSame('Recorded side effect.', $timeline[2]['summary']);
+        $this->assertSame(1, $timeline[2]['workflow_sequence']);
+        $this->assertNull($timeline[2]['command']);
+        $this->assertSame('workflow', $timeline[2]['task']['type']);
+        $this->assertSame('completed', $timeline[2]['task']['status']);
+        $this->assertNull($timeline[2]['activity']);
+        $this->assertNull($timeline[2]['timer']);
+
+        $this->assertSame('signal', $timeline[3]['kind']);
+        $this->assertSame('Waiting for signal finish.', $timeline[3]['summary']);
+        $this->assertSame(2, $timeline[3]['workflow_sequence']);
     }
 
     private function waitFor(callable $condition): void

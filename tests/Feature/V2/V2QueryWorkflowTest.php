@@ -12,6 +12,7 @@ use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
+use Tests\Fixtures\V2\TestSideEffectWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
@@ -34,6 +35,13 @@ use Workflow\V2\WorkflowStub;
 
 final class V2QueryWorkflowTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        TestSideEffectWorkflow::resetCounter();
+
+        parent::tearDown();
+    }
+
     public function testQueriesReplayCommittedHistoryAndForwardArguments(): void
     {
         Queue::fake();
@@ -120,6 +128,39 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame($currentRun->id, $resolved->currentRunId());
         $this->assertTrue($resolved->currentRunIsSelected());
         $this->assertSame(1, $resolved->currentCount());
+    }
+
+    public function testQueriesReuseRecordedSideEffectsWithoutReExecutingClosures(): void
+    {
+        Queue::fake();
+
+        TestSideEffectWorkflow::resetCounter();
+
+        $workflow = WorkflowStub::make(TestSideEffectWorkflow::class, 'query-side-effect');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame('waiting-for-finish', $workflow->currentStage());
+        $this->assertSame(1, $workflow->currentToken());
+        $this->assertSame(1, TestSideEffectWorkflow::sideEffectExecutions());
+
+        $this->assertSame(1, $workflow->query('currentToken'));
+        $this->assertSame('waiting-for-finish', $workflow->query('currentStage'));
+        $this->assertSame(1, TestSideEffectWorkflow::sideEffectExecutions());
+
+        $workflow->signal('finish', 'done');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(1, TestSideEffectWorkflow::sideEffectExecutions());
+        $this->assertSame([
+            'token' => 1,
+            'finish' => 'done',
+            'workflow_id' => 'query-side-effect',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
     }
 
     public function testQueriesAndResumeUseTypedActivityFailureHistoryWhenMutableRowsDrift(): void

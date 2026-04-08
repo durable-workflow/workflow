@@ -163,6 +163,27 @@ final class WorkflowExecutor
                 continue;
             }
 
+            if ($current instanceof SideEffectCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                $sideEffectEvent = $this->sideEffectEvent($run, $sequence);
+
+                try {
+                    if ($sideEffectEvent === null) {
+                        $sideEffectEvent = $this->recordSideEffect($run, $task, $sequence, $current);
+                    }
+
+                    $current = $result->send($this->sideEffectResult($sideEffectEvent));
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
+                ++$sequence;
+                continue;
+            }
+
             if ($current instanceof TimerCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
@@ -341,7 +362,7 @@ final class WorkflowExecutor
                 $run,
                 $task,
                 new UnsupportedWorkflowYieldException(sprintf(
-                    'Workflow %s yielded %s. v2 currently supports activity(), child(), timer(), awaitSignal(), and continueAsNew() only.',
+                    'Workflow %s yielded %s. v2 currently supports activity(), child(), sideEffect(), timer(), awaitSignal(), and continueAsNew() only.',
                     $run->workflow_class,
                     get_debug_type($current),
                 )),
@@ -1189,6 +1210,17 @@ final class WorkflowExecutor
         return Serializer::unserialize($serialized);
     }
 
+    private function sideEffectResult(WorkflowHistoryEvent $event): mixed
+    {
+        $serialized = $event->payload['result'] ?? null;
+
+        if (! is_string($serialized)) {
+            return null;
+        }
+
+        return Serializer::unserialize($serialized);
+    }
+
     private function activityCompletionEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
         /** @var WorkflowHistoryEvent|null $event */
@@ -1199,6 +1231,40 @@ final class WorkflowExecutor
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
         );
+
+        return $event;
+    }
+
+    private function sideEffectEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SideEffectRecorded
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function recordSideEffect(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        SideEffectCall $sideEffectCall,
+    ): WorkflowHistoryEvent {
+        $result = ($sideEffectCall->callback)();
+
+        $event = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::SideEffectRecorded,
+            [
+                'sequence' => $sequence,
+                'result' => Serializer::serialize($result),
+            ],
+            $task,
+        );
+
+        $run->historyEvents->push($event);
 
         return $event;
     }
