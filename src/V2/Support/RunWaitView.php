@@ -148,6 +148,11 @@ final class RunWaitView
             'command_sequence' => null,
             'command_status' => null,
             'command_outcome' => null,
+            'parallel_group_kind' => $activity['parallel_group_kind'] ?? null,
+            'parallel_group_id' => $activity['parallel_group_id'] ?? null,
+            'parallel_group_base_sequence' => $activity['parallel_group_base_sequence'] ?? null,
+            'parallel_group_size' => $activity['parallel_group_size'] ?? null,
+            'parallel_group_index' => $activity['parallel_group_index'] ?? null,
         ];
     }
 

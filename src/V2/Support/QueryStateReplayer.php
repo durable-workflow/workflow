@@ -255,6 +255,89 @@ final class QueryStateReplayer
                     continue;
                 }
 
+                if ($current->kind === 'activity') {
+                    $pending = false;
+                    $results = [];
+                    $failure = null;
+                    $groupSize = count($current->calls);
+
+                    foreach ($current->calls as $index => $activityCall) {
+                        if (! $activityCall instanceof ActivityCall) {
+                            continue;
+                        }
+
+                        $itemSequence = $sequence + $index;
+                        $activityCompletion = $this->activityCompletionEvent($run, $itemSequence);
+
+                        if ($activityCompletion !== null) {
+                            if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
+                                $results[$index] = $this->activityResult($activityCompletion);
+
+                                continue;
+                            }
+
+                            $failure = $this->selectParallelFailure(
+                                $failure,
+                                $index,
+                                $this->activityException($activityCompletion, null, $run),
+                                $activityCompletion->recorded_at?->getTimestampMs()
+                                    ?? $activityCompletion->created_at?->getTimestampMs()
+                                    ?? PHP_INT_MAX,
+                            );
+
+                            continue;
+                        }
+
+                        /** @var ActivityExecution|null $execution */
+                        $execution = $run->activityExecutions->firstWhere('sequence', $itemSequence);
+
+                        if (! $execution instanceof ActivityExecution) {
+                            $pending = true;
+
+                            continue;
+                        }
+
+                        if (in_array($execution->status, [
+                            ActivityStatus::Pending,
+                            ActivityStatus::Running,
+                        ], true)) {
+                            $pending = true;
+
+                            continue;
+                        }
+
+                        if ($execution->status === ActivityStatus::Completed) {
+                            $results[$index] = $execution->activityResult();
+
+                            continue;
+                        }
+
+                        $failure = $this->selectParallelFailure(
+                            $failure,
+                            $index,
+                            $this->activityException(null, $execution, $run),
+                            $execution->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
+                        );
+                    }
+
+                    if ($failure !== null) {
+                        $current = $result->throw($failure['exception']);
+                        $sequence += $groupSize;
+
+                        continue;
+                    }
+
+                    if ($pending) {
+                        return new ReplayState($workflow, $sequence, $current);
+                    }
+
+                    ksort($results);
+                    $current = $result->send(array_values($results));
+                    $sequence += $groupSize;
+
+                    continue;
+                }
+
                 $pending = false;
                 $results = [];
                 $failure = null;
@@ -272,7 +355,7 @@ final class QueryStateReplayer
                             continue;
                         }
 
-                        $failure = $this->selectParallelChildFailure(
+                        $failure = $this->selectParallelFailure(
                             $failure,
                             $index,
                             ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
@@ -308,7 +391,7 @@ final class QueryStateReplayer
                         continue;
                     }
 
-                    $failure = $this->selectParallelChildFailure(
+                    $failure = $this->selectParallelFailure(
                         $failure,
                         $index,
                         ChildRunHistory::exceptionForChildRun($childRun),
@@ -350,7 +433,7 @@ final class QueryStateReplayer
      * @param array{index: int, exception: Throwable, recorded_at: int}|null $currentFailure
      * @return array{index: int, exception: Throwable, recorded_at: int}
      */
-    private function selectParallelChildFailure(
+    private function selectParallelFailure(
         ?array $currentFailure,
         int $index,
         Throwable $exception,

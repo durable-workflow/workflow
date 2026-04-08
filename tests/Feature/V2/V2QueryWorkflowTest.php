@@ -10,6 +10,8 @@ use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
+use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
+use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
@@ -449,6 +451,43 @@ final class V2QueryWorkflowTest extends TestCase
 
         $this->assertSame([
             'stage' => 'caught-child-failure',
+            'message' => 'boom',
+        ], $workflow->currentState());
+    }
+
+    public function testQueriesKeepParallelActivityAllWaitingUntilEveryActivityCompletes(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelActivityWorkflow::class, 'query-parallel-activities');
+        $workflow->start('Taylor', 'Abigail');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-activities',
+        ], $workflow->currentState());
+    }
+
+    public function testQueriesReplayParallelActivityFailureBeforeParentWorkflowTaskRuns(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelActivityFailureWorkflow::class, 'query-parallel-activity-failure');
+        $workflow->start('Taylor');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame([
+            'stage' => 'caught-activity-failure',
             'message' => 'boom',
         ], $workflow->currentState());
     }

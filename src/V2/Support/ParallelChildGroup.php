@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -14,15 +15,17 @@ final class ParallelChildGroup
     /**
      * @return array{
      *     parallel_group_id: string,
+     *     parallel_group_kind: string,
      *     parallel_group_base_sequence: int,
      *     parallel_group_size: int,
      *     parallel_group_index: int
      * }
      */
-    public static function itemMetadata(int $baseSequence, int $size, int $index): array
+    public static function itemMetadata(int $baseSequence, int $size, int $index, string $kind = 'child'): array
     {
         return [
-            'parallel_group_id' => self::groupId($baseSequence, $size),
+            'parallel_group_id' => self::groupId($kind, $baseSequence, $size),
+            'parallel_group_kind' => $kind,
             'parallel_group_base_sequence' => $baseSequence,
             'parallel_group_size' => $size,
             'parallel_group_index' => $index,
@@ -32,6 +35,7 @@ final class ParallelChildGroup
     /**
      * @return array{
      *     parallel_group_id: string,
+     *     parallel_group_kind: string,
      *     parallel_group_base_sequence: int,
      *     parallel_group_size: int,
      *     parallel_group_index: int
@@ -44,6 +48,10 @@ final class ParallelChildGroup
             static fn (WorkflowHistoryEvent $event): bool => in_array(
                 $event->event_type,
                 [
+                    HistoryEventType::ActivityScheduled,
+                    HistoryEventType::ActivityStarted,
+                    HistoryEventType::ActivityCompleted,
+                    HistoryEventType::ActivityFailed,
                     HistoryEventType::ChildWorkflowScheduled,
                     HistoryEventType::ChildRunStarted,
                     HistoryEventType::ChildRunCompleted,
@@ -67,6 +75,7 @@ final class ParallelChildGroup
      * @param array<string, mixed> $payload
      * @return array{
      *     parallel_group_id: string,
+     *     parallel_group_kind: string,
      *     parallel_group_base_sequence: int,
      *     parallel_group_size: int,
      *     parallel_group_index: int
@@ -77,6 +86,9 @@ final class ParallelChildGroup
         $groupId = is_string($payload['parallel_group_id'] ?? null)
             ? $payload['parallel_group_id']
             : null;
+        $kind = is_string($payload['parallel_group_kind'] ?? null)
+            ? $payload['parallel_group_kind']
+            : self::kindFromGroupId($groupId);
         $baseSequence = is_int($payload['parallel_group_base_sequence'] ?? null)
             ? $payload['parallel_group_base_sequence']
             : null;
@@ -87,12 +99,13 @@ final class ParallelChildGroup
             ? $payload['parallel_group_index']
             : null;
 
-        if ($groupId === null || $baseSequence === null || $size === null || $index === null || $size < 1) {
+        if ($groupId === null || $kind === null || $baseSequence === null || $size === null || $index === null || $size < 1) {
             return null;
         }
 
         return [
             'parallel_group_id' => $groupId,
+            'parallel_group_kind' => $kind,
             'parallel_group_base_sequence' => $baseSequence,
             'parallel_group_size' => $size,
             'parallel_group_index' => $index,
@@ -152,8 +165,62 @@ final class ParallelChildGroup
         return true;
     }
 
-    private static function groupId(int $baseSequence, int $size): string
+    public static function shouldWakeParentOnActivityClosure(
+        WorkflowRun $parentRun,
+        array $metadata,
+        ActivityStatus $closedActivityStatus,
+    ): bool {
+        if ($closedActivityStatus !== ActivityStatus::Completed) {
+            return true;
+        }
+
+        $parentRun->unsetRelation('historyEvents');
+        $parentRun->unsetRelation('activityExecutions');
+
+        $activitiesBySequence = collect(RunActivityView::activitiesForRun($parentRun))
+            ->filter(static fn (array $activity): bool => is_int($activity['sequence'] ?? null))
+            ->keyBy(static fn (array $activity): string => (string) $activity['sequence']);
+
+        foreach (self::sequences($metadata) as $sequence) {
+            $activity = $activitiesBySequence->get((string) $sequence);
+            $status = is_string($activity['status'] ?? null)
+                ? $activity['status']
+                : null;
+
+            if ($status === null || in_array($status, [
+                ActivityStatus::Pending->value,
+                ActivityStatus::Running->value,
+            ], true)) {
+                return false;
+            }
+
+            if ($status !== ActivityStatus::Completed->value) {
+                return true;
+            }
+        }
+
+        return true;
+    }
+
+    private static function groupId(string $kind, int $baseSequence, int $size): string
     {
-        return sprintf('parallel-children:%d:%d', $baseSequence, $size);
+        $prefix = match ($kind) {
+            'activity' => 'parallel-activities',
+            'mixed' => 'parallel-calls',
+            default => 'parallel-children',
+        };
+
+        return sprintf('%s:%d:%d', $prefix, $baseSequence, $size);
+    }
+
+    private static function kindFromGroupId(?string $groupId): ?string
+    {
+        return match (true) {
+            $groupId === null => null,
+            str_starts_with($groupId, 'parallel-activities:') => 'activity',
+            str_starts_with($groupId, 'parallel-calls:') => 'mixed',
+            str_starts_with($groupId, 'parallel-children:') => 'child',
+            default => null,
+        };
     }
 }

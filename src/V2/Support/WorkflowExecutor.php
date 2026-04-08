@@ -518,6 +518,120 @@ final class WorkflowExecutor
                     continue;
                 }
 
+                if ($current->kind === 'activity') {
+                    $scheduledTasks = [];
+                    $pending = false;
+                    $results = [];
+                    $failure = null;
+                    $groupSize = count($current->calls);
+
+                    foreach ($current->calls as $index => $activityCall) {
+                        if (! $activityCall instanceof ActivityCall) {
+                            continue;
+                        }
+
+                        $itemSequence = $sequence + $index;
+                        $parallelMetadata = ParallelChildGroup::itemMetadata($sequence, $groupSize, $index, 'activity');
+                        $activityCompletion = $this->activityCompletionEvent($run, $itemSequence);
+
+                        if ($activityCompletion !== null) {
+                            if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
+                                $results[$index] = $this->activityResult($activityCompletion);
+
+                                continue;
+                            }
+
+                            $failure = $this->selectParallelFailure(
+                                $failure,
+                                $index,
+                                $this->activityException($activityCompletion, null, $run),
+                                $activityCompletion->recorded_at?->getTimestampMs()
+                                    ?? $activityCompletion->created_at?->getTimestampMs()
+                                    ?? PHP_INT_MAX,
+                            );
+
+                            continue;
+                        }
+
+                        /** @var ActivityExecution|null $execution */
+                        $execution = $run->activityExecutions->firstWhere('sequence', $itemSequence);
+
+                        if (! $execution instanceof ActivityExecution) {
+                            $scheduledTasks[] = $this->scheduleActivity(
+                                $run,
+                                $task,
+                                $itemSequence,
+                                $activityCall,
+                                $parallelMetadata,
+                                false,
+                            );
+                            $pending = true;
+
+                            continue;
+                        }
+
+                        if (in_array($execution->status, [
+                            ActivityStatus::Pending,
+                            ActivityStatus::Running,
+                        ], true)) {
+                            $pending = true;
+
+                            continue;
+                        }
+
+                        if ($execution->status === ActivityStatus::Completed) {
+                            $results[$index] = $execution->activityResult();
+
+                            continue;
+                        }
+
+                        $failure = $this->selectParallelFailure(
+                            $failure,
+                            $index,
+                            $this->activityException(null, $execution, $run),
+                            $execution->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
+                        );
+                    }
+
+                    if ($failure !== null) {
+                        try {
+                            $current = $result->throw($failure['exception']);
+                        } catch (Throwable $throwable) {
+                            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                            return null;
+                        }
+
+                        $sequence += $groupSize;
+
+                        continue;
+                    }
+
+                    if (! $pending) {
+                        ksort($results);
+
+                        try {
+                            $current = $result->send(array_values($results));
+                        } catch (Throwable $throwable) {
+                            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                            return null;
+                        }
+
+                        $sequence += $groupSize;
+
+                        continue;
+                    }
+
+                    $this->markRunWaiting($run, $task);
+
+                    foreach ($scheduledTasks as $scheduledTask) {
+                        TaskDispatcher::dispatch($scheduledTask);
+                    }
+
+                    return null;
+                }
+
                 $scheduledTasks = [];
                 $pending = false;
                 $results = [];
@@ -549,7 +663,7 @@ final class WorkflowExecutor
                             continue;
                         }
 
-                        $failure = $this->selectParallelChildFailure(
+                        $failure = $this->selectParallelFailure(
                             $failure,
                             $index,
                             ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
@@ -602,7 +716,7 @@ final class WorkflowExecutor
                         continue;
                     }
 
-                    $failure = $this->selectParallelChildFailure(
+                    $failure = $this->selectParallelFailure(
                         $failure,
                         $index,
                         ChildRunHistory::exceptionForChildRun($childRun),
@@ -674,6 +788,8 @@ final class WorkflowExecutor
         WorkflowTask $task,
         int $sequence,
         ActivityCall $activityCall,
+        ?array $parallelMetadata = null,
+        bool $parkRun = true,
     ): WorkflowTask {
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
@@ -688,13 +804,13 @@ final class WorkflowExecutor
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run),
         ]);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, array_merge([
             'activity_execution_id' => $execution->id,
             'activity_class' => $execution->activity_class,
             'activity_type' => $execution->activity_type,
             'sequence' => $sequence,
             'activity' => ActivitySnapshot::fromExecution($execution),
-        ], $task);
+        ], $parallelMetadata ?? []), $task);
 
         /** @var WorkflowTask $activityTask */
         $activityTask = WorkflowTask::query()->create([
@@ -710,7 +826,9 @@ final class WorkflowExecutor
             'compatibility' => $run->compatibility,
         ]);
 
-        $this->markRunWaiting($run, $task);
+        if ($parkRun) {
+            $this->markRunWaiting($run, $task);
+        }
 
         return $activityTask;
     }
@@ -1245,7 +1363,7 @@ final class WorkflowExecutor
      * @param array{index: int, exception: Throwable, recorded_at: int}|null $currentFailure
      * @return array{index: int, exception: Throwable, recorded_at: int}
      */
-    private function selectParallelChildFailure(
+    private function selectParallelFailure(
         ?array $currentFailure,
         int $index,
         Throwable $exception,

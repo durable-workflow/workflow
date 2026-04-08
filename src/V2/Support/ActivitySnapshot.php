@@ -63,6 +63,11 @@ final class ActivitySnapshot
             'sequence' => self::intValue($payload['sequence'] ?? null),
             'type' => self::stringValue($payload['activity_type'] ?? null),
             'class' => self::stringValue($payload['activity_class'] ?? null),
+            'parallel_group_kind' => self::stringValue($payload['parallel_group_kind'] ?? null),
+            'parallel_group_id' => self::stringValue($payload['parallel_group_id'] ?? null),
+            'parallel_group_base_sequence' => self::intValue($payload['parallel_group_base_sequence'] ?? null),
+            'parallel_group_size' => self::intValue($payload['parallel_group_size'] ?? null),
+            'parallel_group_index' => self::intValue($payload['parallel_group_index'] ?? null),
             'result' => self::stringValue($payload['result'] ?? null),
             'created_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? self::timestamp($event->recorded_at)
@@ -114,6 +119,11 @@ final class ActivitySnapshot
             'sequence' => self::intValue($snapshot['sequence'] ?? null),
             'type' => self::stringValue($snapshot['type'] ?? null),
             'class' => self::stringValue($snapshot['class'] ?? null),
+            'parallel_group_kind' => self::stringValue($snapshot['parallel_group_kind'] ?? null),
+            'parallel_group_id' => self::stringValue($snapshot['parallel_group_id'] ?? null),
+            'parallel_group_base_sequence' => self::intValue($snapshot['parallel_group_base_sequence'] ?? null),
+            'parallel_group_size' => self::intValue($snapshot['parallel_group_size'] ?? null),
+            'parallel_group_index' => self::intValue($snapshot['parallel_group_index'] ?? null),
             'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null),
             'status' => self::stringValue($snapshot['status'] ?? null),
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),

@@ -24,6 +24,8 @@ use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
+use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
+use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestReclaimDuringExecutionActivity;
@@ -1143,6 +1145,104 @@ final class V2WorkflowTest extends TestCase
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame([
             'stage' => 'caught-child-failure',
+            'message' => 'boom',
+        ], $workflow->output());
+    }
+
+    public function testParallelActivityAllWaitsForLastSuccessfulActivityBeforeResumingParent(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelActivityWorkflow::class, 'parallel-activity-all');
+        $workflow->start('Taylor', 'Abigail');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $activities = ActivityExecution::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $activities);
+        $this->assertSame([1, 2], $activities->pluck('sequence')->all());
+
+        /** @var WorkflowHistoryEvent $firstActivityScheduled */
+        $firstActivityScheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ActivityScheduled')
+            ->get()
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 1);
+
+        $this->assertSame('parallel-activities:1:2', $firstActivityScheduled->payload['parallel_group_id'] ?? null);
+        $this->assertSame('activity', $firstActivityScheduled->payload['parallel_group_kind'] ?? null);
+        $this->assertSame(1, $firstActivityScheduled->payload['parallel_group_base_sequence'] ?? null);
+        $this->assertSame(2, $firstActivityScheduled->payload['parallel_group_size'] ?? null);
+        $this->assertSame(0, $firstActivityScheduled->payload['parallel_group_index'] ?? null);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowHistoryEvent $firstActivityCompleted */
+        $firstActivityCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ActivityCompleted')
+            ->get()
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 1);
+
+        $this->assertSame('parallel-activities:1:2', $firstActivityCompleted->payload['parallel_group_id'] ?? null);
+        $this->assertSame('activity', $firstActivityCompleted->payload['parallel_group_kind'] ?? null);
+        $this->assertSame(0, $firstActivityCompleted->payload['parallel_group_index'] ?? null);
+        $this->assertSame('completed', $workflow->output()['stage'] ?? null);
+        $this->assertSame([
+            'Hello, Taylor!',
+            'Hello, Abigail!',
+        ], $workflow->output()['results'] ?? null);
+    }
+
+    public function testParallelActivityAllResumesParentImmediatelyOnFirstActivityFailure(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelActivityFailureWorkflow::class, 'parallel-activity-failure');
+        $workflow->start('Taylor');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->runReadyTaskForRun($parentRunId, TaskType::Activity);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'caught-activity-failure',
             'message' => 'boom',
         ], $workflow->output());
     }

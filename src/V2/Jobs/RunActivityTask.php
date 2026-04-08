@@ -141,6 +141,36 @@ final class RunActivityTask implements ShouldQueue
                 return null;
             }
 
+            if (in_array($run->status, [RunStatus::Completed, RunStatus::Failed], true)) {
+                $lockedExecution->forceFill([
+                    'status' => $throwable === null ? ActivityStatus::Completed : ActivityStatus::Failed,
+                    'result' => $throwable === null ? Serializer::serialize($result) : $lockedExecution->result,
+                    'exception' => $throwable === null
+                        ? $lockedExecution->exception
+                        : Serializer::serialize(FailureFactory::payload($throwable)),
+                    'closed_at' => $lockedExecution->closed_at ?? now(),
+                ])->save();
+
+                self::closeAttempt(
+                    $attemptId,
+                    $throwable === null ? ActivityAttemptStatus::Completed : ActivityAttemptStatus::Failed,
+                );
+
+                $task->forceFill([
+                    'status' => TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                ])->save();
+
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+                return null;
+            }
+
+            $parallelMetadata = \Workflow\V2\Support\ParallelChildGroup::metadataForSequence(
+                $run,
+                (int) $lockedExecution->sequence,
+            );
+
             if ($throwable === null) {
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,
@@ -148,14 +178,14 @@ final class RunActivityTask implements ShouldQueue
                     'closed_at' => now(),
                 ])->save();
 
-                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, [
+                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, array_merge([
                     'activity_execution_id' => $lockedExecution->id,
                     'activity_class' => $lockedExecution->activity_class,
                     'activity_type' => $lockedExecution->activity_type,
                     'sequence' => $lockedExecution->sequence,
                     'result' => $lockedExecution->result,
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
-                ], $task);
+                ], $parallelMetadata ?? []), $task);
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
             } else {
@@ -179,7 +209,7 @@ final class RunActivityTask implements ShouldQueue
                     'closed_at' => now(),
                 ])->save();
 
-                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, [
+                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, array_merge([
                     'activity_execution_id' => $lockedExecution->id,
                     'activity_class' => $lockedExecution->activity_class,
                     'activity_type' => $lockedExecution->activity_type,
@@ -190,7 +220,7 @@ final class RunActivityTask implements ShouldQueue
                     'code' => $throwable->getCode(),
                     'exception' => $exceptionPayload,
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
-                ], $task);
+                ], $parallelMetadata ?? []), $task);
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Failed);
             }
@@ -199,6 +229,24 @@ final class RunActivityTask implements ShouldQueue
                 'status' => TaskStatus::Completed,
                 'lease_expires_at' => null,
             ])->save();
+
+            $closedStatus = $throwable === null
+                ? ActivityStatus::Completed
+                : ActivityStatus::Failed;
+
+            if (
+                $parallelMetadata !== null
+                && ($parallelMetadata['parallel_group_kind'] ?? null) === 'activity'
+                && ! \Workflow\V2\Support\ParallelChildGroup::shouldWakeParentOnActivityClosure(
+                    $run,
+                    $parallelMetadata,
+                    $closedStatus,
+                )
+            ) {
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+                return null;
+            }
 
             /** @var WorkflowTask $resumeTask */
             $resumeTask = WorkflowTask::query()->create([
@@ -290,13 +338,18 @@ final class RunActivityTask implements ShouldQueue
                 'lease_expires_at' => $task->lease_expires_at,
             ]);
 
-            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, [
+            $parallelMetadata = \Workflow\V2\Support\ParallelChildGroup::metadataForSequence(
+                $run,
+                (int) $execution->sequence,
+            );
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([
                 'activity_execution_id' => $execution->id,
                 'activity_class' => $execution->activity_class,
                 'activity_type' => $execution->activity_type,
                 'sequence' => $execution->sequence,
                 'activity' => ActivitySnapshot::fromExecution($execution),
-            ], $task);
+            ], $parallelMetadata ?? []), $task);
 
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
