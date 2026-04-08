@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Tests\Fixtures\TestSimpleWorkflow;
 use Tests\TestCase;
 use Workflow\Models\StoredWorkflow;
@@ -71,6 +72,17 @@ final class WorkflowServiceProviderTest extends TestCase
 
         $migrationFiles = glob(database_path('migrations/*.php'));
         $this->assertNotEmpty($migrationFiles, 'Migrations should be published');
+    }
+
+    public function testProviderLoadsPackageMigrationsForFreshApps(): void
+    {
+        Artisan::call('migrate:fresh');
+
+        $this->assertTrue(Schema::hasTable('workflows'));
+        $this->assertTrue(Schema::hasTable('workflow_instances'));
+        $this->assertTrue(Schema::hasTable('workflow_runs'));
+        $this->assertTrue(Schema::hasTable('workflow_run_summaries'));
+        $this->assertTrue(Schema::hasTable('workflow_commands'));
     }
 
     public function testCommandsAreRegistered(): void

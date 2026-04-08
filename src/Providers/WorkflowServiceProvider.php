@@ -20,6 +20,8 @@ final class WorkflowServiceProvider extends ServiceProvider
     {
         SerializableClosure::setSecretKey(config('app.key'));
 
+        $this->loadMigrationsFrom(__DIR__ . '/../migrations');
+
         $this->publishes([
             __DIR__ . '/../config/workflows.php' => config_path('workflows.php'),
         ], 'config');

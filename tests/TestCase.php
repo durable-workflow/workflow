@@ -69,12 +69,9 @@ abstract class TestCase extends BaseTestCase
 
     protected function defineDatabaseMigrations()
     {
-        $this->artisan('migrate:fresh', [
-            '--path' => dirname(__DIR__) . '/src/migrations',
-            '--realpath' => true,
-        ]);
-
         $this->loadLaravelMigrations();
+
+        $this->artisan('migrate:fresh');
     }
 
     protected function getPackageProviders($app)
