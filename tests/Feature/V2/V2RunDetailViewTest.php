@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
@@ -129,6 +130,35 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('SignalWaitOpened', $detail['timeline'][2]['type']);
         $this->assertSame('signal', $detail['timeline'][2]['kind']);
         $this->assertSame('Waiting for signal name-provided.', $detail['timeline'][2]['summary']);
+    }
+
+    public function testRunDetailViewExposesNormalizedCommandTargetsForMixedSignalContracts(): void
+    {
+        $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-command-targets');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+
+        $detail = RunDetailView::forRun($run);
+
+        $this->assertSame(['approved-by', 'rejected-by'], $detail['declared_signals']);
+        $this->assertCount(2, $detail['declared_signal_targets']);
+        $this->assertSame('approved-by', $detail['declared_signal_targets'][0]['name']);
+        $this->assertTrue($detail['declared_signal_targets'][0]['has_contract']);
+        $this->assertSame('actor', $detail['declared_signal_targets'][0]['parameters'][0]['name']);
+        $this->assertSame('string', $detail['declared_signal_targets'][0]['parameters'][0]['type']);
+        $this->assertSame('rejected-by', $detail['declared_signal_targets'][1]['name']);
+        $this->assertFalse($detail['declared_signal_targets'][1]['has_contract']);
+        $this->assertSame([], $detail['declared_signal_targets'][1]['parameters']);
+        $this->assertSame(['mark-approved'], $detail['declared_updates']);
+        $this->assertCount(1, $detail['declared_update_targets']);
+        $this->assertSame('mark-approved', $detail['declared_update_targets'][0]['name']);
+        $this->assertTrue($detail['declared_update_targets'][0]['has_contract']);
+        $this->assertSame('approved', $detail['declared_update_targets'][0]['parameters'][0]['name']);
+        $this->assertSame('bool', $detail['declared_update_targets'][0]['parameters'][0]['type']);
     }
 
     public function testRunDetailViewIncludesCommandsActivitiesAndTimelineForCompletedSignalRun(): void

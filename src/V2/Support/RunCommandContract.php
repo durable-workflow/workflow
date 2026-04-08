@@ -21,8 +21,10 @@ final class RunCommandContract
      * @return array{
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
+     *     signal_targets: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
+     *     update_targets: list<array<string, mixed>>,
      *     source: string
      * }
      */
@@ -33,7 +35,7 @@ final class RunCommandContract
 
         if ($contract !== null && ! self::historyContractNeedsBackfill($event)) {
             return [
-                ...$contract,
+                ...self::withTargets($contract),
                 'source' => self::SOURCE_DURABLE_HISTORY,
             ];
         }
@@ -43,7 +45,7 @@ final class RunCommandContract
 
             if ($contract !== null) {
                 return [
-                    ...$contract,
+                    ...self::withTargets($contract),
                     'source' => self::SOURCE_DURABLE_HISTORY,
                 ];
             }
@@ -51,7 +53,7 @@ final class RunCommandContract
 
         if ($contract !== null) {
             return [
-                ...$contract,
+                ...self::withTargets($contract),
                 'source' => self::SOURCE_DURABLE_HISTORY,
             ];
         }
@@ -69,7 +71,7 @@ final class RunCommandContract
         }
 
         return [
-            ...WorkflowDefinition::commandContract($resolvedClass),
+            ...self::withTargets(WorkflowDefinition::commandContract($resolvedClass)),
             'source' => self::SOURCE_LIVE_DEFINITION,
         ];
     }
@@ -247,6 +249,86 @@ final class RunCommandContract
         sort($normalized);
 
         return $normalized;
+    }
+
+    /**
+     * @param array{
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * } $contract
+     * @return array{
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     signal_targets: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>,
+     *     update_targets: list<array<string, mixed>>
+     * }
+     */
+    private static function withTargets(array $contract): array
+    {
+        return [
+            ...$contract,
+            'signal_targets' => self::normalizeTargets(
+                $contract['signals'],
+                $contract['signal_contracts'],
+            ),
+            'update_targets' => self::normalizeTargets(
+                $contract['updates'],
+                $contract['update_contracts'],
+            ),
+        ];
+    }
+
+    /**
+     * @param list<string> $names
+     * @param list<array<string, mixed>> $contracts
+     * @return list<array{
+     *     name: string,
+     *     parameters: list<array<string, mixed>>,
+     *     has_contract: bool
+     * }>
+     */
+    private static function normalizeTargets(array $names, array $contracts): array
+    {
+        $contractByName = [];
+
+        foreach ($contracts as $contract) {
+            if (! is_string($contract['name'] ?? null)) {
+                continue;
+            }
+
+            $contractByName[$contract['name']] = [
+                'name' => $contract['name'],
+                'parameters' => is_array($contract['parameters'] ?? null)
+                    ? array_values(array_filter(
+                        $contract['parameters'],
+                        static fn (mixed $parameter): bool => is_array($parameter),
+                    ))
+                    : [],
+                'has_contract' => true,
+            ];
+        }
+
+        $targets = [];
+
+        foreach ($names as $name) {
+            $targets[$name] = $contractByName[$name] ?? [
+                'name' => $name,
+                'parameters' => [],
+                'has_contract' => false,
+            ];
+        }
+
+        foreach ($contractByName as $name => $target) {
+            $targets[$name] ??= $target;
+        }
+
+        ksort($targets);
+
+        return array_values($targets);
     }
 
     private static function historyContractNeedsBackfill(?WorkflowHistoryEvent $event): bool
