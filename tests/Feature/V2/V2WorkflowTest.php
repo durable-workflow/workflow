@@ -23,6 +23,7 @@ use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestReclaimDuringExecutionActivity;
+use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -1356,6 +1357,47 @@ final class V2WorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+    }
+
+    public function testSignalCommandCanAcceptSingleAssociativePayloadViaArraySafeHelper(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalPayloadWorkflow::class, 'signal-payload-instance');
+        $workflow->start();
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'signal');
+
+        $result = $workflow->attemptSignalWithArguments('payload-provided', [
+            'approved' => true,
+            'source' => 'waterline',
+        ]);
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('signal_received', $result->outcome());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($result->commandId());
+
+        $this->assertSame([
+            [
+                'approved' => true,
+                'source' => 'waterline',
+            ],
+        ], $command->payloadArguments());
+        $this->assertSame([
+            'payload' => [
+                'approved' => true,
+                'source' => 'waterline',
+            ],
+            'workflow_id' => 'signal-payload-instance',
+            'run_id' => $runId,
+        ], $workflow->output());
     }
 
     public function testSignalCommandsUseDurableCommandSequenceOrder(): void

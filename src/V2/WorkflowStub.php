@@ -456,7 +456,7 @@ final class WorkflowStub
 
     public function signal(string $name, ...$arguments): CommandResult
     {
-        $result = $this->attemptSignal($name, ...$arguments);
+        $result = $this->attemptSignalWithArguments($name, $arguments);
 
         if ($result->rejected()) {
             throw new LogicException(sprintf(
@@ -784,6 +784,30 @@ final class WorkflowStub
     }
 
     public function attemptSignal(string $name, ...$arguments): CommandResult
+    {
+        return $this->attemptSignalWithArguments($name, $arguments);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    public function attemptSignalWithArguments(string $name, array $arguments): CommandResult
+    {
+        $arguments = array_is_list($arguments)
+            ? array_values($arguments)
+            : [$arguments];
+
+        if ($name === '') {
+            throw new LogicException('Signal name cannot be empty.');
+        }
+
+        return $this->attemptSignalInternal($name, $arguments);
+    }
+
+    /**
+     * @param list<mixed> $arguments
+     */
+    private function attemptSignalInternal(string $name, array $arguments): CommandResult
     {
         if ($name === '') {
             throw new LogicException('Signal name cannot be empty.');
