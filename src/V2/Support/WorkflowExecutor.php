@@ -387,6 +387,7 @@ final class WorkflowExecutor
             'activity_class' => $activityCall->activity,
             'activity_type' => TypeRegistry::for($activityCall->activity),
             'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
             'arguments' => Serializer::serialize($activityCall->arguments),
             'connection' => RoutingResolver::activityConnection($activityCall->activity, $run),
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run),

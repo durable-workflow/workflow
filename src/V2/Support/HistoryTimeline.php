@@ -502,6 +502,10 @@ final class HistoryTimeline
             'class' => self::stringValue($snapshot['class'] ?? null)
                 ?? $activity?->activity_class
                 ?? self::stringValue($payload['activity_class'] ?? null),
+            'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null)
+                ?? ($event->event_type === HistoryEventType::ActivityScheduled
+                    ? null
+                    : self::stringValue($activity?->current_attempt_id)),
             'status' => self::stringValue($snapshot['status'] ?? null)
                 ?? match ($event->event_type) {
                     HistoryEventType::ActivityScheduled => 'pending',
@@ -512,7 +516,9 @@ final class HistoryTimeline
                 },
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null)
                 ?? ($event->event_type === HistoryEventType::ActivityScheduled
-                    ? ($activity?->attempt_count ?? 1)
+                    ? (($activity?->status?->value === 'pending' && $activity?->started_at === null)
+                        ? 0
+                        : ($activity?->attempt_count ?? 1))
                     : $activity?->attempt_count),
             'connection' => self::stringValue($snapshot['connection'] ?? null)
                 ?? $activity?->connection,

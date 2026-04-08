@@ -10,6 +10,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use ReflectionMethod;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -53,11 +54,15 @@ final class RunActivityTask implements ShouldQueue
             is_string($this->queue ?? null) ? $this->queue : null,
         );
 
-        $activityExecutionId = $this->claimTask();
+        $claim = $this->claimTask();
 
-        if ($activityExecutionId === null) {
+        if ($claim === null) {
             return;
         }
+
+        $activityExecutionId = $claim['activity_execution_id'];
+        $attemptId = $claim['attempt_id'];
+        $attemptCount = $claim['attempt_count'];
 
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()
@@ -80,7 +85,13 @@ final class RunActivityTask implements ShouldQueue
             $throwable = $error;
         }
 
-        $resumeTask = DB::transaction(function () use ($execution, $result, $throwable): ?WorkflowTask {
+        $resumeTask = DB::transaction(function () use (
+            $execution,
+            $result,
+            $throwable,
+            $attemptId,
+            $attemptCount,
+        ): ?WorkflowTask {
             /** @var WorkflowTask $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
@@ -95,6 +106,17 @@ final class RunActivityTask implements ShouldQueue
             $run = WorkflowRun::query()
                 ->lockForUpdate()
                 ->findOrFail($lockedExecution->workflow_run_id);
+
+            // Ignore late activity outcomes once the lease has been reclaimed or a newer
+            // attempt has already been claimed for this execution.
+            if (
+                $task->status !== TaskStatus::Leased
+                || $task->attempt_count !== $attemptCount
+                || $lockedExecution->attempt_count !== $attemptCount
+                || $lockedExecution->current_attempt_id !== $attemptId
+            ) {
+                return null;
+            }
 
             if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)) {
                 $lockedExecution->forceFill([
@@ -189,9 +211,12 @@ final class RunActivityTask implements ShouldQueue
         }
     }
 
-    private function claimTask(): ?string
+    /**
+     * @return array{activity_execution_id: string, attempt_id: string, attempt_count: int}|null
+     */
+    private function claimTask(): ?array
     {
-        return DB::transaction(function (): ?string {
+        return DB::transaction(function (): ?array {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
@@ -232,9 +257,15 @@ final class RunActivityTask implements ShouldQueue
                 'attempt_count' => $task->attempt_count + 1,
             ])->save();
 
+            $attemptId = (string) Str::ulid();
+            $attemptCount = $task->attempt_count;
+
             $execution->forceFill([
                 'status' => ActivityStatus::Running,
-                'started_at' => $execution->started_at ?? now(),
+                'attempt_count' => $attemptCount,
+                'current_attempt_id' => $attemptId,
+                'started_at' => now(),
+                'last_heartbeat_at' => null,
             ])->save();
 
             WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, [
@@ -247,7 +278,11 @@ final class RunActivityTask implements ShouldQueue
 
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-            return $activityExecutionId;
+            return [
+                'activity_execution_id' => $activityExecutionId,
+                'attempt_id' => $attemptId,
+                'attempt_count' => $attemptCount,
+            ];
         });
     }
 }

@@ -98,6 +98,8 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame(1, $timeline[2]['activity']['sequence']);
         $this->assertSame(TestGreetingActivity::class, $timeline[2]['activity']['type']);
         $this->assertSame(TestGreetingActivity::class, $timeline[2]['activity']['class']);
+        $this->assertNull($timeline[2]['activity']['attempt_id']);
+        $this->assertSame(0, $timeline[2]['activity']['attempt_count']);
         $this->assertSame('pending', $timeline[2]['activity']['status']);
         $this->assertNull($timeline[2]['activity']['started_at']);
         $this->assertNull($timeline[2]['activity']['closed_at']);
@@ -108,6 +110,8 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame($activity->id, $timeline[3]['activity_execution_id']);
         $this->assertSame('activity', $timeline[3]['task']['type']);
         $this->assertSame('leased', $timeline[3]['task']['status']);
+        $this->assertSame($activity->current_attempt_id, $timeline[3]['activity']['attempt_id']);
+        $this->assertSame(1, $timeline[3]['activity']['attempt_count']);
         $this->assertSame('running', $timeline[3]['activity']['status']);
         $this->assertSame($activity->started_at?->toJSON(), $timeline[3]['activity']['started_at']);
         $this->assertNull($timeline[3]['activity']['closed_at']);
@@ -116,6 +120,8 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame($activity->id, $timeline[4]['activity_execution_id']);
         $this->assertSame('activity', $timeline[4]['task']['type']);
         $this->assertSame('completed', $timeline[4]['task']['status']);
+        $this->assertSame($activity->current_attempt_id, $timeline[4]['activity']['attempt_id']);
+        $this->assertSame(1, $timeline[4]['activity']['attempt_count']);
         $this->assertSame($activity->closed_at?->toJSON(), $timeline[4]['activity']['closed_at']);
 
         $this->assertSame('workflow', $timeline[5]['kind']);

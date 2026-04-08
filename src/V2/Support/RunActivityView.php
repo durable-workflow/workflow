@@ -164,6 +164,7 @@ final class RunActivityView
             'sequence' => $state['sequence'] ?? null,
             'type' => $state['type'] ?? null,
             'class' => $state['class'] ?? null,
+            'attempt_id' => $state['attempt_id'] ?? null,
             'status' => $state['status'] ?? 'pending',
             'attempt_count' => is_int($state['attempt_count'] ?? null) ? $state['attempt_count'] : 0,
             'connection' => $state['connection'] ?? null,

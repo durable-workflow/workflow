@@ -134,6 +134,11 @@ final class V2RunDetailViewTest extends TestCase
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
 
@@ -164,6 +169,8 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('signal_received', $detail['commands'][1]['outcome']);
         $this->assertCount(1, $detail['activities']);
         $this->assertSame('completed', $detail['activities'][0]['status']);
+        $this->assertSame(1, $detail['activities'][0]['attempt_count']);
+        $this->assertSame($execution->current_attempt_id, $detail['activities'][0]['attempt_id']);
         $this->assertNotNull($detail['activities'][0]['created_at']);
         $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');

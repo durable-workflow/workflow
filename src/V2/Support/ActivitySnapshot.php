@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -21,8 +22,9 @@ final class ActivitySnapshot
             'sequence' => $execution->sequence,
             'type' => $execution->activity_type,
             'class' => $execution->activity_class,
+            'attempt_id' => self::stringValue($execution->current_attempt_id),
             'status' => $execution->status?->value,
-            'attempt_count' => $execution->attempt_count,
+            'attempt_count' => self::executionAttemptCount($execution),
             'connection' => $execution->connection,
             'queue' => $execution->queue,
             'last_heartbeat_at' => self::timestamp($execution->last_heartbeat_at),
@@ -43,6 +45,7 @@ final class ActivitySnapshot
         /** @var array<string, mixed> $payload */
         $payload = is_array($event->payload) ? $event->payload : [];
         $snapshot = is_array($payload['activity'] ?? null) ? $payload['activity'] : [];
+        $taskSnapshot = is_array($payload['task'] ?? null) ? $payload['task'] : [];
         $activityId = self::stringValue($snapshot['id'] ?? null)
             ?? self::stringValue($payload['activity_execution_id'] ?? null);
 
@@ -77,6 +80,7 @@ final class ActivitySnapshot
 
         $merged['status'] = self::stringValue($merged['status'] ?? null)
             ?? self::statusForEvent($event->event_type);
+        $merged['attempt_count'] = self::eventAttemptCount($event->event_type, $merged, $taskSnapshot);
 
         return $merged;
     }
@@ -110,6 +114,7 @@ final class ActivitySnapshot
             'sequence' => self::intValue($snapshot['sequence'] ?? null),
             'type' => self::stringValue($snapshot['type'] ?? null),
             'class' => self::stringValue($snapshot['class'] ?? null),
+            'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null),
             'status' => self::stringValue($snapshot['status'] ?? null),
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
             'connection' => self::stringValue($snapshot['connection'] ?? null),
@@ -133,6 +138,53 @@ final class ActivitySnapshot
             HistoryEventType::ActivityFailed => 'failed',
             default => null,
         };
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     * @param array<string, mixed> $taskSnapshot
+     */
+    private static function eventAttemptCount(
+        HistoryEventType $eventType,
+        array $snapshot,
+        array $taskSnapshot,
+    ): int {
+        $taskAttemptCount = in_array($eventType, [
+            HistoryEventType::ActivityStarted,
+            HistoryEventType::ActivityCompleted,
+            HistoryEventType::ActivityFailed,
+        ], true)
+            ? self::intValue($taskSnapshot['attempt_count'] ?? null)
+            : null;
+        $attemptCount = $taskAttemptCount ?? self::intValue($snapshot['attempt_count'] ?? null);
+        $status = self::stringValue($snapshot['status'] ?? null);
+        $startedAt = self::stringValue($snapshot['started_at'] ?? null);
+
+        if (
+            ($eventType === HistoryEventType::ActivityScheduled || ($status === ActivityStatus::Pending->value && $startedAt === null))
+            && ($attemptCount === null || $attemptCount <= 1)
+        ) {
+            return 0;
+        }
+
+        return $attemptCount !== null && $attemptCount > 0
+            ? $attemptCount
+            : 1;
+    }
+
+    private static function executionAttemptCount(ActivityExecution $execution): int
+    {
+        $attemptCount = is_int($execution->attempt_count) ? $execution->attempt_count : 0;
+
+        if (
+            $execution->status === ActivityStatus::Pending
+            && $execution->started_at === null
+            && ($attemptCount <= 1)
+        ) {
+            return 0;
+        }
+
+        return $attemptCount > 0 ? $attemptCount : 1;
     }
 
     private static function timestamp(mixed $value): ?string

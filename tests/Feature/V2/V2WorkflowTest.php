@@ -18,6 +18,7 @@ use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
+use Tests\Fixtures\V2\TestReclaimDuringExecutionActivity;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -71,11 +72,39 @@ final class V2WorkflowTest extends TestCase
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+        /** @var WorkflowHistoryEvent $activityScheduled */
+        $activityScheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'ActivityScheduled')
+            ->firstOrFail();
+        /** @var WorkflowHistoryEvent $activityStarted */
+        $activityStarted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'ActivityStarted')
+            ->firstOrFail();
+        /** @var WorkflowHistoryEvent $activityCompleted */
+        $activityCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'ActivityCompleted')
+            ->firstOrFail();
+
         $this->assertSame([
             'greeting' => 'Hello, Taylor!',
             'workflow_id' => $instanceId,
             'run_id' => $runId,
         ], $workflow->output());
+        $this->assertSame(1, $execution->attempt_count);
+        $this->assertNotNull($execution->current_attempt_id);
+        $this->assertSame(0, $activityScheduled->payload['activity']['attempt_count'] ?? null);
+        $this->assertNull($activityScheduled->payload['activity']['attempt_id'] ?? null);
+        $this->assertSame(1, $activityStarted->payload['activity']['attempt_count'] ?? null);
+        $this->assertSame($execution->current_attempt_id, $activityStarted->payload['activity']['attempt_id'] ?? null);
+        $this->assertSame(1, $activityCompleted->payload['activity']['attempt_count'] ?? null);
+        $this->assertSame($execution->current_attempt_id, $activityCompleted->payload['activity']['attempt_id'] ?? null);
 
         $this->assertSame([
             'StartAccepted',
@@ -2144,6 +2173,108 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('activity', $summary->wait_kind);
         $this->assertSame('activity_task_ready', $summary->liveness_state);
         $this->assertSame($task->id, $summary->next_task_id);
+    }
+
+    public function testLateActivityOutcomeIsIgnoredAfterNewerAttemptTakesOwnership(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'stale-activity-attempt',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => TestReclaimDuringExecutionActivity::class,
+            'activity_type' => TestReclaimDuringExecutionActivity::class,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
+            'connection' => 'redis',
+            'queue' => 'activities',
+        ]);
+
+        TestReclaimDuringExecutionActivity::intercept(static function (string $executionId) use ($task): void {
+            WorkflowTask::query()
+                ->whereKey($task->id)
+                ->update([
+                    'status' => TaskStatus::Leased->value,
+                    'attempt_count' => 2,
+                    'leased_at' => now()->subSecond(),
+                    'lease_owner' => 'worker-newer',
+                    'lease_expires_at' => now()->addMinutes(5),
+                ]);
+
+            ActivityExecution::query()
+                ->whereKey($executionId)
+                ->update([
+                    'status' => ActivityStatus::Running->value,
+                    'attempt_count' => 2,
+                    'current_attempt_id' => '01JTESTATTEMPT000000000002',
+                    'started_at' => now()->subSecond(),
+                ]);
+        });
+
+        (new RunActivityTask($task->id))->handle();
+
+        $task->refresh();
+        $execution->refresh();
+
+        $this->assertSame(TaskStatus::Leased, $task->status);
+        $this->assertSame(2, $task->attempt_count);
+        $this->assertSame(ActivityStatus::Running, $execution->status);
+        $this->assertSame(2, $execution->attempt_count);
+        $this->assertSame('01JTESTATTEMPT000000000002', $execution->current_attempt_id);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', 'ActivityStarted')
+            ->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', 'ActivityCompleted')
+            ->count());
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->count());
     }
 
     public function testTaskWatchdogReclaimsExpiredTimerTaskLease(): void
