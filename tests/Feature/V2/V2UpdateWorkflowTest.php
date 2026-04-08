@@ -150,6 +150,13 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertTrue($detail['can_update']);
         $this->assertNull($detail['update_blocked_reason']);
         $this->assertTrue($detail['can_signal']);
+        $this->assertNull($detail['signal_blocked_reason']);
+        $this->assertTrue($detail['can_cancel']);
+        $this->assertNull($detail['cancel_blocked_reason']);
+        $this->assertTrue($detail['can_terminate']);
+        $this->assertNull($detail['terminate_blocked_reason']);
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame('repair_not_needed', $detail['repair_blocked_reason']);
         $this->assertSame(['name-provided'], $detail['declared_signals']);
         $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
         $this->assertSame('durable_history', $detail['declared_contract_source']);
@@ -262,10 +269,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('approve', $rejectedUpdate['update_name']);
         $this->assertSame('rejected', $rejectedUpdate['command_status']);
         $this->assertSame('rejected_pending_signal', $rejectedUpdate['command_outcome']);
-        $this->assertSame(
-            'Rejected update approve: earlier_signal_pending.',
-            $rejectedUpdate['summary'],
-        );
+        $this->assertSame('Rejected update approve: earlier_signal_pending.', $rejectedUpdate['summary']);
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
@@ -276,6 +280,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('workflow-task', $detail['wait_kind']);
         $this->assertSame('workflow_task_ready', $detail['liveness_state']);
         $this->assertTrue($detail['can_signal']);
+        $this->assertNull($detail['signal_blocked_reason']);
         $this->assertFalse($detail['can_update']);
         $this->assertSame('earlier_signal_pending', $detail['update_blocked_reason']);
         $this->assertSame('approve', $detail['commands'][2]['target_name']);
@@ -339,6 +344,8 @@ final class V2UpdateWorkflowTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
         $this->assertSame([1, 2, 3], array_column($detail['commands'], 'sequence'));
+        $this->assertTrue($detail['can_signal']);
+        $this->assertNull($detail['signal_blocked_reason']);
         $this->assertFalse($detail['can_update']);
         $this->assertSame('earlier_signal_pending', $detail['update_blocked_reason']);
 
@@ -363,8 +370,10 @@ final class V2UpdateWorkflowTest extends TestCase
             'workflow_class' => TestUpdateWorkflow::class,
             'workflow_type' => 'test-update-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -377,8 +386,10 @@ final class V2UpdateWorkflowTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(20),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(20),
             'last_history_sequence' => 2,
         ]);
 
@@ -396,7 +407,8 @@ final class V2UpdateWorkflowTest extends TestCase
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
             ],
-            'recorded_at' => now()->subSeconds(19),
+            'recorded_at' => now()
+                ->subSeconds(19),
         ]);
 
         WorkflowHistoryEvent::query()->create([
@@ -408,7 +420,8 @@ final class V2UpdateWorkflowTest extends TestCase
                 'signal_wait_id' => '01JTESTSIGNALWAITBACKFILL01',
                 'sequence' => 1,
             ],
-            'recorded_at' => now()->subSeconds(18),
+            'recorded_at' => now()
+                ->subSeconds(18),
         ]);
 
         $result = WorkflowStub::load($instance->id)->attemptSignal('name-provided', 'Taylor');

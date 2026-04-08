@@ -11,7 +11,6 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimer;
-use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class RunDetailView
 {
@@ -41,17 +40,17 @@ final class RunDetailView
         $currentSummary = $currentRun?->summary;
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
         $commandContract = RunCommandContract::forRun($run);
-        $canIssueTerminalCommands = $isCurrentRun && in_array($run->status, [
-            RunStatus::Pending,
-            RunStatus::Running,
-            RunStatus::Waiting,
-        ], true);
-        $updateBlockedReason = $canIssueTerminalCommands
-            ? UpdateCommandGate::blockedReason($run)
-            : null;
-        $canRepair = $isCurrentRun
-            && $summary?->liveness_state === 'repair_needed'
-            && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
+        $cancelBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
+        $terminateBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
+        $signalBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
+        $updateBlockedReason = self::updateBlockedReason($run, $isCurrentRun);
+        $repairBlockedReason = self::repairBlockedReason($run, $isCurrentRun, $summary?->liveness_state);
+        $canCancel = $cancelBlockedReason === null;
+        $canTerminate = $terminateBlockedReason === null;
+        $canIssueTerminalCommands = $canCancel && $canTerminate;
+        $canSignal = $signalBlockedReason === null;
+        $canUpdate = $updateBlockedReason === null;
+        $canRepair = $repairBlockedReason === null;
 
         $activities = RunActivityView::activitiesForRun($run);
         $activityClasses = collect(RunActivityView::classesFromActivities($activities));
@@ -126,15 +125,17 @@ final class RunDetailView
             'exception_count' => $summary?->exception_count ?? $run->failures->count(),
             'exceptions_count' => $summary?->exceptions_count ?? $run->failures->count(),
             'can_issue_terminal_commands' => $canIssueTerminalCommands,
-            'can_signal' => $canIssueTerminalCommands,
-            'can_update' => $canIssueTerminalCommands && $updateBlockedReason === null,
+            'can_cancel' => $canCancel,
+            'cancel_blocked_reason' => $cancelBlockedReason,
+            'can_terminate' => $canTerminate,
+            'terminate_blocked_reason' => $terminateBlockedReason,
+            'can_signal' => $canSignal,
+            'signal_blocked_reason' => $signalBlockedReason,
+            'can_update' => $canUpdate,
             'update_blocked_reason' => $updateBlockedReason,
             'can_repair' => $canRepair,
-            'read_only_reason' => $canIssueTerminalCommands
-                ? null
-                : ($isCurrentRun
-                    ? 'Run is closed.'
-                    : 'Selected run is historical. Issue commands against the current active run.'),
+            'repair_blocked_reason' => $repairBlockedReason,
+            'read_only_reason' => self::readOnlyReason($run, $isCurrentRun),
             'created_at' => $summary?->started_at ?? $run->started_at ?? $run->created_at,
             'updated_at' => $summary?->closed_at ?? $run->last_progress_at ?? $run->updated_at,
             'run_navigation' => ($run->instance?->runs ?? collect())
@@ -327,6 +328,71 @@ final class RunDetailView
         ];
     }
 
+    private static function actionBlockedReason(WorkflowRun $run, bool $isCurrentRun): ?string
+    {
+        if (! $isCurrentRun) {
+            return 'selected_run_not_current';
+        }
+
+        if (self::isClosed($run)) {
+            return 'run_closed';
+        }
+
+        return null;
+    }
+
+    private static function updateBlockedReason(WorkflowRun $run, bool $isCurrentRun): ?string
+    {
+        $blockedReason = self::actionBlockedReason($run, $isCurrentRun);
+
+        if ($blockedReason !== null) {
+            return $blockedReason;
+        }
+
+        return UpdateCommandGate::blockedReason($run);
+    }
+
+    private static function repairBlockedReason(
+        WorkflowRun $run,
+        bool $isCurrentRun,
+        ?string $livenessState,
+    ): ?string {
+        $blockedReason = self::actionBlockedReason($run, $isCurrentRun);
+
+        if ($blockedReason !== null) {
+            return $blockedReason;
+        }
+
+        if ($livenessState === 'repair_needed') {
+            return null;
+        }
+
+        if (is_string($livenessState) && str_contains($livenessState, 'waiting_for_compatible_worker')) {
+            return 'waiting_for_compatible_worker';
+        }
+
+        return 'repair_not_needed';
+    }
+
+    private static function readOnlyReason(WorkflowRun $run, bool $isCurrentRun): ?string
+    {
+        return match (self::actionBlockedReason($run, $isCurrentRun)) {
+            'selected_run_not_current' => 'Selected run is historical. Issue commands against the current active run.',
+            'run_closed' => 'Run is closed.',
+            default => null,
+        };
+    }
+
+    private static function isClosed(WorkflowRun $run): bool
+    {
+        return in_array($run->status, [
+            RunStatus::Completed,
+            RunStatus::Failed,
+            RunStatus::Cancelled,
+            RunStatus::Terminated,
+        ], true);
+    }
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -400,7 +466,9 @@ final class RunDetailView
             ? array_values(array_filter($payload['trace'], static fn (mixed $frame): bool => is_array($frame)))
             : [];
         $properties = is_array($payload['properties'] ?? null)
-            ? array_values(array_filter($payload['properties'], static fn (mixed $property): bool => is_array($property)))
+            ? array_values(
+                array_filter($payload['properties'], static fn (mixed $property): bool => is_array($property))
+            )
             : [];
 
         return [

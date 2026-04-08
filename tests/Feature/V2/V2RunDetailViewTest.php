@@ -9,17 +9,17 @@ use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
-use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -31,8 +31,8 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
@@ -56,7 +56,7 @@ final class V2RunDetailViewTest extends TestCase
 
         $this->assertSame('workflow-task', $detail['wait_kind']);
         $this->assertSame('Workflow task ready', $detail['wait_reason']);
-        $this->assertSame('workflow-task:'.$workflowTask['id'], $detail['open_wait_id']);
+        $this->assertSame('workflow-task:' . $workflowTask['id'], $detail['open_wait_id']);
         $this->assertSame('workflow_task', $detail['resume_source_kind']);
         $this->assertSame($workflowTask['id'], $detail['resume_source_id']);
         $this->assertSame($workflowTask['id'], $detail['next_task_id']);
@@ -96,6 +96,16 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('selected_run', $detail['timeline_scope']);
         $this->assertSame('selected_run', $detail['lineage_scope']);
         $this->assertTrue($detail['can_issue_terminal_commands']);
+        $this->assertTrue($detail['can_cancel']);
+        $this->assertNull($detail['cancel_blocked_reason']);
+        $this->assertTrue($detail['can_terminate']);
+        $this->assertNull($detail['terminate_blocked_reason']);
+        $this->assertTrue($detail['can_signal']);
+        $this->assertNull($detail['signal_blocked_reason']);
+        $this->assertTrue($detail['can_update']);
+        $this->assertNull($detail['update_blocked_reason']);
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame('repair_not_needed', $detail['repair_blocked_reason']);
         $this->assertNull($detail['read_only_reason']);
         $this->assertSame(1, $detail['commands'][0]['sequence']);
         $this->assertSame('start', $detail['commands'][0]['type']);
@@ -148,6 +158,16 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('completed', $detail['status_bucket']);
         $this->assertSame('completed', $detail['closed_reason']);
         $this->assertFalse($detail['can_issue_terminal_commands']);
+        $this->assertFalse($detail['can_cancel']);
+        $this->assertSame('run_closed', $detail['cancel_blocked_reason']);
+        $this->assertFalse($detail['can_terminate']);
+        $this->assertSame('run_closed', $detail['terminate_blocked_reason']);
+        $this->assertFalse($detail['can_signal']);
+        $this->assertSame('run_closed', $detail['signal_blocked_reason']);
+        $this->assertFalse($detail['can_update']);
+        $this->assertSame('run_closed', $detail['update_blocked_reason']);
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame('run_closed', $detail['repair_blocked_reason']);
         $this->assertSame('Run is closed.', $detail['read_only_reason']);
         $this->assertSame(0, $detail['exception_count']);
         $this->assertSame(0, $detail['exceptions_count']);
@@ -205,7 +225,10 @@ final class V2RunDetailViewTest extends TestCase
             'ActivityCompleted',
             'WorkflowCompleted',
         ], array_column($detail['timeline'], 'type'));
-        $this->assertSame([1, 1, null, 2, 2, null, null, null, null], array_column($detail['timeline'], 'command_sequence'));
+        $this->assertSame(
+            [1, 1, null, 2, 2, null, null, null, null],
+            array_column($detail['timeline'], 'command_sequence')
+        );
     }
 
     public function testRunDetailViewKeepsActivityDetailWhenActivityRowDrifts(): void
@@ -500,7 +523,10 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame([1, 2], array_column($signalWaits, 'sequence'));
         $this->assertSame(['resolved', 'resolved'], array_column($signalWaits, 'status'));
         $this->assertSame(['applied', 'applied'], array_column($signalWaits, 'source_status'));
-        $this->assertSame([$firstSignal->commandId(), $secondSignal->commandId()], array_column($signalWaits, 'command_id'));
+        $this->assertSame(
+            [$firstSignal->commandId(), $secondSignal->commandId()],
+            array_column($signalWaits, 'command_id')
+        );
         $this->assertSame([2, 3], array_column($signalWaits, 'command_sequence'));
         $this->assertNotSame($signalWaits[0]['signal_wait_id'], $signalWaits[1]['signal_wait_id']);
         $this->assertIsString($signalWaits[0]['signal_wait_id']);
@@ -576,6 +602,16 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('waiting', $detail['current_run_status']);
         $this->assertSame('running', $detail['current_run_status_bucket']);
         $this->assertFalse($detail['can_issue_terminal_commands']);
+        $this->assertFalse($detail['can_cancel']);
+        $this->assertSame('selected_run_not_current', $detail['cancel_blocked_reason']);
+        $this->assertFalse($detail['can_terminate']);
+        $this->assertSame('selected_run_not_current', $detail['terminate_blocked_reason']);
+        $this->assertFalse($detail['can_signal']);
+        $this->assertSame('selected_run_not_current', $detail['signal_blocked_reason']);
+        $this->assertFalse($detail['can_update']);
+        $this->assertSame('selected_run_not_current', $detail['update_blocked_reason']);
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame('selected_run_not_current', $detail['repair_blocked_reason']);
         $this->assertSame(
             'Selected run is historical. Issue commands against the current active run.',
             $detail['read_only_reason'],
@@ -589,8 +625,10 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 2,
-            'reserved_at' => now()->subMinutes(10),
-            'started_at' => now()->subMinutes(10),
+            'reserved_at' => now()
+                ->subMinutes(10),
+            'started_at' => now()
+                ->subMinutes(10),
         ]);
 
         /** @var WorkflowRun $historicalRun */
@@ -604,9 +642,12 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([1]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(10),
-            'closed_at' => now()->subMinutes(9),
-            'last_progress_at' => now()->subMinutes(9),
+            'started_at' => now()
+                ->subMinutes(10),
+            'closed_at' => now()
+                ->subMinutes(9),
+            'last_progress_at' => now()
+                ->subMinutes(9),
         ]);
 
         /** @var WorkflowRun $currentRun */
@@ -619,8 +660,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([30]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -643,6 +686,16 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($currentRun->id, $detail['current_run_id']);
         $this->assertSame('waiting', $detail['current_run_status']);
         $this->assertSame('running', $detail['current_run_status_bucket']);
+        $this->assertFalse($detail['can_cancel']);
+        $this->assertSame('selected_run_not_current', $detail['cancel_blocked_reason']);
+        $this->assertFalse($detail['can_terminate']);
+        $this->assertSame('selected_run_not_current', $detail['terminate_blocked_reason']);
+        $this->assertFalse($detail['can_signal']);
+        $this->assertSame('selected_run_not_current', $detail['signal_blocked_reason']);
+        $this->assertFalse($detail['can_update']);
+        $this->assertSame('selected_run_not_current', $detail['update_blocked_reason']);
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame('selected_run_not_current', $detail['repair_blocked_reason']);
         $this->assertSame(
             'Selected run is historical. Issue commands against the current active run.',
             $detail['read_only_reason'],
@@ -725,11 +778,15 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_type' => 'workflow.test-signal',
             'status' => RunStatus::Waiting,
             'arguments' => Serializer::serialize([]),
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
-        $instance->update(['current_run_id' => $run->id]);
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
 
         WorkflowCommand::query()->create([
             'id' => '01JDETAILCOMMANDCTXCOMMAND01',
@@ -768,9 +825,12 @@ final class V2RunDetailViewTest extends TestCase
                 'name' => 'name-provided',
                 'arguments' => ['Taylor'],
             ]),
-            'accepted_at' => now()->subSeconds(30),
-            'created_at' => now()->subSeconds(30),
-            'updated_at' => now()->subSeconds(30),
+            'accepted_at' => now()
+                ->subSeconds(30),
+            'created_at' => now()
+                ->subSeconds(30),
+            'updated_at' => now()
+                ->subSeconds(30),
         ]);
 
         RunSummaryProjector::project(
@@ -890,6 +950,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('waiting', $detail['continuedWorkflows'][0]['status']);
         $this->assertSame(TestTimerWorkflow::class, $detail['continuedWorkflows'][0]['workflow_type']);
         $this->assertFalse($detail['can_repair']);
+        $this->assertSame('repair_not_needed', $detail['repair_blocked_reason']);
     }
 
     public function testRunDetailViewKeepsResolvedChildWaitFromParentHistoryWhenChildRowDrifts(): void
@@ -938,10 +999,7 @@ final class V2RunDetailViewTest extends TestCase
 
         $instanceId = 'detail-child-history';
 
-        $workflow = WorkflowStub::make(
-            TestParentWaitingOnContinuingChildWorkflow::class,
-            $instanceId
-        );
+        $workflow = WorkflowStub::make(TestParentWaitingOnContinuingChildWorkflow::class, $instanceId);
         $workflow->start(0, 1);
         $parentRunId = $workflow->runId();
 
@@ -977,7 +1035,9 @@ final class V2RunDetailViewTest extends TestCase
 
         WorkflowInstance::query()
             ->findOrFail($childInstanceId)
-            ->forceFill(['current_run_id' => null])
+            ->forceFill([
+                'current_run_id' => null,
+            ])
             ->save();
 
         WorkflowLink::query()
@@ -1251,8 +1311,10 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -1265,8 +1327,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(20),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(20),
         ]);
 
         $instance->forceFill([
@@ -1295,7 +1359,8 @@ final class V2RunDetailViewTest extends TestCase
 
         $execution->forceFill([
             'status' => \Workflow\V2\Enums\ActivityStatus::Running->value,
-            'started_at' => now()->subSeconds(15),
+            'started_at' => now()
+                ->subSeconds(15),
         ])->save();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, [
@@ -1337,10 +1402,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertFalse($activityWait['task_backed']);
         $this->assertSame('activity_execution', $activityWait['resume_source_kind']);
         $this->assertSame($executionId, $activityWait['resume_source_id']);
-        $this->assertSame([
-            'ActivityScheduled',
-            'ActivityStarted',
-        ], array_column($detail['timeline'], 'type'));
+        $this->assertSame(['ActivityScheduled', 'ActivityStarted'], array_column($detail['timeline'], 'type'));
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
     }
 

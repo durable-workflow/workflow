@@ -416,8 +416,10 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'id' => 'compat-fleet-heartbeat',
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
-            'reserved_at' => now()->subMinutes(2),
-            'started_at' => now()->subMinutes(2),
+            'reserved_at' => now()
+                ->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
             'run_count' => 1,
         ]);
 
@@ -431,8 +433,10 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'payload_codec' => config('workflows.serializer'),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(2),
-            'last_progress_at' => now()->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinutes(2),
             'last_history_sequence' => 0,
         ]);
 
@@ -445,7 +449,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subMinute(),
+            'available_at' => now()
+                ->subMinute(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -471,10 +476,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
 
         $this->assertSame('workflow_task_ready', $summary->liveness_state);
         $this->assertSame('Workflow task ready', $summary->wait_reason);
-        $this->assertSame(
-            sprintf('Workflow task %s is ready to run.', $task->id),
-            $summary->liveness_reason,
-        );
+        $this->assertSame(sprintf('Workflow task %s is ready to run.', $task->id), $summary->liveness_reason);
         $this->assertFalse($detail['compatibility_supported']);
         $this->assertTrue($detail['compatibility_supported_in_fleet']);
         $this->assertSame(
@@ -540,6 +542,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
             $detail['liveness_reason'],
         );
         $this->assertFalse($detail['can_repair']);
+        $this->assertSame('waiting_for_compatible_worker', $detail['repair_blocked_reason']);
         $this->assertSame('build-a', $detail['tasks'][0]['compatibility']);
         $this->assertFalse($detail['tasks'][0]['compatibility_supported']);
         $this->assertSame(
@@ -628,6 +631,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         );
         $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
         $this->assertFalse($detail['can_repair']);
+        $this->assertSame('waiting_for_compatible_worker', $detail['repair_blocked_reason']);
         $this->assertSame(
             'Workflow task is waiting for a compatible worker; dispatch is overdue.',
             $detail['tasks'][0]['summary'],
@@ -718,6 +722,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         );
         $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
         $this->assertFalse($detail['can_repair']);
+        $this->assertSame('waiting_for_compatible_worker', $detail['repair_blocked_reason']);
         $this->assertSame(
             'Workflow task lease expired and is waiting for a compatible worker.',
             $detail['tasks'][0]['summary'],
