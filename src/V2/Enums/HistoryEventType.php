@@ -20,6 +20,7 @@ enum HistoryEventType: string
     case SignalReceived = 'SignalReceived';
     case SignalApplied = 'SignalApplied';
     case UpdateAccepted = 'UpdateAccepted';
+    case UpdateRejected = 'UpdateRejected';
     case UpdateApplied = 'UpdateApplied';
     case UpdateCompleted = 'UpdateCompleted';
     case RepairRequested = 'RepairRequested';

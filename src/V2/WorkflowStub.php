@@ -499,6 +499,8 @@ final class WorkflowStub
         $result = null;
 
         DB::transaction(function () use ($method, $arguments, &$command, &$failure, &$result): void {
+            $updateCommandAttributes = $this->updateCommandPayloadAttributes($method, $arguments);
+
             /** @var WorkflowInstance $instance */
             $instance = WorkflowInstance::query()
                 ->lockForUpdate()
@@ -513,6 +515,7 @@ final class WorkflowStub
                     CommandType::Update,
                     'instance_not_started',
                     $this->commandTargetScope(),
+                    $updateCommandAttributes,
                 );
 
                 return;
@@ -531,6 +534,9 @@ final class WorkflowStub
                         CommandType::Update,
                         'selected_run_not_current',
                         $this->commandTargetScope(),
+                        $updateCommandAttributes,
+                        HistoryEventType::UpdateRejected,
+                        $this->updateRejectedEventPayload($instance, $run, $method, $arguments),
                     );
 
                     return;
@@ -551,6 +557,9 @@ final class WorkflowStub
                     CommandType::Update,
                     'run_not_active',
                     $this->commandTargetScope(),
+                    $updateCommandAttributes,
+                    HistoryEventType::UpdateRejected,
+                    $this->updateRejectedEventPayload($instance, $run, $method, $arguments),
                 );
 
                 return;
@@ -565,13 +574,9 @@ final class WorkflowStub
                     CommandType::Update,
                     'unknown_update',
                     $this->commandTargetScope(),
-                    [
-                        'payload_codec' => config('workflows.serializer'),
-                        'payload' => Serializer::serialize([
-                            'name' => $method,
-                            'arguments' => $arguments,
-                        ]),
-                    ],
+                    $updateCommandAttributes,
+                    HistoryEventType::UpdateRejected,
+                    $this->updateRejectedEventPayload($instance, $run, $method, $arguments),
                 );
 
                 return;
@@ -584,13 +589,9 @@ final class WorkflowStub
                     CommandType::Update,
                     UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL,
                     $this->commandTargetScope(),
-                    [
-                        'payload_codec' => config('workflows.serializer'),
-                        'payload' => Serializer::serialize([
-                            'name' => $method,
-                            'arguments' => $arguments,
-                        ]),
-                    ],
+                    $updateCommandAttributes,
+                    HistoryEventType::UpdateRejected,
+                    $this->updateRejectedEventPayload($instance, $run, $method, $arguments),
                 );
 
                 return;
@@ -600,17 +601,12 @@ final class WorkflowStub
             $replayState = (new QueryStateReplayer())->replayState($run);
 
             /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
                 'command_type' => CommandType::Update->value,
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
-                'payload_codec' => config('workflows.serializer'),
-                'payload' => Serializer::serialize([
-                    'name' => $method,
-                    'arguments' => $arguments,
-                ]),
                 'accepted_at' => now(),
-            ]));
+            ], $updateCommandAttributes)));
 
             WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
                 'workflow_command_id' => $command->id,
@@ -1290,6 +1286,8 @@ final class WorkflowStub
         string $reason,
         string $targetScope = 'instance',
         array $attributes = [],
+        ?HistoryEventType $historyEventType = null,
+        array $historyPayload = [],
     ): WorkflowCommand {
         /** @var WorkflowCommand $command */
         $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
@@ -1310,7 +1308,54 @@ final class WorkflowStub
             'rejected_at' => now(),
         ], $attributes)));
 
+        if ($run instanceof WorkflowRun && $historyEventType instanceof HistoryEventType) {
+            WorkflowHistoryEvent::record(
+                $run,
+                $historyEventType,
+                array_filter([
+                    'workflow_command_id' => $command->id,
+                    'workflow_instance_id' => $instance->id,
+                    'workflow_run_id' => $run->id,
+                ] + $historyPayload, static fn (mixed $value): bool => $value !== null),
+                null,
+                $command,
+            );
+        }
+
         return $command;
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     * @return array<string, mixed>
+     */
+    private function updateCommandPayloadAttributes(string $method, array $arguments): array
+    {
+        return [
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'name' => $method,
+                'arguments' => $arguments,
+            ]),
+        ];
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     * @return array<string, mixed>
+     */
+    private function updateRejectedEventPayload(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        string $method,
+        array $arguments,
+    ): array {
+        return [
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $method,
+            'arguments' => Serializer::serialize($arguments),
+        ];
     }
 
     /**

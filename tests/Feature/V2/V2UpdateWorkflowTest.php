@@ -162,6 +162,37 @@ final class V2UpdateWorkflowTest extends TestCase
             ->where('event_type', 'UpdateAccepted')
             ->count());
 
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+            'SignalReceived',
+            'UpdateRejected',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        /** @var WorkflowRun $timelineRun */
+        $timelineRun = WorkflowRun::query()->findOrFail($workflow->runId());
+        $timeline = HistoryTimeline::forRun($timelineRun);
+        $rejectedUpdate = collect($timeline)
+            ->firstWhere('type', 'UpdateRejected');
+
+        $this->assertIsArray($rejectedUpdate);
+        $this->assertSame('workflow_command', $rejectedUpdate['source_kind']);
+        $this->assertSame($result->commandId(), $rejectedUpdate['source_id']);
+        $this->assertSame('command', $rejectedUpdate['kind']);
+        $this->assertSame('approve', $rejectedUpdate['update_name']);
+        $this->assertSame('rejected', $rejectedUpdate['command_status']);
+        $this->assertSame('rejected_pending_signal', $rejectedUpdate['command_outcome']);
+        $this->assertSame(
+            'Rejected update approve: earlier_signal_pending.',
+            $rejectedUpdate['summary'],
+        );
+
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
         $detail = RunDetailView::forRun($run);
@@ -173,6 +204,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertTrue($detail['can_signal']);
         $this->assertFalse($detail['can_update']);
         $this->assertSame('earlier_signal_pending', $detail['update_blocked_reason']);
+        $this->assertSame('approve', $detail['commands'][2]['target_name']);
         $this->assertIsArray($signalWait);
         $this->assertSame('resolved', $signalWait['status']);
         $this->assertSame('received', $signalWait['source_status']);
@@ -397,6 +429,24 @@ final class V2UpdateWorkflowTest extends TestCase
             'outcome' => 'rejected_unknown_update',
             'rejection_reason' => 'unknown_update',
         ]);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+            'UpdateRejected',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+
+        $this->assertSame('missingUpdate', $detail['commands'][1]['target_name']);
     }
 
     public function testSignalIntakeUsesDurableRunContractWhenWorkflowClassCannotBeResolved(): void
@@ -504,6 +554,29 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertTrue($result->rejectedNotCurrent());
         $this->assertSame('selected_run_not_current', $result->rejectionReason());
         $this->assertSame($historicalRun->id, $result->runId());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $historicalRun->id,
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'rejected',
+            'outcome' => 'rejected_not_current',
+            'rejection_reason' => 'selected_run_not_current',
+        ]);
+
+        $this->assertSame(['UpdateRejected'], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $historicalRun->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $detail = RunDetailView::forRun($historicalRun->fresh());
+
+        $this->assertSame('approve', $detail['commands'][0]['target_name']);
+        $this->assertSame('selected_run_not_current', $detail['commands'][0]['rejection_reason']);
     }
 
     private function waitFor(callable $condition): void

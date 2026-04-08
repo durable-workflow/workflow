@@ -155,6 +155,7 @@ final class HistoryTimeline
             HistoryEventType::StartRejected,
             HistoryEventType::SignalReceived,
             HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateRejected,
             HistoryEventType::RepairRequested,
             HistoryEventType::CancelRequested,
             HistoryEventType::TerminateRequested => 'command',
@@ -238,6 +239,16 @@ final class HistoryTimeline
             HistoryEventType::UpdateAccepted => $updateName === null
                 ? 'Update accepted.'
                 : sprintf('Accepted update %s.', $updateName),
+            HistoryEventType::UpdateRejected => match (true) {
+                $updateName !== null && $rejectionReason !== null => sprintf(
+                    'Rejected update %s: %s.',
+                    $updateName,
+                    $rejectionReason,
+                ),
+                $updateName !== null => sprintf('Rejected update %s.', $updateName),
+                $rejectionReason !== null => sprintf('Update rejected: %s.', $rejectionReason),
+                default => 'Update rejected.',
+            },
             HistoryEventType::UpdateApplied => $updateName === null
                 ? 'Update applied.'
                 : sprintf('Applied update %s.', $updateName),
@@ -579,6 +590,7 @@ final class HistoryTimeline
             HistoryEventType::StartRejected,
             HistoryEventType::SignalReceived,
             HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateRejected,
             HistoryEventType::UpdateApplied,
             HistoryEventType::UpdateCompleted,
             HistoryEventType::RepairRequested,
@@ -641,6 +653,7 @@ final class HistoryTimeline
     ): ?string {
         return match ($event->event_type) {
             HistoryEventType::StartRejected => 'rejected',
+            HistoryEventType::UpdateRejected => 'rejected',
             HistoryEventType::StartAccepted,
             HistoryEventType::SignalReceived,
             HistoryEventType::UpdateAccepted,
