@@ -152,6 +152,26 @@ final class WorkflowStub
         return new self($instance);
     }
 
+    public static function loadSelection(string $instanceId, ?string $runId = null): self
+    {
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()
+            ->with('currentRun')
+            ->findOrFail($instanceId);
+
+        if ($runId === null) {
+            return new self($instance);
+        }
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->whereKey($runId)
+            ->firstOrFail();
+
+        return new self($instance, $run, true);
+    }
+
     public static function loadRun(string $runId): self
     {
         /** @var WorkflowRun $run */

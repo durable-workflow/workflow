@@ -381,6 +381,68 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(1, $currentDetail['timeline'][0]['command_sequence']);
     }
 
+    public function testRunDetailViewIncludesInstanceRunNavigation(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'detail-run-navigation');
+        $workflow->start(0, 1);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'detail-run-navigation')
+            ->orderBy('run_number')
+            ->get();
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = $runs[0];
+        /** @var WorkflowRun $currentRun */
+        $currentRun = $runs[1];
+
+        $detail = RunDetailView::forRun($historicalRun->fresh(['summary', 'instance.currentRun.summary']));
+
+        $this->assertCount(2, $detail['run_navigation']);
+        $this->assertSame(
+            [
+                [
+                    'instance_id' => 'detail-run-navigation',
+                    'run_id' => $historicalRun->id,
+                    'run_number' => 1,
+                    'status' => 'completed',
+                    'status_bucket' => 'completed',
+                    'closed_reason' => 'continued',
+                    'is_current_run' => false,
+                    'is_selected_run' => true,
+                ],
+                [
+                    'instance_id' => 'detail-run-navigation',
+                    'run_id' => $currentRun->id,
+                    'run_number' => 2,
+                    'status' => 'completed',
+                    'status_bucket' => 'completed',
+                    'closed_reason' => 'completed',
+                    'is_current_run' => true,
+                    'is_selected_run' => false,
+                ],
+            ],
+            array_map(
+                static fn (array $entry): array => [
+                    'instance_id' => $entry['instance_id'],
+                    'run_id' => $entry['run_id'],
+                    'run_number' => $entry['run_number'],
+                    'status' => $entry['status'],
+                    'status_bucket' => $entry['status_bucket'],
+                    'closed_reason' => $entry['closed_reason'],
+                    'is_current_run' => $entry['is_current_run'],
+                    'is_selected_run' => $entry['is_selected_run'],
+                ],
+                $detail['run_navigation'],
+            ),
+        );
+    }
+
     public function testRunDetailViewIncludesChildWaitAndLineageForParentRun(): void
     {
         $workflow = WorkflowStub::make(TestParentWaitingOnChildWorkflow::class, 'detail-child-parent');

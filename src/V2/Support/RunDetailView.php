@@ -32,6 +32,7 @@ final class RunDetailView
             'parentLinks.parentRun.summary',
             'childLinks.childRun.summary',
             'childLinks.childRun.historyEvents',
+            'instance.runs.summary',
             'instance.currentRun.summary',
         ]);
 
@@ -140,6 +141,26 @@ final class RunDetailView
                     : 'Selected run is historical. Issue commands against the current active run.'),
             'created_at' => $summary?->started_at ?? $run->started_at ?? $run->created_at,
             'updated_at' => $summary?->closed_at ?? $run->last_progress_at ?? $run->updated_at,
+            'run_navigation' => ($run->instance?->runs ?? collect())
+                ->sortBy('run_number')
+                ->map(static function (WorkflowRun $instanceRun) use ($run, $currentRun): array {
+                    $instanceRunSummary = $instanceRun->summary;
+
+                    return [
+                        'instance_id' => $instanceRun->workflow_instance_id,
+                        'run_id' => $instanceRun->id,
+                        'run_number' => $instanceRun->run_number,
+                        'status' => $instanceRun->status->value,
+                        'status_bucket' => $instanceRunSummary?->status_bucket,
+                        'closed_reason' => $instanceRunSummary?->closed_reason ?? $instanceRun->closed_reason,
+                        'started_at' => $instanceRunSummary?->started_at ?? $instanceRun->started_at ?? $instanceRun->created_at,
+                        'closed_at' => $instanceRunSummary?->closed_at ?? $instanceRun->closed_at,
+                        'is_current_run' => $currentRun?->id === $instanceRun->id,
+                        'is_selected_run' => $run->id === $instanceRun->id,
+                    ];
+                })
+                ->values()
+                ->all(),
             'activities_scope' => 'selected_run',
             'activities' => $activities,
             'commands_scope' => 'selected_run',

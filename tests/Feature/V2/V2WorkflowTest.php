@@ -115,6 +115,42 @@ final class V2WorkflowTest extends TestCase
         ]);
     }
 
+    public function testLoadSelectionCanPinHistoricalRunWithinOneInstance(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'selection-instance');
+        $workflow->start(0, 1);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'selection-instance')
+            ->orderBy('run_number')
+            ->get();
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = $runs[0];
+        /** @var WorkflowRun $currentRun */
+        $currentRun = $runs[1];
+
+        $selected = WorkflowStub::loadSelection('selection-instance', $historicalRun->id);
+
+        $this->assertSame('selection-instance', $selected->id());
+        $this->assertSame($historicalRun->id, $selected->runId());
+        $this->assertSame($currentRun->id, $selected->currentRunId());
+        $this->assertFalse($selected->currentRunIsSelected());
+        $this->assertSame('completed', $selected->status());
+
+        $current = WorkflowStub::loadSelection('selection-instance');
+
+        $this->assertSame('selection-instance', $current->id());
+        $this->assertSame($currentRun->id, $current->runId());
+        $this->assertSame($currentRun->id, $current->currentRunId());
+        $this->assertTrue($current->currentRunIsSelected());
+    }
+
     public function testPhpApiCommandsRecordDurableCommandContext(): void
     {
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'command-context-php');
