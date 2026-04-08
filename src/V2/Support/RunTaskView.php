@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Collection;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -20,7 +20,10 @@ final class RunTaskView
     {
         $run->loadMissing(['tasks', 'activityExecutions', 'timers']);
 
-        $activities = $run->activityExecutions->keyBy('id');
+        /** @var Collection<string, array<string, mixed>> $activities */
+        $activities = collect(RunActivityView::activitiesForRun($run))
+            ->filter(static fn (array $activity): bool => is_string($activity['id'] ?? null))
+            ->keyBy(static fn (array $activity): string => $activity['id']);
         $timers = $run->timers->keyBy('id');
 
         return $run->tasks
@@ -54,7 +57,7 @@ final class RunTaskView
                     $timerId = self::stringValue($task->payload['timer_id'] ?? null);
                     $compatibility = TaskCompatibility::resolve($task, $run);
 
-                    /** @var ActivityExecution|null $activity */
+                    /** @var array<string, mixed>|null $activity */
                     $activity = $activityExecutionId === null ? null : $activities->get($activityExecutionId);
                     /** @var WorkflowTimer|null $timer */
                     $timer = $timerId === null ? null : $timers->get($timerId);
@@ -87,8 +90,8 @@ final class RunTaskView
                         'connection' => $task->connection,
                         'queue' => $task->queue,
                         'activity_execution_id' => $activityExecutionId,
-                        'activity_type' => $activity?->activity_type,
-                        'activity_class' => $activity?->activity_class,
+                        'activity_type' => self::stringValue($activity['type'] ?? null),
+                        'activity_class' => self::stringValue($activity['class'] ?? null),
                         'timer_id' => $timerId,
                         'timer_sequence' => $timer?->sequence,
                         'timer_fire_at' => $timer?->fire_at,
@@ -103,7 +106,7 @@ final class RunTaskView
 
     private static function summaryFor(
         WorkflowTask $task,
-        ?ActivityExecution $activity,
+        ?array $activity,
         ?WorkflowTimer $timer,
         ?string $compatibility,
     ): string {
@@ -129,7 +132,7 @@ final class RunTaskView
                             : (TaskRepairPolicy::dispatchOverdue($task)
                             ? 'Activity task is waiting for a compatible worker for %s; dispatch is overdue.'
                             : 'Activity task is waiting for a compatible worker for %s.')),
-                    $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                    self::activityLabel($activity),
                 ),
                 TaskType::Timer => sprintf(
                     TaskRepairPolicy::leaseExpired($task)
@@ -223,9 +226,9 @@ final class RunTaskView
         };
     }
 
-    private static function activitySummary(WorkflowTask $task, ?ActivityExecution $activity): string
+    private static function activitySummary(WorkflowTask $task, ?array $activity): string
     {
-        $label = $activity?->activity_type ?? $activity?->activity_class ?? 'activity';
+        $label = self::activityLabel($activity);
 
         return match ($task->status) {
             TaskStatus::Ready => sprintf('Activity task ready for %s.', $label),
@@ -295,6 +298,13 @@ final class RunTaskView
         }
 
         return 'ready';
+    }
+
+    private static function activityLabel(?array $activity): string
+    {
+        return self::stringValue($activity['type'] ?? null)
+            ?? self::stringValue($activity['class'] ?? null)
+            ?? 'activity';
     }
 
     private static function stringValue(mixed $value): ?string

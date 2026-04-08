@@ -64,6 +64,9 @@ final class ActivitySnapshot
             'created_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? self::timestamp($event->recorded_at)
                 : null,
+            'started_at' => $event->event_type === HistoryEventType::ActivityStarted
+                ? self::timestamp($event->recorded_at)
+                : null,
             'closed_at' => in_array($event->event_type, [
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
@@ -125,6 +128,7 @@ final class ActivitySnapshot
     {
         return match ($eventType) {
             HistoryEventType::ActivityScheduled => 'pending',
+            HistoryEventType::ActivityStarted => 'running',
             HistoryEventType::ActivityCompleted => 'completed',
             HistoryEventType::ActivityFailed => 'failed',
             default => null,

@@ -19,6 +19,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -31,6 +32,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
@@ -192,10 +194,11 @@ final class V2RunDetailViewTest extends TestCase
             'SignalReceived',
             'SignalApplied',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowCompleted',
         ], array_column($detail['timeline'], 'type'));
-        $this->assertSame([1, 1, null, 2, 2, null, null, null], array_column($detail['timeline'], 'command_sequence'));
+        $this->assertSame([1, 1, null, 2, 2, null, null, null, null], array_column($detail['timeline'], 'command_sequence'));
     }
 
     public function testRunDetailViewKeepsActivityDetailWhenActivityRowDrifts(): void
@@ -675,7 +678,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($currentRun->id, $historicalDetail['continuedWorkflows'][0]['child_workflow_run_id']);
         $this->assertSame('completed', $historicalDetail['continuedWorkflows'][0]['status']);
         $this->assertSame('completed', $historicalDetail['continuedWorkflows'][0]['status_bucket']);
-        $this->assertSame('WorkflowContinuedAsNew', $historicalDetail['timeline'][4]['type']);
+        $this->assertSame('WorkflowContinuedAsNew', $historicalDetail['timeline'][5]['type']);
 
         $this->assertTrue($currentDetail['is_current_run']);
         $this->assertSame($currentRun->id, $currentDetail['current_run_id']);
@@ -1231,6 +1234,106 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('activity_execution', $activityWait['resume_source_kind']);
         $this->assertSame($execution->id, $activityWait['resume_source_id']);
         $this->assertNull($activityWait['task_id']);
+        $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
+    }
+
+    public function testRunDetailViewKeepsRunningActivityFromTypedHistoryWhenExecutionRowIsMissing(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'detail-running-activity-history',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(20),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => \Tests\Fixtures\V2\TestGreetingActivity::class,
+            'activity_type' => \Tests\Fixtures\V2\TestGreetingActivity::class,
+            'status' => \Workflow\V2\Enums\ActivityStatus::Pending->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ]);
+
+        $execution->forceFill([
+            'status' => \Workflow\V2\Enums\ActivityStatus::Running->value,
+            'started_at' => now()->subSeconds(15),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ]);
+
+        $executionId = $execution->id;
+        $execution->delete();
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $activityWait = $this->findWait($detail['waits'], 'activity');
+
+        $this->assertSame('activity', $detail['wait_kind']);
+        $this->assertSame('activity_running_without_task', $detail['liveness_state']);
+        $this->assertSame(
+            sprintf(
+                'Activity %s is already running without an open activity task. Repair is deferred to avoid duplicating in-flight work.',
+                $executionId,
+            ),
+            $detail['liveness_reason'],
+        );
+        $this->assertCount(1, $detail['activities']);
+        $this->assertSame($executionId, $detail['activities'][0]['id']);
+        $this->assertSame('running', $detail['activities'][0]['status']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
+        $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['class']);
+        $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
+        $this->assertNotNull($detail['activities'][0]['started_at']);
+        $this->assertSame('open', $activityWait['status']);
+        $this->assertSame('running', $activityWait['source_status']);
+        $this->assertFalse($activityWait['task_backed']);
+        $this->assertSame('activity_execution', $activityWait['resume_source_kind']);
+        $this->assertSame($executionId, $activityWait['resume_source_id']);
+        $this->assertSame([
+            'ActivityScheduled',
+            'ActivityStarted',
+        ], array_column($detail['timeline'], 'type'));
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
     }
 

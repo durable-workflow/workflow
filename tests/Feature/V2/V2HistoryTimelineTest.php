@@ -66,6 +66,7 @@ final class V2HistoryTimelineTest extends TestCase
             'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowCompleted',
         ], array_column($timeline, 'type'));
@@ -103,16 +104,24 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('workflow', $timeline[2]['task']['type']);
         $this->assertSame('completed', $timeline[2]['task']['status']);
 
-        $this->assertSame('Completed TestGreetingActivity.', $timeline[3]['summary']);
+        $this->assertSame('Started TestGreetingActivity.', $timeline[3]['summary']);
         $this->assertSame($activity->id, $timeline[3]['activity_execution_id']);
         $this->assertSame('activity', $timeline[3]['task']['type']);
-        $this->assertSame('completed', $timeline[3]['task']['status']);
-        $this->assertSame($activity->closed_at?->toJSON(), $timeline[3]['activity']['closed_at']);
+        $this->assertSame('leased', $timeline[3]['task']['status']);
+        $this->assertSame('running', $timeline[3]['activity']['status']);
+        $this->assertSame($activity->started_at?->toJSON(), $timeline[3]['activity']['started_at']);
+        $this->assertNull($timeline[3]['activity']['closed_at']);
 
-        $this->assertSame('workflow', $timeline[4]['kind']);
-        $this->assertSame('Workflow completed.', $timeline[4]['summary']);
-        $this->assertNull($timeline[4]['command']);
-        $this->assertNull($timeline[4]['failure']);
+        $this->assertSame('Completed TestGreetingActivity.', $timeline[4]['summary']);
+        $this->assertSame($activity->id, $timeline[4]['activity_execution_id']);
+        $this->assertSame('activity', $timeline[4]['task']['type']);
+        $this->assertSame('completed', $timeline[4]['task']['status']);
+        $this->assertSame($activity->closed_at?->toJSON(), $timeline[4]['activity']['closed_at']);
+
+        $this->assertSame('workflow', $timeline[5]['kind']);
+        $this->assertSame('Workflow completed.', $timeline[5]['summary']);
+        $this->assertNull($timeline[5]['command']);
+        $this->assertNull($timeline[5]['failure']);
     }
 
     public function testTimelineIncludesTypedTimerEntriesForCompletedRun(): void
@@ -216,46 +225,47 @@ final class V2HistoryTimelineTest extends TestCase
             'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityFailed',
             'WorkflowFailed',
         ], array_column($timeline, 'type'));
 
-        $this->assertSame('activity', $timeline[3]['kind']);
-        $this->assertSame('activity_execution', $timeline[3]['source_kind']);
-        $this->assertSame($activity->id, $timeline[3]['source_id']);
-        $this->assertSame('Failed TestFailingActivity: boom.', $timeline[3]['summary']);
-        $this->assertSame($activity->id, $timeline[3]['activity_execution_id']);
-        $this->assertSame($activityFailure->id, $timeline[3]['failure_id']);
-        $this->assertSame(RuntimeException::class, $timeline[3]['exception_class']);
-        $this->assertSame('boom', $timeline[3]['message']);
-        $this->assertSame($activityFailure->id, $timeline[3]['failure']['id']);
-        $this->assertSame('activity_execution', $timeline[3]['failure']['source_kind']);
-        $this->assertSame($activity->id, $timeline[3]['failure']['source_id']);
-        $this->assertSame('activity', $timeline[3]['failure']['propagation_kind']);
-        $this->assertFalse($timeline[3]['failure']['handled']);
-        $this->assertSame(RuntimeException::class, $timeline[3]['failure']['exception_class']);
-        $this->assertSame('boom', $timeline[3]['failure']['message']);
-        $this->assertSame('activity', $timeline[3]['task']['type']);
-        $this->assertSame('completed', $timeline[3]['task']['status']);
-        $this->assertSame('failed', $timeline[3]['activity']['status']);
-
-        $this->assertSame('workflow', $timeline[4]['kind']);
-        $this->assertSame('workflow_run', $timeline[4]['source_kind']);
-        $this->assertSame($runId, $timeline[4]['source_id']);
-        $this->assertSame('Workflow failed: boom.', $timeline[4]['summary']);
-        $this->assertSame($terminalFailure->id, $timeline[4]['failure_id']);
+        $this->assertSame('activity', $timeline[4]['kind']);
+        $this->assertSame('activity_execution', $timeline[4]['source_kind']);
+        $this->assertSame($activity->id, $timeline[4]['source_id']);
+        $this->assertSame('Failed TestFailingActivity: boom.', $timeline[4]['summary']);
+        $this->assertSame($activity->id, $timeline[4]['activity_execution_id']);
+        $this->assertSame($activityFailure->id, $timeline[4]['failure_id']);
         $this->assertSame(RuntimeException::class, $timeline[4]['exception_class']);
         $this->assertSame('boom', $timeline[4]['message']);
-        $this->assertSame($terminalFailure->id, $timeline[4]['failure']['id']);
-        $this->assertSame('workflow_run', $timeline[4]['failure']['source_kind']);
-        $this->assertSame($runId, $timeline[4]['failure']['source_id']);
-        $this->assertSame('terminal', $timeline[4]['failure']['propagation_kind']);
+        $this->assertSame($activityFailure->id, $timeline[4]['failure']['id']);
+        $this->assertSame('activity_execution', $timeline[4]['failure']['source_kind']);
+        $this->assertSame($activity->id, $timeline[4]['failure']['source_id']);
+        $this->assertSame('activity', $timeline[4]['failure']['propagation_kind']);
         $this->assertFalse($timeline[4]['failure']['handled']);
         $this->assertSame(RuntimeException::class, $timeline[4]['failure']['exception_class']);
         $this->assertSame('boom', $timeline[4]['failure']['message']);
-        $this->assertSame('workflow', $timeline[4]['task']['type']);
-        $this->assertSame('failed', $timeline[4]['task']['status']);
-        $this->assertNull($timeline[4]['activity']);
+        $this->assertSame('activity', $timeline[4]['task']['type']);
+        $this->assertSame('completed', $timeline[4]['task']['status']);
+        $this->assertSame('failed', $timeline[4]['activity']['status']);
+
+        $this->assertSame('workflow', $timeline[5]['kind']);
+        $this->assertSame('workflow_run', $timeline[5]['source_kind']);
+        $this->assertSame($runId, $timeline[5]['source_id']);
+        $this->assertSame('Workflow failed: boom.', $timeline[5]['summary']);
+        $this->assertSame($terminalFailure->id, $timeline[5]['failure_id']);
+        $this->assertSame(RuntimeException::class, $timeline[5]['exception_class']);
+        $this->assertSame('boom', $timeline[5]['message']);
+        $this->assertSame($terminalFailure->id, $timeline[5]['failure']['id']);
+        $this->assertSame('workflow_run', $timeline[5]['failure']['source_kind']);
+        $this->assertSame($runId, $timeline[5]['failure']['source_id']);
+        $this->assertSame('terminal', $timeline[5]['failure']['propagation_kind']);
+        $this->assertFalse($timeline[5]['failure']['handled']);
+        $this->assertSame(RuntimeException::class, $timeline[5]['failure']['exception_class']);
+        $this->assertSame('boom', $timeline[5]['failure']['message']);
+        $this->assertSame('workflow', $timeline[5]['task']['type']);
+        $this->assertSame('failed', $timeline[5]['task']['status']);
+        $this->assertNull($timeline[5]['activity']);
     }
 
     public function testTimelineIncludesTypedSignalEntriesForSignalDrivenRun(): void
@@ -284,6 +294,7 @@ final class V2HistoryTimelineTest extends TestCase
             'SignalReceived',
             'SignalApplied',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowCompleted',
         ], array_column($timeline, 'type'));

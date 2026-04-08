@@ -81,6 +81,7 @@ final class V2WorkflowTest extends TestCase
             'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowCompleted',
         ], WorkflowHistoryEvent::query()
@@ -506,6 +507,7 @@ final class V2WorkflowTest extends TestCase
             'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowContinuedAsNew',
         ], WorkflowHistoryEvent::query()
@@ -519,6 +521,7 @@ final class V2WorkflowTest extends TestCase
             'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowContinuedAsNew',
         ], WorkflowHistoryEvent::query()
@@ -532,6 +535,7 @@ final class V2WorkflowTest extends TestCase
             'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowCompleted',
         ], WorkflowHistoryEvent::query()
@@ -607,6 +611,7 @@ final class V2WorkflowTest extends TestCase
             'StartAccepted',
             'WorkflowStarted',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowCompleted',
         ], WorkflowHistoryEvent::query()
@@ -1045,6 +1050,7 @@ final class V2WorkflowTest extends TestCase
             'SignalReceived',
             'SignalApplied',
             'ActivityScheduled',
+            'ActivityStarted',
             'ActivityCompleted',
             'WorkflowCompleted',
         ], WorkflowHistoryEvent::query()

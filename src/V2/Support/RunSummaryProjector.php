@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -11,7 +12,6 @@ use Workflow\V2\Enums\StatusBucket;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
-use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -34,13 +34,14 @@ final class RunSummaryProjector
             RunStatus::Cancelled,
             RunStatus::Terminated,
         ], true);
+        $activities = RunActivityView::activitiesForRun($run);
 
         $openActivity = $isTerminal
             ? null
-            : $run->activityExecutions
-                ->first(static fn (ActivityExecution $execution): bool => in_array(
-                    $execution->status,
-                    [ActivityStatus::Pending, ActivityStatus::Running],
+            : collect($activities)
+                ->first(static fn (array $activity): bool => in_array(
+                    $activity['status'] ?? null,
+                    [ActivityStatus::Pending->value, ActivityStatus::Running->value],
                     true,
                 ));
 
@@ -75,11 +76,12 @@ final class RunSummaryProjector
 
         if ($openActivity !== null) {
             $waitKind = 'activity';
-            $waitReason = sprintf('Waiting for activity %s', $openActivity->activity_type);
-            $waitStartedAt = $openActivity->started_at ?? $openActivity->created_at;
-            $openWaitId = sprintf('activity:%s', $openActivity->id);
+            $waitReason = sprintf('Waiting for activity %s', self::activityType($openActivity));
+            $waitStartedAt = self::timestamp($openActivity['started_at'] ?? null)
+                ?? self::timestamp($openActivity['created_at'] ?? null);
+            $openWaitId = sprintf('activity:%s', $openActivity['id']);
             $resumeSourceKind = 'activity_execution';
-            $resumeSourceId = $openActivity->id;
+            $resumeSourceId = $openActivity['id'];
         } elseif ($openTimer !== null) {
             $waitKind = 'timer';
             $waitReason = 'Waiting for timer';
@@ -238,7 +240,7 @@ final class RunSummaryProjector
     private static function liveness(
         WorkflowRun $run,
         bool $isTerminal,
-        ?ActivityExecution $openActivity,
+        ?array $openActivity,
         ?WorkflowTimer $openTimer,
         ?WorkflowTask $nextTask,
         ?array $openChildWait,
@@ -253,12 +255,12 @@ final class RunSummaryProjector
                 return self::taskLiveness($nextTask, $run, 'Activity');
             }
 
-            if ($openActivity->status === ActivityStatus::Running) {
+            if (($openActivity['status'] ?? null) === ActivityStatus::Running->value) {
                 return [
                     'activity_running_without_task',
                     sprintf(
                         'Activity %s is already running without an open activity task. Repair is deferred to avoid duplicating in-flight work.',
-                        $openActivity->id,
+                        $openActivity['id'],
                     ),
                 ];
             }
@@ -267,8 +269,8 @@ final class RunSummaryProjector
                 'repair_needed',
                 sprintf(
                     'Activity %s is %s without an open activity task.',
-                    $openActivity->id,
-                    $openActivity->status->value,
+                    $openActivity['id'],
+                    $openActivity['status'] ?? ActivityStatus::Pending->value,
                 ),
             ];
         }
@@ -526,5 +528,28 @@ final class RunSummaryProjector
                 $reason,
             ),
         };
+    }
+
+    /**
+     * @param array<string, mixed> $activity
+     */
+    private static function activityType(array $activity): string
+    {
+        return is_string($activity['type'] ?? null) && $activity['type'] !== ''
+            ? $activity['type']
+            : (is_string($activity['class'] ?? null) && $activity['class'] !== ''
+                ? $activity['class']
+                : 'activity');
+    }
+
+    private static function timestamp(mixed $value): ?\Carbon\CarbonInterface
+    {
+        if ($value instanceof \Carbon\CarbonInterface) {
+            return $value;
+        }
+
+        return is_string($value) && $value !== ''
+            ? Carbon::parse($value)
+            : null;
     }
 }

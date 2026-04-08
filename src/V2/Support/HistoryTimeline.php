@@ -170,6 +170,7 @@ final class HistoryTimeline
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child',
             HistoryEventType::ActivityScheduled,
+            HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
             HistoryEventType::SideEffectRecorded => 'side_effect',
@@ -273,6 +274,7 @@ final class HistoryTimeline
             HistoryEventType::TerminateRequested => 'Terminate requested.',
             HistoryEventType::WorkflowTerminated => 'Workflow terminated.',
             HistoryEventType::ActivityScheduled => sprintf('Scheduled %s.', $activityLabel),
+            HistoryEventType::ActivityStarted => sprintf('Started %s.', $activityLabel),
             HistoryEventType::ActivityCompleted => sprintf('Completed %s.', $activityLabel),
             HistoryEventType::ActivityFailed => $message === null
                 ? sprintf('Failed %s.', $activityLabel)
@@ -503,6 +505,7 @@ final class HistoryTimeline
             'status' => self::stringValue($snapshot['status'] ?? null)
                 ?? match ($event->event_type) {
                     HistoryEventType::ActivityScheduled => 'pending',
+                    HistoryEventType::ActivityStarted => 'running',
                     HistoryEventType::ActivityCompleted => 'completed',
                     HistoryEventType::ActivityFailed => 'failed',
                     default => $activity?->status?->value,
@@ -517,7 +520,11 @@ final class HistoryTimeline
                 ?? $activity?->queue,
             'started_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? null
-                : self::timestamp($activity?->started_at ?? self::stringValue($snapshot['started_at'] ?? null)),
+                : self::timestamp(
+                    $activity?->started_at
+                    ?? self::stringValue($snapshot['started_at'] ?? null)
+                    ?? ($event->event_type === HistoryEventType::ActivityStarted ? $event->recorded_at : null)
+                ),
             'closed_at' => in_array($event->event_type, [
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
@@ -631,6 +638,7 @@ final class HistoryTimeline
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child_workflow_run',
             HistoryEventType::ActivityScheduled,
+            HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity_execution',
             HistoryEventType::TimerScheduled,
@@ -726,6 +734,7 @@ final class HistoryTimeline
         }
 
         return match ($event->event_type) {
+            HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
             HistoryEventType::TimerFired => 'timer',
@@ -740,6 +749,7 @@ final class HistoryTimeline
         }
 
         return match ($event->event_type) {
+            HistoryEventType::ActivityStarted => 'leased',
             HistoryEventType::WorkflowFailed => 'failed',
             default => 'completed',
         };

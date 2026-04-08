@@ -237,6 +237,14 @@ final class RunActivityTask implements ShouldQueue
                 'started_at' => $execution->started_at ?? now(),
             ])->save();
 
+            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, [
+                'activity_execution_id' => $execution->id,
+                'activity_class' => $execution->activity_class,
+                'activity_type' => $execution->activity_type,
+                'sequence' => $execution->sequence,
+                'activity' => ActivitySnapshot::fromExecution($execution),
+            ], $task);
+
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return $activityExecutionId;

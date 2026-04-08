@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TimerStatus;
-use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
@@ -40,15 +40,14 @@ final class RunWaitView
 
         $waits = [];
 
-        foreach ($run->activityExecutions as $execution) {
-            if (! $execution instanceof ActivityExecution) {
+        foreach (RunActivityView::activitiesForRun($run) as $activity) {
+            if (! is_string($activity['id'] ?? null)) {
                 continue;
             }
 
             $waits[] = self::activityWait(
-                $execution,
-                $taskByActivityExecutionId[$execution->id] ?? null,
-                $run->historyEvents->firstWhere('payload.activity_execution_id', $execution->id),
+                $activity,
+                $taskByActivityExecutionId[$activity['id']] ?? null,
             );
         }
 
@@ -94,39 +93,43 @@ final class RunWaitView
      * @return array<string, mixed>
      */
     private static function activityWait(
-        ActivityExecution $execution,
+        array $activity,
         ?WorkflowTask $task,
-        ?WorkflowHistoryEvent $scheduledEvent,
     ): array {
-        $status = match ($execution->status) {
-            ActivityStatus::Pending, ActivityStatus::Running => 'open',
-            ActivityStatus::Cancelled => 'cancelled',
+        $activityId = self::stringValue($activity['id'] ?? null);
+        $activityType = self::stringValue($activity['type'] ?? null)
+            ?? self::stringValue($activity['class'] ?? null)
+            ?? 'activity';
+        $sourceStatus = self::stringValue($activity['status'] ?? null) ?? ActivityStatus::Pending->value;
+        $status = match ($sourceStatus) {
+            ActivityStatus::Pending->value, ActivityStatus::Running->value => 'open',
+            ActivityStatus::Cancelled->value => 'cancelled',
             default => 'resolved',
         };
 
         return [
-            'id' => sprintf('activity:%s', $execution->id),
+            'id' => sprintf('activity:%s', $activityId),
             'kind' => 'activity',
-            'sequence' => $execution->sequence,
+            'sequence' => $activity['sequence'] ?? null,
             'status' => $status,
-            'source_status' => $execution->status->value,
+            'source_status' => $sourceStatus,
             'summary' => match ($status) {
-                'open' => sprintf('Waiting for activity %s.', $execution->activity_type),
-                'cancelled' => sprintf('Activity wait for %s was cancelled.', $execution->activity_type),
-                default => match ($execution->status) {
-                    ActivityStatus::Failed => sprintf('Activity %s failed.', $execution->activity_type),
-                    default => sprintf('Activity %s completed.', $execution->activity_type),
-                },
+                'open' => sprintf('Waiting for activity %s.', $activityType),
+                'cancelled' => sprintf('Activity wait for %s was cancelled.', $activityType),
+                default => $sourceStatus === ActivityStatus::Failed->value
+                    ? sprintf('Activity %s failed.', $activityType)
+                    : sprintf('Activity %s completed.', $activityType),
             },
-            'opened_at' => $scheduledEvent?->recorded_at ?? $execution->started_at ?? $execution->created_at,
+            'opened_at' => self::timestamp($activity['started_at'] ?? null)
+                ?? self::timestamp($activity['created_at'] ?? null),
             'deadline_at' => null,
-            'resolved_at' => $execution->closed_at,
+            'resolved_at' => self::timestamp($activity['closed_at'] ?? null),
             'target_name' => null,
-            'target_type' => $execution->activity_type,
+            'target_type' => $activityType,
             'task_backed' => self::isOpenTask($task),
             'external_only' => false,
             'resume_source_kind' => 'activity_execution',
-            'resume_source_id' => $execution->id,
+            'resume_source_id' => $activityId,
             'task_id' => $task?->id,
             'task_type' => $task?->task_type?->value,
             'task_status' => $task?->status?->value,
@@ -431,5 +434,16 @@ final class RunWaitView
         }
 
         return in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true);
+    }
+
+    private static function timestamp(mixed $value): ?\Carbon\CarbonInterface
+    {
+        if ($value instanceof \Carbon\CarbonInterface) {
+            return $value;
+        }
+
+        return is_string($value) && $value !== ''
+            ? Carbon::parse($value)
+            : null;
     }
 }

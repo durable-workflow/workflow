@@ -146,6 +146,7 @@ final class RunActivityView
         return $run->historyEvents
             ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
                 HistoryEventType::ActivityScheduled,
+                HistoryEventType::ActivityStarted,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
             ], true))
