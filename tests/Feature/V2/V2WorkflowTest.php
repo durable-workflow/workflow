@@ -22,6 +22,8 @@ use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
+use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
+use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestReclaimDuringExecutionActivity;
 use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
@@ -1014,6 +1016,131 @@ final class V2WorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+    }
+
+    public function testParallelChildAllWaitsForLastSuccessfulChildBeforeResumingParent(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelChildWorkflow::class, 'parallel-child-all');
+        $workflow->start(0, 0);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+        $this->assertSame([1, 2], $links->pluck('sequence')->all());
+
+        /** @var WorkflowHistoryEvent $firstChildScheduled */
+        $firstChildScheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildWorkflowScheduled')
+            ->get()
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 1);
+
+        $this->assertSame('parallel-children:1:2', $firstChildScheduled->payload['parallel_group_id'] ?? null);
+        $this->assertSame(1, $firstChildScheduled->payload['parallel_group_base_sequence'] ?? null);
+        $this->assertSame(2, $firstChildScheduled->payload['parallel_group_size'] ?? null);
+        $this->assertSame(0, $firstChildScheduled->payload['parallel_group_index'] ?? null);
+
+        $firstChildRunId = $links[0]->child_workflow_run_id;
+        $secondChildRunId = $links[1]->child_workflow_run_id;
+
+        $this->assertIsString($firstChildRunId);
+        $this->assertIsString($secondChildRunId);
+
+        $this->runReadyTaskForRun($firstChildRunId, TaskType::Workflow);
+
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildRunCompleted')
+            ->count());
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($secondChildRunId, TaskType::Workflow);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        /** @var WorkflowHistoryEvent $firstChildCompleted */
+        $firstChildCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildRunCompleted')
+            ->get()
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 1);
+
+        $this->assertSame('parallel-children:1:2', $firstChildCompleted->payload['parallel_group_id'] ?? null);
+        $this->assertSame(0, $firstChildCompleted->payload['parallel_group_index'] ?? null);
+        $this->assertSame('completed', $workflow->output()['stage'] ?? null);
+        $this->assertSame($firstChildRunId, $workflow->output()['children'][0]['run_id'] ?? null);
+        $this->assertSame($secondChildRunId, $workflow->output()['children'][1]['run_id'] ?? null);
+    }
+
+    public function testParallelChildAllResumesParentImmediatelyOnFirstChildFailure(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelChildFailureWorkflow::class, 'parallel-child-failure');
+        $workflow->start(60);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+
+        $failingChildRunId = $links[0]->child_workflow_run_id;
+        $slowChildRunId = $links[1]->child_workflow_run_id;
+
+        $this->assertIsString($failingChildRunId);
+        $this->assertIsString($slowChildRunId);
+
+        $this->runReadyTaskForRun($failingChildRunId, TaskType::Workflow);
+        $this->runReadyTaskForRun($failingChildRunId, TaskType::Activity);
+        $this->runReadyTaskForRun($failingChildRunId, TaskType::Workflow);
+
+        /** @var WorkflowRun $slowChildRun */
+        $slowChildRun = WorkflowRun::query()->findOrFail($slowChildRunId);
+
+        $this->assertSame('pending', $slowChildRun->status->value);
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'caught-child-failure',
+            'message' => 'boom',
+        ], $workflow->output());
     }
 
     public function testMakeCanReuseReservedInstanceWhenDurableTypeMatchesConfiguredAlias(): void
@@ -3503,6 +3630,29 @@ final class V2WorkflowTest extends TestCase
 
         if ($task === null) {
             $this->fail('Expected a ready workflow task.');
+        }
+
+        $job = match ($task->task_type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
+
+        $this->app->call([$job, 'handle']);
+    }
+
+    private function runReadyTaskForRun(string $runId, TaskType $taskType): void
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', $taskType->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->first();
+
+        if ($task === null) {
+            $this->fail(sprintf('Expected a ready %s task for run %s.', $taskType->value, $runId));
         }
 
         $job = match ($task->task_type) {

@@ -503,6 +503,152 @@ final class WorkflowExecutor
                 continue;
             }
 
+            if ($current instanceof AllCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                if ($current->calls === []) {
+                    try {
+                        $current = $result->send([]);
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    continue;
+                }
+
+                $scheduledTasks = [];
+                $pending = false;
+                $results = [];
+                $failure = null;
+                $groupSize = count($current->calls);
+
+                foreach ($current->calls as $index => $childCall) {
+                    $itemSequence = $sequence + $index;
+                    $parallelMetadata = ParallelChildGroup::itemMetadata($sequence, $groupSize, $index);
+                    $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $itemSequence);
+                    $childRun = ChildRunHistory::childRunForSequence($run, $itemSequence);
+
+                    if ($resolutionEvent === null && $childRun instanceof WorkflowRun) {
+                        $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
+
+                        if ($childStatus instanceof RunStatus && ! in_array($childStatus, [
+                            RunStatus::Pending,
+                            RunStatus::Running,
+                            RunStatus::Waiting,
+                        ], true)) {
+                            $resolutionEvent = $this->recordChildResolution($run, $task, $itemSequence, $childRun);
+                        }
+                    }
+
+                    if ($resolutionEvent !== null) {
+                        if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
+                            $results[$index] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
+
+                            continue;
+                        }
+
+                        $failure = $this->selectParallelChildFailure(
+                            $failure,
+                            $index,
+                            ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
+                            $resolutionEvent->recorded_at?->getTimestampMs()
+                                ?? $resolutionEvent->created_at?->getTimestampMs()
+                                ?? PHP_INT_MAX,
+                        );
+
+                        continue;
+                    }
+
+                    if (! $childRun instanceof WorkflowRun) {
+                        if (
+                            ChildRunHistory::scheduledEventForSequence($run, $itemSequence) !== null
+                            || ChildRunHistory::startedEventForSequence($run, $itemSequence) !== null
+                        ) {
+                            $pending = true;
+
+                            continue;
+                        }
+
+                        $scheduledTasks[] = $this->scheduleChildWorkflow(
+                            $run,
+                            $task,
+                            $itemSequence,
+                            $childCall,
+                            $parallelMetadata,
+                            false,
+                        );
+                        $pending = true;
+
+                        continue;
+                    }
+
+                    $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
+
+                    if (! $childStatus instanceof RunStatus || in_array($childStatus, [
+                        RunStatus::Pending,
+                        RunStatus::Running,
+                        RunStatus::Waiting,
+                    ], true)) {
+                        $pending = true;
+
+                        continue;
+                    }
+
+                    if ($childStatus === RunStatus::Completed) {
+                        $results[$index] = ChildRunHistory::outputForChildRun($childRun);
+
+                        continue;
+                    }
+
+                    $failure = $this->selectParallelChildFailure(
+                        $failure,
+                        $index,
+                        ChildRunHistory::exceptionForChildRun($childRun),
+                        $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
+                    );
+                }
+
+                if ($failure !== null) {
+                    try {
+                        $current = $result->throw($failure['exception']);
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    $sequence += $groupSize;
+
+                    continue;
+                }
+
+                if (! $pending) {
+                    ksort($results);
+
+                    try {
+                        $current = $result->send(array_values($results));
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    $sequence += $groupSize;
+
+                    continue;
+                }
+
+                $this->markRunWaiting($run, $task);
+
+                foreach ($scheduledTasks as $scheduledTask) {
+                    TaskDispatcher::dispatch($scheduledTask);
+                }
+
+                return null;
+            }
+
             if ($current instanceof ContinueAsNewCall) {
                 return $this->continueAsNew($run, $task, $sequence, $current);
             }
@@ -511,7 +657,7 @@ final class WorkflowExecutor
                 $run,
                 $task,
                 new UnsupportedWorkflowYieldException(sprintf(
-                    'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), sideEffect(), getVersion(), timer(), awaitSignal(), and continueAsNew() only.',
+                    'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), all(), sideEffect(), getVersion(), timer(), awaitSignal(), and continueAsNew() only.',
                     $run->workflow_class,
                     get_debug_type($current),
                 )),
@@ -622,6 +768,8 @@ final class WorkflowExecutor
         WorkflowTask $task,
         int $sequence,
         ChildWorkflowCall $childWorkflowCall,
+        ?array $parallelMetadata = null,
+        bool $parkRun = true,
     ): WorkflowTask {
         $metadata = WorkflowMetadata::fromStartArguments($childWorkflowCall->arguments);
         $workflowType = TypeRegistry::for($childWorkflowCall->workflow);
@@ -678,16 +826,16 @@ final class WorkflowExecutor
             'is_primary_parent' => true,
         ]);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, [
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, array_merge([
             'sequence' => $sequence,
             'workflow_link_id' => $link->id,
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'child_workflow_class' => $childRun->workflow_class,
             'child_workflow_type' => $childRun->workflow_type,
-        ], $task);
+        ], $parallelMetadata ?? []), $task);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, array_merge([
             'sequence' => $sequence,
             'workflow_link_id' => $link->id,
             'child_workflow_instance_id' => $childInstance->id,
@@ -695,7 +843,7 @@ final class WorkflowExecutor
             'child_workflow_class' => $childRun->workflow_class,
             'child_workflow_type' => $childRun->workflow_type,
             'child_run_number' => $childRun->run_number,
-        ], $task);
+        ], $parallelMetadata ?? []), $task);
 
         WorkflowHistoryEvent::record($childRun, HistoryEventType::StartAccepted, [
             'workflow_command_id' => $startCommand->id,
@@ -734,7 +882,9 @@ final class WorkflowExecutor
             'compatibility' => $childRun->compatibility,
         ]);
 
-        $this->markRunWaiting($run, $task);
+        if ($parkRun) {
+            $this->markRunWaiting($run, $task);
+        }
 
         RunSummaryProjector::project(
             $childRun->fresh([
@@ -1056,6 +1206,7 @@ final class WorkflowExecutor
             ->sortByDesc('sequence')
             ->first();
         $failure = $childRun->failures->first();
+        $parallelMetadata = ParallelChildGroup::metadataForSequence($run, $sequence);
 
         return WorkflowHistoryEvent::record($run, $eventType, array_filter([
             'sequence' => $sequence,
@@ -1084,7 +1235,33 @@ final class WorkflowExecutor
             'code' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
                 ? $childTerminalEvent->payload['code'] ?? null
                 : null,
+            ...($parallelMetadata ?? []),
         ], static fn ($value): bool => $value !== null), $task);
+    }
+
+    /**
+     * @param array{index: int, exception: Throwable, recorded_at: int}|null $currentFailure
+     * @return array{index: int, exception: Throwable, recorded_at: int}
+     */
+    private function selectParallelChildFailure(
+        ?array $currentFailure,
+        int $index,
+        Throwable $exception,
+        int $recordedAt,
+    ): array {
+        if (
+            $currentFailure === null
+            || $recordedAt < $currentFailure['recorded_at']
+            || ($recordedAt === $currentFailure['recorded_at'] && $index < $currentFailure['index'])
+        ) {
+            return [
+                'index' => $index,
+                'exception' => $exception,
+                'recorded_at' => $recordedAt,
+            ];
+        }
+
+        return $currentFailure;
     }
 
     private function waitForNextResumeSource(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask
@@ -1373,26 +1550,35 @@ final class WorkflowExecutor
             ->lockForUpdate()
             ->get();
 
-        $parentRunIds = $parentLinks
-            ->pluck('parent_workflow_run_id')
-            ->filter(static fn (mixed $id): bool => is_string($id) && $id !== '')
-            ->unique()
-            ->values()
-            ->all();
+        /** @var array<string, array{parent_workflow_run_id: string, parent_sequence: int|null}> $parentReferences */
+        $parentReferences = [];
 
-        if ($parentRunIds === []) {
+        foreach ($parentLinks as $parentLink) {
+            if (! is_string($parentLink->parent_workflow_run_id) || $parentLink->parent_workflow_run_id === '') {
+                continue;
+            }
+
+            $parentReferences[$parentLink->parent_workflow_run_id] = [
+                'parent_workflow_run_id' => $parentLink->parent_workflow_run_id,
+                'parent_sequence' => is_int($parentLink->sequence)
+                    ? $parentLink->sequence
+                    : ($parentReferences[$parentLink->parent_workflow_run_id]['parent_sequence'] ?? null),
+            ];
+        }
+
+        if ($parentReferences === []) {
             $parentReference = ChildRunHistory::parentReferenceForRun($childRun);
 
             if ($parentReference !== null) {
-                $parentRunIds = [$parentReference['parent_workflow_run_id']];
+                $parentReferences[$parentReference['parent_workflow_run_id']] = $parentReference;
             }
         }
 
-        foreach ($parentRunIds as $parentRunId) {
+        foreach ($parentReferences as $parentReference) {
             /** @var WorkflowRun|null $parentRun */
             $parentRun = WorkflowRun::query()
                 ->lockForUpdate()
-                ->find($parentRunId);
+                ->find($parentReference['parent_workflow_run_id']);
 
             if ($parentRun === null || in_array($parentRun->status, [
                 RunStatus::Completed,
@@ -1401,6 +1587,43 @@ final class WorkflowExecutor
                 RunStatus::Terminated,
             ], true)) {
                 continue;
+            }
+
+            if (is_int($parentReference['parent_sequence'])) {
+                $parentRun->loadMissing([
+                    'historyEvents',
+                    'childLinks.childRun.instance.currentRun',
+                    'childLinks.childRun.failures',
+                    'childLinks.childRun.historyEvents',
+                ]);
+
+                $parallelMetadata = ParallelChildGroup::metadataForSequence($parentRun, $parentReference['parent_sequence']);
+                $childStatus = ChildRunHistory::resolvedStatus(
+                    ChildRunHistory::resolutionEventForSequence($parentRun, $parentReference['parent_sequence']),
+                    $childRun,
+                );
+
+                if (
+                    $parallelMetadata !== null
+                    && $childStatus instanceof RunStatus
+                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure($parentRun, $parallelMetadata, $childStatus)
+                ) {
+                    RunSummaryProjector::project(
+                        $parentRun->fresh([
+                            'instance',
+                            'tasks',
+                            'activityExecutions',
+                            'timers',
+                            'failures',
+                            'historyEvents',
+                            'childLinks.childRun.instance.currentRun',
+                            'childLinks.childRun.failures',
+                            'childLinks.childRun.historyEvents',
+                        ])
+                    );
+
+                    continue;
+                }
             }
 
             $hasOpenWorkflowTask = WorkflowTask::query()

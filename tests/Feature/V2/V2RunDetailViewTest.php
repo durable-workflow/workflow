@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
+use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
@@ -1068,6 +1069,37 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($currentChildRun->id, $detail['continuedWorkflows'][0]['child_workflow_run_id']);
         $this->assertSame($currentChildRun->status->value, $detail['continuedWorkflows'][0]['status']);
         $this->assertSame($currentChildRun->workflow_type, $detail['continuedWorkflows'][0]['workflow_type']);
+    }
+
+    public function testRunDetailViewCountsOpenParallelChildWaitsAndExposesGroupMetadata(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelChildWorkflow::class, 'detail-parallel-children');
+        $workflow->start(60, 60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runNextReadyTask();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $childWaits = array_values(array_filter(
+            $detail['waits'],
+            static fn (array $wait): bool => ($wait['kind'] ?? null) === 'child' && ($wait['status'] ?? null) === 'open',
+        ));
+
+        $this->assertSame('child', $detail['wait_kind']);
+        $this->assertSame(2, $detail['open_wait_count']);
+        $this->assertCount(2, $childWaits);
+        $this->assertSame('parallel-children:1:2', $childWaits[0]['parallel_group_id']);
+        $this->assertSame('parallel-children:1:2', $childWaits[1]['parallel_group_id']);
+        $this->assertSame(2, $childWaits[0]['parallel_group_size']);
+        $this->assertSame(2, $childWaits[1]['parallel_group_size']);
+        $this->assertSame(0, $childWaits[0]['parallel_group_index']);
+        $this->assertSame(1, $childWaits[1]['parallel_group_index']);
     }
 
     public function testRunDetailViewIncludesTaskBackedTimerWaitForSelectedRun(): void

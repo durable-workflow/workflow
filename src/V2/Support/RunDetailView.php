@@ -70,6 +70,9 @@ final class RunDetailView
             ->keyBy(static fn ($event): string => $event->payload['failure_id']);
         $tasks = RunTaskView::forRun($run);
         $waits = RunWaitView::forRun($run);
+        $openWaitCount = collect($waits)
+            ->filter(static fn (array $wait): bool => ($wait['status'] ?? null) === 'open')
+            ->count();
         $currentOpenWait = self::currentOpenWait($waits);
         $workflowTaskResumeSource = self::currentWorkflowTaskResumeSource($tasks, $summary?->next_task_id);
         $fleetCompatibility = self::fleetCompatibility($run, $tasks);
@@ -121,6 +124,7 @@ final class RunDetailView
             'wait_started_at' => $summary?->wait_started_at,
             'wait_deadline_at' => $summary?->wait_deadline_at,
             'open_wait_id' => $openWaitId,
+            'open_wait_count' => $openWaitCount,
             'resume_source_kind' => $resumeSourceKind,
             'resume_source_id' => $resumeSourceId,
             'next_task_at' => $summary?->next_task_at,

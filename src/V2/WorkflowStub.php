@@ -32,7 +32,9 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\AwaitCall;
 use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\FailureFactory;
+use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\CurrentRunResolver;
+use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunCommandContract;
@@ -1865,11 +1867,35 @@ final class WorkflowStub
             ->lockForUpdate()
             ->get();
 
+        /** @var array<string, array{parent_workflow_run_id: string, parent_sequence: int|null}> $parentReferences */
+        $parentReferences = [];
+
         foreach ($parentLinks as $parentLink) {
+            if (! is_string($parentLink->parent_workflow_run_id) || $parentLink->parent_workflow_run_id === '') {
+                continue;
+            }
+
+            $parentReferences[$parentLink->parent_workflow_run_id] = [
+                'parent_workflow_run_id' => $parentLink->parent_workflow_run_id,
+                'parent_sequence' => is_int($parentLink->sequence)
+                    ? $parentLink->sequence
+                    : ($parentReferences[$parentLink->parent_workflow_run_id]['parent_sequence'] ?? null),
+            ];
+        }
+
+        if ($parentReferences === []) {
+            $parentReference = ChildRunHistory::parentReferenceForRun($childRun);
+
+            if ($parentReference !== null) {
+                $parentReferences[$parentReference['parent_workflow_run_id']] = $parentReference;
+            }
+        }
+
+        foreach ($parentReferences as $parentReference) {
             /** @var WorkflowRun|null $parentRun */
             $parentRun = WorkflowRun::query()
                 ->lockForUpdate()
-                ->find($parentLink->parent_workflow_run_id);
+                ->find($parentReference['parent_workflow_run_id']);
 
             if ($parentRun === null || in_array($parentRun->status, [
                 RunStatus::Completed,
@@ -1878,6 +1904,44 @@ final class WorkflowStub
                 RunStatus::Terminated,
             ], true)) {
                 continue;
+            }
+
+            /** @var WorkflowInstance|null $parentInstance */
+            $parentInstance = WorkflowInstance::query()
+                ->lockForUpdate()
+                ->find($parentRun->workflow_instance_id);
+
+            if ($parentInstance instanceof WorkflowInstance) {
+                $this->loadLockedRunRelations($parentRun, $parentInstance);
+            }
+
+            if (is_int($parentReference['parent_sequence'])) {
+                $parallelMetadata = ParallelChildGroup::metadataForSequence($parentRun, $parentReference['parent_sequence']);
+                $childStatus = ChildRunHistory::resolvedStatus(
+                    ChildRunHistory::resolutionEventForSequence($parentRun, $parentReference['parent_sequence']),
+                    $childRun,
+                );
+
+                if (
+                    $parallelMetadata !== null
+                    && $childStatus instanceof RunStatus
+                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure($parentRun, $parallelMetadata, $childStatus)
+                ) {
+                    RunSummaryProjector::project(
+                        $parentRun->fresh([
+                            'instance',
+                            'tasks',
+                            'activityExecutions',
+                            'timers',
+                            'failures',
+                            'historyEvents',
+                            'childLinks.childRun.instance.currentRun',
+                            'childLinks.childRun.failures',
+                        ])
+                    );
+
+                    continue;
+                }
             }
 
             $hasOpenWorkflowTask = WorkflowTask::query()

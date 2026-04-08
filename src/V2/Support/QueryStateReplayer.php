@@ -246,16 +246,129 @@ final class QueryStateReplayer
                 continue;
             }
 
+            if ($current instanceof AllCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                if ($current->calls === []) {
+                    $current = $result->send([]);
+
+                    continue;
+                }
+
+                $pending = false;
+                $results = [];
+                $failure = null;
+                $groupSize = count($current->calls);
+
+                foreach ($current->calls as $index => $childCall) {
+                    $itemSequence = $sequence + $index;
+                    $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $itemSequence);
+                    $childRun = ChildRunHistory::childRunForSequence($run, $itemSequence);
+
+                    if ($resolutionEvent !== null) {
+                        if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
+                            $results[$index] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
+
+                            continue;
+                        }
+
+                        $failure = $this->selectParallelChildFailure(
+                            $failure,
+                            $index,
+                            ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
+                            $resolutionEvent->recorded_at?->getTimestampMs()
+                                ?? $resolutionEvent->created_at?->getTimestampMs()
+                                ?? PHP_INT_MAX,
+                        );
+
+                        continue;
+                    }
+
+                    if (! $childRun instanceof WorkflowRun) {
+                        $pending = true;
+
+                        continue;
+                    }
+
+                    $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
+
+                    if (! $childStatus instanceof RunStatus || in_array($childStatus, [
+                        RunStatus::Pending,
+                        RunStatus::Running,
+                        RunStatus::Waiting,
+                    ], true)) {
+                        $pending = true;
+
+                        continue;
+                    }
+
+                    if ($childStatus === RunStatus::Completed) {
+                        $results[$index] = ChildRunHistory::outputForChildRun($childRun);
+
+                        continue;
+                    }
+
+                    $failure = $this->selectParallelChildFailure(
+                        $failure,
+                        $index,
+                        ChildRunHistory::exceptionForChildRun($childRun),
+                        $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
+                    );
+                }
+
+                if ($failure !== null) {
+                    $current = $result->throw($failure['exception']);
+                    $sequence += $groupSize;
+
+                    continue;
+                }
+
+                if ($pending) {
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                ksort($results);
+                $current = $result->send(array_values($results));
+                $sequence += $groupSize;
+
+                continue;
+            }
+
             if ($current instanceof ContinueAsNewCall) {
                 return new ReplayState($workflow, $sequence, $current);
             }
 
             throw new UnsupportedWorkflowYieldException(sprintf(
-                'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), sideEffect(), getVersion(), timer(), awaitSignal(), and continueAsNew() only.',
+                'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), all(), sideEffect(), getVersion(), timer(), awaitSignal(), and continueAsNew() only.',
                 $run->workflow_class,
                 get_debug_type($current),
             ));
         }
+    }
+
+    /**
+     * @param array{index: int, exception: Throwable, recorded_at: int}|null $currentFailure
+     * @return array{index: int, exception: Throwable, recorded_at: int}
+     */
+    private function selectParallelChildFailure(
+        ?array $currentFailure,
+        int $index,
+        Throwable $exception,
+        int $recordedAt,
+    ): array {
+        if (
+            $currentFailure === null
+            || $recordedAt < $currentFailure['recorded_at']
+            || ($recordedAt === $currentFailure['recorded_at'] && $index < $currentFailure['index'])
+        ) {
+            return [
+                'index' => $index,
+                'exception' => $exception,
+                'recorded_at' => $recordedAt,
+            ];
+        }
+
+        return $currentFailure;
     }
 
     private function appliedSignalEvent(

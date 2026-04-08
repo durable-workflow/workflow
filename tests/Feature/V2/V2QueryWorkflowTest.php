@@ -10,6 +10,8 @@ use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
+use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
+use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
@@ -355,6 +357,71 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame($expectedState, $workflow->refresh()->currentState());
     }
 
+    public function testQueriesKeepParallelChildAllWaitingUntilEveryChildCompletes(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelChildWorkflow::class, 'query-parallel-children');
+        $workflow->start(0, 0);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+
+        $firstChildRunId = $links[0]->child_workflow_run_id;
+
+        $this->assertIsString($firstChildRunId);
+
+        $this->runReadyTaskForRun($firstChildRunId, TaskType::Workflow);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-children',
+        ], $workflow->currentState());
+    }
+
+    public function testQueriesReplayParallelChildFailureBeforeParentWorkflowTaskRuns(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelChildFailureWorkflow::class, 'query-parallel-child-failure');
+        $workflow->start(60);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+
+        $failingChildRunId = $links[0]->child_workflow_run_id;
+
+        $this->assertIsString($failingChildRunId);
+
+        $this->runReadyTaskForRun($failingChildRunId, TaskType::Workflow);
+        $this->runReadyTaskForRun($failingChildRunId, TaskType::Activity);
+        $this->runReadyTaskForRun($failingChildRunId, TaskType::Workflow);
+
+        $this->assertSame([
+            'stage' => 'caught-child-failure',
+            'message' => 'boom',
+        ], $workflow->currentState());
+    }
+
     private function drainReadyTasks(): void
     {
         $deadline = microtime(true) + 10;
@@ -384,5 +451,49 @@ final class V2QueryWorkflowTest extends TestCase
         }
 
         $this->fail('Timed out draining ready workflow tasks.');
+    }
+
+    private function runNextReadyTask(): void
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->first();
+
+        if ($task === null) {
+            $this->fail('Expected a ready workflow task.');
+        }
+
+        $job = match ($task->task_type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
+
+        $this->app->call([$job, 'handle']);
+    }
+
+    private function runReadyTaskForRun(string $runId, TaskType $taskType): void
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', $taskType->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->first();
+
+        if ($task === null) {
+            $this->fail(sprintf('Expected a ready %s task for run %s.', $taskType->value, $runId));
+        }
+
+        $job = match ($task->task_type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
+
+        $this->app->call([$job, 'handle']);
     }
 }

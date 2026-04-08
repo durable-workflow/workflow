@@ -408,6 +408,11 @@ final class RunWaitView
                 RunStatus::Terminated->value => sprintf('Child workflow %s terminated.', $label),
                 default => sprintf('Waiting for child workflow %s.', $label),
             };
+            $parallelMetadata = ParallelChildGroup::metadataFromPayload(
+                is_array($scheduledEvent?->payload) ? $scheduledEvent->payload : (
+                    is_array($resolutionEvent?->payload) ? $resolutionEvent->payload : []
+                )
+            );
 
             return [
                 'id' => sprintf('child:%s', $link?->id ?? $sequence),
@@ -440,6 +445,10 @@ final class RunWaitView
                 'command_sequence' => null,
                 'command_status' => null,
                 'command_outcome' => null,
+                'parallel_group_id' => $parallelMetadata['parallel_group_id'] ?? null,
+                'parallel_group_base_sequence' => $parallelMetadata['parallel_group_base_sequence'] ?? null,
+                'parallel_group_size' => $parallelMetadata['parallel_group_size'] ?? null,
+                'parallel_group_index' => $parallelMetadata['parallel_group_index'] ?? null,
             ];
         }, $sequences));
     }

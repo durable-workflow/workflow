@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Carbon\CarbonInterval;
+use Workflow\V2\Support\AllCall;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\AwaitCall;
 use Workflow\V2\Support\AwaitWithTimeoutCall;
@@ -46,6 +47,13 @@ if (! function_exists(__NAMESPACE__ . '\\child')) {
     function child(string $workflow, ...$arguments): ChildWorkflowCall
     {
         return new ChildWorkflowCall($workflow, $arguments);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\all')) {
+    function all(iterable $calls): AllCall
+    {
+        return new AllCall($calls);
     }
 }
 
