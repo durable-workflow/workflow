@@ -68,6 +68,8 @@ final class RunTaskView
                         'compatibility' => $compatibility,
                         'compatibility_supported' => WorkerCompatibility::supports($compatibility),
                         'compatibility_reason' => WorkerCompatibility::mismatchReason($compatibility),
+                        'compatibility_supported_in_fleet' => TaskCompatibility::supportedInFleet($task, $run),
+                        'compatibility_fleet_reason' => TaskCompatibility::fleetMismatchReason($task, $run),
                         'dispatch_failed' => TaskRepairPolicy::dispatchFailed($task),
                         'dispatch_overdue' => TaskRepairPolicy::dispatchOverdue($task),
                         'is_open' => in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true),
@@ -251,7 +253,10 @@ final class RunTaskView
 
     private static function taskWaitingForCompatibleWorker(WorkflowTask $task, ?string $compatibility): bool
     {
-        if (WorkerCompatibility::supports($compatibility)) {
+        if (
+            WorkerCompatibility::supports($compatibility)
+            || WorkerCompatibilityFleet::supports($compatibility, $task->connection, $task->queue)
+        ) {
             return false;
         }
 

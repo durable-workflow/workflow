@@ -11,6 +11,7 @@ use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\TaskWatchdog;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\Watchdog;
 
 final class WorkflowServiceProvider extends ServiceProvider
@@ -30,8 +31,9 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->commands([ActivityMakeCommand::class, WorkflowMakeCommand::class]);
 
         Event::listen(Looping::class, static function (Looping $event): void {
+            WorkerCompatibilityFleet::heartbeat($event->connectionName, $event->queue);
             Watchdog::wake($event->connectionName, $event->queue);
-            TaskWatchdog::wake();
+            TaskWatchdog::wake($event->connectionName, $event->queue);
         });
     }
 }

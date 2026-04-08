@@ -35,9 +35,27 @@ final class TaskCompatibility
         return WorkerCompatibility::supports(self::resolve($task, $run));
     }
 
+    public static function supportedInFleet(WorkflowTask $task, ?WorkflowRun $run = null): bool
+    {
+        return WorkerCompatibilityFleet::supports(
+            self::resolve($task, $run),
+            $task->connection ?? $run?->connection,
+            $task->queue ?? $run?->queue,
+        );
+    }
+
     public static function mismatchReason(WorkflowTask $task, ?WorkflowRun $run = null): ?string
     {
         return WorkerCompatibility::mismatchReason(self::resolve($task, $run));
+    }
+
+    public static function fleetMismatchReason(WorkflowTask $task, ?WorkflowRun $run = null): ?string
+    {
+        return WorkerCompatibilityFleet::mismatchReason(
+            self::resolve($task, $run),
+            $task->connection ?? $run?->connection,
+            $task->queue ?? $run?->queue,
+        );
     }
 
     private static function normalize(mixed $value): ?string

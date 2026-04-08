@@ -22,6 +22,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class RunTimerTask implements ShouldQueue
 {
@@ -40,6 +41,11 @@ final class RunTimerTask implements ShouldQueue
 
     public function handle(): void
     {
+        WorkerCompatibilityFleet::heartbeat(
+            is_string($this->connection ?? null) ? $this->connection : null,
+            is_string($this->queue ?? null) ? $this->queue : null,
+        );
+
         [$timerId, $releaseIn] = $this->claimTask();
 
         if ($releaseIn !== null) {

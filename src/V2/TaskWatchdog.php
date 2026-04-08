@@ -12,18 +12,20 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunSummaryProjector;
-use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskRepairPolicy;
-use Workflow\V2\Support\WorkerCompatibility;
+use Workflow\V2\Support\TaskCompatibility;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class TaskWatchdog
 {
     public const LOOP_THROTTLE_KEY = 'workflow:v2:task-watchdog:looping';
 
-    public static function wake(): void
+    public static function wake(?string $connection = null, ?string $queue = null): void
     {
+        WorkerCompatibilityFleet::heartbeat($connection, $queue);
+
         if (! Cache::add(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::LOOP_THROTTLE_SECONDS)) {
             return;
         }
@@ -63,14 +65,6 @@ final class TaskWatchdog
 
                 TaskCompatibility::sync($task, $run);
 
-                if (! TaskCompatibility::supported($task, $run)) {
-                    RunSummaryProjector::project(
-                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    );
-
-                    return null;
-                }
-
                 $task = TaskRepair::recoverExistingTask($task, $run);
 
                 RunSummaryProjector::project(
@@ -101,10 +95,6 @@ final class TaskWatchdog
                     ->with(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
                     ->lockForUpdate()
                     ->findOrFail($runId);
-
-                if (! WorkerCompatibility::supports($run->compatibility)) {
-                    return null;
-                }
 
                 $summary = RunSummaryProjector::project($run);
 

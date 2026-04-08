@@ -39,6 +39,7 @@ return [
         'compatibility' => [
             'current' => env('WORKFLOW_V2_CURRENT_COMPATIBILITY'),
             'supported' => env('WORKFLOW_V2_SUPPORTED_COMPATIBILITIES'),
+            'heartbeat_ttl_seconds' => (int) env('WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL', 30),
         ],
     ],
 

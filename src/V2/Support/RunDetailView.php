@@ -12,6 +12,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class RunDetailView
 {
@@ -89,6 +90,7 @@ final class RunDetailView
         $waits = RunWaitView::forRun($run);
         $currentOpenWait = self::currentOpenWait($waits);
         $workflowTaskResumeSource = self::currentWorkflowTaskResumeSource($tasks, $summary?->next_task_id);
+        $fleetCompatibility = self::fleetCompatibility($run, $tasks);
         $openWaitId = $summary?->open_wait_id
             ?? $currentOpenWait['id']
             ?? $workflowTaskResumeSource['open_wait_id'];
@@ -115,6 +117,8 @@ final class RunDetailView
             'compatibility' => $summary?->compatibility ?? $run->compatibility,
             'compatibility_supported' => WorkerCompatibility::supports($run->compatibility),
             'compatibility_reason' => WorkerCompatibility::mismatchReason($run->compatibility),
+            'compatibility_supported_in_fleet' => $fleetCompatibility['supported'],
+            'compatibility_fleet_reason' => $fleetCompatibility['reason'],
             'arguments' => serialize($run->workflowArguments()),
             'connection' => $run->connection,
             'queue' => $run->queue,
@@ -283,6 +287,31 @@ final class RunDetailView
         }
 
         return null;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $tasks
+     * @return array{supported: bool, reason: ?string}
+     */
+    private static function fleetCompatibility(WorkflowRun $run, array $tasks): array
+    {
+        foreach ($tasks as $task) {
+            if (($task['id'] ?? null) !== $run->summary?->next_task_id) {
+                continue;
+            }
+
+            return [
+                'supported' => (bool) ($task['compatibility_supported_in_fleet'] ?? false),
+                'reason' => is_string($task['compatibility_fleet_reason'] ?? null)
+                    ? $task['compatibility_fleet_reason']
+                    : null,
+            ];
+        }
+
+        return [
+            'supported' => WorkerCompatibilityFleet::supports($run->compatibility, $run->connection, $run->queue),
+            'reason' => WorkerCompatibilityFleet::mismatchReason($run->compatibility, $run->connection, $run->queue),
+        ];
     }
 
     /**

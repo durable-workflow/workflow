@@ -478,7 +478,7 @@ final class RunSummaryProjector
 
     private static function taskWaitingForCompatibleWorker(WorkflowTask $task, WorkflowRun $run): bool
     {
-        if (TaskCompatibility::supported($task, $run)) {
+        if (TaskCompatibility::supported($task, $run) || TaskCompatibility::supportedInFleet($task, $run)) {
             return false;
         }
 
@@ -492,7 +492,13 @@ final class RunSummaryProjector
 
     private static function compatibleWorkerReason(WorkflowTask $task, WorkflowRun $run, string $label): string
     {
-        $reason = TaskCompatibility::mismatchReason($task, $run) ?? 'Requires a compatible worker.';
+        $reasons = array_values(array_unique(array_filter([
+            TaskCompatibility::mismatchReason($task, $run),
+            TaskCompatibility::fleetMismatchReason($task, $run),
+        ])));
+        $reason = $reasons === []
+            ? 'Requires a compatible worker.'
+            : implode(' ', $reasons);
 
         return match (true) {
             TaskRepairPolicy::leaseExpired($task) => sprintf(

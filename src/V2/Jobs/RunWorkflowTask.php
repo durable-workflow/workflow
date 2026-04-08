@@ -18,6 +18,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
 
 final class RunWorkflowTask implements ShouldQueue
@@ -37,6 +38,11 @@ final class RunWorkflowTask implements ShouldQueue
 
     public function handle(WorkflowExecutor $executor): void
     {
+        WorkerCompatibilityFleet::heartbeat(
+            is_string($this->connection ?? null) ? $this->connection : null,
+            is_string($this->queue ?? null) ? $this->queue : null,
+        );
+
         if (! $this->claimTask()) {
             return;
         }

@@ -22,11 +22,19 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2CompatibilityWorkflowTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        WorkerCompatibilityFleet::clear();
+    }
+
     public function testStartAndContinueAsNewPreserveCompatibilityMarkerAcrossRunsAndTasks(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-2026-04');
@@ -201,7 +209,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         );
     }
 
-    public function testTaskWatchdogSkipsRedispatchForUnsupportedCompatibilityMarker(): void
+    public function testTaskWatchdogRedispatchesUnsupportedCompatibilityMarkerWithoutLocalSupport(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
         Queue::fake();
@@ -258,15 +266,19 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->wakeTaskWatchdog();
 
         $task->refresh();
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
 
-        Queue::assertNothingPushed();
+        Queue::assertPushed(RunWorkflowTask::class);
         $this->assertSame(TaskStatus::Ready, $task->status);
-        $this->assertSame(0, $task->repair_count);
+        $this->assertSame(1, $task->repair_count);
         $this->assertSame('build-a', $task->compatibility);
-        $this->assertTrue($task->last_dispatched_at?->equalTo($lastDispatchedAt) ?? false);
+        $this->assertFalse($task->last_dispatched_at?->equalTo($lastDispatchedAt) ?? true);
+        $this->assertSame('workflow_task_waiting_for_compatible_worker', $summary->liveness_state);
     }
 
-    public function testTaskWatchdogBackfillsNullTaskCompatibilityFromRunMarkerBeforeSkippingRedispatch(): void
+    public function testTaskWatchdogBackfillsNullTaskCompatibilityFromRunMarkerBeforeRedispatch(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
         Queue::fake();
@@ -325,15 +337,15 @@ final class V2CompatibilityWorkflowTest extends TestCase
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
-        Queue::assertNothingPushed();
+        Queue::assertPushed(RunWorkflowTask::class);
         $this->assertSame('build-a', $task->compatibility);
-        $this->assertSame(0, $task->repair_count);
+        $this->assertSame(1, $task->repair_count);
         $this->assertSame('build-a', $summary->compatibility);
         $this->assertSame('workflow_task_waiting_for_compatible_worker', $summary->liveness_state);
         $this->assertSame('Workflow task waiting for a compatible worker', $summary->wait_reason);
     }
 
-    public function testTaskWatchdogSkipsMissingTaskRecoveryForUnsupportedCompatibilityMarker(): void
+    public function testTaskWatchdogRecoversMissingTaskWithoutLocalSupport(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
         Queue::fake();
@@ -379,14 +391,103 @@ final class V2CompatibilityWorkflowTest extends TestCase
 
         $this->wakeTaskWatchdog();
 
-        Queue::assertNothingPushed();
-        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
+        Queue::assertPushed(RunWorkflowTask::class);
+        $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
 
         $summary = $summary->fresh();
+        $task = WorkflowTask::query()->where('workflow_run_id', $run->id)->first();
 
         $this->assertNotNull($summary);
-        $this->assertSame('repair_needed', $summary->liveness_state);
-        $this->assertNull($summary->next_task_id);
+        $this->assertNotNull($task);
+        $this->assertSame(TaskStatus::Ready, $task?->status);
+        $this->assertSame(1, $task?->repair_count);
+        $this->assertSame('build-a', $task?->compatibility);
+        $this->assertSame('workflow_task_waiting_for_compatible_worker', $summary->liveness_state);
+        $this->assertNotNull($summary->next_task_id);
+    }
+
+    public function testCompatibleFleetHeartbeatKeepsUnsupportedLocalTaskReady(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+
+        WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-build-a');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'compat-fleet-heartbeat',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'reserved_at' => now()->subMinutes(2),
+            'started_at' => now()->subMinutes(2),
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'compatibility' => 'build-a',
+            'payload_codec' => config('workflows.serializer'),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(2),
+            'last_progress_at' => now()->subMinutes(2),
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subMinute(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh([
+            'summary',
+            'commands',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+            'parentLinks.parentRun.summary',
+            'childLinks.childRun.summary',
+            'instance.currentRun.summary',
+        ]));
+
+        $this->assertSame('workflow_task_ready', $summary->liveness_state);
+        $this->assertSame('Workflow task ready', $summary->wait_reason);
+        $this->assertSame(
+            sprintf('Workflow task %s is ready to run.', $task->id),
+            $summary->liveness_reason,
+        );
+        $this->assertFalse($detail['compatibility_supported']);
+        $this->assertTrue($detail['compatibility_supported_in_fleet']);
+        $this->assertSame(
+            'Requires compatibility [build-a]; this worker supports [build-b].',
+            $detail['compatibility_reason'],
+        );
+        $this->assertNull($detail['compatibility_fleet_reason']);
+        $this->assertSame('workflow_task_ready', $detail['liveness_state']);
+        $this->assertSame('build-a', $detail['tasks'][0]['compatibility']);
+        $this->assertFalse($detail['tasks'][0]['compatibility_supported']);
+        $this->assertTrue($detail['tasks'][0]['compatibility_supported_in_fleet']);
+        $this->assertNull($detail['tasks'][0]['compatibility_fleet_reason']);
+        $this->assertSame('Workflow task ready to resume the selected run.', $detail['tasks'][0]['summary']);
     }
 
     public function testRunDetailViewIncludesCompatibilityMetadata(): void
@@ -433,7 +534,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('Workflow task waiting for a compatible worker', $detail['wait_reason']);
         $this->assertSame(
             sprintf(
-                'Workflow task %s is ready but waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b].',
+                'Workflow task %s is ready but waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b]. No active worker heartbeat for queue [default] advertises compatibility [build-a].',
                 $task->id,
             ),
             $detail['liveness_reason'],
@@ -520,7 +621,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('Workflow task waiting for a compatible worker', $summary->wait_reason);
         $this->assertSame(
             sprintf(
-                'Workflow task %s is ready but dispatch is overdue and is waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b].',
+                'Workflow task %s is ready but dispatch is overdue and is waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b]. No active worker heartbeat for connection [redis] queue [default] advertises compatibility [build-a].',
                 $task->id,
             ),
             $summary->liveness_reason,
@@ -610,7 +711,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('Workflow task waiting for a compatible worker', $summary->wait_reason);
         $this->assertSame(
             sprintf(
-                'Workflow task %s lease expired and is waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b].',
+                'Workflow task %s lease expired and is waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b]. No active worker heartbeat for connection [redis] queue [default] advertises compatibility [build-a].',
                 $task->id,
             ),
             $summary->liveness_reason,
