@@ -23,6 +23,7 @@ use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -467,6 +468,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('start', $currentDetail['commands'][0]['type']);
         $this->assertSame('workflow', $currentDetail['commands'][0]['source']);
         $this->assertSame('Workflow', $currentDetail['commands'][0]['caller_label']);
+        $this->assertSame(['workflow'], array_keys($currentDetail['commands'][0]['context']));
         $this->assertSame($historicalRun->id, $currentDetail['commands'][0]['context']['workflow']['parent_run_id']);
         $this->assertSame(2, $currentDetail['commands'][0]['context']['workflow']['sequence']);
         $this->assertSame('continue_as_new', $currentDetail['parents'][0]['link_type']);
@@ -477,6 +479,93 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('completed', $currentDetail['closed_reason']);
         $this->assertSame('StartAccepted', $currentDetail['timeline'][0]['type']);
         $this->assertSame(1, $currentDetail['timeline'][0]['command_sequence']);
+    }
+
+    public function testRunDetailViewOmitsRawRequestContextForWebhookCommands(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'detail-command-context',
+            'workflow_class' => TestSignalWorkflow::class,
+            'workflow_type' => 'workflow.test-signal',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'id' => '01JDETAILCOMMANDCONTEXT0001',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestSignalWorkflow::class,
+            'workflow_type' => 'workflow.test-signal',
+            'status' => RunStatus::Waiting,
+            'arguments' => Serializer::serialize([]),
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->update(['current_run_id' => $run->id]);
+
+        WorkflowCommand::query()->create([
+            'id' => '01JDETAILCOMMANDCTXCOMMAND01',
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'command_sequence' => 1,
+            'command_type' => 'signal',
+            'target_scope' => 'instance',
+            'source' => 'webhook',
+            'status' => 'accepted',
+            'outcome' => 'signal_received',
+            'workflow_class' => TestSignalWorkflow::class,
+            'workflow_type' => 'workflow.test-signal',
+            'context' => [
+                'caller' => [
+                    'type' => 'webhook',
+                    'label' => 'Webhook',
+                ],
+                'auth' => [
+                    'status' => 'authorized',
+                    'method' => 'token',
+                ],
+                'request' => [
+                    'method' => 'POST',
+                    'path' => '/webhooks/instances/detail-command-context/signals/name-provided',
+                    'route_name' => 'workflows.v2.signal',
+                    'ip' => '127.0.0.1',
+                    'user_agent' => 'Workflow Test Agent',
+                    'request_id' => 'req-123',
+                    'correlation_id' => 'corr-123',
+                    'fingerprint' => 'sha256:detail-command-context',
+                ],
+            ],
+            'payload_codec' => Serializer::class,
+            'payload' => Serializer::serialize([
+                'name' => 'name-provided',
+                'arguments' => ['Taylor'],
+            ]),
+            'accepted_at' => now()->subSeconds(30),
+            'created_at' => now()->subSeconds(30),
+            'updated_at' => now()->subSeconds(30),
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertCount(1, $detail['commands']);
+        $this->assertSame([], $detail['commands'][0]['context']);
+        $this->assertSame('Webhook', $detail['commands'][0]['caller_label']);
+        $this->assertSame('authorized', $detail['commands'][0]['auth_status']);
+        $this->assertSame('token', $detail['commands'][0]['auth_method']);
+        $this->assertSame('POST', $detail['commands'][0]['request_method']);
+        $this->assertSame(
+            '/webhooks/instances/detail-command-context/signals/name-provided',
+            $detail['commands'][0]['request_path'],
+        );
+        $this->assertSame('workflows.v2.signal', $detail['commands'][0]['request_route_name']);
+        $this->assertSame('sha256:detail-command-context', $detail['commands'][0]['request_fingerprint']);
+        $this->assertSame('req-123', $detail['commands'][0]['request_id']);
+        $this->assertSame('corr-123', $detail['commands'][0]['correlation_id']);
     }
 
     public function testRunDetailViewIncludesInstanceRunNavigation(): void

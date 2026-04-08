@@ -131,6 +131,34 @@ class WorkflowCommand extends Model
             : [];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function publicContext(): array
+    {
+        $workflow = $this->commandContext()['workflow'] ?? null;
+
+        if (! is_array($workflow)) {
+            return [];
+        }
+
+        $publicWorkflow = array_filter([
+            'parent_instance_id' => is_string($workflow['parent_instance_id'] ?? null)
+                ? $workflow['parent_instance_id']
+                : null,
+            'parent_run_id' => is_string($workflow['parent_run_id'] ?? null)
+                ? $workflow['parent_run_id']
+                : null,
+            'sequence' => is_int($workflow['sequence'] ?? null)
+                ? $workflow['sequence']
+                : null,
+        ], static fn (mixed $value): bool => $value !== null);
+
+        return $publicWorkflow === []
+            ? []
+            : ['workflow' => $publicWorkflow];
+    }
+
     public function callerLabel(): ?string
     {
         $caller = $this->commandContext()['caller'] ?? null;

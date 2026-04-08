@@ -171,7 +171,7 @@ final class RunDetailView
                     'target_scope' => $command->target_scope,
                     'target_name' => $command->targetName(),
                     'source' => $command->source,
-                    'context' => $command->commandContext(),
+                    'context' => $command->publicContext(),
                     'caller_label' => $command->callerLabel(),
                     'auth_status' => $command->authStatus(),
                     'auth_method' => $command->authMethod(),
