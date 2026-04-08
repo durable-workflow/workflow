@@ -69,6 +69,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'started_new')
             ->assertJsonPath('workflow_id', 'order-456')
             ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('target_scope', 'instance')
             ->assertJsonPath('command_sequence', 1)
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('command_source', 'webhook')
@@ -316,6 +317,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'signal_received')
             ->assertJsonPath('workflow_id', 'order-signal')
             ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
             ->assertJsonPath('workflow_type', 'test-signal-workflow')
             ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'accepted')
@@ -328,9 +330,45 @@ final class V2WebhookWorkflowTest extends TestCase
             'workflow_instance_id' => 'order-signal',
             'workflow_run_id' => $workflow->runId(),
             'command_type' => 'signal',
+            'target_scope' => 'instance',
             'status' => 'accepted',
             'outcome' => 'signal_received',
         ]);
+    }
+
+    public function testRunTargetedSignalWebhookReturnsTypedAcceptedResponse(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-signal-run');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson(
+            '/webhooks/instances/order-signal-run/runs/' . $workflow->runId() . '/signals/name-provided',
+            [
+                'arguments' => ['Taylor'],
+            ]
+        );
+
+        $response
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', 'signal_received')
+            ->assertJsonPath('workflow_id', 'order-signal-run')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'run')
+            ->assertJsonPath('workflow_type', 'test-signal-workflow')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('rejection_reason', null);
+
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+
+        $this->assertSame('run', $command->target_scope);
+        $this->assertSame(
+            '/webhooks/instances/order-signal-run/runs/' . $workflow->runId() . '/signals/name-provided',
+            $command->requestPath(),
+        );
+        $this->assertSame('workflows.v2.runs.signal', $command->requestRouteName());
     }
 
     public function testSignalWebhookReturnsTypedUnknownSignalResponse(): void
@@ -380,6 +418,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'update_completed')
             ->assertJsonPath('workflow_id', 'order-update-webhook')
             ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
             ->assertJsonPath('workflow_type', 'test-update-workflow')
             ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'accepted')
@@ -398,6 +437,81 @@ final class V2WebhookWorkflowTest extends TestCase
             'approved' => true,
             'events' => ['started', 'approved:yes:webhook'],
         ], $workflow->currentState());
+    }
+
+    public function testRunTargetedUpdateWebhookRejectsHistoricalSelectedRun(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'order-update-webhook-history',
+            'workflow_class' => TestUpdateWorkflow::class,
+            'workflow_type' => 'test-update-workflow',
+            'run_count' => 2,
+            'started_at' => now()->subMinutes(5),
+        ]);
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestUpdateWorkflow::class,
+            'workflow_type' => 'test-update-workflow',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(5),
+            'closed_at' => now()->subMinutes(4),
+            'last_progress_at' => now()->subMinutes(4),
+        ]);
+
+        /** @var WorkflowRun $currentRun */
+        $currentRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 2,
+            'workflow_class' => TestUpdateWorkflow::class,
+            'workflow_type' => 'test-update-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $currentRun->id,
+        ])->save();
+
+        $response = $this->postJson(
+            '/webhooks/instances/order-update-webhook-history/runs/' . $historicalRun->id . '/updates/approve',
+            [
+                'arguments' => [true, 'webhook'],
+            ]
+        );
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('outcome', 'rejected_not_current')
+            ->assertJsonPath('workflow_id', 'order-update-webhook-history')
+            ->assertJsonPath('run_id', $historicalRun->id)
+            ->assertJsonPath('target_scope', 'run')
+            ->assertJsonPath('workflow_type', 'test-update-workflow')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'selected_run_not_current')
+            ->assertJsonPath('result', null)
+            ->assertJsonPath('failure_id', null)
+            ->assertJsonPath('failure_message', null);
+
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+
+        $this->assertSame('run', $command->target_scope);
+        $this->assertSame(
+            '/webhooks/instances/order-update-webhook-history/runs/' . $historicalRun->id . '/updates/approve',
+            $command->requestPath(),
+        );
+        $this->assertSame('workflows.v2.runs.update', $command->requestRouteName());
     }
 
     public function testUpdateWebhookReturnsTypedUnknownUpdateResponse(): void
@@ -569,6 +683,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'cancelled')
             ->assertJsonPath('workflow_id', 'order-cancel')
             ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
             ->assertJsonPath('workflow_type', TestTimerWorkflow::class)
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null);
@@ -599,6 +714,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'terminated')
             ->assertJsonPath('workflow_id', 'order-terminate')
             ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
             ->assertJsonPath('workflow_type', TestTimerWorkflow::class)
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null);

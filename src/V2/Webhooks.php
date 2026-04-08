@@ -33,10 +33,7 @@ final class Webhooks
         foreach (self::normalizeWorkflows($workflows) as $alias => $workflow) {
             Route::post("{$basePath}/start/{$alias}", static function (Request $request) use ($alias, $workflow) {
                 $request = self::validateAuth($request);
-                $commandContext = CommandContext::webhook(
-                    $request,
-                    (string) config('workflows.webhook_auth.method', 'none'),
-                );
+                $commandContext = self::commandContext($request);
 
                 [$instanceId, $arguments, $startOptions] = self::resolveStartArguments($workflow, $request->all());
 
@@ -51,37 +48,23 @@ final class Webhooks
             })->name("workflows.v2.start.{$alias}");
         }
 
-        Route::post(
-            "{$basePath}/instances/{workflowId}/cancel",
-            static function (Request $request, string $workflowId) {
-                $request = self::validateAuth($request);
+        Route::post("{$basePath}/instances/{workflowId}/runs/{runId}/signals/{signal}", static function (
+            Request $request,
+            string $workflowId,
+            string $runId,
+            string $signal,
+        ) {
+            $request = self::validateAuth($request);
 
-                $result = WorkflowStub::load($workflowId)
-                    ->withCommandContext(CommandContext::webhook(
-                        $request,
-                        (string) config('workflows.webhook_auth.method', 'none'),
-                    ))
-                    ->attemptCancel();
+            $result = self::selectionStub($workflowId, $runId)
+                ->withCommandContext(self::commandContext($request))
+                ->attemptSignal($signal, ...self::resolveSignalArguments($request->all()));
 
-                return self::commandResponse($result, $result->accepted() ? 200 : 409);
-            }
-        )->name('workflows.v2.cancel');
-
-        Route::post(
-            "{$basePath}/instances/{workflowId}/repair",
-            static function (Request $request, string $workflowId) {
-                $request = self::validateAuth($request);
-
-                $result = WorkflowStub::load($workflowId)
-                    ->withCommandContext(CommandContext::webhook(
-                        $request,
-                        (string) config('workflows.webhook_auth.method', 'none'),
-                    ))
-                    ->attemptRepair();
-
-                return self::commandResponse($result, $result->accepted() ? 200 : 409);
-            }
-        )->name('workflows.v2.repair');
+            return self::commandResponse($result, match ($result->outcome()) {
+                CommandOutcome::RejectedUnknownSignal->value => 404,
+                default => $result->accepted() ? 202 : 409,
+            });
+        })->name('workflows.v2.runs.signal');
 
         Route::post("{$basePath}/instances/{workflowId}/signals/{signal}", static function (
             Request $request,
@@ -90,11 +73,8 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            $result = WorkflowStub::load($workflowId)
-                ->withCommandContext(CommandContext::webhook(
-                    $request,
-                    (string) config('workflows.webhook_auth.method', 'none'),
-                ))
+            $result = self::selectionStub($workflowId)
+                ->withCommandContext(self::commandContext($request))
                 ->attemptSignal($signal, ...self::resolveSignalArguments($request->all()));
 
             return self::commandResponse($result, match ($result->outcome()) {
@@ -103,6 +83,26 @@ final class Webhooks
             });
         })->name('workflows.v2.signal');
 
+        Route::post("{$basePath}/instances/{workflowId}/runs/{runId}/updates/{update}", static function (
+            Request $request,
+            string $workflowId,
+            string $runId,
+            string $update,
+        ) {
+            $request = self::validateAuth($request);
+
+            $result = self::selectionStub($workflowId, $runId)
+                ->withCommandContext(self::commandContext($request))
+                ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
+
+            return self::commandResponse($result, match (true) {
+                $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
+                $result->rejected() => 409,
+                $result instanceof UpdateResult && $result->failed() => 422,
+                default => 200,
+            });
+        })->name('workflows.v2.runs.update');
+
         Route::post("{$basePath}/instances/{workflowId}/updates/{update}", static function (
             Request $request,
             string $workflowId,
@@ -110,16 +110,12 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            $result = WorkflowStub::load($workflowId)
-                ->withCommandContext(CommandContext::webhook(
-                    $request,
-                    (string) config('workflows.webhook_auth.method', 'none'),
-                ))
+            $result = self::selectionStub($workflowId)
+                ->withCommandContext(self::commandContext($request))
                 ->attemptUpdate($update, ...self::resolveSignalArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
-                $result->outcome() === CommandOutcome::RejectedUnknownUpdate
-->value => 404,
+                $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
                 default => 200,
@@ -127,15 +123,77 @@ final class Webhooks
         })->name('workflows.v2.update');
 
         Route::post(
+            "{$basePath}/instances/{workflowId}/runs/{runId}/repair",
+            static function (Request $request, string $workflowId, string $runId) {
+                $request = self::validateAuth($request);
+
+                $result = self::selectionStub($workflowId, $runId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptRepair();
+
+                return self::commandResponse($result, $result->accepted() ? 200 : 409);
+            }
+        )->name('workflows.v2.runs.repair');
+
+        Route::post(
+            "{$basePath}/instances/{workflowId}/repair",
+            static function (Request $request, string $workflowId) {
+                $request = self::validateAuth($request);
+
+                $result = self::selectionStub($workflowId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptRepair();
+
+                return self::commandResponse($result, $result->accepted() ? 200 : 409);
+            }
+        )->name('workflows.v2.repair');
+
+        Route::post(
+            "{$basePath}/instances/{workflowId}/runs/{runId}/cancel",
+            static function (Request $request, string $workflowId, string $runId) {
+                $request = self::validateAuth($request);
+
+                $result = self::selectionStub($workflowId, $runId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptCancel();
+
+                return self::commandResponse($result, $result->accepted() ? 200 : 409);
+            }
+        )->name('workflows.v2.runs.cancel');
+
+        Route::post(
+            "{$basePath}/instances/{workflowId}/cancel",
+            static function (Request $request, string $workflowId) {
+                $request = self::validateAuth($request);
+
+                $result = self::selectionStub($workflowId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptCancel();
+
+                return self::commandResponse($result, $result->accepted() ? 200 : 409);
+            }
+        )->name('workflows.v2.cancel');
+
+        Route::post(
+            "{$basePath}/instances/{workflowId}/runs/{runId}/terminate",
+            static function (Request $request, string $workflowId, string $runId) {
+                $request = self::validateAuth($request);
+
+                $result = self::selectionStub($workflowId, $runId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptTerminate();
+
+                return self::commandResponse($result, $result->accepted() ? 200 : 409);
+            }
+        )->name('workflows.v2.runs.terminate');
+
+        Route::post(
             "{$basePath}/instances/{workflowId}/terminate",
             static function (Request $request, string $workflowId) {
                 $request = self::validateAuth($request);
 
-                $result = WorkflowStub::load($workflowId)
-                    ->withCommandContext(CommandContext::webhook(
-                        $request,
-                        (string) config('workflows.webhook_auth.method', 'none'),
-                    ))
+                $result = self::selectionStub($workflowId)
+                    ->withCommandContext(self::commandContext($request))
                     ->attemptTerminate();
 
                 return self::commandResponse($result, $result->accepted() ? 200 : 409);
@@ -314,6 +372,21 @@ final class Webhooks
         }
 
         return (new $authenticatorClass())->validate($request);
+    }
+
+    private static function commandContext(Request $request): CommandContext
+    {
+        return CommandContext::webhook(
+            $request,
+            (string) config('workflows.webhook_auth.method', 'none'),
+        );
+    }
+
+    private static function selectionStub(string $workflowId, ?string $runId = null): WorkflowStub
+    {
+        return $runId === null
+            ? WorkflowStub::load($workflowId)
+            : WorkflowStub::loadSelection($workflowId, $runId);
     }
 
     private static function commandResponse(CommandResult $result, int $status, ?string $workflowType = null)

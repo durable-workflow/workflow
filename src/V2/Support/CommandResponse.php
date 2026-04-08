@@ -20,6 +20,7 @@ final class CommandResponse
             'run_id' => $result->runId(),
             'command_id' => $result->commandId(),
             'command_sequence' => $result->commandSequence(),
+            'target_scope' => $result->targetScope(),
             'workflow_type' => $workflowType ?? $result->workflowType(),
             'command_status' => $result->status(),
             'command_source' => $result->source(),
