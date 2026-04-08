@@ -239,6 +239,84 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame(2, $signalReceived['command_sequence']);
     }
 
+    public function testAttemptSignalBackfillsMissingCommandContractOnWorkflowStartedHistory(): void
+    {
+        Queue::fake();
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'legacy-command-contract-signal',
+            'workflow_class' => TestUpdateWorkflow::class,
+            'workflow_type' => 'test-update-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestUpdateWorkflow::class,
+            'workflow_type' => 'test-update-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(20),
+            'last_history_sequence' => 2,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'event_type' => 'WorkflowStarted',
+            'payload' => [
+                'workflow_class' => TestUpdateWorkflow::class,
+                'workflow_type' => 'test-update-workflow',
+                'workflow_instance_id' => $instance->id,
+                'workflow_run_id' => $run->id,
+            ],
+            'recorded_at' => now()->subSeconds(19),
+        ]);
+
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 2,
+            'event_type' => 'SignalWaitOpened',
+            'payload' => [
+                'signal_name' => 'name-provided',
+                'signal_wait_id' => '01JTESTSIGNALWAITBACKFILL01',
+                'sequence' => 1,
+            ],
+            'recorded_at' => now()->subSeconds(18),
+        ]);
+
+        $result = WorkflowStub::load($instance->id)->attemptSignal('name-provided', 'Taylor');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('signal_received', $result->outcome());
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', 'WorkflowStarted')
+            ->sole();
+
+        $this->assertSame(['name-provided'], $started->payload['declared_signals'] ?? null);
+        $this->assertSame(['approve', 'explode'], $started->payload['declared_updates'] ?? null);
+
+        $detail = RunDetailView::forRun($run->fresh());
+
+        $this->assertSame(['name-provided'], $detail['declared_signals']);
+        $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+    }
+
     public function testUpdateFailuresAreRecordedWithoutClosingTheRun(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-failure');
