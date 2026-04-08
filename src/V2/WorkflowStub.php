@@ -49,6 +49,8 @@ use Workflow\WorkflowMetadata;
 
 final class WorkflowStub
 {
+    public const DEFAULT_VERSION = -1;
+
     private ?WorkflowRun $run = null;
 
     private ?string $selectedRunId = null;

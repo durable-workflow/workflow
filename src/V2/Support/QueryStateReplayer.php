@@ -10,6 +10,7 @@ use ReflectionMethod;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\Exceptions\VersionNotSupportedException;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -168,6 +169,18 @@ final class QueryStateReplayer
                 continue;
             }
 
+            if ($current instanceof VersionCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                $current = $result->send(
+                    $this->versionValue($this->versionMarkerEvent($run, $sequence), $current, $sequence)
+                );
+
+                ++$sequence;
+
+                continue;
+            }
+
             if ($current instanceof SignalCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
@@ -232,7 +245,7 @@ final class QueryStateReplayer
             }
 
             throw new UnsupportedWorkflowYieldException(sprintf(
-                'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), sideEffect(), timer(), awaitSignal(), and continueAsNew() only.',
+                'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), sideEffect(), getVersion(), timer(), awaitSignal(), and continueAsNew() only.',
                 $run->workflow_class,
                 get_debug_type($current),
             ));
@@ -326,6 +339,17 @@ final class QueryStateReplayer
         return $event;
     }
 
+    private function versionMarkerEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::VersionMarkerRecorded
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
     private function timerFiredEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
         /** @var WorkflowHistoryEvent|null $event */
@@ -335,6 +359,60 @@ final class QueryStateReplayer
         );
 
         return $event;
+    }
+
+    private function versionValue(?WorkflowHistoryEvent $event, VersionCall $versionCall, int $sequence): int
+    {
+        if ($event === null) {
+            return $versionCall->maxSupported;
+        }
+
+        $recordedChangeId = $this->stringValue($event->payload['change_id'] ?? null);
+
+        if ($recordedChangeId === null) {
+            throw new LogicException(sprintf(
+                'Workflow version marker at workflow sequence [%d] is missing a change ID.',
+                $sequence,
+            ));
+        }
+
+        if ($recordedChangeId !== $versionCall->changeId) {
+            throw new LogicException(sprintf(
+                'Workflow version marker at workflow sequence [%d] expected change ID [%s] but history recorded [%s].',
+                $sequence,
+                $versionCall->changeId,
+                $recordedChangeId,
+            ));
+        }
+
+        $version = $event->payload['version'] ?? null;
+
+        if (! is_int($version)) {
+            throw new LogicException(sprintf(
+                'Workflow version marker [%s] at workflow sequence [%d] is missing an integer version.',
+                $versionCall->changeId,
+                $sequence,
+            ));
+        }
+
+        if ($version < $versionCall->minSupported || $version > $versionCall->maxSupported) {
+            throw new VersionNotSupportedException(sprintf(
+                "Version %d for change ID '%s' is not supported. Supported range: [%d, %d]",
+                $version,
+                $versionCall->changeId,
+                $versionCall->minSupported,
+                $versionCall->maxSupported,
+            ));
+        }
+
+        return $version;
+    }
+
+    private function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 
     private function activityException(

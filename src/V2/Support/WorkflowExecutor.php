@@ -11,6 +11,7 @@ use ReflectionMethod;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\Exceptions\VersionNotSupportedException;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
@@ -306,6 +307,29 @@ final class WorkflowExecutor
                 continue;
             }
 
+            if ($current instanceof VersionCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+
+                $versionMarkerEvent = $this->versionMarkerEvent($run, $sequence);
+
+                try {
+                    $version = $this->versionValue($versionMarkerEvent, $current, $sequence);
+
+                    if ($versionMarkerEvent === null) {
+                        $versionMarkerEvent = $this->recordVersionMarker($run, $task, $sequence, $current, $version);
+                    }
+
+                    $current = $result->send($version);
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
+                ++$sequence;
+                continue;
+            }
+
             if ($current instanceof TimerCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
@@ -484,7 +508,7 @@ final class WorkflowExecutor
                 $run,
                 $task,
                 new UnsupportedWorkflowYieldException(sprintf(
-                    'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), sideEffect(), timer(), awaitSignal(), and continueAsNew() only.',
+                    'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), sideEffect(), getVersion(), timer(), awaitSignal(), and continueAsNew() only.',
                     $run->workflow_class,
                     get_debug_type($current),
                 )),
@@ -1458,6 +1482,17 @@ final class WorkflowExecutor
         return $event;
     }
 
+    private function versionMarkerEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::VersionMarkerRecorded
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
     private function recordSideEffect(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -1481,6 +1516,31 @@ final class WorkflowExecutor
         return $event;
     }
 
+    private function recordVersionMarker(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        VersionCall $versionCall,
+        int $version,
+    ): WorkflowHistoryEvent {
+        $event = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::VersionMarkerRecorded,
+            [
+                'sequence' => $sequence,
+                'change_id' => $versionCall->changeId,
+                'version' => $version,
+                'min_supported' => $versionCall->minSupported,
+                'max_supported' => $versionCall->maxSupported,
+            ],
+            $task,
+        );
+
+        $run->historyEvents->push($event);
+
+        return $event;
+    }
+
     private function timerFiredEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
         /** @var WorkflowHistoryEvent|null $event */
@@ -1490,6 +1550,53 @@ final class WorkflowExecutor
         );
 
         return $event;
+    }
+
+    private function versionValue(?WorkflowHistoryEvent $event, VersionCall $versionCall, int $sequence): int
+    {
+        if ($event === null) {
+            return $versionCall->maxSupported;
+        }
+
+        $recordedChangeId = $this->stringValue($event->payload['change_id'] ?? null);
+
+        if ($recordedChangeId === null) {
+            throw new LogicException(sprintf(
+                'Workflow version marker at workflow sequence [%d] is missing a change ID.',
+                $sequence,
+            ));
+        }
+
+        if ($recordedChangeId !== $versionCall->changeId) {
+            throw new LogicException(sprintf(
+                'Workflow version marker at workflow sequence [%d] expected change ID [%s] but history recorded [%s].',
+                $sequence,
+                $versionCall->changeId,
+                $recordedChangeId,
+            ));
+        }
+
+        $version = $event->payload['version'] ?? null;
+
+        if (! is_int($version)) {
+            throw new LogicException(sprintf(
+                'Workflow version marker [%s] at workflow sequence [%d] is missing an integer version.',
+                $versionCall->changeId,
+                $sequence,
+            ));
+        }
+
+        if ($version < $versionCall->minSupported || $version > $versionCall->maxSupported) {
+            throw new VersionNotSupportedException(sprintf(
+                "Version %d for change ID '%s' is not supported. Supported range: [%d, %d]",
+                $version,
+                $versionCall->changeId,
+                $versionCall->minSupported,
+                $versionCall->maxSupported,
+            ));
+        }
+
+        return $version;
     }
 
     private function activityException(

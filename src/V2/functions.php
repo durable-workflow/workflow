@@ -13,6 +13,7 @@ use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
+use Workflow\V2\Support\VersionCall;
 
 if (! function_exists(__NAMESPACE__ . '\\activity')) {
     function activity(string $activity, ...$arguments): ActivityCall
@@ -79,5 +80,15 @@ if (! function_exists(__NAMESPACE__ . '\\continueAsNew')) {
     function continueAsNew(...$arguments): ContinueAsNewCall
     {
         return new ContinueAsNewCall($arguments);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\getVersion')) {
+    function getVersion(
+        string $changeId,
+        int $minSupported = WorkflowStub::DEFAULT_VERSION,
+        int $maxSupported = 1,
+    ): VersionCall {
+        return new VersionCall($changeId, $minSupported, $maxSupported);
     }
 }

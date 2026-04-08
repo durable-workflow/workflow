@@ -125,6 +125,10 @@ final class HistoryTimeline
             'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
             'signal_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['signal_name'] ?? null),
             'update_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['update_name'] ?? null),
+            'version_change_id' => self::stringValue($payload['change_id'] ?? null),
+            'version' => self::intValue($payload['version'] ?? null),
+            'version_min_supported' => self::intValue($payload['min_supported'] ?? null),
+            'version_max_supported' => self::intValue($payload['max_supported'] ?? null),
             'activity_execution_id' => $activityMetadata['id'] ?? null,
             'activity_type' => $activityMetadata['type'] ?? null,
             'activity_class' => $activityMetadata['class'] ?? null,
@@ -178,6 +182,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
             HistoryEventType::SideEffectRecorded => 'side_effect',
+            HistoryEventType::VersionMarkerRecorded => 'version',
             HistoryEventType::TimerScheduled,
             HistoryEventType::TimerFired => 'timer',
             default => 'workflow',
@@ -205,6 +210,8 @@ final class HistoryTimeline
         $rejectionReason = $command['rejection_reason'] ?? null;
         $signalName = $command['target_name'] ?? self::stringValue($payload['signal_name'] ?? null);
         $updateName = $command['target_name'] ?? self::stringValue($payload['update_name'] ?? null);
+        $changeId = self::stringValue($payload['change_id'] ?? null);
+        $version = self::intValue($payload['version'] ?? null);
         $timerKind = self::stringValue($payload['timer_kind'] ?? null);
         $childLabel = self::displayLabel(
             $child['type']
@@ -296,6 +303,12 @@ final class HistoryTimeline
                 ? sprintf('Failed %s.', $activityLabel)
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
             HistoryEventType::SideEffectRecorded => 'Recorded side effect.',
+            HistoryEventType::VersionMarkerRecorded => match (true) {
+                $changeId !== null && $version !== null => sprintf('Recorded version marker %s = %d.', $changeId, $version),
+                $changeId !== null => sprintf('Recorded version marker %s.', $changeId),
+                $version !== null => sprintf('Recorded version marker %d.', $version),
+                default => 'Recorded version marker.',
+            },
             HistoryEventType::TimerScheduled => $timerKind === 'condition_timeout'
                 ? ($delaySeconds === null
                     ? 'Scheduled condition timeout.'
@@ -674,6 +687,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity_execution',
+            HistoryEventType::VersionMarkerRecorded => 'version_marker',
             HistoryEventType::TimerScheduled,
             HistoryEventType::TimerFired => 'timer',
             default => 'workflow_run',
@@ -701,6 +715,7 @@ final class HistoryTimeline
             'workflow_command' => self::stringValue($command['id'] ?? null),
             'signal_wait' => self::stringValue($event->payload['signal_wait_id'] ?? null),
             'condition_wait' => self::stringValue($event->payload['condition_wait_id'] ?? null),
+            'version_marker' => self::stringValue($event->payload['change_id'] ?? null),
             'child_workflow_run' => self::stringValue($child['run_id'] ?? null)
                 ?? self::stringValue($child['instance_id'] ?? null),
             'activity_execution' => self::stringValue($activity['id'] ?? null)
