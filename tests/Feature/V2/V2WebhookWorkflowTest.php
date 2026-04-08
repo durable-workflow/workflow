@@ -763,6 +763,46 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testUpdateWebhookUsesDurableContractTypeValidationWhenWorkflowDefinitionCannotBeResolved(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-web-type-history');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+            'workflow_type' => 'missing-update-workflow',
+        ]);
+
+        $response = $this->postJson('/webhooks/instances/order-update-web-type-history/updates/approve', [
+            'arguments' => [
+                'approved' => 'yes',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonPath('outcome', 'rejected_invalid_arguments')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'invalid_update_arguments')
+            ->assertJsonPath('validation_errors.approved.0', 'The approved argument must be of type bool.')
+            ->assertJsonPath('workflow_id', 'order-update-web-type-history')
+            ->assertJsonPath('result', null)
+            ->assertJsonPath('failure_id', null)
+            ->assertJsonPath('failure_message', null);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-web-type-history',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_invalid_arguments',
+            'rejection_reason' => 'invalid_update_arguments',
+        ]);
+    }
+
     public function testUpdateWebhookRejectsLaterUpdateWhenAnEarlierSignalIsPending(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-b');

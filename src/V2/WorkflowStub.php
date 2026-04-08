@@ -1630,6 +1630,11 @@ final class WorkflowStub
             if (($parameter['variadic'] ?? false) === true) {
                 while ($consumed < $providedCount) {
                     $normalized[] = $arguments[$consumed];
+                    $this->appendParameterValidationErrors(
+                        $errors,
+                        $parameter,
+                        $arguments[$consumed],
+                    );
                     $consumed++;
                 }
 
@@ -1638,6 +1643,11 @@ final class WorkflowStub
 
             if ($consumed < $providedCount) {
                 $normalized[] = $arguments[$consumed];
+                $this->appendParameterValidationErrors(
+                    $errors,
+                    $parameter,
+                    $arguments[$consumed],
+                );
                 $consumed++;
 
                 continue;
@@ -1694,9 +1704,13 @@ final class WorkflowStub
                 $values = $arguments[$name];
 
                 if (is_array($values)) {
-                    array_push($normalized, ...array_values($values));
+                    foreach (array_values($values) as $value) {
+                        $normalized[] = $value;
+                        $this->appendParameterValidationErrors($errors, $parameter, $value);
+                    }
                 } else {
                     $normalized[] = $values;
+                    $this->appendParameterValidationErrors($errors, $parameter, $values);
                 }
 
                 continue;
@@ -1704,6 +1718,7 @@ final class WorkflowStub
 
             if (array_key_exists($name, $arguments)) {
                 $normalized[] = $arguments[$name];
+                $this->appendParameterValidationErrors($errors, $parameter, $arguments[$name]);
 
                 continue;
             }
@@ -1731,6 +1746,173 @@ final class WorkflowStub
             'arguments' => $normalized,
             'validation_errors' => $errors,
         ];
+    }
+
+    /**
+     * @param array<string, list<string>> $errors
+     * @param array<string, mixed> $parameter
+     */
+    private function appendParameterValidationErrors(array &$errors, array $parameter, mixed $value): void
+    {
+        $name = is_string($parameter['name'] ?? null)
+            ? $parameter['name']
+            : 'argument';
+
+        foreach ($this->validationErrorsForParameterValue($parameter, $value) as $message) {
+            $errors[$name][] = $message;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $parameter
+     * @return list<string>
+     */
+    private function validationErrorsForParameterValue(array $parameter, mixed $value): array
+    {
+        $name = is_string($parameter['name'] ?? null)
+            ? $parameter['name']
+            : 'argument';
+
+        if ($value === null) {
+            return $this->parameterAllowsNull($parameter)
+                ? []
+                : [sprintf('The %s argument cannot be null.', $name)];
+        }
+
+        $type = is_string($parameter['type'] ?? null)
+            ? trim($parameter['type'])
+            : null;
+
+        if ($type === null || $type === '' || $type === 'mixed') {
+            return [];
+        }
+
+        if ($this->valueMatchesDeclaredType($value, $type)) {
+            return [];
+        }
+
+        return [sprintf('The %s argument must be of type %s.', $name, $type)];
+    }
+
+    /**
+     * @param array<string, mixed> $parameter
+     */
+    private function parameterAllowsNull(array $parameter): bool
+    {
+        if (is_bool($parameter['allows_null'] ?? null)) {
+            return $parameter['allows_null'];
+        }
+
+        $type = is_string($parameter['type'] ?? null)
+            ? trim($parameter['type'])
+            : null;
+
+        if ($type === null || $type === '') {
+            return true;
+        }
+
+        return str_starts_with($type, '?')
+            || in_array('null', $this->splitDeclaredType($type, '|'), true);
+    }
+
+    private function valueMatchesDeclaredType(mixed $value, string $type): bool
+    {
+        $type = trim($type);
+
+        if ($type === '' || $type === 'mixed') {
+            return true;
+        }
+
+        if (str_starts_with($type, '?')) {
+            return $value === null || $this->valueMatchesDeclaredType($value, substr($type, 1));
+        }
+
+        $unionTypes = $this->splitDeclaredType($type, '|');
+
+        if (count($unionTypes) > 1) {
+            foreach ($unionTypes as $unionType) {
+                if ($this->valueMatchesDeclaredType($value, $unionType)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        $intersectionTypes = $this->splitDeclaredType($type, '&');
+
+        if (count($intersectionTypes) > 1) {
+            foreach ($intersectionTypes as $intersectionType) {
+                if (! $this->valueMatchesDeclaredType($value, $intersectionType)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        $type = trim($type, "() \t\n\r\0\x0B");
+
+        return match ($type) {
+            'int' => is_int($value),
+            'float' => is_float($value) || is_int($value),
+            'string' => is_string($value),
+            'bool' => is_bool($value),
+            'array' => is_array($value),
+            'object' => is_object($value),
+            'callable' => is_callable($value),
+            'iterable' => is_iterable($value),
+            'scalar' => is_scalar($value),
+            'true' => $value === true,
+            'false' => $value === false,
+            'null' => $value === null,
+            'mixed' => true,
+            'never', 'void' => false,
+            'self', 'static', 'parent' => is_object($value),
+            default => is_object($value)
+                && (
+                    ! class_exists($type)
+                    && ! interface_exists($type)
+                    && ! enum_exists($type)
+                    || $value instanceof $type
+                ),
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function splitDeclaredType(string $type, string $delimiter): array
+    {
+        $parts = [];
+        $current = '';
+        $depth = 0;
+
+        for ($index = 0, $length = strlen($type); $index < $length; $index++) {
+            $character = $type[$index];
+
+            if ($character === '(') {
+                $depth++;
+            } elseif ($character === ')' && $depth > 0) {
+                $depth--;
+            }
+
+            if ($character === $delimiter && $depth === 0) {
+                $parts[] = trim($current);
+                $current = '';
+
+                continue;
+            }
+
+            $current .= $character;
+        }
+
+        $parts[] = trim($current);
+
+        return array_values(array_filter(
+            $parts,
+            static fn (string $part): bool => $part !== '',
+        ));
     }
 
     /**

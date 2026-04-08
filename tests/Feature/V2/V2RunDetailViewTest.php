@@ -161,6 +161,42 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('bool', $detail['declared_update_targets'][0]['parameters'][0]['type']);
     }
 
+    public function testRunDetailViewReturnsEmptyNormalizedTargetsWhenCommandContractIsUnavailable(): void
+    {
+        $instance = WorkflowInstance::create([
+            'id' => 'detail-command-contract-unavailable',
+            'workflow_class' => 'Missing\\Workflow\\CommandContractWorkflow',
+            'workflow_type' => 'workflow.command-contract',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::create([
+            'id' => '01JTESTFLOWRUNCONTRACTUNAV1',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'Missing\\Workflow\\CommandContractWorkflow',
+            'workflow_type' => 'workflow.command-contract',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(20),
+        ]);
+
+        $instance->update(['current_run_id' => $run->id]);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame([], $detail['declared_signals']);
+        $this->assertSame([], $detail['declared_signal_contracts']);
+        $this->assertSame([], $detail['declared_signal_targets']);
+        $this->assertSame([], $detail['declared_updates']);
+        $this->assertSame([], $detail['declared_update_contracts']);
+        $this->assertSame([], $detail['declared_update_targets']);
+        $this->assertSame('unavailable', $detail['declared_contract_source']);
+    }
+
     public function testRunDetailViewIncludesCommandsActivitiesAndTimelineForCompletedSignalRun(): void
     {
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-complete');

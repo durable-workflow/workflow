@@ -291,6 +291,39 @@ final class V2UpdateWorkflowTest extends TestCase
         ], $detail['commands'][1]['validation_errors']);
     }
 
+    public function testAttemptUpdateRejectsNullArgumentsWhenTheContractDisallowsNull(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-null-invalid');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->attemptUpdate('approve', null);
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedInvalidArguments());
+        $this->assertSame('rejected_invalid_arguments', $result->outcome());
+        $this->assertSame('invalid_update_arguments', $result->rejectionReason());
+        $this->assertSame([
+            'approved' => ['The approved argument cannot be null.'],
+        ], $result->validationErrors());
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->currentState());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('approve', $detail['commands'][1]['target_name']);
+        $this->assertSame('invalid_update_arguments', $detail['commands'][1]['rejection_reason']);
+        $this->assertSame([
+            'approved' => ['The approved argument cannot be null.'],
+        ], $detail['commands'][1]['validation_errors']);
+    }
+
     public function testAttemptUpdateRejectsWhenAnEarlierSignalIsStillPending(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-blocked');

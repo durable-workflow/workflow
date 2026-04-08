@@ -62,10 +62,12 @@ final class RunCommandContract
             $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         } catch (LogicException) {
             return [
-                'signals' => [],
-                'signal_contracts' => [],
-                'updates' => [],
-                'update_contracts' => [],
+                ...self::withTargets([
+                    'signals' => [],
+                    'signal_contracts' => [],
+                    'updates' => [],
+                    'update_contracts' => [],
+                ]),
                 'source' => self::SOURCE_UNAVAILABLE,
             ];
         }

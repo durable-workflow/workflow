@@ -1723,6 +1723,38 @@ final class V2WorkflowTest extends TestCase
         ]);
     }
 
+    public function testSignalCommandRejectsTypeMismatchedArgumentsAgainstDeclaredContract(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-type-mismatch');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'signal');
+
+        $result = $workflow->attemptSignalWithArguments('name-provided', [
+            'name' => 123,
+        ]);
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedInvalidArguments());
+        $this->assertSame('rejected_invalid_arguments', $result->outcome());
+        $this->assertSame('invalid_signal_arguments', $result->rejectionReason());
+        $this->assertSame([
+            'name' => ['The name argument must be of type string.'],
+        ], $result->validationErrors());
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'signal-contract-type-mismatch',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'signal',
+            'status' => 'rejected',
+            'outcome' => 'rejected_invalid_arguments',
+            'rejection_reason' => 'invalid_signal_arguments',
+        ]);
+    }
+
     public function testSignalCommandsUseDurableCommandSequenceOrder(): void
     {
         Queue::fake();
