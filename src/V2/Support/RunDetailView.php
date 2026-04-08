@@ -108,6 +108,7 @@ final class RunDetailView
             'output' => $run->output === null ? serialize(null) : serialize($run->workflowOutput()),
             'status' => $run->status->value,
             'declared_signals' => $commandContract['signals'],
+            'declared_signal_contracts' => $commandContract['signal_contracts'],
             'declared_updates' => $commandContract['updates'],
             'declared_update_contracts' => $commandContract['update_contracts'],
             'declared_contract_source' => $commandContract['source'],

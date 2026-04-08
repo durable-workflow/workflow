@@ -402,6 +402,7 @@ final class WorkflowStub
                 'workflow_run_id' => $run->id,
                 'workflow_command_id' => $command->id,
                 'declared_signals' => $commandContract['signals'],
+                'declared_signal_contracts' => $commandContract['signal_contracts'],
                 'declared_updates' => $commandContract['updates'],
                 'declared_update_contracts' => $commandContract['update_contracts'],
             ], null, $command);
@@ -795,7 +796,7 @@ final class WorkflowStub
     {
         $arguments = array_is_list($arguments)
             ? array_values($arguments)
-            : [$arguments];
+            : $arguments;
 
         if ($name === '') {
             throw new LogicException('Signal name cannot be empty.');
@@ -805,7 +806,7 @@ final class WorkflowStub
     }
 
     /**
-     * @param list<mixed> $arguments
+     * @param array<int|string, mixed> $arguments
      */
     private function attemptSignalInternal(string $name, array $arguments): CommandResult
     {
@@ -884,17 +885,32 @@ final class WorkflowStub
                     CommandType::Signal,
                     'unknown_signal',
                     $this->commandTargetScope(),
-                    [
-                        'payload_codec' => config('workflows.serializer'),
-                        'payload' => Serializer::serialize([
-                            'name' => $name,
-                            'arguments' => $arguments,
-                        ]),
-                    ],
+                    $this->signalCommandPayloadAttributes($name, $arguments),
                 );
 
                 return;
             }
+
+            $validatedArguments = $this->validatedSignalArgumentsForRun($run, $name, $arguments);
+
+            if ($validatedArguments['validation_errors'] !== []) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Signal,
+                    'invalid_signal_arguments',
+                    $this->commandTargetScope(),
+                    $this->signalCommandPayloadAttributes(
+                        $name,
+                        $arguments,
+                        $validatedArguments['validation_errors'],
+                    ),
+                );
+
+                return;
+            }
+
+            $arguments = $validatedArguments['arguments'];
 
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
@@ -902,11 +918,7 @@ final class WorkflowStub
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::SignalReceived->value,
-                'payload_codec' => config('workflows.serializer'),
-                'payload' => Serializer::serialize([
-                    'name' => $name,
-                    'arguments' => $arguments,
-                ]),
+                ...$this->signalCommandPayloadAttributes($name, $arguments),
                 'accepted_at' => now(),
             ]));
 
@@ -1393,6 +1405,7 @@ final class WorkflowStub
                 'selected_run_not_current' => CommandOutcome::RejectedNotCurrent->value,
                 'unknown_signal' => CommandOutcome::RejectedUnknownSignal->value,
                 'unknown_update' => CommandOutcome::RejectedUnknownUpdate->value,
+                'invalid_signal_arguments' => CommandOutcome::RejectedInvalidArguments->value,
                 'invalid_update_arguments' => CommandOutcome::RejectedInvalidArguments->value,
                 UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL => CommandOutcome::RejectedPendingSignal->value,
                 default => null,
@@ -1417,6 +1430,27 @@ final class WorkflowStub
         }
 
         return $command;
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     * @param array<string, list<string>> $validationErrors
+     * @return array<string, mixed>
+     */
+    private function signalCommandPayloadAttributes(
+        string $name,
+        array $arguments,
+        array $validationErrors = [],
+    ): array
+    {
+        return [
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'name' => $name,
+                'arguments' => $arguments,
+                'validation_errors' => $validationErrors,
+            ]),
+        ];
     }
 
     /**
@@ -1485,6 +1519,48 @@ final class WorkflowStub
      * @param array<int|string, mixed> $arguments
      * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
      */
+    private function validatedSignalArgumentsForRun(WorkflowRun $run, string $signalName, array $arguments): array
+    {
+        if (array_is_list($arguments)) {
+            $normalized = array_values($arguments);
+            $contract = RunCommandContract::signalContract($run, $signalName);
+
+            if ($contract === null) {
+                try {
+                    $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+                } catch (LogicException) {
+                    return ['arguments' => $normalized, 'validation_errors' => []];
+                }
+
+                $contract = WorkflowDefinition::signalContract($workflowClass, $signalName);
+            }
+
+            return $contract === null
+                ? ['arguments' => $normalized, 'validation_errors' => []]
+                : $this->normalizePositionalCommandArguments($contract, $arguments, 'signal');
+        }
+
+        $contract = RunCommandContract::signalContract($run, $signalName);
+
+        if ($contract === null) {
+            try {
+                $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+            } catch (LogicException) {
+                return ['arguments' => [$arguments], 'validation_errors' => []];
+            }
+
+            $contract = WorkflowDefinition::signalContract($workflowClass, $signalName);
+        }
+
+        return $contract === null
+            ? ['arguments' => [$arguments], 'validation_errors' => []]
+            : $this->normalizeNamedCommandArguments($contract, $arguments);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
     private function validatedUpdateArgumentsForRun(WorkflowRun $run, string $updateName, array $arguments): array
     {
         if (array_is_list($arguments)) {
@@ -1524,8 +1600,8 @@ final class WorkflowStub
         }
 
         return array_is_list($arguments)
-            ? $this->normalizePositionalUpdateArguments($contract, $arguments)
-            : $this->normalizeNamedUpdateArguments($contract, $arguments);
+            ? $this->normalizePositionalCommandArguments($contract, $arguments, 'update')
+            : $this->normalizeNamedCommandArguments($contract, $arguments);
     }
 
     /**
@@ -1533,7 +1609,7 @@ final class WorkflowStub
      * @param array<int, mixed> $arguments
      * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
      */
-    private function normalizePositionalUpdateArguments(array $contract, array $arguments): array
+    private function normalizePositionalCommandArguments(array $contract, array $arguments, string $commandType): array
     {
         $normalized = [];
         $errors = [];
@@ -1573,7 +1649,8 @@ final class WorkflowStub
 
         if ($consumed < $providedCount) {
             $errors['arguments'][] = sprintf(
-                'Too many arguments were provided for update [%s].',
+                'Too many arguments were provided for %s [%s].',
+                $commandType,
                 $contract['name'],
             );
         }
@@ -1589,7 +1666,7 @@ final class WorkflowStub
      * @param array<string, mixed> $arguments
      * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
      */
-    private function normalizeNamedUpdateArguments(array $contract, array $arguments): array
+    private function normalizeNamedCommandArguments(array $contract, array $arguments): array
     {
         $normalized = [];
         $errors = [];

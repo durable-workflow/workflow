@@ -27,6 +27,7 @@ use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
@@ -1398,6 +1399,72 @@ final class V2WorkflowTest extends TestCase
             'workflow_id' => 'signal-payload-instance',
             'run_id' => $runId,
         ], $workflow->output());
+    }
+
+    public function testSignalCommandCanAcceptNamedArgumentsViaDeclaredSignalContract(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-instance');
+        $workflow->start();
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'signal');
+
+        $result = $workflow->attemptSignalWithArguments('name-provided', [
+            'name' => 'Taylor',
+        ]);
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('signal_received', $result->outcome());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($result->commandId());
+
+        $this->assertSame(['Taylor'], $command->payloadArguments());
+        $this->assertSame([
+            'approved' => false,
+            'events' => ['started', 'signal:Taylor'],
+            'workflow_id' => 'signal-contract-instance',
+            'run_id' => $runId,
+        ], $workflow->output());
+    }
+
+    public function testSignalCommandRejectsInvalidNamedArgumentsAgainstDeclaredContract(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-invalid');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'signal');
+
+        $result = $workflow->attemptSignalWithArguments('name-provided', [
+            'nickname' => 'Taylor',
+        ]);
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedInvalidArguments());
+        $this->assertSame('rejected_invalid_arguments', $result->outcome());
+        $this->assertSame('invalid_signal_arguments', $result->rejectionReason());
+        $this->assertSame([
+            'name' => ['The name argument is required.'],
+            'nickname' => ['Unknown argument [nickname].'],
+        ], $result->validationErrors());
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'signal-contract-invalid',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'signal',
+            'status' => 'rejected',
+            'outcome' => 'rejected_invalid_arguments',
+            'rejection_reason' => 'invalid_signal_arguments',
+        ]);
     }
 
     public function testSignalCommandsUseDurableCommandSequenceOrder(): void

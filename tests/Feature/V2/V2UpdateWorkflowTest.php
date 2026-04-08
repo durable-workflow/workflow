@@ -158,6 +158,10 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('repair_not_needed', $detail['repair_blocked_reason']);
         $this->assertSame(['name-provided'], $detail['declared_signals']);
+        $this->assertSame('name-provided', $detail['declared_signal_contracts'][0]['name']);
+        $this->assertSame('name', $detail['declared_signal_contracts'][0]['parameters'][0]['name']);
+        $this->assertTrue($detail['declared_signal_contracts'][0]['parameters'][0]['required']);
+        $this->assertSame('string', $detail['declared_signal_contracts'][0]['parameters'][0]['type']);
         $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
         $this->assertSame('approve', $detail['declared_update_contracts'][0]['name']);
         $this->assertSame('approved', $detail['declared_update_contracts'][0]['parameters'][0]['name']);
@@ -519,11 +523,17 @@ final class V2UpdateWorkflowTest extends TestCase
             ->sole();
 
         $this->assertSame(['name-provided'], $started->payload['declared_signals'] ?? null);
+        $this->assertSame('name-provided', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
+        $this->assertSame(
+            'name',
+            $started->payload['declared_signal_contracts'][0]['parameters'][0]['name'] ?? null,
+        );
         $this->assertSame(['approve', 'explode'], $started->payload['declared_updates'] ?? null);
 
         $detail = RunDetailView::forRun($run->fresh());
 
         $this->assertSame(['name-provided'], $detail['declared_signals']);
+        $this->assertSame('name-provided', $detail['declared_signal_contracts'][0]['name']);
         $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
         $this->assertSame('durable_history', $detail['declared_contract_source']);
     }

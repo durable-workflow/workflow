@@ -58,10 +58,11 @@ final class Webhooks
 
             $result = self::selectionStub($workflowId, $runId)
                 ->withCommandContext(self::commandContext($request))
-                ->attemptSignal($signal, ...self::resolveSignalArguments($request->all()));
+                ->attemptSignalWithArguments($signal, self::resolveSignalArguments($request->all()));
 
             return self::commandResponse($result, match ($result->outcome()) {
                 CommandOutcome::RejectedUnknownSignal->value => 404,
+                CommandOutcome::RejectedInvalidArguments->value => 422,
                 default => $result->accepted() ? 202 : 409,
             });
         })->name('workflows.v2.runs.signal');
@@ -75,10 +76,11 @@ final class Webhooks
 
             $result = self::selectionStub($workflowId)
                 ->withCommandContext(self::commandContext($request))
-                ->attemptSignal($signal, ...self::resolveSignalArguments($request->all()));
+                ->attemptSignalWithArguments($signal, self::resolveSignalArguments($request->all()));
 
             return self::commandResponse($result, match ($result->outcome()) {
                 CommandOutcome::RejectedUnknownSignal->value => 404,
+                CommandOutcome::RejectedInvalidArguments->value => 422,
                 default => $result->accepted() ? 202 : 409,
             });
         })->name('workflows.v2.signal');
@@ -315,7 +317,7 @@ final class Webhooks
 
     /**
      * @param array<string, mixed> $payload
-     * @return array<int, mixed>
+     * @return array<int|string, mixed>
      */
     private static function resolveSignalArguments(array $payload): array
     {
@@ -331,7 +333,9 @@ final class Webhooks
             ]);
         }
 
-        return array_values($arguments);
+        return array_is_list($arguments)
+            ? array_values($arguments)
+            : $arguments;
     }
 
     /**

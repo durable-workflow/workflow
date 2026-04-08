@@ -20,6 +20,7 @@ final class RunCommandContract
     /**
      * @return array{
      *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
      *     source: string
@@ -60,6 +61,7 @@ final class RunCommandContract
         } catch (LogicException) {
             return [
                 'signals' => [],
+                'signal_contracts' => [],
                 'updates' => [],
                 'update_contracts' => [],
                 'source' => self::SOURCE_UNAVAILABLE,
@@ -75,6 +77,23 @@ final class RunCommandContract
     public static function hasSignal(WorkflowRun $run, string $name): bool
     {
         return in_array($name, self::forRun($run)['signals'], true);
+    }
+
+    /**
+     * @return array{
+     *     name: string,
+     *     parameters: list<array<string, mixed>>
+     * }|null
+     */
+    public static function signalContract(WorkflowRun $run, string $target): ?array
+    {
+        foreach (self::forRun($run)['signal_contracts'] as $contract) {
+            if (($contract['name'] ?? null) === $target) {
+                return $contract;
+            }
+        }
+
+        return null;
     }
 
     public static function hasUpdateMethod(WorkflowRun $run, string $method): bool
@@ -103,6 +122,7 @@ final class RunCommandContract
      * @param class-string $workflowClass
      * @return array{
      *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>
      * }
@@ -115,6 +135,7 @@ final class RunCommandContract
     /**
      * @return array{
      *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>
      * }|null
@@ -128,18 +149,28 @@ final class RunCommandContract
         }
 
         $signals = self::normalizeList($event->payload['declared_signals'] ?? null);
+        $hasSignalContracts = is_array($event->payload) && array_key_exists('declared_signal_contracts', $event->payload);
+        $signalContracts = $hasSignalContracts
+            ? self::normalizeCommandContracts($event->payload['declared_signal_contracts'] ?? null)
+            : [];
         $updates = self::normalizeList($event->payload['declared_updates'] ?? null);
         $hasUpdateContracts = is_array($event->payload) && array_key_exists('declared_update_contracts', $event->payload);
         $updateContracts = $hasUpdateContracts
-            ? self::normalizeUpdateContracts($event->payload['declared_update_contracts'] ?? null)
+            ? self::normalizeCommandContracts($event->payload['declared_update_contracts'] ?? null)
             : [];
 
-        if ($signals === null || $updates === null || ($hasUpdateContracts && $updateContracts === null)) {
+        if (
+            $signals === null
+            || $updates === null
+            || ($hasSignalContracts && $signalContracts === null)
+            || ($hasUpdateContracts && $updateContracts === null)
+        ) {
             return null;
         }
 
         return [
             'signals' => $signals,
+            'signal_contracts' => $signalContracts ?? [],
             'updates' => $updates,
             'update_contracts' => $updateContracts ?? [],
         ];
@@ -148,6 +179,7 @@ final class RunCommandContract
     /**
      * @return array{
      *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>
      * }|null
@@ -166,6 +198,7 @@ final class RunCommandContract
         $payload = is_array($event->payload) ? $event->payload : [];
 
         $payload['declared_signals'] = $snapshot['signals'];
+        $payload['declared_signal_contracts'] = $snapshot['signal_contracts'];
         $payload['declared_updates'] = $snapshot['updates'];
         $payload['declared_update_contracts'] = $snapshot['update_contracts'];
 
@@ -220,13 +253,16 @@ final class RunCommandContract
     {
         return $event instanceof WorkflowHistoryEvent
             && is_array($event->payload)
-            && ! array_key_exists('declared_update_contracts', $event->payload);
+            && (
+                ! array_key_exists('declared_signal_contracts', $event->payload)
+                || ! array_key_exists('declared_update_contracts', $event->payload)
+            );
     }
 
     /**
      * @return list<array<string, mixed>>|null
      */
-    private static function normalizeUpdateContracts(mixed $value): ?array
+    private static function normalizeCommandContracts(mixed $value): ?array
     {
         if (! is_array($value)) {
             return null;

@@ -25,6 +25,23 @@ final class WorkflowDefinition
     private static array $signalNames = [];
 
     /**
+     * @var array<class-string, list<array{
+     *     name: string,
+     *     parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: ?string,
+     *         allows_null: bool
+     *     }>
+     * }>>
+     */
+    private static array $signalContracts = [];
+
+    /**
      * @var array<class-string, list<string>>
      */
     private static array $updateMethods = [];
@@ -60,6 +77,19 @@ final class WorkflowDefinition
      * @param class-string $class
      * @return array{
      *     signals: list<string>,
+     *     signal_contracts: list<array{
+     *         name: string,
+     *         parameters: list<array{
+     *             name: string,
+     *             position: int,
+     *             required: bool,
+     *             variadic: bool,
+     *             default_available: bool,
+     *             default: mixed,
+     *             type: ?string,
+     *             allows_null: bool
+     *         }>
+     *     }>,
      *     updates: list<string>,
      *     update_contracts: list<array{
      *         name: string,
@@ -80,6 +110,7 @@ final class WorkflowDefinition
     {
         return [
             'signals' => self::signalNames($class),
+            'signal_contracts' => self::signalContracts($class),
             'updates' => self::updateMethods($class),
             'update_contracts' => self::updateContracts($class),
         ];
@@ -97,18 +128,112 @@ final class WorkflowDefinition
 
         if (! array_key_exists($class, self::$signalNames)) {
             $signals = [];
+            $seenSignals = [];
 
             foreach ((new ReflectionClass($class))->getAttributes(Signal::class) as $attribute) {
-                $signals[] = $attribute->newInstance()->name;
+                /** @var Signal $definition */
+                $definition = $attribute->newInstance();
+
+                if (array_key_exists($definition->name, $seenSignals)) {
+                    throw new LogicException(sprintf(
+                        'Workflow [%s] declares duplicate durable signal name [%s].',
+                        $class,
+                        $definition->name,
+                    ));
+                }
+
+                $signals[] = $definition->name;
+                $seenSignals[$definition->name] = true;
             }
 
-            $signals = array_values(array_unique($signals));
             sort($signals);
 
             self::$signalNames[$class] = $signals;
         }
 
         return self::$signalNames[$class];
+    }
+
+    /**
+     * @param class-string $class
+     * @return list<array{
+     *     name: string,
+     *     parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: ?string,
+     *         allows_null: bool
+     *     }>
+     * }>
+     */
+    public static function signalContracts(string $class): array
+    {
+        if (! self::isWorkflowClass($class)) {
+            return [];
+        }
+
+        if (! array_key_exists($class, self::$signalContracts)) {
+            $contracts = [];
+            $seenSignals = [];
+
+            foreach ((new ReflectionClass($class))->getAttributes(Signal::class) as $attribute) {
+                /** @var Signal $definition */
+                $definition = $attribute->newInstance();
+
+                if (array_key_exists($definition->name, $seenSignals)) {
+                    throw new LogicException(sprintf(
+                        'Workflow [%s] declares duplicate durable signal name [%s].',
+                        $class,
+                        $definition->name,
+                    ));
+                }
+
+                if ($definition->parameters !== []) {
+                    $contracts[] = [
+                        'name' => $definition->name,
+                        'parameters' => $definition->parameters,
+                    ];
+                }
+                $seenSignals[$definition->name] = true;
+            }
+
+            usort($contracts, static fn (array $left, array $right): int => $left['name'] <=> $right['name']);
+
+            self::$signalContracts[$class] = $contracts;
+        }
+
+        return self::$signalContracts[$class];
+    }
+
+    /**
+     * @param class-string $class
+     * @return array{
+     *     name: string,
+     *     parameters: list<array{
+     *         name: string,
+     *         position: int,
+     *         required: bool,
+     *         variadic: bool,
+     *         default_available: bool,
+     *         default: mixed,
+     *         type: ?string,
+     *         allows_null: bool
+     *     }>
+     * }|null
+     */
+    public static function signalContract(string $class, string $target): ?array
+    {
+        foreach (self::signalContracts($class) as $contract) {
+            if ($contract['name'] === $target) {
+                return $contract;
+            }
+        }
+
+        return null;
     }
 
     /**

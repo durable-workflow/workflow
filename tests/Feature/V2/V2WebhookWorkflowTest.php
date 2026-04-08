@@ -373,6 +373,64 @@ final class V2WebhookWorkflowTest extends TestCase
         $this->assertSame('workflows.v2.runs.signal', $command->requestRouteName());
     }
 
+    public function testSignalWebhookAcceptsNamedArgumentsWhenTheRunHasADurableSignalContract(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-signal-contract');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-signal-contract/signals/name-provided', [
+            'arguments' => [
+                'name' => 'Taylor',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', 'signal_received')
+            ->assertJsonPath('workflow_id', 'order-signal-contract')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('workflow_type', 'test-update-workflow')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('validation_errors', []);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $this->assertSame([
+            'approved' => false,
+            'events' => ['started', 'signal:Taylor'],
+            'workflow_id' => 'order-signal-contract',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+    }
+
+    public function testSignalWebhookReturnsValidationErrorsForInvalidNamedArguments(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-signal-contract-invalid');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-signal-contract-invalid/signals/name-provided', [
+            'arguments' => [
+                'nickname' => 'Taylor',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonPath('outcome', 'rejected_invalid_arguments')
+            ->assertJsonPath('workflow_id', 'order-signal-contract-invalid')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('workflow_type', 'test-update-workflow')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'invalid_signal_arguments')
+            ->assertJsonPath('validation_errors.name.0', 'The name argument is required.')
+            ->assertJsonPath('validation_errors.nickname.0', 'Unknown argument [nickname].');
+    }
+
     public function testSignalWebhookReturnsTypedUnknownSignalResponse(): void
     {
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-signal-unknown');

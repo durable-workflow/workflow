@@ -717,6 +717,7 @@ final class WorkflowExecutor
             'parent_sequence' => $sequence,
             'workflow_link_id' => $link->id,
             'declared_signals' => $commandContract['signals'],
+            'declared_signal_contracts' => $commandContract['signal_contracts'],
             'declared_updates' => $commandContract['updates'],
             'declared_update_contracts' => $commandContract['update_contracts'],
         ], null, $startCommand);
@@ -1217,6 +1218,7 @@ final class WorkflowExecutor
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
             'declared_signals' => $commandContract['signals'],
+            'declared_signal_contracts' => $commandContract['signal_contracts'],
             'declared_updates' => $commandContract['updates'],
             'declared_update_contracts' => $commandContract['update_contracts'],
             'parent_workflow_instance_id' => $parentReference['parent_workflow_instance_id'] ?? null,
