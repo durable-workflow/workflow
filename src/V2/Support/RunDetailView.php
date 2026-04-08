@@ -32,11 +32,12 @@ final class RunDetailView
             'childLinks.childRun.summary',
             'childLinks.childRun.historyEvents',
             'instance.runs.summary',
-            'instance.currentRun.summary',
         ]);
 
         $summary = $run->summary;
-        $currentRun = $run->instance?->currentRun;
+        $currentRun = $run->instance === null
+            ? null
+            : CurrentRunResolver::forInstance($run->instance, ['summary']);
         $currentSummary = $currentRun?->summary;
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
         $commandContract = RunCommandContract::forRun($run);

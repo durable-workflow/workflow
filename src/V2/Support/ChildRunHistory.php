@@ -11,7 +11,6 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -364,7 +363,7 @@ final class ChildRunHistory
         $run = WorkflowRun::query()
             ->with([
                 'summary',
-                'instance.currentRun.summary',
+                'instance',
                 'failures',
                 'historyEvents',
             ])
@@ -375,12 +374,14 @@ final class ChildRunHistory
 
     private static function loadCurrentRunForInstance(string $instanceId): ?WorkflowRun
     {
-        /** @var WorkflowInstance|null $instance */
-        $instance = WorkflowInstance::query()
-            ->with('currentRun.summary', 'currentRun.failures', 'currentRun.historyEvents', 'currentRun.instance.currentRun')
-            ->find($instanceId);
+        /** @var \Workflow\V2\Models\WorkflowInstance|null $instance */
+        $instance = \Workflow\V2\Models\WorkflowInstance::query()->find($instanceId);
 
-        return $instance?->currentRun;
+        if ($instance === null) {
+            return null;
+        }
+
+        return CurrentRunResolver::forInstance($instance, ['summary', 'failures', 'historyEvents']);
     }
 
     private static function followContinuedRun(?WorkflowRun $childRun): ?WorkflowRun
@@ -388,25 +389,23 @@ final class ChildRunHistory
         $visited = [];
 
         while ($childRun instanceof WorkflowRun) {
-            $childRun->loadMissing('instance.currentRun.summary');
+            $childRun->loadMissing('instance');
 
             if ($childRun->closed_reason !== 'continued') {
                 return $childRun;
             }
 
-            $currentRun = $childRun->instance?->currentRun;
+            $currentRun = CurrentRunResolver::forRun($childRun, [
+                'summary',
+                'failures',
+                'historyEvents',
+            ]);
 
             if (! $currentRun instanceof WorkflowRun || $currentRun->id === $childRun->id || isset($visited[$childRun->id])) {
                 return $childRun;
             }
 
             $visited[$childRun->id] = true;
-            $currentRun->loadMissing([
-                'summary',
-                'failures',
-                'historyEvents',
-                'instance.currentRun.summary',
-            ]);
             $childRun = $currentRun;
         }
 

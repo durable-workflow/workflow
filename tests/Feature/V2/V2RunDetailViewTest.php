@@ -423,6 +423,74 @@ final class V2RunDetailViewTest extends TestCase
         );
     }
 
+    public function testRunDetailViewResolvesCurrentRunPointerWhenCurrentRunColumnIsMissing(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'detail-historical-instance-pointer-drift',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'run_count' => 2,
+            'reserved_at' => now()->subMinutes(10),
+            'started_at' => now()->subMinutes(10),
+        ]);
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'arguments' => Serializer::serialize([1]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(10),
+            'closed_at' => now()->subMinutes(9),
+            'last_progress_at' => now()->subMinutes(9),
+        ]);
+
+        /** @var WorkflowRun $currentRun */
+        $currentRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 2,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([30]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => null,
+            'run_count' => 2,
+        ])->save();
+
+        RunSummaryProjector::project(
+            $historicalRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+        RunSummaryProjector::project(
+            $currentRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($historicalRun->fresh(['summary', 'instance.runs.summary']));
+
+        $this->assertSame($historicalRun->id, $detail['selected_run_id']);
+        $this->assertSame($historicalRun->id, $detail['run_id']);
+        $this->assertFalse($detail['is_current_run']);
+        $this->assertSame($currentRun->id, $detail['current_run_id']);
+        $this->assertSame('waiting', $detail['current_run_status']);
+        $this->assertSame('running', $detail['current_run_status_bucket']);
+        $this->assertSame(
+            'Selected run is historical. Issue commands against the current active run.',
+            $detail['read_only_reason'],
+        );
+        $this->assertTrue($instance->fresh()->current_run_id === null);
+    }
+
     public function testRunDetailViewIncludesContinueAsNewLineage(): void
     {
         Queue::fake();
@@ -747,6 +815,11 @@ final class V2RunDetailViewTest extends TestCase
             ->where('workflow_instance_id', $childInstanceId)
             ->orderByDesc('run_number')
             ->firstOrFail();
+
+        WorkflowInstance::query()
+            ->findOrFail($childInstanceId)
+            ->forceFill(['current_run_id' => null])
+            ->save();
 
         WorkflowLink::query()
             ->where('parent_workflow_run_id', $parentRunId)

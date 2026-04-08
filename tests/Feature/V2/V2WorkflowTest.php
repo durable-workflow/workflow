@@ -2527,6 +2527,90 @@ final class V2WorkflowTest extends TestCase
         ]);
     }
 
+    public function testRunTargetedCancelRejectsHistoricalSelectionWhenCurrentRunPointerDrifts(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'historical-instance-pointer-drift',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'run_count' => 2,
+            'reserved_at' => now()->subMinutes(10),
+            'started_at' => now()->subMinutes(10),
+        ]);
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'arguments' => Serializer::serialize([1]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(10),
+            'closed_at' => now()->subMinutes(9),
+            'last_progress_at' => now()->subMinutes(9),
+        ]);
+
+        /** @var WorkflowRun $currentRun */
+        $currentRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 2,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([30]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => null,
+            'run_count' => 2,
+        ])->save();
+
+        RunSummaryProjector::project(
+            $historicalRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+        RunSummaryProjector::project(
+            $currentRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $selectedRun = WorkflowStub::loadRun($historicalRun->id);
+        $result = $selectedRun->attemptCancel();
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedNotCurrent());
+        $this->assertSame('run', $result->targetScope());
+        $this->assertSame('rejected_not_current', $result->outcome());
+        $this->assertSame('selected_run_not_current', $result->rejectionReason());
+        $this->assertSame($instance->id, $result->instanceId());
+        $this->assertSame($historicalRun->id, $result->runId());
+
+        $selectedRun->refresh();
+
+        $this->assertSame($historicalRun->id, $selectedRun->runId());
+        $this->assertSame($currentRun->id, $selectedRun->currentRunId());
+        $this->assertFalse($selectedRun->currentRunIsSelected());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $historicalRun->id,
+            'command_type' => 'cancel',
+            'target_scope' => 'run',
+            'status' => 'rejected',
+            'outcome' => 'rejected_not_current',
+            'rejection_reason' => 'selected_run_not_current',
+        ]);
+
+        $this->assertSame($currentRun->id, $instance->fresh()->current_run_id);
+    }
+
     public function testAttemptCancelRejectsReservedInstanceThatHasNotStarted(): void
     {
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'reserved-instance');

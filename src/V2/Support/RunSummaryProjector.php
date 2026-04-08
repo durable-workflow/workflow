@@ -24,6 +24,9 @@ final class RunSummaryProjector
     {
         $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
         $run->loadMissing(['childLinks.childRun.instance.currentRun', 'childLinks.childRun.failures']);
+        $currentRun = $run->instance === null
+            ? null
+            : CurrentRunResolver::forInstance($run->instance);
 
         $isTerminal = in_array($run->status, [
             RunStatus::Completed,
@@ -130,7 +133,7 @@ final class RunSummaryProjector
             [
                 'workflow_instance_id' => $run->workflow_instance_id,
                 'run_number' => $run->run_number,
-                'is_current_run' => $run->instance !== null && $run->instance->current_run_id === $run->id,
+                'is_current_run' => $currentRun?->id === $run->id,
                 'engine_source' => 'v2',
                 'class' => $run->workflow_class,
                 'workflow_type' => $run->workflow_type,

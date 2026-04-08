@@ -30,6 +30,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\FailureFactory;
+use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunCommandContract;
@@ -57,7 +58,7 @@ final class WorkflowStub
         ?WorkflowRun $selectedRun = null,
         private readonly bool $runTargeted = false,
     ) {
-        $this->run = $selectedRun ?? $this->instance->currentRun;
+        $this->run = $selectedRun ?? CurrentRunResolver::forInstance($this->instance);
         $this->selectedRunId = $this->run?->id;
     }
 
@@ -96,7 +97,7 @@ final class WorkflowStub
                 'run_count' => 0,
             ]);
 
-            return new self($instance->fresh(['currentRun']));
+            return new self($instance->fresh());
         }
 
         WorkflowInstanceId::assertValid($instanceId);
@@ -107,14 +108,13 @@ final class WorkflowStub
             instanceId: $instanceId,
         );
 
-        return new self($instance->fresh(['currentRun']));
+        return new self($instance->fresh());
     }
 
     public static function load(string $instanceId): self
     {
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()
-            ->with('currentRun')
             ->findOrFail($instanceId);
 
         return new self($instance);
@@ -124,7 +124,6 @@ final class WorkflowStub
     {
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()
-            ->with('currentRun')
             ->findOrFail($instanceId);
 
         if ($runId === null) {
@@ -144,11 +143,10 @@ final class WorkflowStub
     {
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()
-            ->with('instance.currentRun')
+            ->with('instance')
             ->findOrFail($runId);
 
         $instance = $run->instance;
-        $instance->loadMissing('currentRun');
 
         return new self($instance, $run, true);
     }
@@ -165,7 +163,7 @@ final class WorkflowStub
 
     public function currentRunId(): ?string
     {
-        return $this->instance->currentRun?->id ?? $this->instance->current_run_id;
+        return $this->currentRunForInstance($this->instance)?->id;
     }
 
     public function currentRunIsSelected(): bool
@@ -245,7 +243,6 @@ final class WorkflowStub
     public function refresh(): self
     {
         $this->instance = WorkflowInstance::query()
-            ->with('currentRun')
             ->findOrFail($this->instance->id);
 
         if ($this->runTargeted && $this->selectedRunId !== null) {
@@ -253,7 +250,7 @@ final class WorkflowStub
             $selectedRun = WorkflowRun::query()->findOrFail($this->selectedRunId);
             $this->run = $selectedRun;
         } else {
-            $this->run = $this->instance->currentRun;
+            $this->run = $this->currentRunForInstance($this->instance);
             $this->selectedRunId = $this->run?->id;
         }
 
@@ -294,11 +291,9 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            if ($instance->current_run_id !== null) {
-                /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->findOrFail($instance->current_run_id);
+            $run = $this->currentRunForInstance($instance, true);
+
+            if ($run instanceof WorkflowRun) {
 
                 $canReturnExisting = $startOptions->duplicateStartPolicy === DuplicateStartPolicy::ReturnExistingActive
                     && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
@@ -509,7 +504,9 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            if ($instance->current_run_id === null) {
+            $currentRun = $this->currentRunForInstance($instance, true);
+
+            if (! $currentRun instanceof WorkflowRun) {
                 $command = $this->rejectCommand(
                     $instance,
                     null,
@@ -527,7 +524,7 @@ final class WorkflowStub
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
 
-                if ($run->id !== $instance->current_run_id) {
+                if ($run->id !== $currentRun->id) {
                     $command = $this->rejectCommand(
                         $instance,
                         $run,
@@ -539,10 +536,7 @@ final class WorkflowStub
                     return;
                 }
             } else {
-                /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->findOrFail($instance->current_run_id);
+                $run = $currentRun;
             }
 
             if (in_array($run->status, [
@@ -740,7 +734,9 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            if ($instance->current_run_id === null) {
+            $currentRun = $this->currentRunForInstance($instance, true);
+
+            if (! $currentRun instanceof WorkflowRun) {
                 $command = $this->rejectCommand(
                     $instance,
                     null,
@@ -758,7 +754,7 @@ final class WorkflowStub
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
 
-                if ($run->id !== $instance->current_run_id) {
+                if ($run->id !== $currentRun->id) {
                     $command = $this->rejectCommand(
                         $instance,
                         $run,
@@ -770,10 +766,7 @@ final class WorkflowStub
                     return;
                 }
             } else {
-                /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->findOrFail($instance->current_run_id);
+                $run = $currentRun;
             }
 
             if (in_array($run->status, [
@@ -885,7 +878,9 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            if ($instance->current_run_id === null) {
+            $currentRun = $this->currentRunForInstance($instance, true);
+
+            if (! $currentRun instanceof WorkflowRun) {
                 $command = $this->rejectCommand(
                     $instance,
                     null,
@@ -903,7 +898,7 @@ final class WorkflowStub
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
 
-                if ($run->id !== $instance->current_run_id) {
+                if ($run->id !== $currentRun->id) {
                     $command = $this->rejectCommand(
                         $instance,
                         $run,
@@ -915,10 +910,7 @@ final class WorkflowStub
                     return;
                 }
             } else {
-                /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->findOrFail($instance->current_run_id);
+                $run = $currentRun;
             }
 
             if (in_array($run->status, [
@@ -1132,7 +1124,9 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            if ($instance->current_run_id === null) {
+            $currentRun = $this->currentRunForInstance($instance, true);
+
+            if (! $currentRun instanceof WorkflowRun) {
                 $command = $this->rejectCommand(
                     $instance,
                     null,
@@ -1150,7 +1144,7 @@ final class WorkflowStub
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
 
-                if ($run->id !== $instance->current_run_id) {
+                if ($run->id !== $currentRun->id) {
                     $command = $this->rejectCommand(
                         $instance,
                         $run,
@@ -1162,10 +1156,7 @@ final class WorkflowStub
                     return;
                 }
             } else {
-                /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->findOrFail($instance->current_run_id);
+                $run = $currentRun;
             }
 
             $openTasks = WorkflowTask::query()
@@ -1329,6 +1320,19 @@ final class WorkflowStub
     private function commandAttributes(array $attributes): array
     {
         return array_merge($this->resolvedCommandContext()->attributes(), $attributes);
+    }
+
+    private function currentRunForInstance(
+        WorkflowInstance $instance,
+        bool $lockForUpdate = false,
+    ): ?WorkflowRun {
+        $run = CurrentRunResolver::forInstance($instance, lockForUpdate: $lockForUpdate);
+
+        if ($lockForUpdate) {
+            CurrentRunResolver::syncPointer($instance, $run);
+        }
+
+        return $run;
     }
 
     private function resolvedCommandContext(): CommandContext

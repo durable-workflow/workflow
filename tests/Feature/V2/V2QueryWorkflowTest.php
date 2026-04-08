@@ -26,6 +26,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -88,6 +89,37 @@ final class V2QueryWorkflowTest extends TestCase
         $historical = WorkflowStub::loadRun($firstRunId);
 
         $this->assertSame(1, $historical->currentCount());
+    }
+
+    public function testLoadResolvesLatestRunWhenCurrentRunPointerIsMissing(): void
+    {
+        Queue::fake();
+
+        $instanceId = 'query-continue-pointer-drift';
+
+        $workflow = WorkflowStub::make(TestQueryContinueAsNewWorkflow::class, $instanceId);
+        $workflow->start(0, 1);
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowRun $currentRun */
+        $currentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->orderByDesc('run_number')
+            ->firstOrFail();
+
+        WorkflowInstance::query()
+            ->findOrFail($instanceId)
+            ->forceFill(['current_run_id' => null])
+            ->save();
+
+        $resolved = WorkflowStub::load($instanceId);
+
+        $this->assertSame($currentRun->id, $resolved->runId());
+        $this->assertSame($currentRun->id, $resolved->currentRunId());
+        $this->assertTrue($resolved->currentRunIsSelected());
+        $this->assertSame(1, $resolved->currentCount());
     }
 
     public function testQueriesAndResumeUseTypedActivityFailureHistoryWhenMutableRowsDrift(): void
