@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -477,6 +478,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('workflow_task_ready', $summary->liveness_state);
         $this->assertSame('Workflow task ready', $summary->wait_reason);
         $this->assertSame(sprintf('Workflow task %s is ready to run.', $task->id), $summary->liveness_reason);
+        $this->assertCount(1, WorkerCompatibilityHeartbeat::query()->get());
         $this->assertFalse($detail['compatibility_supported']);
         $this->assertTrue($detail['compatibility_supported_in_fleet']);
         $this->assertSame(
@@ -484,12 +486,36 @@ final class V2CompatibilityWorkflowTest extends TestCase
             $detail['compatibility_reason'],
         );
         $this->assertNull($detail['compatibility_fleet_reason']);
+        $this->assertCount(1, $detail['compatibility_fleet']);
+        $this->assertSame('worker-build-a', $detail['compatibility_fleet'][0]['worker_id']);
+        $this->assertSame('redis', $detail['compatibility_fleet'][0]['connection']);
+        $this->assertSame('default', $detail['compatibility_fleet'][0]['queue']);
+        $this->assertSame(['build-a'], $detail['compatibility_fleet'][0]['supported']);
+        $this->assertTrue($detail['compatibility_fleet'][0]['supports_required']);
+        $this->assertNotNull($detail['compatibility_fleet'][0]['recorded_at']);
+        $this->assertNotNull($detail['compatibility_fleet'][0]['expires_at']);
         $this->assertSame('workflow_task_ready', $detail['liveness_state']);
         $this->assertSame('build-a', $detail['tasks'][0]['compatibility']);
         $this->assertFalse($detail['tasks'][0]['compatibility_supported']);
         $this->assertTrue($detail['tasks'][0]['compatibility_supported_in_fleet']);
         $this->assertNull($detail['tasks'][0]['compatibility_fleet_reason']);
         $this->assertSame('Workflow task ready to resume the selected run.', $detail['tasks'][0]['summary']);
+    }
+
+    public function testTaskWatchdogHeartbeatPersistsDurableWorkerSnapshot(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-watchdog']);
+
+        $this->wakeTaskWatchdog();
+
+        /** @var WorkerCompatibilityHeartbeat $heartbeat */
+        $heartbeat = WorkerCompatibilityHeartbeat::query()->sole();
+
+        $this->assertSame('redis', $heartbeat->connection);
+        $this->assertSame('default', $heartbeat->queue);
+        $this->assertSame(['build-watchdog'], $heartbeat->supported);
+        $this->assertNotNull($heartbeat->recorded_at);
+        $this->assertNotNull($heartbeat->expires_at);
     }
 
     public function testRunDetailViewIncludesCompatibilityMetadata(): void
@@ -532,6 +558,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'Requires compatibility [build-a]; this worker supports [build-b].',
             $detail['compatibility_reason'],
         );
+        $this->assertSame([], $detail['compatibility_fleet']);
         $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
         $this->assertSame('Workflow task waiting for a compatible worker', $detail['wait_reason']);
         $this->assertSame(
@@ -759,6 +786,6 @@ final class V2CompatibilityWorkflowTest extends TestCase
     private function wakeTaskWatchdog(): void
     {
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
-        TaskWatchdog::wake();
+        TaskWatchdog::wake('redis', 'default');
     }
 }

@@ -51,6 +51,11 @@ final class RunDetailView
         $canSignal = $signalBlockedReason === null;
         $canUpdate = $updateBlockedReason === null;
         $canRepair = $repairBlockedReason === null;
+        $compatibilityFleet = WorkerCompatibilityFleet::details(
+            $run->compatibility,
+            $run->connection,
+            $run->queue,
+        );
 
         $activities = RunActivityView::activitiesForRun($run);
         $activityClasses = collect(RunActivityView::classesFromActivities($activities));
@@ -96,6 +101,7 @@ final class RunDetailView
             'compatibility_reason' => WorkerCompatibility::mismatchReason($run->compatibility),
             'compatibility_supported_in_fleet' => $fleetCompatibility['supported'],
             'compatibility_fleet_reason' => $fleetCompatibility['reason'],
+            'compatibility_fleet' => $compatibilityFleet,
             'arguments' => serialize($run->workflowArguments()),
             'connection' => $run->connection,
             'queue' => $run->queue,
