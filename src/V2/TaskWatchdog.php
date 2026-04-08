@@ -12,6 +12,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -55,14 +56,20 @@ final class TaskWatchdog
                     return null;
                 }
 
-                if (! WorkerCompatibility::supports($task->compatibility)) {
-                    return null;
-                }
-
                 /** @var WorkflowRun $run */
                 $run = WorkflowRun::query()
                     ->lockForUpdate()
                     ->findOrFail($task->workflow_run_id);
+
+                TaskCompatibility::sync($task, $run);
+
+                if (! TaskCompatibility::supported($task, $run)) {
+                    RunSummaryProjector::project(
+                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                    );
+
+                    return null;
+                }
 
                 $task = TaskRepair::recoverExistingTask($task, $run);
 

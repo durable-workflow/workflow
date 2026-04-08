@@ -20,8 +20,8 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
-use Workflow\V2\Support\WorkerCompatibility;
 
 final class RunTimerTask implements ShouldQueue
 {
@@ -146,10 +146,6 @@ final class RunTimerTask implements ShouldQueue
                 return [null, null];
             }
 
-            if (! WorkerCompatibility::supports($task->compatibility)) {
-                return [null, null];
-            }
-
             if ($task->available_at !== null && $task->available_at->isFuture()) {
                 $remainingMilliseconds = max(1, $task->available_at->getTimestampMs() - now()->getTimestampMs());
 
@@ -162,6 +158,21 @@ final class RunTimerTask implements ShouldQueue
                 return [null, null];
             }
 
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()->findOrFail($timerId);
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($timer->workflow_run_id);
+
+            TaskCompatibility::sync($task, $run);
+
+            if (! TaskCompatibility::supported($task, $run)) {
+                RunSummaryProjector::project(
+                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
+                );
+
+                return [null, null];
+            }
+
             $task->forceFill([
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
@@ -171,10 +182,6 @@ final class RunTimerTask implements ShouldQueue
                 'attempt_count' => $task->attempt_count + 1,
             ])->save();
 
-            /** @var WorkflowTimer $timer */
-            $timer = WorkflowTimer::query()->findOrFail($timerId);
-            /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()->findOrFail($timer->workflow_run_id);
             RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
             );

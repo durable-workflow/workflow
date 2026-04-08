@@ -49,9 +49,10 @@ final class RunTaskView
                 return $left->id <=> $right->id;
             })
             ->map(
-                static function (WorkflowTask $task) use ($activities, $timers): array {
+                static function (WorkflowTask $task) use ($activities, $run, $timers): array {
                     $activityExecutionId = self::stringValue($task->payload['activity_execution_id'] ?? null);
                     $timerId = self::stringValue($task->payload['timer_id'] ?? null);
+                    $compatibility = TaskCompatibility::resolve($task, $run);
 
                     /** @var ActivityExecution|null $activity */
                     $activity = $activityExecutionId === null ? null : $activities->get($activityExecutionId);
@@ -63,10 +64,10 @@ final class RunTaskView
                         'type' => $task->task_type->value,
                         'status' => $task->status->value,
                         'transport_state' => self::transportState($task),
-                        'summary' => self::summaryFor($task, $activity, $timer),
-                        'compatibility' => $task->compatibility,
-                        'compatibility_supported' => WorkerCompatibility::supports($task->compatibility),
-                        'compatibility_reason' => WorkerCompatibility::mismatchReason($task->compatibility),
+                        'summary' => self::summaryFor($task, $activity, $timer, $compatibility),
+                        'compatibility' => $compatibility,
+                        'compatibility_supported' => WorkerCompatibility::supports($compatibility),
+                        'compatibility_reason' => WorkerCompatibility::mismatchReason($compatibility),
                         'dispatch_failed' => TaskRepairPolicy::dispatchFailed($task),
                         'dispatch_overdue' => TaskRepairPolicy::dispatchOverdue($task),
                         'is_open' => in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true),
@@ -102,8 +103,9 @@ final class RunTaskView
         WorkflowTask $task,
         ?ActivityExecution $activity,
         ?WorkflowTimer $timer,
+        ?string $compatibility,
     ): string {
-        if (self::taskWaitingForCompatibleWorker($task)) {
+        if (self::taskWaitingForCompatibleWorker($task, $compatibility)) {
             return match ($task->task_type) {
                 TaskType::Workflow => match (true) {
                     TaskRepairPolicy::leaseExpired(
@@ -247,9 +249,9 @@ final class RunTaskView
         };
     }
 
-    private static function taskWaitingForCompatibleWorker(WorkflowTask $task): bool
+    private static function taskWaitingForCompatibleWorker(WorkflowTask $task, ?string $compatibility): bool
     {
-        if (WorkerCompatibility::supports($task->compatibility)) {
+        if (WorkerCompatibility::supports($compatibility)) {
             return false;
         }
 

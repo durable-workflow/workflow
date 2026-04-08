@@ -25,9 +25,9 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TypeRegistry;
-use Workflow\V2\Support\WorkerCompatibility;
 
 final class RunActivityTask implements ShouldQueue
 {
@@ -192,10 +192,6 @@ final class RunActivityTask implements ShouldQueue
                 return null;
             }
 
-            if (! WorkerCompatibility::supports($task->compatibility)) {
-                return null;
-            }
-
             $activityExecutionId = $task->payload['activity_execution_id'] ?? null;
 
             if (! is_string($activityExecutionId)) {
@@ -206,6 +202,17 @@ final class RunActivityTask implements ShouldQueue
             $execution = ActivityExecution::query()
                 ->lockForUpdate()
                 ->findOrFail($activityExecutionId);
+
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($execution->workflow_run_id);
+
+            TaskCompatibility::sync($task, $run);
+
+            if (! TaskCompatibility::supported($task, $run)) {
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+                return null;
+            }
 
             $task->forceFill([
                 'status' => TaskStatus::Leased,
@@ -221,8 +228,6 @@ final class RunActivityTask implements ShouldQueue
                 'started_at' => $execution->started_at ?? now(),
             ])->save();
 
-            /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()->findOrFail($execution->workflow_run_id);
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return $activityExecutionId;

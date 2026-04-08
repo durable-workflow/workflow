@@ -79,7 +79,7 @@ final class RunSummaryProjector
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
-                self::taskWaitingForCompatibleWorker($nextTask) => 'Workflow task waiting for a compatible worker',
+                self::taskWaitingForCompatibleWorker($nextTask, $run) => 'Workflow task waiting for a compatible worker',
                 TaskRepairPolicy::dispatchFailed($nextTask) => 'Workflow task dispatch failed',
                 TaskRepairPolicy::leaseExpired($nextTask) => 'Workflow task lease expired',
                 TaskRepairPolicy::dispatchOverdue($nextTask) => 'Workflow task ready but dispatch is overdue',
@@ -226,7 +226,7 @@ final class RunSummaryProjector
 
         if ($openActivity !== null) {
             if ($nextTask !== null) {
-                return self::taskLiveness($nextTask, 'Activity');
+                return self::taskLiveness($nextTask, $run, 'Activity');
             }
 
             if ($openActivity->status === ActivityStatus::Running) {
@@ -254,7 +254,7 @@ final class RunSummaryProjector
                 if (TaskRepairPolicy::leaseExpired($nextTask) || TaskRepairPolicy::readyTaskNeedsRedispatch(
                     $nextTask
                 )) {
-                    return self::taskLiveness($nextTask, 'Timer');
+                    return self::taskLiveness($nextTask, $run, 'Timer');
                 }
 
                 return $nextTask->status === TaskStatus::Leased
@@ -273,7 +273,7 @@ final class RunSummaryProjector
         }
 
         if ($nextTask !== null) {
-            return self::taskLiveness($nextTask, 'Workflow');
+            return self::taskLiveness($nextTask, $run, 'Workflow');
         }
 
         if ($openChildWait !== null) {
@@ -376,12 +376,12 @@ final class RunSummaryProjector
     /**
      * @return array{0: string, 1: string}
      */
-    private static function taskLiveness(WorkflowTask $task, string $label): array
+    private static function taskLiveness(WorkflowTask $task, WorkflowRun $run, string $label): array
     {
-        if (self::taskWaitingForCompatibleWorker($task)) {
+        if (self::taskWaitingForCompatibleWorker($task, $run)) {
             return [
                 sprintf('%s_task_waiting_for_compatible_worker', $task->task_type->value),
-                self::compatibleWorkerReason($task, $label),
+                self::compatibleWorkerReason($task, $run, $label),
             ];
         }
 
@@ -435,9 +435,9 @@ final class RunSummaryProjector
             ];
     }
 
-    private static function taskWaitingForCompatibleWorker(WorkflowTask $task): bool
+    private static function taskWaitingForCompatibleWorker(WorkflowTask $task, WorkflowRun $run): bool
     {
-        if (WorkerCompatibility::supports($task->compatibility)) {
+        if (TaskCompatibility::supported($task, $run)) {
             return false;
         }
 
@@ -449,9 +449,9 @@ final class RunSummaryProjector
             && ($task->available_at === null || ! $task->available_at->isFuture());
     }
 
-    private static function compatibleWorkerReason(WorkflowTask $task, string $label): string
+    private static function compatibleWorkerReason(WorkflowTask $task, WorkflowRun $run, string $label): string
     {
-        $reason = WorkerCompatibility::mismatchReason($task->compatibility) ?? 'Requires a compatible worker.';
+        $reason = TaskCompatibility::mismatchReason($task, $run) ?? 'Requires a compatible worker.';
 
         return match (true) {
             TaskRepairPolicy::leaseExpired($task) => sprintf(

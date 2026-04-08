@@ -16,8 +16,8 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
-use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowExecutor;
 
 final class RunWorkflowTask implements ShouldQueue
@@ -114,7 +114,14 @@ final class RunWorkflowTask implements ShouldQueue
                 return false;
             }
 
-            if (! WorkerCompatibility::supports($task->compatibility)) {
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($task->workflow_run_id);
+
+            TaskCompatibility::sync($task, $run);
+
+            if (! TaskCompatibility::supported($task, $run)) {
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
                 return false;
             }
 
@@ -127,8 +134,6 @@ final class RunWorkflowTask implements ShouldQueue
                 'attempt_count' => $task->attempt_count + 1,
             ])->save();
 
-            /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()->findOrFail($task->workflow_run_id);
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return true;
