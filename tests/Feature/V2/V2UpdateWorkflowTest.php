@@ -830,6 +830,69 @@ final class V2UpdateWorkflowTest extends TestCase
         ], $detail['commands'][1]['validation_errors']);
     }
 
+    public function testAttemptUpdateRejectsWhenWorkflowDefinitionCannotBeResolvedAfterDurableValidation(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-ct-update-execution');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+            'workflow_type' => 'missing-update-workflow',
+        ]);
+
+        $result = $workflow->attemptUpdateWithArguments('approve', [
+            'approved' => true,
+            'source' => 'api',
+        ]);
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('rejected_workflow_definition_unavailable', $result->outcome());
+        $this->assertSame('workflow_definition_unavailable', $result->rejectionReason());
+        $this->assertNull($result->result());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'order-ct-update-execution',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_workflow_definition_unavailable',
+            'rejection_reason' => 'workflow_definition_unavailable',
+        ]);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+            'UpdateRejected',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        /** @var WorkflowHistoryEvent $rejectedEvent */
+        $rejectedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateRejected')
+            ->firstOrFail();
+
+        $this->assertSame('approve', $rejectedEvent->payload['update_name'] ?? null);
+        $this->assertSame([true, 'api'], Serializer::unserialize($rejectedEvent->payload['arguments'] ?? serialize([])));
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run->fresh());
+
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertSame('approve', $detail['commands'][1]['target_name']);
+        $this->assertSame('rejected_workflow_definition_unavailable', $detail['commands'][1]['outcome']);
+        $this->assertSame('workflow_definition_unavailable', $detail['commands'][1]['rejection_reason']);
+    }
+
     public function testAttemptUpdateRejectsHistoricalSelectedRuns(): void
     {
         $instance = WorkflowInstance::query()->create([

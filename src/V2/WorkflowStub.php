@@ -21,6 +21,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
+use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -47,6 +48,7 @@ use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateCommandGate;
 use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowDefinition;
+use Workflow\V2\Support\WorkflowExecutionGate;
 use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\WorkflowMetadata;
 
@@ -235,14 +237,13 @@ final class WorkflowStub
             throw new LogicException(sprintf('Workflow instance [%s] has not started yet.', $this->instance->id));
         }
 
-        $workflowClass = TypeRegistry::resolveWorkflowClass($this->run->workflow_class, $this->run->workflow_type);
-        $resolvedTarget = WorkflowDefinition::resolveQueryTarget($workflowClass, $method);
+        $resolvedTarget = $this->resolveQueryTargetForRun($this->run, $method);
 
         if ($resolvedTarget === null) {
             throw new LogicException(sprintf(
-                'Method [%s::%s] is not a v2 query method.',
-                $workflowClass,
+                'Workflow query [%s] is not declared on run [%s].',
                 $method,
+                $this->run->id,
             ));
         }
 
@@ -250,6 +251,22 @@ final class WorkflowStub
 
         if ($validatedArguments['validation_errors'] !== []) {
             throw new InvalidQueryArgumentsException($resolvedTarget['name'], $validatedArguments['validation_errors']);
+        }
+
+        $queryBlockedReason = WorkflowExecutionGate::blockedReason($this->run);
+
+        if ($queryBlockedReason !== null) {
+            throw new WorkflowExecutionUnavailableException(
+                'query',
+                $resolvedTarget['name'],
+                $queryBlockedReason,
+                WorkflowExecutionGate::blockedMessage($this->run, 'query', $resolvedTarget['name'])
+                    ?? sprintf(
+                        'Workflow query [%s] cannot execute for run [%s].',
+                        $resolvedTarget['name'],
+                        $this->run->id,
+                    ),
+            );
         }
 
         return (new QueryStateReplayer())->query($this->run, $resolvedTarget['method'], $validatedArguments['arguments']);
@@ -681,6 +698,23 @@ final class WorkflowStub
             }
 
             $arguments = $validatedArguments['arguments'];
+            $workflowExecutionBlockedReason = WorkflowExecutionGate::blockedReason($run);
+
+            if ($workflowExecutionBlockedReason !== null) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Update,
+                    $workflowExecutionBlockedReason,
+                    $this->commandTargetScope(),
+                    $updateCommandAttributes,
+                    HistoryEventType::UpdateRejected,
+                    $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
+                );
+
+                return;
+            }
+
             $updateMethod = $this->resolveUpdateTargetForRun($run, $updateName)['method'];
             $replayState = (new QueryStateReplayer())->replayState($run);
 
@@ -1443,6 +1477,7 @@ final class WorkflowStub
                 'invalid_signal_arguments' => CommandOutcome::RejectedInvalidArguments->value,
                 'invalid_update_arguments' => CommandOutcome::RejectedInvalidArguments->value,
                 UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL => CommandOutcome::RejectedPendingSignal->value,
+                WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE => CommandOutcome::RejectedWorkflowDefinitionUnavailable->value,
                 default => null,
             },
             'payload_codec' => config('workflows.serializer'),
@@ -1548,6 +1583,25 @@ final class WorkflowStub
             'name' => $target,
             'method' => $target,
         ];
+    }
+
+    /**
+     * @return array{name: string, method: string}|null
+     */
+    private function resolveQueryTargetForRun(WorkflowRun $run, string $target): ?array
+    {
+        try {
+            $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        } catch (LogicException) {
+            return RunCommandContract::hasQueryMethod($run, $target)
+                ? [
+                    'name' => $target,
+                    'method' => $target,
+                ]
+                : null;
+        }
+
+        return WorkflowDefinition::resolveQueryTarget($workflowClass, $target);
     }
 
     /**

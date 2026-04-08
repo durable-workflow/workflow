@@ -155,6 +155,8 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertTrue($detail['declared_query_targets'][1]['has_contract']);
         $this->assertSame('stage', $detail['declared_query_targets'][1]['parameters'][0]['name']);
         $this->assertSame('string', $detail['declared_query_targets'][1]['parameters'][0]['type']);
+        $this->assertTrue($detail['can_query']);
+        $this->assertNull($detail['query_blocked_reason']);
         $this->assertSame(['approved-by', 'rejected-by'], $detail['declared_signals']);
         $this->assertCount(2, $detail['declared_signal_targets']);
         $this->assertSame('approved-by', $detail['declared_signal_targets'][0]['name']);
@@ -170,6 +172,33 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertTrue($detail['declared_update_targets'][0]['has_contract']);
         $this->assertSame('approved', $detail['declared_update_targets'][0]['parameters'][0]['name']);
         $this->assertSame('bool', $detail['declared_update_targets'][0]['parameters'][0]['type']);
+    }
+
+    public function testRunDetailViewBlocksQueryAndUpdateWhenDurableTargetsExistButDefinitionIsUnavailable(): void
+    {
+        $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-definition-unavailable');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
+            'workflow_type' => 'missing-command-target-workflow',
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertSame(['approval-stage', 'approvalMatches'], $detail['declared_queries']);
+        $this->assertFalse($detail['can_query']);
+        $this->assertSame('workflow_definition_unavailable', $detail['query_blocked_reason']);
+        $this->assertTrue($detail['can_signal']);
+        $this->assertNull($detail['signal_blocked_reason']);
+        $this->assertFalse($detail['can_update']);
+        $this->assertSame('workflow_definition_unavailable', $detail['update_blocked_reason']);
     }
 
     public function testRunDetailViewReturnsEmptyNormalizedTargetsWhenCommandContractIsUnavailable(): void

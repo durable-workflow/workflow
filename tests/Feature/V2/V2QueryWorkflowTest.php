@@ -27,6 +27,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -92,6 +93,44 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame('events-starting-with', $contracts->get('events-starting-with')['name'] ?? null);
         $this->assertSame('prefix', $contracts->get('events-starting-with')['parameters'][0]['name'] ?? null);
         $this->assertSame('string', $contracts->get('events-starting-with')['parameters'][0]['type'] ?? null);
+    }
+
+    public function testQueriesThrowExplicitExecutionUnavailableWhenWorkflowDefinitionCannotBeResolved(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestQueryWorkflow::class, 'query-definition-unavailable');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestQueryWorkflow',
+            'workflow_type' => 'missing-query-workflow',
+        ]);
+
+        try {
+            $workflow->queryWithArguments('events-starting-with', [
+                'prefix' => 'start',
+            ]);
+
+            $this->fail('Expected query execution to be blocked when the workflow definition is unavailable.');
+        } catch (WorkflowExecutionUnavailableException $exception) {
+            $this->assertSame('query', $exception->operation());
+            $this->assertSame('events-starting-with', $exception->targetName());
+            $this->assertSame('workflow_definition_unavailable', $exception->blockedReason());
+            $this->assertSame(
+                sprintf(
+                    'Workflow %s [%s] cannot execute query [%s] because the workflow definition is unavailable for durable type [%s].',
+                    $workflow->runId(),
+                    $workflow->id(),
+                    'events-starting-with',
+                    'missing-query-workflow',
+                ),
+                $exception->getMessage(),
+            );
+        }
     }
 
     public function testQueriesIgnorePendingAcceptedSignalsUntilTheyAreApplied(): void

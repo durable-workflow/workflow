@@ -43,11 +43,13 @@ final class RunDetailView
         $cancelBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
         $terminateBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
         $signalBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
+        $queryBlockedReason = self::queryBlockedReason($run);
         $updateBlockedReason = self::updateBlockedReason($run, $isCurrentRun);
         $repairBlockedReason = self::repairBlockedReason($run, $isCurrentRun, $summary?->liveness_state);
         $canCancel = $cancelBlockedReason === null;
         $canTerminate = $terminateBlockedReason === null;
         $canIssueTerminalCommands = $canCancel && $canTerminate;
+        $canQuery = $queryBlockedReason === null;
         $canSignal = $signalBlockedReason === null;
         $canUpdate = $updateBlockedReason === null;
         $canRepair = $repairBlockedReason === null;
@@ -142,6 +144,8 @@ final class RunDetailView
             'exception_count' => $summary?->exception_count ?? $run->failures->count(),
             'exceptions_count' => $summary?->exceptions_count ?? $run->failures->count(),
             'can_issue_terminal_commands' => $canIssueTerminalCommands,
+            'can_query' => $canQuery,
+            'query_blocked_reason' => $queryBlockedReason,
             'can_cancel' => $canCancel,
             'cancel_blocked_reason' => $cancelBlockedReason,
             'can_terminate' => $canTerminate,
@@ -367,7 +371,18 @@ final class RunDetailView
             return $blockedReason;
         }
 
-        return UpdateCommandGate::blockedReason($run);
+        $blockedReason = UpdateCommandGate::blockedReason($run);
+
+        if ($blockedReason !== null) {
+            return $blockedReason;
+        }
+
+        return WorkflowExecutionGate::blockedReason($run);
+    }
+
+    private static function queryBlockedReason(WorkflowRun $run): ?string
+    {
+        return WorkflowExecutionGate::blockedReason($run);
     }
 
     private static function repairBlockedReason(
