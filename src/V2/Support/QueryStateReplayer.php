@@ -10,7 +10,6 @@ use ReflectionMethod;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
-use Workflow\Exceptions\VersionNotSupportedException;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -172,11 +171,18 @@ final class QueryStateReplayer
             if ($current instanceof VersionCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
-                $current = $result->send(
-                    $this->versionValue($this->versionMarkerEvent($run, $sequence), $current, $sequence)
+                $resolution = VersionResolver::resolve(
+                    $run,
+                    $this->versionMarkerEvent($run, $sequence),
+                    $current,
+                    $sequence,
                 );
 
-                ++$sequence;
+                $current = $result->send($resolution->version);
+
+                if ($resolution->advancesSequence) {
+                    ++$sequence;
+                }
 
                 continue;
             }
@@ -359,53 +365,6 @@ final class QueryStateReplayer
         );
 
         return $event;
-    }
-
-    private function versionValue(?WorkflowHistoryEvent $event, VersionCall $versionCall, int $sequence): int
-    {
-        if ($event === null) {
-            return $versionCall->maxSupported;
-        }
-
-        $recordedChangeId = $this->stringValue($event->payload['change_id'] ?? null);
-
-        if ($recordedChangeId === null) {
-            throw new LogicException(sprintf(
-                'Workflow version marker at workflow sequence [%d] is missing a change ID.',
-                $sequence,
-            ));
-        }
-
-        if ($recordedChangeId !== $versionCall->changeId) {
-            throw new LogicException(sprintf(
-                'Workflow version marker at workflow sequence [%d] expected change ID [%s] but history recorded [%s].',
-                $sequence,
-                $versionCall->changeId,
-                $recordedChangeId,
-            ));
-        }
-
-        $version = $event->payload['version'] ?? null;
-
-        if (! is_int($version)) {
-            throw new LogicException(sprintf(
-                'Workflow version marker [%s] at workflow sequence [%d] is missing an integer version.',
-                $versionCall->changeId,
-                $sequence,
-            ));
-        }
-
-        if ($version < $versionCall->minSupported || $version > $versionCall->maxSupported) {
-            throw new VersionNotSupportedException(sprintf(
-                "Version %d for change ID '%s' is not supported. Supported range: [%d, %d]",
-                $version,
-                $versionCall->changeId,
-                $versionCall->minSupported,
-                $versionCall->maxSupported,
-            ));
-        }
-
-        return $version;
     }
 
     private function stringValue(mixed $value): ?string
