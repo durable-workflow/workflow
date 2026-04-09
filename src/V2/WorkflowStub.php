@@ -38,6 +38,7 @@ use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\CurrentRunResolver;
+use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
@@ -295,6 +296,20 @@ final class WorkflowStub
         }
 
         return WorkflowRunSummary::query()->find($this->run->id);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function historyExport(): array
+    {
+        $this->refresh();
+
+        if ($this->run === null) {
+            throw new LogicException(sprintf('Workflow instance [%s] has not started yet.', $this->instance->id));
+        }
+
+        return HistoryExport::forRun($this->run);
     }
 
     public function refresh(): self
