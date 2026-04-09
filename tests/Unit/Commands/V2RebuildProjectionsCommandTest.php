@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Commands;
 
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
@@ -37,12 +39,16 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'status' => RunStatus::Completed->value,
             'status_bucket' => 'completed',
             'closed_reason' => 'completed',
-            'started_at' => now()->subHour(),
-            'closed_at' => now()->subMinutes(50),
+            'started_at' => now()
+                ->subHour(),
+            'closed_at' => now()
+                ->subMinutes(50),
             'duration_ms' => 600000,
             'exception_count' => 0,
-            'created_at' => now()->subHour(),
-            'updated_at' => now()->subMinutes(50),
+            'created_at' => now()
+                ->subHour(),
+            'updated_at' => now()
+                ->subMinutes(50),
         ]);
 
         $this->artisan('workflow:v2:rebuild-projections', [
@@ -96,10 +102,196 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
     }
 
+    public function testItUsesConfiguredRunAndSummaryModels(): void
+    {
+        $this->createCustomProjectionTables();
+        config()
+            ->set('workflows.v2.run_model', ProjectionCommandWorkflowRun::class);
+        config()
+            ->set('workflows.v2.run_summary_model', ProjectionCommandWorkflowRunSummary::class);
+
+        [$instance, $run] = $this->createCompletedRun(
+            'projection-command-custom-model',
+            ProjectionCommandWorkflowRun::class,
+        );
+        $staleRunId = (string) Str::ulid();
+
+        ProjectionCommandWorkflowRunSummary::query()->create([
+            'id' => $staleRunId,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 99,
+            'is_current_run' => false,
+            'engine_source' => 'v2',
+            'class' => 'App\\Workflows\\DeletedWorkflow',
+            'workflow_type' => 'deleted.workflow',
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'closed_reason' => 'completed',
+            'started_at' => now()
+                ->subHour(),
+            'closed_at' => now()
+                ->subMinutes(50),
+            'duration_ms' => 600000,
+            'exception_count' => 0,
+            'created_at' => now()
+                ->subHour(),
+            'updated_at' => now()
+                ->subMinutes(50),
+        ]);
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--prune-stale' => true,
+        ])
+            ->expectsOutput('Rebuilt 1 run-summary projection row(s).')
+            ->expectsOutput('Pruned 1 stale run-summary projection row(s).')
+            ->assertSuccessful();
+
+        $this->assertDatabaseHas('projection_command_workflow_run_summaries', [
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'history_event_count' => 2,
+        ]);
+        $this->assertDatabaseMissing('projection_command_workflow_run_summaries', [
+            'id' => $staleRunId,
+        ]);
+        $this->assertDatabaseMissing('workflow_run_summaries', [
+            'id' => $run->id,
+        ]);
+    }
+
+    private function createCustomProjectionTables(): void
+    {
+        Schema::create('projection_command_workflow_runs', static function (Blueprint $table): void {
+            $table->string('id', 26)
+                ->primary();
+            $table->string('workflow_instance_id', 191)
+                ->index();
+            $table->unsignedInteger('run_number');
+            $table->string('workflow_class');
+            $table->string('workflow_type');
+            $table->string('status');
+            $table->string('closed_reason')
+                ->nullable();
+            $table->string('compatibility')
+                ->nullable();
+            $table->string('payload_codec')
+                ->nullable();
+            $table->longText('arguments')
+                ->nullable();
+            $table->longText('output')
+                ->nullable();
+            $table->string('connection')
+                ->nullable();
+            $table->string('queue')
+                ->nullable();
+            $table->unsignedInteger('last_history_sequence')
+                ->default(0);
+            $table->unsignedInteger('last_command_sequence')
+                ->default(0);
+            $table->timestamp('started_at', 6)
+                ->nullable();
+            $table->timestamp('closed_at', 6)
+                ->nullable();
+            $table->timestamp('archived_at', 6)
+                ->nullable();
+            $table->string('archive_command_id', 26)
+                ->nullable();
+            $table->string('archive_reason')
+                ->nullable();
+            $table->timestamp('last_progress_at', 6)
+                ->nullable();
+            $table->timestamps(6);
+        });
+
+        Schema::create('projection_command_workflow_run_summaries', static function (Blueprint $table): void {
+            $table->string('id', 26)
+                ->primary();
+            $table->string('workflow_instance_id', 191)
+                ->index();
+            $table->unsignedInteger('run_number');
+            $table->boolean('is_current_run')
+                ->default(false)
+                ->index();
+            $table->string('engine_source')
+                ->default('v2');
+            $table->string('class');
+            $table->string('workflow_type');
+            $table->string('compatibility')
+                ->nullable();
+            $table->string('status')
+                ->index();
+            $table->string('status_bucket')
+                ->index();
+            $table->string('closed_reason')
+                ->nullable();
+            $table->string('connection')
+                ->nullable();
+            $table->string('queue')
+                ->nullable();
+            $table->timestamp('started_at', 6)
+                ->nullable();
+            $table->timestamp('sort_timestamp', 6)
+                ->nullable();
+            $table->string('sort_key', 64)
+                ->nullable();
+            $table->timestamp('closed_at', 6)
+                ->nullable();
+            $table->timestamp('archived_at', 6)
+                ->nullable();
+            $table->string('archive_command_id', 26)
+                ->nullable();
+            $table->string('archive_reason')
+                ->nullable();
+            $table->bigInteger('duration_ms')
+                ->nullable();
+            $table->string('wait_kind')
+                ->nullable();
+            $table->text('wait_reason')
+                ->nullable();
+            $table->timestamp('wait_started_at', 6)
+                ->nullable();
+            $table->timestamp('wait_deadline_at', 6)
+                ->nullable();
+            $table->string('open_wait_id', 191)
+                ->nullable();
+            $table->string('resume_source_kind')
+                ->nullable();
+            $table->string('resume_source_id', 191)
+                ->nullable();
+            $table->timestamp('next_task_at', 6)
+                ->nullable();
+            $table->string('liveness_state')
+                ->nullable();
+            $table->text('liveness_reason')
+                ->nullable();
+            $table->string('next_task_id', 26)
+                ->nullable();
+            $table->string('next_task_type')
+                ->nullable();
+            $table->string('next_task_status')
+                ->nullable();
+            $table->timestamp('next_task_lease_expires_at', 6)
+                ->nullable();
+            $table->unsignedInteger('exception_count')
+                ->default(0);
+            $table->unsignedInteger('history_event_count')
+                ->default(0);
+            $table->unsignedBigInteger('history_size_bytes')
+                ->default(0);
+            $table->boolean('continue_as_new_recommended')
+                ->default(false);
+            $table->timestamps(6);
+        });
+    }
+
     /**
+     * @param class-string<WorkflowRun> $runModel
+     *
      * @return array{WorkflowInstance, WorkflowRun}
      */
-    private function createCompletedRun(string $instanceId): array
+    private function createCompletedRun(string $instanceId, string $runModel = WorkflowRun::class): array
     {
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()->create([
@@ -107,12 +299,14 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'workflow_class' => 'App\\Workflows\\ProjectionWorkflow',
             'workflow_type' => 'projection.workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinutes(5),
-            'started_at' => now()->subMinutes(5),
+            'reserved_at' => now()
+                ->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $run */
-        $run = WorkflowRun::query()->create([
+        $run = $runModel::query()->create([
             'id' => (string) Str::ulid(),
             'workflow_instance_id' => $instance->id,
             'run_number' => 1,
@@ -120,24 +314,43 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'workflow_type' => 'projection.workflow',
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
-            'started_at' => now()->subMinutes(5),
-            'closed_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         WorkflowHistoryEvent::record(
             $run,
             HistoryEventType::WorkflowStarted,
-            ['workflow_type' => 'projection.workflow'],
+            [
+                'workflow_type' => 'projection.workflow',
+            ],
         );
         WorkflowHistoryEvent::record(
             $run->refresh(),
             HistoryEventType::WorkflowCompleted,
-            ['result_available' => true],
+            [
+                'result_available' => true,
+            ],
         );
 
         return [$instance->refresh(), $run->refresh()];
     }
+}
+
+final class ProjectionCommandWorkflowRun extends WorkflowRun
+{
+    protected $table = 'projection_command_workflow_runs';
+}
+
+final class ProjectionCommandWorkflowRunSummary extends WorkflowRunSummary
+{
+    protected $table = 'projection_command_workflow_run_summaries';
 }

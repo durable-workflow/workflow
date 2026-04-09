@@ -8,7 +8,6 @@ use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
-use Workflow\V2\Enums\StatusBucket;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
@@ -96,7 +95,10 @@ final class RunSummaryProjector
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
-                self::taskWaitingForCompatibleWorker($nextTask, $run) => 'Workflow task waiting for a compatible worker',
+                self::taskWaitingForCompatibleWorker(
+                    $nextTask,
+                    $run
+                ) => 'Workflow task waiting for a compatible worker',
                 TaskRepairPolicy::dispatchFailed($nextTask) => 'Workflow task dispatch failed',
                 TaskRepairPolicy::leaseExpired($nextTask) => 'Workflow task lease expired',
                 TaskRepairPolicy::dispatchOverdue($nextTask) => 'Workflow task ready but dispatch is overdue',
@@ -155,9 +157,10 @@ final class RunSummaryProjector
         }
 
         $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
+        $summaryModel = self::summaryModel();
 
         /** @var WorkflowRunSummary $summary */
-        $summary = WorkflowRunSummary::query()->updateOrCreate(
+        $summary = $summaryModel::query()->updateOrCreate(
             [
                 'id' => $run->id,
             ],
@@ -211,6 +214,17 @@ final class RunSummaryProjector
         );
 
         return $summary;
+    }
+
+    /**
+     * @return class-string<WorkflowRunSummary>
+     */
+    private static function summaryModel(): string
+    {
+        /** @var class-string<WorkflowRunSummary> $model */
+        $model = config('workflows.v2.run_summary_model', WorkflowRunSummary::class);
+
+        return $model;
     }
 
     private static function nextOpenTask(WorkflowRun $run): ?WorkflowTask
@@ -313,10 +327,7 @@ final class RunSummaryProjector
 
                 return [
                     'repair_needed',
-                    sprintf(
-                        'Condition wait %s is open without an open timeout task.',
-                        $openConditionWait['id'],
-                    ),
+                    sprintf('Condition wait %s is open without an open timeout task.', $openConditionWait['id']),
                 ];
             }
 

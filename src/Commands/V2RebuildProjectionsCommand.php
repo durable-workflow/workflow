@@ -47,7 +47,7 @@ class V2RebuildProjectionsCommand extends Command
         ];
 
         if (! $dryRun) {
-            $runQuery->chunkById(100, function ($runs) use (&$report): void {
+            $runQuery->chunkById(100, static function ($runs) use (&$report): void {
                 foreach ($runs as $run) {
                     try {
                         RunSummaryProjector::project($run);
@@ -85,7 +85,10 @@ class V2RebuildProjectionsCommand extends Command
      */
     private function runQuery(array $runIds, ?string $instanceId, bool $missingOnly)
     {
-        $query = WorkflowRun::query()
+        $runModel = $this->runModel();
+        $summaryModel = $this->summaryModel();
+
+        $query = $runModel::query()
             ->with([
                 'instance.runs',
                 'tasks',
@@ -106,7 +109,7 @@ class V2RebuildProjectionsCommand extends Command
         }
 
         if ($missingOnly) {
-            $query->whereNotIn('id', WorkflowRunSummary::query()->select('id'));
+            $query->whereNotIn('id', $summaryModel::query()->select('id'));
         }
 
         return $query;
@@ -117,8 +120,11 @@ class V2RebuildProjectionsCommand extends Command
      */
     private function staleSummaryQuery(array $runIds, ?string $instanceId)
     {
-        $query = WorkflowRunSummary::query()
-            ->whereNotIn('id', WorkflowRun::query()->select('id'));
+        $runModel = $this->runModel();
+        $summaryModel = $this->summaryModel();
+
+        $query = $summaryModel::query()
+            ->whereNotIn('id', $runModel::query()->select('id'));
 
         if ($runIds !== []) {
             $query->whereKey($runIds);
@@ -129,6 +135,28 @@ class V2RebuildProjectionsCommand extends Command
         }
 
         return $query;
+    }
+
+    /**
+     * @return class-string<WorkflowRun>
+     */
+    private function runModel(): string
+    {
+        /** @var class-string<WorkflowRun> $model */
+        $model = config('workflows.v2.run_model', WorkflowRun::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<WorkflowRunSummary>
+     */
+    private function summaryModel(): string
+    {
+        /** @var class-string<WorkflowRunSummary> $model */
+        $model = config('workflows.v2.run_summary_model', WorkflowRunSummary::class);
+
+        return $model;
     }
 
     /**
@@ -191,10 +219,7 @@ class V2RebuildProjectionsCommand extends Command
                 ));
             }
         } else {
-            $this->info(sprintf(
-                'Rebuilt %d run-summary projection row(s).',
-                $report['run_summaries_rebuilt'],
-            ));
+            $this->info(sprintf('Rebuilt %d run-summary projection row(s).', $report['run_summaries_rebuilt']));
 
             if ($report['run_summaries_pruned'] > 0) {
                 $this->info(sprintf(
@@ -205,11 +230,7 @@ class V2RebuildProjectionsCommand extends Command
         }
 
         foreach ($report['failures'] as $failure) {
-            $this->error(sprintf(
-                'Failed to rebuild run [%s]: %s',
-                $failure['run_id'],
-                $failure['message'],
-            ));
+            $this->error(sprintf('Failed to rebuild run [%s]: %s', $failure['run_id'], $failure['message']));
         }
     }
 }

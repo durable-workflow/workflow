@@ -42,13 +42,13 @@ class WorkflowRun extends Model
 
     public function historyEvents(): HasMany
     {
-        return $this->hasMany(WorkflowHistoryEvent::class)
+        return $this->hasMany(WorkflowHistoryEvent::class, 'workflow_run_id')
             ->orderBy('sequence');
     }
 
     public function tasks(): HasMany
     {
-        return $this->hasMany(WorkflowTask::class)
+        return $this->hasMany(WorkflowTask::class, 'workflow_run_id')
             ->orderBy('available_at');
     }
 
@@ -80,7 +80,7 @@ class WorkflowRun extends Model
 
     public function activityExecutions(): HasMany
     {
-        return $this->hasMany(ActivityExecution::class)
+        return $this->hasMany(ActivityExecution::class, 'workflow_run_id')
             ->orderBy('sequence');
     }
 
@@ -94,13 +94,13 @@ class WorkflowRun extends Model
 
     public function timers(): HasMany
     {
-        return $this->hasMany(WorkflowTimer::class)
+        return $this->hasMany(WorkflowTimer::class, 'workflow_run_id')
             ->orderBy('sequence');
     }
 
     public function failures(): HasMany
     {
-        return $this->hasMany(WorkflowFailure::class)
+        return $this->hasMany(WorkflowFailure::class, 'workflow_run_id')
             ->latest('created_at');
     }
 
