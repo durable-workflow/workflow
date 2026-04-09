@@ -248,6 +248,7 @@ final class RunActivityTask implements ShouldQueue
                     'activity_type' => $lockedExecution->activity_type,
                     'sequence' => $lockedExecution->sequence,
                     'retry_task_id' => $retryTask->id,
+                    'retry_of_task_id' => $task->id,
                     'retry_available_at' => $retryAvailableAt->toJSON(),
                     'retry_backoff_seconds' => $backoffSeconds,
                     'retry_after_attempt_id' => $attemptId,

@@ -298,6 +298,7 @@ final class V2WorkflowTest extends TestCase
 
             $this->assertSame($execution->id, $retryScheduled->payload['activity_execution_id'] ?? null);
             $this->assertSame($retryTask->id, $retryScheduled->payload['retry_task_id'] ?? null);
+            $this->assertSame($firstAttempt->workflow_task_id, $retryScheduled->payload['retry_of_task_id'] ?? null);
             $this->assertSame($firstAttempt->id, $retryScheduled->payload['retry_after_attempt_id'] ?? null);
             $this->assertSame(1, $retryScheduled->payload['retry_after_attempt'] ?? null);
             $this->assertSame(5, $retryScheduled->payload['retry_backoff_seconds'] ?? null);
@@ -4672,6 +4673,98 @@ final class V2WorkflowTest extends TestCase
             'workflow_task_id' => $task->id,
             'event_type' => 'RepairRequested',
         ]);
+    }
+
+    public function testRepairRecreatesMissingDelayedActivityRetryTaskFromTypedHistory(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'repair-retry-activity-instance');
+            $workflow->start('Taylor');
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+            $this->runReadyTaskForRun($runId, TaskType::Activity);
+
+            /** @var ActivityExecution $execution */
+            $execution = ActivityExecution::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+            /** @var WorkflowTask $missingRetryTask */
+            $missingRetryTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->firstOrFail();
+
+            $originalRetryTaskId = $missingRetryTask->id;
+            $originalRetryPayload = $missingRetryTask->payload;
+            $originalRetryAvailableAt = $missingRetryTask->available_at?->toJSON();
+
+            $this->assertSame(Carbon::parse('2026-04-09 12:00:05')->toJSON(), $originalRetryAvailableAt);
+
+            $missingRetryTask->delete();
+
+            $summary = RunSummaryProjector::project(
+                WorkflowRun::query()
+                    ->with(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                    ->findOrFail($runId)
+            );
+
+            $this->assertSame('repair_needed', $summary->liveness_state);
+            $this->assertSame('activity', $summary->wait_kind);
+            $this->assertNull($summary->next_task_id);
+
+            $result = WorkflowStub::loadRun($runId)->attemptRepair();
+
+            $this->assertTrue($result->accepted());
+            $this->assertSame('repair_dispatched', $result->outcome());
+
+            /** @var WorkflowTask $repairedRetryTask */
+            $repairedRetryTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->firstOrFail();
+
+            $this->assertNotSame($originalRetryTaskId, $repairedRetryTask->id);
+            $this->assertSame($execution->id, $repairedRetryTask->payload['activity_execution_id'] ?? null);
+            $this->assertSame($originalRetryPayload['retry_of_task_id'], $repairedRetryTask->payload['retry_of_task_id'] ?? null);
+            $this->assertSame($originalRetryPayload['retry_after_attempt_id'], $repairedRetryTask->payload['retry_after_attempt_id'] ?? null);
+            $this->assertSame($originalRetryPayload['retry_after_attempt'], $repairedRetryTask->payload['retry_after_attempt'] ?? null);
+            $this->assertSame($originalRetryPayload['retry_backoff_seconds'], $repairedRetryTask->payload['retry_backoff_seconds'] ?? null);
+            $this->assertSame($originalRetryPayload['max_attempts'], $repairedRetryTask->payload['max_attempts'] ?? null);
+            $this->assertSame($originalRetryPayload['retry_policy'], $repairedRetryTask->payload['retry_policy'] ?? null);
+            $this->assertSame($originalRetryAvailableAt, $repairedRetryTask->available_at?->toJSON());
+            $this->assertSame(1, $repairedRetryTask->attempt_count);
+            $this->assertSame(1, $repairedRetryTask->repair_count);
+
+            Queue::assertPushed(
+                RunActivityTask::class,
+                static fn (RunActivityTask $job): bool => $job->taskId === $repairedRetryTask->id
+            );
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+
+            $this->assertSame('scheduled', $detail['tasks'][0]['transport_state']);
+            $this->assertSame(1, $detail['tasks'][0]['retry_after_attempt']);
+            $this->assertSame(5, $detail['tasks'][0]['retry_backoff_seconds']);
+            $this->assertSame(2, $detail['tasks'][0]['retry_max_attempts']);
+            $this->assertSame($execution->retry_policy, $detail['tasks'][0]['retry_policy']);
+
+            Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:05'));
+
+            $this->runReadyTaskForRun($runId, TaskType::Activity);
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            $this->assertTrue($workflow->refresh()->completed());
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function testRepairDoesNotRecreateMissingTaskForRunningActivityExecution(): void

@@ -4,14 +4,18 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
+use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -118,15 +122,15 @@ final class TaskRepair
                 ));
 
             if ($execution instanceof ActivityExecution) {
+                $taskAttributes = self::missingActivityTaskAttributes($run, $execution);
+
                 /** @var WorkflowTask $task */
                 $task = WorkflowTask::query()->create([
                     'workflow_run_id' => $run->id,
                     'task_type' => TaskType::Activity->value,
                     'status' => TaskStatus::Ready->value,
-                    'available_at' => now(),
-                    'payload' => [
-                        'activity_execution_id' => $execution->id,
-                    ],
+                    'available_at' => $taskAttributes['available_at'],
+                    'payload' => $taskAttributes['payload'],
                     'connection' => $execution->connection ?? $run->connection,
                     'queue' => $execution->queue ?? $run->queue,
                     'compatibility' => $run->compatibility,
@@ -179,6 +183,87 @@ final class TaskRepair
         ]);
 
         return $task;
+    }
+
+    /**
+     * @return array{available_at: CarbonInterface, payload: array<string, mixed>}
+     */
+    private static function missingActivityTaskAttributes(WorkflowRun $run, ActivityExecution $execution): array
+    {
+        $payload = [
+            'activity_execution_id' => $execution->id,
+        ];
+
+        $retryEvent = self::latestRetryScheduledEvent($run, $execution);
+
+        if (! $retryEvent instanceof WorkflowHistoryEvent) {
+            return [
+                'available_at' => now(),
+                'payload' => $payload,
+            ];
+        }
+
+        $retryPayload = is_array($retryEvent->payload) ? $retryEvent->payload : [];
+
+        foreach ([
+            'retry_of_task_id',
+            'retry_after_attempt_id',
+            'retry_after_attempt',
+            'retry_backoff_seconds',
+            'max_attempts',
+            'retry_policy',
+        ] as $key) {
+            if (array_key_exists($key, $retryPayload)) {
+                $payload[$key] = $retryPayload[$key];
+            }
+        }
+
+        if (! array_key_exists('retry_policy', $payload) && is_array($execution->retry_policy)) {
+            $payload['retry_policy'] = $execution->retry_policy;
+        }
+
+        return [
+            'available_at' => self::timestamp($retryPayload['retry_available_at'] ?? null) ?? now(),
+            'payload' => $payload,
+        ];
+    }
+
+    private static function latestRetryScheduledEvent(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+    ): ?WorkflowHistoryEvent {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents
+            ->filter(static function (WorkflowHistoryEvent $event) use ($execution): bool {
+                if ($event->event_type !== HistoryEventType::ActivityRetryScheduled) {
+                    return false;
+                }
+
+                $payload = is_array($event->payload) ? $event->payload : [];
+
+                return ($payload['activity_execution_id'] ?? null) === $execution->id;
+            })
+            ->sortByDesc('sequence')
+            ->first();
+
+        return $event;
+    }
+
+    private static function timestamp(mixed $value): ?CarbonInterface
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value;
+        }
+
+        if (! is_string($value) || $value === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private static function settleTerminalTask(WorkflowTask $task, WorkflowRun $run): void
