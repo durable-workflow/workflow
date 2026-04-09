@@ -32,6 +32,7 @@ final class CommandResponse
 
         if ($result instanceof UpdateResult) {
             $payload['update_id'] = $result->updateId();
+            $payload['update_status'] = $result->updateStatus();
             $payload['result'] = $result->result();
             $payload['failure_id'] = $result->failureId();
             $payload['failure_message'] = $result->failureMessage();

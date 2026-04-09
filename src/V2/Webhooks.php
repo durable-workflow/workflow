@@ -129,15 +129,18 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            $result = self::selectionStub($workflowId, $runId)
-                ->withCommandContext(self::commandContext($request))
-                ->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
+            $stub = self::selectionStub($workflowId, $runId)
+                ->withCommandContext(self::commandContext($request));
+            $result = self::shouldSubmitUpdate($request->all())
+                ? $stub->submitUpdateWithArguments($update, self::resolveUpdateArguments($request->all()))
+                : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
                 $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
                 $result->outcome() === CommandOutcome::RejectedInvalidArguments->value => 422,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
+                $result instanceof UpdateResult && $result->updateStatus() === 'accepted' => 202,
                 default => 200,
             });
         })->name('workflows.v2.runs.update');
@@ -149,15 +152,18 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            $result = self::selectionStub($workflowId)
-                ->withCommandContext(self::commandContext($request))
-                ->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
+            $stub = self::selectionStub($workflowId)
+                ->withCommandContext(self::commandContext($request));
+            $result = self::shouldSubmitUpdate($request->all())
+                ? $stub->submitUpdateWithArguments($update, self::resolveUpdateArguments($request->all()))
+                : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
                 $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
                 $result->outcome() === CommandOutcome::RejectedInvalidArguments->value => 422,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
+                $result instanceof UpdateResult && $result->updateStatus() === 'accepted' => 202,
                 default => 200,
             });
         })->name('workflows.v2.update');
@@ -448,6 +454,14 @@ final class Webhooks
         return array_is_list($arguments)
             ? array_values($arguments)
             : $arguments;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function shouldSubmitUpdate(array $payload): bool
+    {
+        return ($payload['wait_for'] ?? null) === 'accepted';
     }
 
     /**

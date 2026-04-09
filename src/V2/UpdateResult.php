@@ -58,4 +58,9 @@ final class UpdateResult extends CommandResult
     {
         return $this->update?->id;
     }
+
+    public function updateStatus(): ?string
+    {
+        return $this->update?->status?->value;
+    }
 }

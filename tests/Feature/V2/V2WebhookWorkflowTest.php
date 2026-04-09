@@ -16,10 +16,13 @@ use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Webhooks;
 use Workflow\V2\WorkflowStub;
 use Workflow\V2\Support\WorkflowInstanceId;
@@ -661,6 +664,67 @@ final class V2WebhookWorkflowTest extends TestCase
         ], $workflow->currentState());
     }
 
+    public function testUpdateWebhookCanReturnAfterAcceptanceAndLetWorkerApplyTheUpdate(): void
+    {
+        config()->set('queue.default', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-accepted');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $response = $this->postJson('/webhooks/instances/order-update-webhook-accepted/updates/approve', [
+            'wait_for' => 'accepted',
+            'arguments' => [true, 'webhook'],
+        ]);
+
+        $response
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', null)
+            ->assertJsonPath('workflow_id', 'order-update-webhook-accepted')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('workflow_type', 'test-update-workflow')
+            ->assertJsonPath('command_sequence', 2)
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('update_status', 'accepted')
+            ->assertJsonPath('result', null);
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $response->json('update_id'),
+            'workflow_command_id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-webhook-accepted',
+            'workflow_run_id' => $workflow->runId(),
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'outcome' => null,
+            'workflow_sequence' => null,
+        ]);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->currentState());
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => true,
+            'events' => ['started', 'approved:yes:webhook'],
+        ], $workflow->currentState());
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $response->json('update_id'),
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+            'workflow_sequence' => 1,
+        ]);
+    }
+
     public function testUpdateWebhookRejectsLaterUpdateWhileAnEarlierSignalIsStillPending(): void
     {
         $workflow = WorkflowStub::make(TestSignalThenUpdateWorkflow::class, 'order-update-webhook-linearized');
@@ -1293,6 +1357,19 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('workflow_type', 'test-greeting-workflow')
             ->assertJsonPath('command_status', 'rejected')
             ->assertJsonPath('rejection_reason', 'run_not_active');
+    }
+
+    private function runReadyWorkflowTask(string $runId): void
+    {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->firstOrFail();
+
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
     }
 
     private function waitFor(callable $condition): void

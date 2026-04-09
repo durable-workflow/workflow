@@ -11,11 +11,15 @@ use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\RunDetailView;
@@ -222,6 +226,132 @@ final class V2UpdateWorkflowTest extends TestCase
             'workflow_id' => 'order-update',
             'run_id' => $workflow->runId(),
         ], $workflow->output());
+    }
+
+    public function testSubmitUpdateRecordsAcceptedLifecycleAndWorkerAppliesIt(): void
+    {
+        config()->set('queue.default', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-submitted');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $update = $workflow->submitUpdate('approve', true, 'api');
+
+        $this->assertTrue($update->accepted());
+        $this->assertFalse($update->completed());
+        $this->assertNull($update->outcome());
+        $this->assertSame('accepted', $update->updateStatus());
+        $this->assertNull($update->result());
+        $this->assertNotNull($update->updateId());
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $update->updateId(),
+            'workflow_command_id' => $update->commandId(),
+            'workflow_instance_id' => 'order-update-submitted',
+            'workflow_run_id' => $workflow->runId(),
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'outcome' => null,
+            'workflow_sequence' => null,
+        ]);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->currentState());
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => true,
+            'events' => ['started', 'approved:yes:api'],
+        ], $workflow->currentState());
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $update->updateId(),
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+            'workflow_sequence' => 1,
+        ]);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+            'UpdateAccepted',
+            'UpdateApplied',
+            'UpdateCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testSubmittedUpdateFailureIsRecordedAndWorkerReplaysCleanly(): void
+    {
+        config()->set('queue.default', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-submitted-failure');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $update = $workflow->submitUpdate('explode', 'boom');
+
+        $this->assertTrue($update->accepted());
+        $this->assertSame('accepted', $update->updateStatus());
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $update->updateId(),
+            'status' => 'failed',
+            'outcome' => 'update_failed',
+            'workflow_sequence' => 1,
+            'failure_message' => 'boom',
+        ]);
+
+        $this->assertDatabaseHas('workflow_failures', [
+            'workflow_run_id' => $workflow->runId(),
+            'source_kind' => 'workflow_command',
+            'source_id' => $update->commandId(),
+            'propagation_kind' => 'update',
+            'message' => 'boom',
+        ]);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->currentState());
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+            'UpdateAccepted',
+            'UpdateCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
     }
 
     public function testCallingAnnotatedUpdateMethodReturnsTheRawUpdateResult(): void
@@ -1017,6 +1147,19 @@ final class V2UpdateWorkflowTest extends TestCase
 
         $this->assertSame('approve', $detail['commands'][0]['target_name']);
         $this->assertSame('selected_run_not_current', $detail['commands'][0]['rejection_reason']);
+    }
+
+    private function runReadyWorkflowTask(string $runId): void
+    {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->firstOrFail();
+
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
     }
 
     private function waitFor(callable $condition): void

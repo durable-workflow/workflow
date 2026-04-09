@@ -95,6 +95,51 @@ final class V2AwaitWorkflowTest extends TestCase
             ->all());
     }
 
+    public function testAwaitWorkflowCanApplySubmittedUpdateOnWorkflowWorker(): void
+    {
+        config()->set('queue.default', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestAwaitWorkflow::class, 'await-submitted-update');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $update = $workflow->submitUpdate('approve', true);
+
+        $this->assertTrue($update->accepted());
+        $this->assertFalse($update->completed());
+        $this->assertSame('accepted', $update->updateStatus());
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'approved' => true,
+            'stage' => 'completed',
+            'workflow_id' => 'await-submitted-update',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ConditionWaitOpened',
+            'UpdateAccepted',
+            'UpdateApplied',
+            'UpdateCompleted',
+            'ConditionWaitSatisfied',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
     public function testAwaitWorkflowUpdateRedispatchesExistingReadyWorkflowTaskBeforeWorkerRuns(): void
     {
         Queue::fake();

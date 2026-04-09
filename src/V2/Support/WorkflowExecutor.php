@@ -22,6 +22,7 @@ use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -33,6 +34,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -46,6 +48,7 @@ final class WorkflowExecutor
             'failures',
             'tasks',
             'commands',
+            'updates',
             'historyEvents',
             'childLinks.childRun.instance.currentRun',
             'childLinks.childRun.failures',
@@ -95,7 +98,9 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof ActivityCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
 
                 $activityCompletion = $this->activityCompletionEvent($run, $sequence);
 
@@ -166,7 +171,9 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof AwaitCall || $current instanceof AwaitWithTimeoutCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
 
                 $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
 
@@ -295,7 +302,9 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof SideEffectCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
 
                 $sideEffectEvent = $this->sideEffectEvent($run, $sequence);
 
@@ -316,7 +325,9 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof VersionCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
 
                 $versionMarkerEvent = $this->versionMarkerEvent($run, $sequence);
 
@@ -343,7 +354,9 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof TimerCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
 
                 if ($this->timerFiredEvent($run, $sequence) !== null) {
                     try {
@@ -398,7 +411,9 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof SignalCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
 
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
 
@@ -449,7 +464,9 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof ChildWorkflowCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
 
                 $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
                 $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
@@ -509,7 +526,9 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof AllCall) {
-                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
 
                 $leafDescriptors = $current->leafDescriptors($sequence);
                 $groupSize = count($leafDescriptors);
@@ -1938,7 +1957,8 @@ final class WorkflowExecutor
         WorkflowRun $run,
         \Workflow\V2\Workflow $workflow,
         int $sequence,
-    ): void {
+        ?WorkflowTask $task = null,
+    ): bool {
         $events = $run->historyEvents
             ->filter(
                 static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::UpdateApplied
@@ -1979,6 +1999,193 @@ final class WorkflowExecutor
 
             $workflow->{$method}(...$parameters);
         }
+
+        if ($task instanceof WorkflowTask && ! $this->applyPendingUpdates($run, $task, $workflow, $sequence)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function applyPendingUpdates(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        \Workflow\V2\Workflow $workflow,
+        int $sequence,
+    ): bool {
+        $run->loadMissing(['updates', 'commands']);
+
+        $updates = $run->updates
+            ->filter(
+                static fn (WorkflowUpdate $update): bool => $update->status === UpdateStatus::Accepted
+                    && ($update->workflow_sequence === null || (int) $update->workflow_sequence === $sequence)
+            )
+            ->sort(static function (WorkflowUpdate $left, WorkflowUpdate $right): int {
+                $leftSequence = $left->command_sequence ?? PHP_INT_MAX;
+                $rightSequence = $right->command_sequence ?? PHP_INT_MAX;
+
+                if ($leftSequence !== $rightSequence) {
+                    return $leftSequence <=> $rightSequence;
+                }
+
+                $leftAcceptedAt = $left->accepted_at?->getTimestampMs() ?? PHP_INT_MAX;
+                $rightAcceptedAt = $right->accepted_at?->getTimestampMs() ?? PHP_INT_MAX;
+
+                if ($leftAcceptedAt !== $rightAcceptedAt) {
+                    return $leftAcceptedAt <=> $rightAcceptedAt;
+                }
+
+                return $left->id <=> $right->id;
+            });
+
+        foreach ($updates as $update) {
+            if (! $update instanceof WorkflowUpdate) {
+                continue;
+            }
+
+            /** @var WorkflowCommand|null $command */
+            $command = $update->workflow_command_id === null
+                ? null
+                : $run->commands->firstWhere('id', $update->workflow_command_id);
+
+            try {
+                $target = $update->update_name;
+                $resolvedTarget = WorkflowDefinition::resolveUpdateTarget($workflow::class, $target);
+
+                if ($resolvedTarget === null) {
+                    throw new LogicException(sprintf(
+                        'Workflow update [%s] is not declared on workflow [%s].',
+                        $target,
+                        $workflow::class,
+                    ));
+                }
+
+                $parameters = $workflow->resolveMethodDependencies(
+                    $update->updateArguments(),
+                    new ReflectionMethod($workflow, $resolvedTarget['method']),
+                );
+                $result = $workflow->{$resolvedTarget['method']}(...$parameters);
+
+                $appliedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
+                    'workflow_command_id' => $command?->id,
+                    'update_id' => $update->id,
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                    'update_name' => $target,
+                    'arguments' => $update->arguments,
+                    'sequence' => $sequence,
+                ], $task, $command);
+                $run->historyEvents->push($appliedEvent);
+
+                $completedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
+                    'workflow_command_id' => $command?->id,
+                    'update_id' => $update->id,
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                    'update_name' => $target,
+                    'sequence' => $sequence,
+                    'result' => Serializer::serialize($result),
+                ], $task, $command);
+                $run->historyEvents->push($completedEvent);
+
+                $update->forceFill([
+                    'workflow_sequence' => $sequence,
+                    'status' => UpdateStatus::Completed->value,
+                    'outcome' => CommandOutcome::UpdateCompleted->value,
+                    'result' => Serializer::serialize($result),
+                    'applied_at' => now(),
+                    'closed_at' => now(),
+                ])->save();
+
+                if ($command instanceof WorkflowCommand) {
+                    $command->forceFill([
+                        'outcome' => CommandOutcome::UpdateCompleted->value,
+                        'applied_at' => $update->applied_at,
+                    ])->save();
+                }
+            } catch (Throwable $throwable) {
+                /** @var WorkflowFailure $failure */
+                $failure = WorkflowFailure::query()->create(array_merge(
+                    FailureFactory::make($throwable),
+                    [
+                        'workflow_run_id' => $run->id,
+                        'source_kind' => 'workflow_command',
+                        'source_id' => $command?->id ?? $update->id,
+                        'propagation_kind' => 'update',
+                        'handled' => false,
+                    ],
+                ));
+
+                $completedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
+                    'workflow_command_id' => $command?->id,
+                    'update_id' => $update->id,
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                    'update_name' => $update->update_name,
+                    'sequence' => $sequence,
+                    'failure_id' => $failure->id,
+                    'exception_class' => $failure->exception_class,
+                    'message' => $failure->message,
+                    'code' => $throwable->getCode(),
+                    'exception' => FailureFactory::payload($throwable),
+                ], $task, $command);
+                $run->historyEvents->push($completedEvent);
+
+                $update->forceFill([
+                    'workflow_sequence' => $sequence,
+                    'status' => UpdateStatus::Failed->value,
+                    'outcome' => CommandOutcome::UpdateFailed->value,
+                    'failure_id' => $failure->id,
+                    'failure_message' => $failure->message,
+                    'applied_at' => now(),
+                    'closed_at' => now(),
+                ])->save();
+
+                if ($command instanceof WorkflowCommand) {
+                    $command->forceFill([
+                        'outcome' => CommandOutcome::UpdateFailed->value,
+                        'applied_at' => $update->applied_at,
+                    ])->save();
+                }
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function restartAfterPendingUpdateFailure(WorkflowRun $run, WorkflowTask $task): WorkflowTask
+    {
+        $run->forceFill([
+            'status' => RunStatus::Waiting,
+            'last_progress_at' => now(),
+        ])->save();
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        /** @var WorkflowTask $nextTask */
+        $nextTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [
+                'resume_reason' => 'pending_update_failed',
+            ],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        return $nextTask;
     }
 
     private function conditionWaitResolutionEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
