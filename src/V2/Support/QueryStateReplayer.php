@@ -277,7 +277,7 @@ final class QueryStateReplayer
                                 continue;
                             }
 
-                            $failure = $this->selectParallelFailure(
+                            $failure = ParallelFailureSelector::select(
                                 $failure,
                                 $offset,
                                 $this->activityException($activityCompletion, null, $run),
@@ -313,7 +313,7 @@ final class QueryStateReplayer
                             continue;
                         }
 
-                        $failure = $this->selectParallelFailure(
+                        $failure = ParallelFailureSelector::select(
                             $failure,
                             $offset,
                             $this->activityException(null, $execution, $run),
@@ -333,7 +333,7 @@ final class QueryStateReplayer
                             continue;
                         }
 
-                        $failure = $this->selectParallelFailure(
+                        $failure = ParallelFailureSelector::select(
                             $failure,
                             $offset,
                             ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
@@ -369,7 +369,7 @@ final class QueryStateReplayer
                         continue;
                     }
 
-                    $failure = $this->selectParallelFailure(
+                    $failure = ParallelFailureSelector::select(
                         $failure,
                         $offset,
                         ChildRunHistory::exceptionForChildRun($childRun),
@@ -405,31 +405,6 @@ final class QueryStateReplayer
                 get_debug_type($current),
             ));
         }
-    }
-
-    /**
-     * @param array{index: int, exception: Throwable, recorded_at: int}|null $currentFailure
-     * @return array{index: int, exception: Throwable, recorded_at: int}
-     */
-    private function selectParallelFailure(
-        ?array $currentFailure,
-        int $index,
-        Throwable $exception,
-        int $recordedAt,
-    ): array {
-        if (
-            $currentFailure === null
-            || $recordedAt < $currentFailure['recorded_at']
-            || ($recordedAt === $currentFailure['recorded_at'] && $index < $currentFailure['index'])
-        ) {
-            return [
-                'index' => $index,
-                'exception' => $exception,
-                'recorded_at' => $recordedAt,
-            ];
-        }
-
-        return $currentFailure;
     }
 
     private function appliedSignalEvent(

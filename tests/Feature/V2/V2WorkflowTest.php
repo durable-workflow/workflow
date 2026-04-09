@@ -32,6 +32,7 @@ use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
+use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestReclaimDuringExecutionActivity;
 use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
@@ -1615,6 +1616,42 @@ final class V2WorkflowTest extends TestCase
             'stage' => 'caught-activity-failure',
             'message' => 'boom',
         ], $workflow->output());
+    }
+
+    public function testParallelActivityAllUsesEarliestRecordedFailureWhenMultipleMembersFailBeforeResume(): void
+    {
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(
+                TestParallelMultipleActivityFailureWorkflow::class,
+                'parallel-multiple-activity-failure',
+            );
+            $workflow->start();
+            $parentRunId = $workflow->runId();
+
+            $this->assertNotNull($parentRunId);
+
+            $this->runNextReadyTask();
+
+            Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:01'));
+            $this->runReadyActivityTaskForSequence($parentRunId, 2);
+
+            Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:02'));
+            $this->runReadyActivityTaskForSequence($parentRunId, 1);
+
+            $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame([
+                'stage' => 'caught-activity-failure',
+                'message' => 'second failure',
+            ], $workflow->output());
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function testAsyncHelperRunsClosureAsDurableChildWorkflow(): void

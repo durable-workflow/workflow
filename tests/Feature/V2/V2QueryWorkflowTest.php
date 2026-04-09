@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
@@ -17,6 +18,7 @@ use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
+use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
@@ -567,6 +569,35 @@ final class V2QueryWorkflowTest extends TestCase
             'stage' => 'caught-activity-failure',
             'message' => 'boom',
         ], $workflow->currentState());
+    }
+
+    public function testQueriesBreakParallelFailureTimestampTiesByBarrierIndexBeforeParentWorkflowTaskRuns(): void
+    {
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-09 12:30:00'));
+
+        try {
+            $workflow = WorkflowStub::make(
+                TestParallelMultipleActivityFailureWorkflow::class,
+                'query-parallel-multiple-activity-failure',
+            );
+            $workflow->start();
+            $parentRunId = $workflow->runId();
+
+            $this->assertNotNull($parentRunId);
+
+            $this->runNextReadyTask();
+            $this->runReadyActivityTaskForSequence($parentRunId, 2);
+            $this->runReadyActivityTaskForSequence($parentRunId, 1);
+
+            $this->assertSame([
+                'stage' => 'caught-activity-failure',
+                'message' => 'first failure',
+            ], $workflow->currentState());
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function testQueriesKeepMixedAllWaitingUntilEveryMemberCompletes(): void
