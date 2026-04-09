@@ -882,6 +882,7 @@ final class WorkflowExecutor
         $childInstance->forceFill([
             'current_run_id' => $childRun->id,
         ])->save();
+        $childCallId = (string) Str::ulid();
 
         $startCommand = $this->recordWorkflowStartCommand(
             $run,
@@ -890,10 +891,12 @@ final class WorkflowExecutor
             $childRun,
             $metadata->arguments,
             $now,
+            $childCallId,
         );
 
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
+            'id' => $childCallId,
             'link_type' => 'child_workflow',
             'sequence' => $sequence,
             'parent_workflow_instance_id' => $run->workflow_instance_id,
@@ -906,6 +909,7 @@ final class WorkflowExecutor
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, array_merge([
             'sequence' => $sequence,
             'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'child_workflow_class' => $childRun->workflow_class,
@@ -915,6 +919,7 @@ final class WorkflowExecutor
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, array_merge([
             'sequence' => $sequence,
             'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'child_workflow_class' => $childRun->workflow_class,
@@ -941,6 +946,7 @@ final class WorkflowExecutor
             'parent_workflow_run_id' => $run->id,
             'parent_sequence' => $sequence,
             'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
             'declared_queries' => $commandContract['queries'],
             'declared_query_contracts' => $commandContract['query_contracts'],
             'declared_signals' => $commandContract['signals'],
@@ -1290,6 +1296,7 @@ final class WorkflowExecutor
         return WorkflowHistoryEvent::record($run, $eventType, array_filter([
             'sequence' => $sequence,
             'workflow_link_id' => $link?->id,
+            'child_call_id' => ChildRunHistory::childCallIdForSequence($run, $sequence),
             'child_workflow_instance_id' => $childRun->workflow_instance_id,
             'child_workflow_run_id' => $childRun->id,
             'child_workflow_class' => $childRun->workflow_class,
@@ -1407,6 +1414,7 @@ final class WorkflowExecutor
             'current_run_id' => $continuedRun->id,
             'run_count' => $continuedRun->run_number,
         ])->save();
+        $childCallId = ChildRunHistory::childCallIdForRun($run);
 
         $startCommand = $this->recordWorkflowStartCommand(
             $run,
@@ -1415,6 +1423,7 @@ final class WorkflowExecutor
             $continuedRun,
             $continueAsNew->arguments,
             $now,
+            $childCallId,
         );
 
         /** @var WorkflowLink $link */
@@ -1480,6 +1489,7 @@ final class WorkflowExecutor
             'workflow_command_id' => $startCommand->id,
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
             'declared_queries' => $commandContract['queries'],
             'declared_query_contracts' => $commandContract['query_contracts'],
             'declared_signals' => $commandContract['signals'],
@@ -1554,6 +1564,7 @@ final class WorkflowExecutor
         WorkflowRun $targetRun,
         array $arguments,
         mixed $recordedAt,
+        ?string $childCallId = null,
     ): WorkflowCommand {
         /** @var WorkflowCommand $command */
         $command = WorkflowCommand::record(
@@ -1564,6 +1575,7 @@ final class WorkflowExecutor
                     $sourceRun->workflow_instance_id,
                     $sourceRun->id,
                     $sourceSequence,
+                    $childCallId,
                 )->attributes(),
                 [
                     'command_type' => CommandType::Start->value,

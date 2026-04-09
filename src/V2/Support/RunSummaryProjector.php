@@ -511,9 +511,10 @@ final class RunSummaryProjector
 
             $scheduledEvent = ChildRunHistory::scheduledEventForSequence($run, $sequence);
             $link = ChildRunHistory::latestLinkForSequence($run, $sequence);
+            $childCallId = ChildRunHistory::childCallIdForSequence($run, $sequence);
 
             return [
-                'id' => sprintf('child:%s', $link?->id ?? $sequence),
+                'id' => sprintf('child:%s', $childCallId ?? $sequence),
                 'label' => $childRun->workflow_type,
                 'opened_at' => $scheduledEvent?->recorded_at ?? $scheduledEvent?->created_at ?? $link?->created_at,
                 'resume_source_kind' => 'child_workflow_run',

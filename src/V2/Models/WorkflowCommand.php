@@ -180,6 +180,9 @@ class WorkflowCommand extends Model
             'sequence' => is_int($workflow['sequence'] ?? null)
                 ? $workflow['sequence']
                 : null,
+            'child_call_id' => is_string($workflow['child_call_id'] ?? null)
+                ? $workflow['child_call_id']
+                : null,
         ], static fn (mixed $value): bool => $value !== null);
 
         return $publicWorkflow === []

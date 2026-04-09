@@ -1045,6 +1045,11 @@ final class V2RunDetailViewTest extends TestCase
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $runId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
 
         $detail = RunDetailView::forRun($run);
         $childWait = $this->findWait($detail['waits'], 'child');
@@ -1059,9 +1064,12 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertFalse($childWait['external_only']);
         $this->assertSame('child_workflow_run', $childWait['resume_source_kind']);
         $this->assertNotNull($childWait['resume_source_id']);
+        $this->assertSame($link->id, $childWait['child_call_id']);
+        $this->assertSame('child:' . $link->id, $detail['open_wait_id']);
         $this->assertCount(0, $detail['parents']);
         $this->assertCount(1, $detail['continuedWorkflows']);
         $this->assertSame('child_workflow', $detail['continuedWorkflows'][0]['link_type']);
+        $this->assertSame($link->id, $detail['continuedWorkflows'][0]['child_call_id']);
         $this->assertSame(1, $detail['continuedWorkflows'][0]['sequence']);
         $this->assertSame('waiting', $detail['continuedWorkflows'][0]['status']);
         $this->assertSame(TestTimerWorkflow::class, $detail['continuedWorkflows'][0]['workflow_type']);
@@ -1140,8 +1148,10 @@ final class V2RunDetailViewTest extends TestCase
             ->orderBy('sequence')
             ->firstOrFail();
         $childInstanceId = $childStarted->payload['child_workflow_instance_id'] ?? null;
+        $childCallId = $childStarted->payload['child_call_id'] ?? null;
 
         $this->assertIsString($childInstanceId);
+        $this->assertIsString($childCallId);
 
         /** @var WorkflowRun $currentChildRun */
         $currentChildRun = WorkflowRun::query()
@@ -1174,8 +1184,11 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('open', $childWait['status']);
         $this->assertSame($childInstanceId, $childWait['target_name']);
         $this->assertSame($currentChildRun->id, $childWait['resume_source_id']);
+        $this->assertSame($childCallId, $childWait['child_call_id']);
+        $this->assertSame('child:' . $childCallId, $detail['open_wait_id']);
         $this->assertCount(1, $detail['continuedWorkflows']);
         $this->assertSame('child_workflow', $detail['continuedWorkflows'][0]['link_type']);
+        $this->assertSame($childCallId, $detail['continuedWorkflows'][0]['child_call_id']);
         $this->assertSame($currentChildRun->id, $detail['continuedWorkflows'][0]['child_workflow_run_id']);
         $this->assertSame($currentChildRun->status->value, $detail['continuedWorkflows'][0]['status']);
         $this->assertSame($currentChildRun->workflow_type, $detail['continuedWorkflows'][0]['workflow_type']);

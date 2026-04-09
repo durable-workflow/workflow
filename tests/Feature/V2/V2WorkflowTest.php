@@ -462,8 +462,10 @@ final class V2WorkflowTest extends TestCase
             ->orderBy('sequence')
             ->firstOrFail();
         $childInstanceId = $childStarted->payload['child_workflow_instance_id'] ?? null;
+        $childCallId = $childStarted->payload['child_call_id'] ?? null;
 
         $this->assertIsString($childInstanceId);
+        $this->assertIsString($childCallId);
 
         /** @var WorkflowRun $currentChildRun */
         $currentChildRun = WorkflowRun::query()
@@ -499,8 +501,15 @@ final class V2WorkflowTest extends TestCase
             ->where('event_type', 'ChildRunCompleted')
             ->orderByDesc('sequence')
             ->firstOrFail();
+        /** @var WorkflowCommand $currentChildStart */
+        $currentChildStart = WorkflowCommand::query()
+            ->where('workflow_run_id', $currentChildRun->id)
+            ->where('command_type', 'start')
+            ->sole();
 
         $this->assertSame($currentChildRun->id, $childCompleted->payload['child_workflow_run_id'] ?? null);
+        $this->assertSame($childCallId, $childCompleted->payload['child_call_id'] ?? null);
+        $this->assertSame($childCallId, $currentChildStart->commandContext()['workflow']['child_call_id'] ?? null);
     }
 
     public function testLoadSelectionCanPinHistoricalRunWithinOneInstance(): void
@@ -901,6 +910,16 @@ final class V2WorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+        /** @var WorkflowHistoryEvent $childScheduled */
+        $childScheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildWorkflowScheduled')
+            ->sole();
+        /** @var WorkflowHistoryEvent $childCompleted */
+        $childCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildRunCompleted')
+            ->sole();
 
         /** @var WorkflowCommand $childStart */
         $childStart = WorkflowCommand::query()
@@ -914,8 +933,11 @@ final class V2WorkflowTest extends TestCase
             'parent_instance_id' => 'parent-child-instance',
             'parent_run_id' => $parentRunId,
             'sequence' => 1,
+            'child_call_id' => $link->id,
         ], $childStart->commandContext()['workflow']);
         $this->assertSame(1, $childStart->command_sequence);
+        $this->assertSame($link->id, $childScheduled->payload['child_call_id'] ?? null);
+        $this->assertSame($link->id, $childCompleted->payload['child_call_id'] ?? null);
         $this->assertSame([
             'StartAccepted',
             'WorkflowStarted',

@@ -135,6 +135,7 @@ final class HistoryTimeline
             'activity_status' => $activityMetadata['status'] ?? null,
             'timer_id' => $timerMetadata['id'] ?? null,
             'delay_seconds' => self::intValue($payload['timeout_seconds'] ?? null) ?? $timerMetadata['delay_seconds'] ?? null,
+            'child_call_id' => $childMetadata['child_call_id'] ?? null,
             'child_workflow_instance_id' => $childMetadata['instance_id'] ?? null,
             'child_workflow_run_id' => $childMetadata['run_id'] ?? null,
             'child_workflow_type' => $childMetadata['type'] ?? null,
@@ -337,7 +338,8 @@ final class HistoryTimeline
     private static function childMetadata(WorkflowHistoryEvent $event, array $payload): ?array
     {
         if (
-            ! array_key_exists('child_workflow_instance_id', $payload)
+            ! array_key_exists('child_call_id', $payload)
+            && ! array_key_exists('child_workflow_instance_id', $payload)
             && ! array_key_exists('child_workflow_run_id', $payload)
             && ! array_key_exists('child_workflow_type', $payload)
             && ! array_key_exists('child_workflow_class', $payload)
@@ -354,6 +356,8 @@ final class HistoryTimeline
         }
 
         return [
+            'child_call_id' => self::stringValue($payload['child_call_id'] ?? null)
+                ?? self::legacyChildCallId($event, $payload),
             'instance_id' => self::stringValue($payload['child_workflow_instance_id'] ?? null),
             'run_id' => self::stringValue($payload['child_workflow_run_id'] ?? null),
             'type' => self::stringValue($payload['child_workflow_type'] ?? null),
@@ -368,6 +372,21 @@ final class HistoryTimeline
                 },
             'run_number' => self::intValue($payload['child_run_number'] ?? null),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function legacyChildCallId(WorkflowHistoryEvent $event, array $payload): ?string
+    {
+        if (! in_array($event->event_type, [
+            HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildRunStarted,
+        ], true)) {
+            return null;
+        }
+
+        return self::stringValue($payload['workflow_link_id'] ?? null);
     }
 
     /**

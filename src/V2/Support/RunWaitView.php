@@ -381,6 +381,9 @@ final class RunWaitView
                 ? null
                 : ChildRunHistory::childRunForSequence($run, $workflowSequence);
             $resolvedStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
+            $childCallId = $workflowSequence === null
+                ? null
+                : ChildRunHistory::childCallIdForSequence($run, $workflowSequence);
             $label = self::stringValue($resolutionEvent?->payload['child_workflow_type'] ?? null)
                 ?? self::stringValue($scheduledEvent?->payload['child_workflow_type'] ?? null)
                 ?? $childRun?->workflow_type
@@ -420,8 +423,9 @@ final class RunWaitView
             );
 
             return [
-                'id' => sprintf('child:%s', $link?->id ?? $sequence),
+                'id' => sprintf('child:%s', $childCallId ?? $sequence),
                 'kind' => 'child',
+                'child_call_id' => $childCallId,
                 'sequence' => $workflowSequence,
                 'status' => $status,
                 'source_status' => $sourceStatus,

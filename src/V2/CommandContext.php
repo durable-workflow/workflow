@@ -61,7 +61,12 @@ final class CommandContext
         ]);
     }
 
-    public static function workflow(string $parentInstanceId, string $parentRunId, int $sequence): self
+    public static function workflow(
+        string $parentInstanceId,
+        string $parentRunId,
+        int $sequence,
+        ?string $childCallId = null,
+    ): self
     {
         return new self('workflow', [
             'caller' => [
@@ -72,11 +77,12 @@ final class CommandContext
                 'status' => 'not_applicable',
                 'method' => 'none',
             ],
-            'workflow' => [
+            'workflow' => array_filter([
                 'parent_instance_id' => $parentInstanceId,
                 'parent_run_id' => $parentRunId,
                 'sequence' => $sequence,
-            ],
+                'child_call_id' => $childCallId,
+            ], static fn (mixed $value): bool => $value !== null),
         ]);
     }
 

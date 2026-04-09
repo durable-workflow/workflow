@@ -475,16 +475,19 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('child_workflow_run', $timeline[2]['source_kind']);
         $this->assertSame($link->child_workflow_run_id, $timeline[2]['source_id']);
         $this->assertSame('Scheduled child workflow test-child-greeting-workflow.', $timeline[2]['summary']);
+        $this->assertSame($link->id, $timeline[2]['child_call_id']);
         $this->assertSame($link->child_workflow_instance_id, $timeline[2]['child_workflow_instance_id']);
         $this->assertSame($link->child_workflow_run_id, $timeline[2]['child_workflow_run_id']);
         $this->assertSame('test-child-greeting-workflow', $timeline[2]['child_workflow_type']);
         $this->assertSame(TestChildGreetingWorkflow::class, $timeline[2]['child_workflow_class']);
+        $this->assertSame($link->id, $timeline[2]['child']['child_call_id']);
         $this->assertSame($link->child_workflow_run_id, $timeline[2]['child']['run_id']);
         $this->assertSame(TestChildGreetingWorkflow::class, $timeline[2]['child']['class']);
         $this->assertNull($timeline[2]['child']['status']);
 
         $this->assertSame('Child workflow test-child-greeting-workflow completed.', $timeline[4]['summary']);
         $this->assertSame('child', $timeline[4]['kind']);
+        $this->assertSame($link->id, $timeline[4]['child_call_id']);
         $this->assertSame('completed', $timeline[4]['child_status']);
         $this->assertSame('completed', $timeline[4]['child']['status']);
     }
