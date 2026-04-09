@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
+use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
@@ -34,7 +35,11 @@ final class WorkflowServiceProvider extends ServiceProvider
             __DIR__ . '/../migrations/' => database_path('/migrations'),
         ], 'migrations');
 
-        $this->commands([ActivityMakeCommand::class, WorkflowMakeCommand::class]);
+        $this->commands([
+            ActivityMakeCommand::class,
+            WorkflowMakeCommand::class,
+            V2HistoryExportCommand::class,
+        ]);
 
         Event::listen(Looping::class, static function (Looping $event): void {
             Watchdog::wake($event->connectionName, $event->queue);
