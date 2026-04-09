@@ -1202,6 +1202,105 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('repair_not_needed', $detail['repair_blocked_reason']);
     }
 
+    public function testRunDetailViewKeepsOpenChildWaitFromParentHistoryWhenChildRowDriftsTerminal(): void
+    {
+        $parentInstance = WorkflowInstance::create([
+            'id' => 'detail-child-authority-parent',
+            'workflow_class' => TestParentWaitingOnChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'run_count' => 1,
+        ]);
+
+        $childInstance = WorkflowInstance::create([
+            'id' => 'detail-child-authority-child',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::create([
+            'id' => '01JTESTRUNDETAILCHILDAUTH01',
+            'workflow_instance_id' => $parentInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestParentWaitingOnChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([60]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(4),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $childRun = WorkflowRun::create([
+            'id' => '01JTESTRUNDETAILCHILDAUTH02',
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'arguments' => Serializer::serialize([]),
+            'output' => Serializer::serialize([
+                'child' => 'corrupted-terminal-row',
+            ]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(3),
+            'closed_at' => now()->subSeconds(30),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $parentInstance->update(['current_run_id' => $run->id]);
+        $childInstance->update(['current_run_id' => $childRun->id]);
+
+        $link = WorkflowLink::create([
+            'id' => '01JTESTRUNDETAILCHILDLINK01',
+            'link_type' => 'child_workflow',
+            'sequence' => 1,
+            'parent_workflow_instance_id' => $parentInstance->id,
+            'parent_workflow_run_id' => $run->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+            'created_at' => now()->subSeconds(90),
+            'updated_at' => now()->subSeconds(90),
+        ]);
+
+        WorkflowHistoryEvent::create([
+            'id' => '01JTESTRUNDETAILCHILDEVENT1',
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'event_type' => HistoryEventType::ChildWorkflowScheduled->value,
+            'payload' => [
+                'workflow_link_id' => $link->id,
+                'child_call_id' => $link->id,
+                'sequence' => 1,
+                'child_workflow_instance_id' => $childInstance->id,
+                'child_workflow_run_id' => $childRun->id,
+                'child_workflow_type' => 'workflow.child',
+                'child_workflow_class' => TestTimerWorkflow::class,
+                'child_run_number' => 1,
+            ],
+            'recorded_at' => now()->subSeconds(90),
+            'created_at' => now()->subSeconds(90),
+            'updated_at' => now()->subSeconds(90),
+        ]);
+
+        RunSummaryProjector::project($run->fresh());
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $childWait = $this->findWait($detail['waits'], 'child');
+
+        $this->assertSame('child', $detail['wait_kind']);
+        $this->assertSame('waiting_for_child', $detail['liveness_state']);
+        $this->assertSame('child:' . $link->id, $detail['open_wait_id']);
+        $this->assertSame('open', $childWait['status']);
+        $this->assertSame('waiting', $childWait['source_status']);
+        $this->assertSame($link->child_workflow_instance_id, $childWait['target_name']);
+        $this->assertSame($childRun->id, $childWait['resume_source_id']);
+    }
+
     public function testRunDetailViewKeepsResolvedChildWaitFromParentHistoryWhenChildRowDrifts(): void
     {
         Queue::fake();

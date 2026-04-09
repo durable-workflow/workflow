@@ -240,6 +240,11 @@ final class QueryStateReplayer
                     continue;
                 }
 
+                if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $sequence)) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
                 if ($childRun === null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
@@ -364,6 +369,12 @@ final class QueryStateReplayer
                                 ?? $resolutionEvent->created_at?->getTimestampMs()
                                 ?? PHP_INT_MAX,
                         );
+
+                        continue;
+                    }
+
+                    if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $itemSequence)) {
+                        $pending = true;
 
                         continue;
                     }

@@ -22,6 +22,7 @@ use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
+use Tests\Fixtures\V2\TestQueryChildResolutionAuthorityWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
@@ -45,6 +46,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\WorkflowStub;
 
 final class V2QueryWorkflowTest extends TestCase
@@ -435,6 +437,103 @@ final class V2QueryWorkflowTest extends TestCase
         ])->save();
 
         $this->assertSame($expectedState, $workflow->refresh()->currentState());
+    }
+
+    public function testQueriesKeepWaitingForChildUntilParentCommitsChildResolutionHistory(): void
+    {
+        $parentInstance = WorkflowInstance::create([
+            'id' => 'query-child-resolution-authority-parent',
+            'workflow_class' => TestQueryChildResolutionAuthorityWorkflow::class,
+            'workflow_type' => 'test-query-child-resolution-authority-workflow',
+            'run_count' => 1,
+        ]);
+
+        $childInstance = WorkflowInstance::create([
+            'id' => 'query-child-resolution-authority-child',
+            'workflow_class' => TestHistoryReplayedChildWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'run_count' => 1,
+        ]);
+
+        $parentRun = WorkflowRun::create([
+            'id' => '01JTESTQUERYCHILDAUTHORITY01',
+            'workflow_instance_id' => $parentInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestQueryChildResolutionAuthorityWorkflow::class,
+            'workflow_type' => 'test-query-child-resolution-authority-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([60]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(2),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $childRun = WorkflowRun::create([
+            'id' => '01JTESTQUERYCHILDAUTHORITY02',
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestHistoryReplayedChildWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'arguments' => Serializer::serialize([]),
+            'output' => Serializer::serialize([
+                'child' => 'corrupted-terminal-row',
+            ]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(2),
+            'closed_at' => now()->subSeconds(30),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $parentInstance->update(['current_run_id' => $parentRun->id]);
+        $childInstance->update(['current_run_id' => $childRun->id]);
+
+        $link = WorkflowLink::create([
+            'id' => '01JTESTQUERYCHILDAUTHLINK01',
+            'link_type' => 'child_workflow',
+            'sequence' => 1,
+            'parent_workflow_instance_id' => $parentInstance->id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+            'created_at' => now()->subSeconds(45),
+            'updated_at' => now()->subSeconds(45),
+        ]);
+
+        WorkflowHistoryEvent::create([
+            'id' => '01JTESTQUERYCHILDAUTHEVENT1',
+            'workflow_run_id' => $parentRun->id,
+            'sequence' => 1,
+            'event_type' => HistoryEventType::ChildWorkflowScheduled->value,
+            'payload' => [
+                'workflow_link_id' => $link->id,
+                'child_call_id' => $link->id,
+                'sequence' => 1,
+                'child_workflow_instance_id' => $childInstance->id,
+                'child_workflow_run_id' => $childRun->id,
+                'child_workflow_type' => 'workflow.child',
+                'child_workflow_class' => TestHistoryReplayedChildWorkflow::class,
+                'child_run_number' => 1,
+            ],
+            'recorded_at' => now()->subSeconds(45),
+            'created_at' => now()->subSeconds(45),
+            'updated_at' => now()->subSeconds(45),
+        ]);
+
+        $state = (new QueryStateReplayer())->query($parentRun->fresh(), 'currentState');
+
+        $this->assertSame([
+            'stage' => 'waiting-for-child',
+            'child' => [
+                'instance_id' => $link->child_workflow_instance_id,
+                'run_id' => $childRun->id,
+                'call_id' => $link->id,
+            ],
+        ], $state);
     }
 
     public function testQueriesKeepParallelChildAllWaitingUntilEveryChildCompletes(): void

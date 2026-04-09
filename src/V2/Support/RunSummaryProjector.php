@@ -6,12 +6,9 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
-use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
-use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -494,43 +491,19 @@ final class RunSummaryProjector
      */
     private static function openChildWait(WorkflowRun $run): ?array
     {
-        $sequences = array_values(array_unique(array_merge(
-            $run->historyEvents
-                ->filter(
-                    static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
-                        && is_int($event->payload['sequence'] ?? null)
-                )
-                ->map(static fn (WorkflowHistoryEvent $event): int => $event->payload['sequence'])
-                ->all(),
-            $run->childLinks
-                ->filter(static fn ($link): bool => $link->link_type === 'child_workflow' && $link->sequence !== null)
-                ->map(static fn ($link): int => (int) $link->sequence)
-                ->all(),
-        )));
+        foreach (ChildRunHistory::knownSequences($run) as $sequence) {
+            $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
 
-        sort($sequences);
-
-        foreach ($sequences as $sequence) {
-            $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
-
-            if (! $childRun instanceof WorkflowRun || ! in_array($childRun->status, [
-                RunStatus::Pending,
-                RunStatus::Running,
-                RunStatus::Waiting,
-            ], true)) {
+            if ($snapshot === null || $snapshot['status'] !== 'open') {
                 continue;
             }
 
-            $scheduledEvent = ChildRunHistory::scheduledEventForSequence($run, $sequence);
-            $link = ChildRunHistory::latestLinkForSequence($run, $sequence);
-            $childCallId = ChildRunHistory::childCallIdForSequence($run, $sequence);
-
             return [
-                'id' => sprintf('child:%s', $childCallId ?? $sequence),
-                'label' => $childRun->workflow_type,
-                'opened_at' => $scheduledEvent?->recorded_at ?? $scheduledEvent?->created_at ?? $link?->created_at,
+                'id' => sprintf('child:%s', $snapshot['child_call_id'] ?? $sequence),
+                'label' => $snapshot['label'],
+                'opened_at' => $snapshot['opened_at'],
                 'resume_source_kind' => 'child_workflow_run',
-                'resume_source_id' => $childRun->id,
+                'resume_source_id' => $snapshot['resume_source_id'],
             ];
         }
 

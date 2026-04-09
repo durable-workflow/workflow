@@ -6,13 +6,11 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
-use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -320,83 +318,19 @@ final class RunWaitView
      */
     private static function childWaits(WorkflowRun $run): array
     {
-        $scheduledEvents = $run->historyEvents
-            ->filter(
-                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
-                    && is_int($event->payload['sequence'] ?? null)
-            )
-            ->keyBy(static fn (WorkflowHistoryEvent $event): string => (string) $event->payload['sequence']);
+        return array_values(array_filter(array_map(static function (int $sequence) use ($run): ?array {
+            $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
 
-        $resolutionEvents = $run->historyEvents
-            ->filter(
-                static fn (WorkflowHistoryEvent $event): bool => in_array(
-                    $event->event_type,
-                    ChildRunHistory::resolutionEventTypes(),
-                    true,
-                ) && is_int($event->payload['sequence'] ?? null)
-            )
-            ->keyBy(static fn (WorkflowHistoryEvent $event): string => (string) $event->payload['sequence']);
+            if ($snapshot === null) {
+                return null;
+            }
 
-        $sequences = array_unique(array_merge(
-            $scheduledEvents->keys()
-                ->all(),
-            $resolutionEvents->keys()
-                ->all(),
-            $run->childLinks
-                ->filter(
-                    static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow' && $link->sequence !== null
-                )
-                ->map(static fn (WorkflowLink $link): string => (string) $link->sequence)
-                ->all(),
-        ));
-
-        sort($sequences, SORT_NATURAL);
-
-        return array_values(array_map(static function (string $sequence) use (
-            $run,
-            $scheduledEvents,
-            $resolutionEvents,
-        ): array {
-            $workflowSequence = is_numeric($sequence) ? (int) $sequence : null;
-            /** @var WorkflowLink|null $link */
-            $link = $workflowSequence === null
-                ? null
-                : ChildRunHistory::latestLinkForSequence($run, $workflowSequence);
             /** @var WorkflowHistoryEvent|null $scheduledEvent */
-            $scheduledEvent = $scheduledEvents->get($sequence);
+            $scheduledEvent = $snapshot['scheduled_event'];
             /** @var WorkflowHistoryEvent|null $resolutionEvent */
-            $resolutionEvent = $resolutionEvents->get($sequence);
-            $childRun = $workflowSequence === null
-                ? null
-                : ChildRunHistory::childRunForSequence($run, $workflowSequence);
-            $resolvedStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
-            $childCallId = $workflowSequence === null
-                ? null
-                : ChildRunHistory::childCallIdForSequence($run, $workflowSequence);
-            $label = self::stringValue($resolutionEvent?->payload['child_workflow_type'] ?? null)
-                ?? self::stringValue($scheduledEvent?->payload['child_workflow_type'] ?? null)
-                ?? $childRun?->workflow_type
-                ?? self::stringValue($resolutionEvent?->payload['child_workflow_class'] ?? null)
-                ?? self::stringValue($scheduledEvent?->payload['child_workflow_class'] ?? null)
-                ?? $childRun?->workflow_class
-                ?? 'child workflow';
-            $sourceStatus = $resolvedStatus?->value ?? $childRun?->status?->value;
-            $status = match (true) {
-                $resolutionEvent !== null => in_array(
-                    $resolvedStatus,
-                    [RunStatus::Cancelled, RunStatus::Terminated],
-                    true
-                )
-                    ? 'cancelled'
-                    : 'resolved',
-                in_array(
-                    $childRun?->status,
-                    [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting],
-                    true
-                ) => 'open',
-                in_array($childRun?->status, [RunStatus::Cancelled, RunStatus::Terminated], true) => 'cancelled',
-                default => 'resolved',
-            };
+            $resolutionEvent = $snapshot['resolution_event'];
+            $sourceStatus = $snapshot['source_status'];
+            $label = $snapshot['label'];
 
             $summary = match ($sourceStatus) {
                 RunStatus::Completed->value => sprintf('Child workflow %s completed.', $label),
@@ -417,30 +351,22 @@ final class RunWaitView
             );
 
             return [
-                'id' => sprintf('child:%s', $childCallId ?? $sequence),
+                'id' => sprintf('child:%s', $snapshot['child_call_id'] ?? $sequence),
                 'kind' => 'child',
-                'child_call_id' => $childCallId,
-                'sequence' => $workflowSequence,
-                'status' => $status,
+                'child_call_id' => $snapshot['child_call_id'],
+                'sequence' => $sequence,
+                'status' => $snapshot['status'],
                 'source_status' => $sourceStatus,
                 'summary' => $summary,
-                'opened_at' => $scheduledEvent?->recorded_at ?? $scheduledEvent?->created_at ?? $link?->created_at,
+                'opened_at' => $snapshot['opened_at'],
                 'deadline_at' => null,
-                'resolved_at' => $resolutionEvent?->recorded_at ?? $childRun?->closed_at,
-                'target_name' => $childRun?->workflow_instance_id
-                    ?? self::stringValue($resolutionEvent?->payload['child_workflow_instance_id'] ?? null)
-                    ?? self::stringValue($scheduledEvent?->payload['child_workflow_instance_id'] ?? null)
-                    ?? $link?->child_workflow_instance_id
-                    ?? null,
-                'target_type' => $label,
+                'resolved_at' => $snapshot['resolved_at'],
+                'target_name' => $snapshot['target_name'],
+                'target_type' => $snapshot['label'],
                 'task_backed' => false,
                 'external_only' => false,
                 'resume_source_kind' => 'child_workflow_run',
-                'resume_source_id' => $childRun?->id
-                    ?? self::stringValue($resolutionEvent?->payload['child_workflow_run_id'] ?? null)
-                    ?? self::stringValue($scheduledEvent?->payload['child_workflow_run_id'] ?? null)
-                    ?? $link?->child_workflow_run_id
-                    ?? null,
+                'resume_source_id' => $snapshot['resume_source_id'],
                 'task_id' => null,
                 'task_type' => null,
                 'task_status' => null,
@@ -455,7 +381,7 @@ final class RunWaitView
                 'parallel_group_index' => $parallelMetadata['parallel_group_index'] ?? null,
                 'parallel_group_path' => $parallelMetadataPath,
             ];
-        }, $sequences));
+        }, ChildRunHistory::knownSequences($run))));
     }
 
     private static function stringValue(mixed $value): ?string
