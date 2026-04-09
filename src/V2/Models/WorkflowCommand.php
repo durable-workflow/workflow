@@ -92,6 +92,11 @@ class WorkflowCommand extends Model
         return $this->hasOne(WorkflowUpdate::class, 'workflow_command_id');
     }
 
+    public function signalRecord(): HasOne
+    {
+        return $this->hasOne(WorkflowSignal::class, 'workflow_command_id');
+    }
+
     /**
      * @return array<int, mixed>
      */
@@ -205,7 +210,9 @@ class WorkflowCommand extends Model
 
         return $publicWorkflow === []
             ? []
-            : ['workflow' => $publicWorkflow];
+            : [
+                'workflow' => $publicWorkflow,
+            ];
     }
 
     public function callerLabel(): ?string

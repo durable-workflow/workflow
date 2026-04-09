@@ -26,6 +26,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\WorkflowStub;
@@ -102,6 +103,40 @@ final class HistoryExportTest extends TestCase
             'outcome' => CommandOutcome::StartedNew->value,
             'accepted_at' => now()->subMinutes(5),
             'applied_at' => now()->subMinutes(5),
+        ]);
+
+        $signalCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Signal->value,
+            'target_scope' => 'instance',
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'name' => 'approved-by',
+                'arguments' => ['Taylor'],
+            ]),
+            'source' => 'webhook',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::SignalReceived->value,
+            'accepted_at' => now()->subMinutes(4),
+            'applied_at' => now()->subMinutes(4),
+        ]);
+
+        $signal = WorkflowSignal::query()->create([
+            'workflow_command_id' => $signalCommand->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'instance',
+            'resolved_workflow_run_id' => $run->id,
+            'signal_name' => 'approved-by',
+            'signal_wait_id' => 'signal-wait-export',
+            'status' => 'applied',
+            'outcome' => 'signal_received',
+            'command_sequence' => $signalCommand->command_sequence,
+            'workflow_sequence' => 1,
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize(['Taylor']),
+            'received_at' => now()->subMinutes(4),
+            'applied_at' => now()->subMinutes(4),
+            'closed_at' => now()->subMinutes(4),
         ]);
 
         WorkflowHistoryEvent::record(
@@ -217,6 +252,9 @@ final class HistoryExportTest extends TestCase
         $this->assertSame(['StartAccepted', 'WorkflowCompleted'], array_column($bundle['history_events'], 'type'));
         $this->assertSame($command->id, $bundle['commands'][0]['id']);
         $this->assertSame('started_new', $bundle['commands'][0]['outcome']);
+        $this->assertSame($signal->id, $bundle['signals'][0]['id']);
+        $this->assertSame('approved-by', $bundle['signals'][0]['name']);
+        $this->assertSame('applied', $bundle['signals'][0]['status']);
         $this->assertSame($task->id, $bundle['tasks'][0]['id']);
         $this->assertSame($activity->id, $bundle['activities'][0]['id']);
         $this->assertSame($attempt->id, $bundle['activities'][0]['attempts'][0]['id']);
@@ -285,6 +323,36 @@ final class HistoryExportTest extends TestCase
             'applied_at' => now()->subMinutes(5),
         ]);
 
+        $signalCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Signal->value,
+            'target_scope' => 'instance',
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'name' => 'approved-by',
+                'arguments' => ['secret-signal-value'],
+            ]),
+            'source' => 'webhook',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::SignalReceived->value,
+            'accepted_at' => now()->subMinutes(4),
+        ]);
+
+        WorkflowSignal::query()->create([
+            'workflow_command_id' => $signalCommand->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'instance',
+            'resolved_workflow_run_id' => $run->id,
+            'signal_name' => 'approved-by',
+            'signal_wait_id' => 'signal-wait-redacted',
+            'status' => 'received',
+            'outcome' => 'signal_received',
+            'command_sequence' => $signalCommand->command_sequence,
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize(['secret-signal-value']),
+            'received_at' => now()->subMinutes(4),
+        ]);
+
         WorkflowHistoryEvent::record(
             $run,
             HistoryEventType::WorkflowStarted,
@@ -335,6 +403,7 @@ final class HistoryExportTest extends TestCase
         $this->assertContains('history_events.0.payload', $bundle['redaction']['paths']);
         $this->assertContains('commands.0.payload', $bundle['redaction']['paths']);
         $this->assertContains('commands.0.context', $bundle['redaction']['paths']);
+        $this->assertContains('signals.0.arguments', $bundle['redaction']['paths']);
         $this->assertContains('tasks.0.payload', $bundle['redaction']['paths']);
         $this->assertContains('activities.0.arguments', $bundle['redaction']['paths']);
         $this->assertContains('failures.0.message', $bundle['redaction']['paths']);

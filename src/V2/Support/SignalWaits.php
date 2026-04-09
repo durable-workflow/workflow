@@ -19,6 +19,7 @@ final class SignalWaits
      * @return list<array{
      *     id: string,
      *     signal_wait_id: string,
+     *     signal_id: string|null,
      *     signal_name: string,
      *     sequence: int|null,
      *     status: string,
@@ -59,6 +60,7 @@ final class SignalWaits
                 $waits[$waitId] = [
                     'id' => $waitId,
                     'signal_wait_id' => $waitId,
+                    'signal_id' => null,
                     'signal_name' => $signalName,
                     'sequence' => self::intValue($event->payload['sequence'] ?? null),
                     'status' => 'open',
@@ -99,6 +101,8 @@ final class SignalWaits
                 $waits[$waitId]['source_status'] = $event->event_type === HistoryEventType::SignalApplied
                     ? 'applied'
                     : 'received';
+                $waits[$waitId]['signal_id'] = self::stringValue($event->payload['signal_id'] ?? null)
+                    ?? $waits[$waitId]['signal_id'];
                 $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
                 $waits[$waitId]['command_id'] = self::stringValue($event->workflow_command_id)
                     ?? self::stringValue($event->payload['workflow_command_id'] ?? null)

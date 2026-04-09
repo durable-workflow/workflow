@@ -18,6 +18,7 @@ use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
@@ -29,6 +30,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\WorkflowMetadata;
@@ -205,7 +207,14 @@ final class WorkflowExecutor
                         || $timeoutTimer?->status === TimerStatus::Fired
                     )
                 ) {
-                    $this->recordConditionWaitTimedOut($run, $task, $sequence, $waitId, $timeoutTimer, $current->seconds);
+                    $this->recordConditionWaitTimedOut(
+                        $run,
+                        $task,
+                        $sequence,
+                        $waitId,
+                        $timeoutTimer,
+                        $current->seconds
+                    );
 
                     try {
                         $current = $result->send(false);
@@ -477,11 +486,7 @@ final class WorkflowExecutor
 
                 $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
 
-                if (in_array($childStatus, [
-                    RunStatus::Pending,
-                    RunStatus::Running,
-                    RunStatus::Waiting,
-                ], true)) {
+                if (in_array($childStatus, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
@@ -1157,13 +1162,27 @@ final class WorkflowExecutor
         string $signalWaitId,
     ): WorkflowHistoryEvent {
         $value = $this->signalPayloadValue($command);
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $command->id)
+            ->first();
 
         $command->forceFill([
             'applied_at' => now(),
         ])->save();
 
+        if ($signal instanceof WorkflowSignal) {
+            $signal->forceFill([
+                'signal_wait_id' => $signalWaitId,
+                'status' => SignalStatus::Applied->value,
+                'workflow_sequence' => $sequence,
+                'applied_at' => $command->applied_at,
+                'closed_at' => $command->applied_at,
+            ])->save();
+        }
+
         return WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
             'workflow_command_id' => $command->id,
+            'signal_id' => $signal?->id,
             'signal_name' => $signalCall->name,
             'signal_wait_id' => $signalWaitId,
             'sequence' => $sequence,
@@ -1696,7 +1715,10 @@ final class WorkflowExecutor
                     'childLinks.childRun.historyEvents',
                 ]);
 
-                $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($parentRun, $parentReference['parent_sequence']);
+                $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence(
+                    $parentRun,
+                    $parentReference['parent_sequence']
+                );
                 $childStatus = ChildRunHistory::resolvedStatus(
                     ChildRunHistory::resolutionEventForSequence($parentRun, $parentReference['parent_sequence']),
                     $childRun,
@@ -1705,7 +1727,11 @@ final class WorkflowExecutor
                 if (
                     $parallelMetadataPath !== []
                     && $childStatus instanceof RunStatus
-                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure($parentRun, $parallelMetadataPath, $childStatus)
+                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure(
+                        $parentRun,
+                        $parallelMetadataPath,
+                        $childStatus
+                    )
                 ) {
                     RunSummaryProjector::project(
                         $parentRun->fresh([

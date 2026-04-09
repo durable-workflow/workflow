@@ -125,6 +125,7 @@ final class HistoryTimeline
             'command_outcome' => $commandMetadata['outcome'] ?? null,
             'command_rejection_reason' => $commandMetadata['rejection_reason'] ?? null,
             'workflow_sequence' => self::intValue($payload['sequence'] ?? null),
+            'signal_id' => self::stringValue($payload['signal_id'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
             'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
             'signal_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['signal_name'] ?? null),
@@ -138,7 +139,9 @@ final class HistoryTimeline
             'activity_class' => $activityMetadata['class'] ?? null,
             'activity_status' => $activityMetadata['status'] ?? null,
             'timer_id' => $timerMetadata['id'] ?? null,
-            'delay_seconds' => self::intValue($payload['timeout_seconds'] ?? null) ?? $timerMetadata['delay_seconds'] ?? null,
+            'delay_seconds' => self::intValue(
+                $payload['timeout_seconds'] ?? null
+            ) ?? $timerMetadata['delay_seconds'] ?? null,
             'child_call_id' => $childMetadata['child_call_id'] ?? null,
             'child_workflow_instance_id' => $childMetadata['instance_id'] ?? null,
             'child_workflow_run_id' => $childMetadata['run_id'] ?? null,
@@ -211,11 +214,7 @@ final class HistoryTimeline
         ?array $child,
         ?array $failure,
     ): string {
-        $activityLabel = self::displayLabel(
-            $activity['type']
-            ?? $activity['class']
-            ?? 'activity'
-        );
+        $activityLabel = self::displayLabel($activity['type'] ?? $activity['class'] ?? 'activity');
         $delaySeconds = $timer['delay_seconds'] ?? null;
         $message = $failure['message'] ?? null;
         $outcome = $command['outcome'] ?? null;
@@ -225,12 +224,7 @@ final class HistoryTimeline
         $changeId = self::stringValue($payload['change_id'] ?? null);
         $version = self::intValue($payload['version'] ?? null);
         $timerKind = self::stringValue($payload['timer_kind'] ?? null);
-        $childLabel = self::displayLabel(
-            $child['type']
-            ?? $child['class']
-            ?? $child['run_id']
-            ?? 'child workflow'
-        );
+        $childLabel = self::displayLabel($child['type'] ?? $child['class'] ?? $child['run_id'] ?? 'child workflow');
 
         return match ($event->event_type) {
             HistoryEventType::StartAccepted => $outcome === null
@@ -295,11 +289,8 @@ final class HistoryTimeline
                     : sprintf('Update %s failed: %s.', $updateName, $message)),
             HistoryEventType::RepairRequested => match ($outcome) {
                 'repair_dispatched' => sprintf(
-                'Repair recreated %s task.',
-                self::displayLabel(
-                        $task['type']
-                        ?? 'workflow'
-                    ),
+                    'Repair recreated %s task.',
+                    self::displayLabel($task['type'] ?? 'workflow'),
                 ),
                 'repair_not_needed' => 'Repair accepted; the run already had a durable resume source.',
                 default => 'Repair accepted.',
@@ -317,7 +308,11 @@ final class HistoryTimeline
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
             HistoryEventType::SideEffectRecorded => 'Recorded side effect.',
             HistoryEventType::VersionMarkerRecorded => match (true) {
-                $changeId !== null && $version !== null => sprintf('Recorded version marker %s = %d.', $changeId, $version),
+                $changeId !== null && $version !== null => sprintf(
+                    'Recorded version marker %s = %d.',
+                    $changeId,
+                    $version
+                ),
                 $changeId !== null => sprintf('Recorded version marker %s.', $changeId),
                 $version !== null => sprintf('Recorded version marker %d.', $version),
                 default => 'Recorded version marker.',
@@ -411,8 +406,7 @@ final class HistoryTimeline
         ?WorkflowCommand $command,
         array $payload,
         ?string $commandId,
-    ): ?array
-    {
+    ): ?array {
         $snapshot = self::arrayValue($payload['command'] ?? null);
         $resolvedCommandId = $command?->id
             ?? $commandId
@@ -470,9 +464,13 @@ final class HistoryTimeline
             'rejection_reason' => self::stringValue($snapshot['rejection_reason'] ?? null)
                 ?? $command?->rejection_reason
                 ?? self::stringValue($payload['rejection_reason'] ?? null),
-            'accepted_at' => self::timestamp($snapshot['accepted_at'] ?? null) ?? self::timestamp($command?->accepted_at),
+            'accepted_at' => self::timestamp($snapshot['accepted_at'] ?? null) ?? self::timestamp(
+                $command?->accepted_at
+            ),
             'applied_at' => self::timestamp($snapshot['applied_at'] ?? null) ?? self::timestamp($command?->applied_at),
-            'rejected_at' => self::timestamp($snapshot['rejected_at'] ?? null) ?? self::timestamp($command?->rejected_at),
+            'rejected_at' => self::timestamp($snapshot['rejected_at'] ?? null) ?? self::timestamp(
+                $command?->rejected_at
+            ),
         ];
     }
 
@@ -484,8 +482,7 @@ final class HistoryTimeline
         ?WorkflowTask $task,
         array $payload,
         ?string $taskId,
-    ): ?array
-    {
+    ): ?array {
         $snapshot = self::arrayValue($payload['task'] ?? null);
         $resolvedTaskId = $task?->id
             ?? $taskId
@@ -502,7 +499,9 @@ final class HistoryTimeline
                     ?? self::stringValue($snapshot['type'] ?? null)
                     ?? $task?->task_type?->value,
                 'status' => $resolvedTaskId === null ? null : TaskStatus::Ready->value,
-                'available_at' => self::timestamp($snapshot['available_at'] ?? null) ?? self::timestamp($task?->available_at),
+                'available_at' => self::timestamp($snapshot['available_at'] ?? null) ?? self::timestamp(
+                    $task?->available_at
+                ),
                 'leased_at' => self::timestamp($snapshot['leased_at'] ?? null) ?? self::timestamp($task?->leased_at),
                 'lease_expires_at' => self::timestamp($snapshot['lease_expires_at'] ?? null)
                     ?? self::timestamp($task?->lease_expires_at),
@@ -521,7 +520,9 @@ final class HistoryTimeline
             'status' => $historicalStatus
                 ?? self::stringValue($snapshot['status'] ?? null)
                 ?? $task?->status?->value,
-            'available_at' => self::timestamp($snapshot['available_at'] ?? null) ?? self::timestamp($task?->available_at),
+            'available_at' => self::timestamp($snapshot['available_at'] ?? null) ?? self::timestamp(
+                $task?->available_at
+            ),
             'leased_at' => self::timestamp($snapshot['leased_at'] ?? null) ?? self::timestamp($task?->leased_at),
             'lease_expires_at' => self::timestamp($snapshot['lease_expires_at'] ?? null)
                 ?? self::timestamp($task?->lease_expires_at),
@@ -541,8 +542,7 @@ final class HistoryTimeline
         array $payload,
         ?string $activityId,
         ?WorkflowFailure $failure,
-    ): ?array
-    {
+    ): ?array {
         $snapshot = ActivitySnapshot::fromEvent($event);
 
         if (
@@ -626,8 +626,7 @@ final class HistoryTimeline
         ?WorkflowTimer $timer,
         array $payload,
         ?string $timerId,
-    ): ?array
-    {
+    ): ?array {
         if (
             $timer === null
             && $timerId === null
@@ -663,8 +662,7 @@ final class HistoryTimeline
         ?WorkflowFailure $failure,
         array $payload,
         ?string $failureId,
-    ): ?array
-    {
+    ): ?array {
         if (
             $failure === null
             && $failureId === null

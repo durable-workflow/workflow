@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -36,14 +37,14 @@ final class HistoryExport
         WorkflowRun $run,
         ?CarbonInterface $exportedAt = null,
         HistoryExportRedactor|callable|null $redactor = null,
-    ): array
-    {
+    ): array {
         $exportedAt ??= now();
 
         $run->loadMissing([
             'instance.runs.summary',
             'summary',
             'commands',
+            'signals',
             'updates',
             'tasks',
             'activityExecutions.attempts',
@@ -102,6 +103,10 @@ final class HistoryExport
                 ->all(),
             'commands' => $run->commands
                 ->map(static fn (WorkflowCommand $command): array => self::command($command))
+                ->values()
+                ->all(),
+            'signals' => $run->signals
+                ->map(static fn (WorkflowSignal $signal): array => self::signal($signal))
                 ->values()
                 ->all(),
             'updates' => $run->updates
@@ -163,7 +168,9 @@ final class HistoryExport
                 $bundle['payloads']['arguments'],
                 'data',
                 $callback,
-                self::redactionContext($run, 'payloads.arguments.data', 'workflow_payload', ['field' => 'arguments']),
+                self::redactionContext($run, 'payloads.arguments.data', 'workflow_payload', [
+                    'field' => 'arguments',
+                ]),
                 $paths,
             );
         }
@@ -173,7 +180,9 @@ final class HistoryExport
                 $bundle['payloads']['output'],
                 'data',
                 $callback,
-                self::redactionContext($run, 'payloads.output.data', 'workflow_payload', ['field' => 'output']),
+                self::redactionContext($run, 'payloads.output.data', 'workflow_payload', [
+                    'field' => 'output',
+                ]),
                 $paths,
             );
         }
@@ -256,6 +265,27 @@ final class HistoryExport
             }
 
             unset($update);
+        }
+
+        if (isset($bundle['signals']) && is_array($bundle['signals'])) {
+            foreach ($bundle['signals'] as $index => &$signal) {
+                if (! is_array($signal)) {
+                    continue;
+                }
+
+                self::redactField(
+                    $signal,
+                    'arguments',
+                    $callback,
+                    self::redactionContext($run, "signals.{$index}.arguments", 'signal_payload', [
+                        'signal_id' => $signal['id'] ?? null,
+                        'signal_name' => $signal['name'] ?? null,
+                    ]),
+                    $paths,
+                );
+            }
+
+            unset($signal);
         }
 
         if (isset($bundle['tasks']) && is_array($bundle['tasks'])) {
@@ -580,6 +610,33 @@ final class HistoryExport
             'closed_at' => self::timestamp($update->closed_at),
             'arguments' => $update->arguments,
             'result' => $update->result,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function signal(WorkflowSignal $signal): array
+    {
+        return [
+            'id' => $signal->id,
+            'command_id' => $signal->workflow_command_id,
+            'command_sequence' => $signal->command_sequence,
+            'workflow_sequence' => $signal->workflow_sequence,
+            'name' => $signal->signal_name,
+            'signal_wait_id' => $signal->signal_wait_id,
+            'target_scope' => $signal->target_scope,
+            'requested_run_id' => $signal->requested_workflow_run_id,
+            'resolved_run_id' => $signal->resolved_workflow_run_id,
+            'status' => $signal->status->value,
+            'outcome' => $signal->outcome?->value,
+            'rejection_reason' => $signal->rejection_reason,
+            'validation_errors' => $signal->normalizedValidationErrors(),
+            'received_at' => self::timestamp($signal->received_at),
+            'applied_at' => self::timestamp($signal->applied_at),
+            'rejected_at' => self::timestamp($signal->rejected_at),
+            'closed_at' => self::timestamp($signal->closed_at),
+            'arguments' => $signal->arguments,
         ];
     }
 

@@ -39,7 +39,10 @@ final class RunWaitView
         $taskByTimerId = self::preferredTasksByPayloadKey($run, 'timer_id');
         $conditionWaits = ConditionWaits::forRun($run);
         $conditionTimerIds = array_values(array_filter(
-            array_map(static fn (array $wait): ?string => self::stringValue($wait['timer_id'] ?? null), $conditionWaits),
+            array_map(
+                static fn (array $wait): ?string => self::stringValue($wait['timer_id'] ?? null),
+                $conditionWaits
+            ),
             static fn (?string $timerId): bool => $timerId !== null,
         ));
 
@@ -50,10 +53,7 @@ final class RunWaitView
                 continue;
             }
 
-            $waits[] = self::activityWait(
-                $activity,
-                $taskByActivityExecutionId[$activity['id']] ?? null,
-            );
+            $waits[] = self::activityWait($activity, $taskByActivityExecutionId[$activity['id']] ?? null);
         }
 
         $waits = array_merge($waits, self::conditionWaits($conditionWaits, $taskByTimerId));
@@ -103,10 +103,8 @@ final class RunWaitView
     /**
      * @return array<string, mixed>
      */
-    private static function activityWait(
-        array $activity,
-        ?WorkflowTask $task,
-    ): array {
+    private static function activityWait(array $activity, ?WorkflowTask $task): array
+    {
         $activityId = self::stringValue($activity['id'] ?? null);
         $activityType = self::stringValue($activity['type'] ?? null)
             ?? self::stringValue($activity['class'] ?? null)
@@ -226,6 +224,7 @@ final class RunWaitView
             return [
                 'id' => $wait['signal_wait_id'],
                 'signal_wait_id' => $wait['signal_wait_id'],
+                'signal_id' => $wait['signal_id'] ?? null,
                 'kind' => 'signal',
                 'sequence' => $wait['sequence'],
                 'status' => $wait['status'],
@@ -256,10 +255,8 @@ final class RunWaitView
      * @param array<string, WorkflowTask> $taskByTimerId
      * @return list<array<string, mixed>>
      */
-    private static function conditionWaits(
-        array $conditionWaits,
-        array $taskByTimerId,
-    ): array {
+    private static function conditionWaits(array $conditionWaits, array $taskByTimerId): array
+    {
         return array_values(array_map(
             static function (array $wait) use ($taskByTimerId): array {
                 $sequence = self::intValue($wait['sequence'] ?? null);
@@ -283,10 +280,7 @@ final class RunWaitView
                         default => 'Condition wait ended when the run failed.',
                     },
                     default => $wait['source_status'] === 'timed_out'
-                        ? sprintf(
-                            'Condition wait timed out after %s.',
-                            self::durationLabel($timeoutSeconds ?? 0),
-                        )
+                        ? sprintf('Condition wait timed out after %s.', self::durationLabel($timeoutSeconds ?? 0))
                         : 'Condition satisfied.',
                 };
 
@@ -349,7 +343,9 @@ final class RunWaitView
             $resolutionEvents->keys()
                 ->all(),
             $run->childLinks
-                ->filter(static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow' && $link->sequence !== null)
+                ->filter(
+                    static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow' && $link->sequence !== null
+                )
                 ->map(static fn (WorkflowLink $link): string => (string) $link->sequence)
                 ->all(),
         ));

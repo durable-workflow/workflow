@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Workflow\Serializers\Serializer;
-use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -22,6 +21,7 @@ final class RunDetailView
         $run->loadMissing([
             'summary',
             'commands',
+            'signals.command',
             'updates.command',
             'updates.failure',
             'tasks',
@@ -63,6 +63,10 @@ final class RunDetailView
 
         $activities = RunActivityView::activitiesForRun($run);
         $activityClasses = collect(RunActivityView::classesFromActivities($activities));
+        $signals = RunSignalView::forRun($run);
+        $signalsByCommandId = collect($signals)
+            ->filter(static fn (array $signal): bool => is_string($signal['command_id'] ?? null))
+            ->keyBy('command_id');
         $updates = RunUpdateView::forRun($run);
         $updatesByCommandId = collect($updates)
             ->filter(static fn (array $update): bool => is_string($update['command_id'] ?? null))
@@ -203,7 +207,8 @@ final class RunDetailView
             'activities' => $activities,
             'commands_scope' => 'selected_run',
             'commands' => $run->commands
-                ->map(static function (WorkflowCommand $command) use ($updatesByCommandId): array {
+                ->map(static function (WorkflowCommand $command) use ($signalsByCommandId, $updatesByCommandId): array {
+                    $signal = $signalsByCommandId->get($command->id);
                     $update = $updatesByCommandId->get($command->id);
 
                     return [
@@ -237,6 +242,9 @@ final class RunDetailView
                         'accepted_at' => $command->accepted_at,
                         'applied_at' => $command->applied_at,
                         'rejected_at' => $command->rejected_at,
+                        'signal_id' => $signal['id'] ?? null,
+                        'signal_status' => $signal['status'] ?? null,
+                        'signal_wait_id' => $signal['signal_wait_id'] ?? null,
                         'update_id' => $update['id'] ?? null,
                         'update_status' => $update['status'] ?? null,
                         'result_available' => $update['result_available'] ?? false,
@@ -248,6 +256,8 @@ final class RunDetailView
                 })
                 ->values()
                 ->all(),
+            'signals_scope' => 'selected_run',
+            'signals' => $signals,
             'updates_scope' => 'selected_run',
             'updates' => $updates,
             'waits_scope' => 'selected_run',

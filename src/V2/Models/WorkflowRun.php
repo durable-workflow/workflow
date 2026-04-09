@@ -68,6 +68,15 @@ class WorkflowRun extends Model
             ->oldest('id');
     }
 
+    public function signals(): HasMany
+    {
+        return $this->hasMany(WorkflowSignal::class, 'workflow_run_id')
+            ->orderBy('command_sequence')
+            ->oldest('received_at')
+            ->oldest('created_at')
+            ->oldest('id');
+    }
+
     public function activityExecutions(): HasMany
     {
         return $this->hasMany(ActivityExecution::class)

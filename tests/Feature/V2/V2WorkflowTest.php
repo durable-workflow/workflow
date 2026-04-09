@@ -59,6 +59,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
@@ -2214,12 +2215,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanWaitForSignalAndResumeAfterSignalCommand(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'signal-instance');
         $workflow->start();
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'signal');
@@ -2248,13 +2253,26 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($runId, $result->runId());
         $this->assertSame(2, $result->commandSequence());
 
+        $this->drainReadyTasks();
+
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         $command = WorkflowCommand::query()->findOrFail($result->commandId());
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $result->commandId())
+            ->sole();
 
         $this->assertNotNull($command->applied_at);
         $this->assertSame(2, $command->command_sequence);
         $this->assertSame('name-provided', $command->targetName());
+        $this->assertSame('name-provided', $signal->signal_name);
+        $this->assertSame('applied', $signal->status->value);
+        $this->assertSame('signal_received', $signal->outcome?->value);
+        $this->assertSame(2, $signal->command_sequence);
+        $this->assertSame(1, $signal->workflow_sequence);
+        $this->assertNotNull($signal->signal_wait_id);
+        $this->assertSame(['Taylor'], $signal->signalArguments());
         $this->assertSame([
             'name' => 'Taylor',
             'greeting' => 'Hello, Taylor!',
@@ -2278,6 +2296,27 @@ final class V2WorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+
+        $signalEvents = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', ['SignalReceived', 'SignalApplied'])
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertSame([$signal->id, $signal->id], $signalEvents
+            ->map(static fn (WorkflowHistoryEvent $event): ?string => $event->payload['signal_id'] ?? null)
+            ->all());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+
+        $this->assertSame('selected_run', $detail['signals_scope']);
+        $this->assertSame($signal->id, $detail['signals'][0]['id']);
+        $this->assertSame('applied', $detail['signals'][0]['status']);
+        $this->assertSame('name-provided', $detail['signals'][0]['name']);
+        $this->assertSame($signal->id, $detail['commands'][1]['signal_id']);
+        $this->assertSame('applied', $detail['commands'][1]['signal_status']);
     }
 
     public function testSignalCommandCanAcceptSingleAssociativePayloadViaArraySafeHelper(): void
@@ -2356,8 +2395,12 @@ final class V2WorkflowTest extends TestCase
 
     public function testSignalCommandRejectsInvalidNamedArgumentsAgainstDeclaredContract(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-invalid');
         $workflow->start();
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'signal');
@@ -2385,6 +2428,20 @@ final class V2WorkflowTest extends TestCase
             'outcome' => 'rejected_invalid_arguments',
             'rejection_reason' => 'invalid_signal_arguments',
         ]);
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $result->commandId())
+            ->sole();
+
+        $this->assertSame('name-provided', $signal->signal_name);
+        $this->assertSame('rejected', $signal->status->value);
+        $this->assertSame('rejected_invalid_arguments', $signal->outcome?->value);
+        $this->assertSame('invalid_signal_arguments', $signal->rejection_reason);
+        $this->assertSame([
+            'name' => ['The name argument is required.'],
+            'nickname' => ['Unknown argument [nickname].'],
+        ], $signal->normalizedValidationErrors());
     }
 
     public function testSignalCommandRejectsTypeMismatchedArgumentsAgainstDeclaredContract(): void
