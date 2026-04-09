@@ -56,7 +56,7 @@ final class RunWaitView
             );
         }
 
-        $waits = array_merge($waits, self::conditionWaits($run, $conditionWaits, $taskByTimerId));
+        $waits = array_merge($waits, self::conditionWaits($conditionWaits, $taskByTimerId));
 
         foreach ($run->timers as $timer) {
             if (! $timer instanceof WorkflowTimer) {
@@ -257,21 +257,17 @@ final class RunWaitView
      * @return list<array<string, mixed>>
      */
     private static function conditionWaits(
-        WorkflowRun $run,
         array $conditionWaits,
         array $taskByTimerId,
     ): array {
-        $timersBySequence = $run->timers
-            ->filter(static fn (WorkflowTimer $timer): bool => $timer->sequence !== null)
-            ->keyBy(static fn (WorkflowTimer $timer): string => (string) $timer->sequence);
-
         return array_values(array_map(
-            static function (array $wait) use ($timersBySequence, $taskByTimerId): array {
+            static function (array $wait) use ($taskByTimerId): array {
                 $sequence = self::intValue($wait['sequence'] ?? null);
-                /** @var WorkflowTimer|null $timer */
-                $timer = $sequence === null ? null : $timersBySequence->get((string) $sequence);
-                $task = $timer?->id === null ? null : ($taskByTimerId[$timer->id] ?? null);
-                $timeoutSeconds = self::intValue($wait['timeout_seconds'] ?? null) ?? $timer?->delay_seconds;
+                $timerId = self::stringValue($wait['timer_id'] ?? null);
+                $task = $timerId === null ? null : ($taskByTimerId[$timerId] ?? null);
+                $timeoutSeconds = self::intValue($wait['timeout_seconds'] ?? null);
+                $resumeSourceKind = self::stringValue($wait['resume_source_kind'] ?? null) ?? 'external_input';
+                $resumeSourceId = self::stringValue($wait['resume_source_id'] ?? null);
                 $summary = match ($wait['status']) {
                     'open' => $timeoutSeconds === null
                         ? 'Waiting for condition.'
@@ -303,18 +299,14 @@ final class RunWaitView
                     'source_status' => $wait['source_status'],
                     'summary' => $summary,
                     'opened_at' => $wait['opened_at'],
-                    'deadline_at' => $timer?->fire_at,
+                    'deadline_at' => self::timestamp($wait['deadline_at'] ?? null),
                     'resolved_at' => $wait['resolved_at'],
                     'target_name' => null,
                     'target_type' => 'condition',
                     'task_backed' => self::isOpenTask($task),
                     'external_only' => true,
-                    'resume_source_kind' => $wait['status'] === 'resolved' && $wait['source_status'] === 'timed_out'
-                        ? 'timer'
-                        : ($timer?->id === null ? 'external_input' : 'timer'),
-                    'resume_source_id' => $wait['status'] === 'resolved' && $wait['source_status'] !== 'timed_out'
-                        ? null
-                        : $timer?->id,
+                    'resume_source_kind' => $resumeSourceKind,
+                    'resume_source_id' => $resumeSourceId,
                     'task_id' => $task?->id,
                     'task_type' => $task?->task_type?->value,
                     'task_status' => $task?->status?->value,

@@ -403,21 +403,17 @@ final class RunSummaryProjector
             return $left['condition_wait_id'] <=> $right['condition_wait_id'];
         });
 
-        /** @var array{id: string, condition_wait_id: string, sequence: int|null, opened_at: \Carbon\CarbonInterface|null, timer_id: string|null, timeout_seconds: int|null} $condition */
+        /** @var array{id: string, condition_wait_id: string, sequence: int|null, opened_at: \Carbon\CarbonInterface|null, deadline_at: \Carbon\CarbonInterface|null, timer_id: string|null, timeout_seconds: int|null, resume_source_kind: string, resume_source_id: string|null} $condition */
         $condition = end($openConditions);
-        /** @var WorkflowTimer|null $timer */
-        $timer = $condition['sequence'] === null
-            ? null
-            : $run->timers->firstWhere('sequence', $condition['sequence']);
 
         return [
             'id' => $condition['condition_wait_id'],
             'opened_at' => $condition['opened_at'],
-            'deadline_at' => $timer?->fire_at,
-            'timer_id' => $timer?->id ?? $condition['timer_id'],
-            'timeout_seconds' => $timer?->delay_seconds ?? $condition['timeout_seconds'],
-            'resume_source_kind' => $timer?->id === null ? 'external_input' : 'timer',
-            'resume_source_id' => $timer?->id,
+            'deadline_at' => $condition['deadline_at'],
+            'timer_id' => $condition['timer_id'],
+            'timeout_seconds' => $condition['timeout_seconds'],
+            'resume_source_kind' => $condition['resume_source_kind'],
+            'resume_source_id' => $condition['resume_source_id'],
         ];
     }
 

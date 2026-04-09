@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
 final class V2AwaitWorkflowTest extends TestCase
@@ -179,6 +180,16 @@ final class V2AwaitWorkflowTest extends TestCase
             'workflow_run_id' => $workflow->runId(),
             'event_type' => HistoryEventType::ConditionWaitTimedOut->value,
         ]);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+        $conditionWait = $this->findConditionWait($detail['waits']);
+
+        $this->assertSame('resolved', $conditionWait['status']);
+        $this->assertSame('satisfied', $conditionWait['source_status']);
+        $this->assertSame('external_input', $conditionWait['resume_source_kind']);
+        $this->assertNull($conditionWait['resume_source_id']);
+        $this->assertNotNull($conditionWait['deadline_at']);
+
         $this->assertSame([
             'approved' => true,
             'timed_out' => false,
@@ -186,6 +197,55 @@ final class V2AwaitWorkflowTest extends TestCase
             'workflow_id' => 'await-timeout-update',
             'run_id' => $workflow->runId(),
         ], $workflow->output());
+    }
+
+    public function testAwaitWithTimeoutKeepsConditionWaitProjectionWhenTimerRowDrifts(): void
+    {
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-08 13:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'await-timeout-drift');
+            $workflow->start();
+
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()
+                ->where('workflow_run_id', $workflow->runId())
+                ->firstOrFail();
+
+            $timerId = $timer->id;
+            $deadlineAt = $timer->fire_at?->toJSON();
+
+            $timer->delete();
+
+            RunSummaryProjector::project(WorkflowRun::query()->findOrFail($workflow->runId()));
+
+            $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+            $detail = RunDetailView::forRun($run);
+            $conditionWait = $this->findConditionWait($detail['waits']);
+            $timerTask = $this->findTask($detail['tasks'], 'timer');
+
+            $this->assertSame('condition', $detail['wait_kind']);
+            $this->assertSame('Waiting for condition or timeout', $detail['wait_reason']);
+            $this->assertSame('waiting_for_condition', $detail['liveness_state']);
+            $this->assertSame('timer', $detail['resume_source_kind']);
+            $this->assertSame($timerId, $detail['resume_source_id']);
+            $this->assertSame($conditionWait['condition_wait_id'], $detail['open_wait_id']);
+            $this->assertSame($deadlineAt, $run->summary?->wait_deadline_at?->toJSON());
+            $this->assertSame('open', $conditionWait['status']);
+            $this->assertSame('timer', $conditionWait['resume_source_kind']);
+            $this->assertSame($timerId, $conditionWait['resume_source_id']);
+            $this->assertSame($deadlineAt, $conditionWait['deadline_at']?->toJSON());
+            $this->assertSame(5, $conditionWait['timeout_seconds']);
+            $this->assertTrue($conditionWait['task_backed']);
+            $this->assertSame($conditionWait['condition_wait_id'], $timerTask['condition_wait_id']);
+            $this->assertSame($timerId, $timerTask['timer_id']);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     private function runReadyWorkflowTask(string $runId): void
