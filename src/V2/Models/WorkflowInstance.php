@@ -23,6 +23,10 @@ class WorkflowInstance extends Model
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
+    protected $casts = [
+        'visibility_labels' => 'array',
+    ];
+
     public function currentRun(): BelongsTo
     {
         return $this->belongsTo(WorkflowRun::class, 'current_run_id');

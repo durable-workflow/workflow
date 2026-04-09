@@ -285,6 +285,7 @@ final class Webhooks
         $hasInstanceId = array_key_exists('workflow_id', $payload);
         $instanceId = $payload['workflow_id'] ?? null;
         $onDuplicate = $payload['on_duplicate'] ?? DuplicateStartPolicy::RejectDuplicate->value;
+        $visibility = $payload['visibility'] ?? [];
 
         if ($hasInstanceId && ! is_string($instanceId)) {
             throw ValidationException::withMessages([
@@ -316,7 +317,36 @@ final class Webhooks
             ]);
         }
 
-        unset($payload['workflow_id'], $payload['on_duplicate']);
+        if (! is_array($visibility)) {
+            throw ValidationException::withMessages([
+                'visibility' => ['The visibility field must be an object.'],
+            ]);
+        }
+
+        $businessKey = $visibility['business_key'] ?? null;
+        $labels = $visibility['labels'] ?? [];
+
+        if ($businessKey !== null && ! is_string($businessKey)) {
+            throw ValidationException::withMessages([
+                'visibility.business_key' => ['The visibility.business_key field must be a string.'],
+            ]);
+        }
+
+        if (! is_array($labels)) {
+            throw ValidationException::withMessages([
+                'visibility.labels' => ['The visibility.labels field must be an object.'],
+            ]);
+        }
+
+        try {
+            $startOptions = new StartOptions($duplicateStartPolicy, $businessKey, $labels);
+        } catch (LogicException $exception) {
+            throw ValidationException::withMessages([
+                'visibility' => [$exception->getMessage()],
+            ]);
+        }
+
+        unset($payload['workflow_id'], $payload['on_duplicate'], $payload['visibility']);
 
         $arguments = [];
         $missing = [];
@@ -348,7 +378,7 @@ final class Webhooks
             throw ValidationException::withMessages($missing);
         }
 
-        return [$instanceId, $arguments, new StartOptions($duplicateStartPolicy)];
+        return [$instanceId, $arguments, $startOptions];
     }
 
     /**

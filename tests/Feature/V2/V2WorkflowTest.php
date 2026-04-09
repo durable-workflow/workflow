@@ -862,6 +862,58 @@ final class V2WorkflowTest extends TestCase
         );
     }
 
+    public function testStartOptionsPersistVisibilityFieldsOnRunSummaryAndStartHistory(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'visible-order');
+        $result = $workflow->attemptStart(
+            'Taylor',
+            StartOptions::withVisibility(
+                businessKey: 'order-123',
+                labels: ['region' => 'us-east', 'tenant' => 'acme'],
+            ),
+        );
+
+        $runId = $workflow->runId();
+
+        $this->assertTrue($result->accepted());
+        $this->assertIsString($runId);
+        $this->assertSame('order-123', $workflow->businessKey());
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $workflow->visibilityLabels());
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->findOrFail('visible-order');
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        /** @var WorkflowRunSummary $summary */
+        $summary = WorkflowRunSummary::query()->findOrFail($runId);
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $this->assertSame('order-123', $instance->business_key);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $instance->visibility_labels);
+        $this->assertSame('order-123', $run->business_key);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $run->visibility_labels);
+        $this->assertSame('order-123', $summary->business_key);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $summary->visibility_labels);
+        $this->assertSame('order-123', $started->payload['business_key'] ?? null);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $started->payload['visibility_labels'] ?? null);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary', 'instance.runs.summary']));
+        $export = $workflow->historyExport();
+
+        $this->assertSame('order-123', $detail['business_key']);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $detail['visibility_labels']);
+        $this->assertSame('order-123', $export['workflow']['business_key']);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $export['workflow']['visibility_labels']);
+        $this->assertSame('order-123', $export['summary']['business_key']);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $export['summary']['visibility_labels']);
+    }
+
     public function testMakeRejectsBlankCallerSuppliedInstanceId(): void
     {
         $this->expectException(LogicException::class);
@@ -955,7 +1007,14 @@ final class V2WorkflowTest extends TestCase
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'continue-instance');
-        $started = $workflow->start(0, 2);
+        $started = $workflow->start(
+            0,
+            2,
+            StartOptions::withVisibility(
+                businessKey: 'order-continue',
+                labels: ['tenant' => 'acme'],
+            ),
+        );
         $firstRunId = $started->runId();
 
         $this->assertNotNull($firstRunId);
@@ -982,6 +1041,12 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertCount(3, $runs);
         $this->assertSame([1, 2, 3], $runs->pluck('run_number')->all());
+        $this->assertSame(['order-continue', 'order-continue', 'order-continue'], $runs->pluck('business_key')->all());
+        $this->assertSame([
+            ['tenant' => 'acme'],
+            ['tenant' => 'acme'],
+            ['tenant' => 'acme'],
+        ], $runs->map(static fn (WorkflowRun $run): ?array => $run->visibility_labels)->all());
         $this->assertSame(['completed', 'completed', 'completed'], $runs->pluck('status')->map(
             static fn (RunStatus $status): string => $status->value
         )->all());
@@ -1039,6 +1104,15 @@ final class V2WorkflowTest extends TestCase
             'sequence' => 2,
         ], $thirdRunStart->commandContext()['workflow']);
         $this->assertSame(1, $thirdRunStart->command_sequence);
+
+        /** @var WorkflowHistoryEvent $thirdRunStarted */
+        $thirdRunStarted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runs[2]->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $this->assertSame('order-continue', $thirdRunStarted->payload['business_key'] ?? null);
+        $this->assertSame(['tenant' => 'acme'], $thirdRunStarted->payload['visibility_labels'] ?? null);
 
         $this->assertSame([
             'StartAccepted',

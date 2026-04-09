@@ -105,6 +105,35 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testStartWebhookAcceptsVisibilityMetadata(): void
+    {
+        Queue::fake();
+
+        $response = $this->postJson('/webhooks/start/test-greeting-workflow', [
+            'workflow_id' => 'order-visible',
+            'name' => 'Taylor',
+            'visibility' => [
+                'business_key' => 'order-123',
+                'labels' => [
+                    'region' => 'us-east',
+                    'tenant' => 'acme',
+                ],
+            ],
+        ]);
+
+        $response->assertStatus(202);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($response->json('run_id'));
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->findOrFail('order-visible');
+
+        $this->assertSame('order-123', $instance->business_key);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $instance->visibility_labels);
+        $this->assertSame('order-123', $run->business_key);
+        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $run->visibility_labels);
+    }
+
     public function testWebhookCommandsPersistDurableIngressMetadata(): void
     {
         $response = $this->withHeaders([

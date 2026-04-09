@@ -188,6 +188,21 @@ final class WorkflowStub
         return $this->selectedRunId !== null && $this->selectedRunId === $this->currentRunId();
     }
 
+    public function businessKey(): ?string
+    {
+        return $this->run?->business_key ?? $this->instance->business_key;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function visibilityLabels(): array
+    {
+        $labels = $this->run?->visibility_labels ?? $this->instance->visibility_labels ?? [];
+
+        return is_array($labels) ? $labels : [];
+    }
+
     public function status(): string
     {
         return $this->run?->status->value ?? 'reserved';
@@ -422,6 +437,10 @@ final class WorkflowStub
             }
 
             $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
+            $businessKey = $startOptions->businessKey ?? $instance->business_key;
+            $visibilityLabels = $startOptions->labels !== []
+                ? $startOptions->labels
+                : (is_array($instance->visibility_labels) ? $instance->visibility_labels : null);
 
             if ($instance->workflow_class !== $workflowClass) {
                 $instance->forceFill([
@@ -435,6 +454,8 @@ final class WorkflowStub
                 'run_number' => $instance->run_count + 1,
                 'workflow_class' => $workflowClass,
                 'workflow_type' => $instance->workflow_type,
+                'business_key' => $businessKey,
+                'visibility_labels' => $visibilityLabels,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => config('workflows.serializer'),
@@ -460,6 +481,8 @@ final class WorkflowStub
 
             $instance->forceFill([
                 'current_run_id' => $run->id,
+                'business_key' => $businessKey,
+                'visibility_labels' => $visibilityLabels,
                 'started_at' => now(),
                 'run_count' => $run->run_number,
             ])->save();
@@ -472,6 +495,8 @@ final class WorkflowStub
                 'workflow_run_id' => $run->id,
                 'workflow_class' => $run->workflow_class,
                 'workflow_type' => $run->workflow_type,
+                'business_key' => $run->business_key,
+                'visibility_labels' => $run->visibility_labels,
                 'outcome' => $command->outcome?->value,
             ], null, $command);
 
@@ -481,6 +506,8 @@ final class WorkflowStub
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'workflow_command_id' => $command->id,
+                'business_key' => $run->business_key,
+                'visibility_labels' => $run->visibility_labels,
                 'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
                 'declared_queries' => $commandContract['queries'],
                 'declared_query_contracts' => $commandContract['query_contracts'],
