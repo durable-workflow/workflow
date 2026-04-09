@@ -12,6 +12,7 @@ use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelFailureWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelWorkflow;
+use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
@@ -514,6 +515,41 @@ final class V2QueryWorkflowTest extends TestCase
         ], $workflow->currentState());
     }
 
+    public function testQueriesReplayNestedParallelActivityGroupsBeforeParentWorkflowTaskRuns(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestNestedParallelActivityWorkflow::class, 'query-nested-parallel-activities');
+        $workflow->start('Taylor', 'Abigail', 'Selena');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->runReadyActivityTaskForSequence($parentRunId, 2);
+        $this->runReadyActivityTaskForSequence($parentRunId, 3);
+
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+        $this->assertSame([
+            'stage' => 'waiting-for-activities',
+        ], $workflow->currentState());
+
+        $this->runReadyActivityTaskForSequence($parentRunId, 1);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+        $this->assertSame([
+            'stage' => 'completed',
+        ], $workflow->currentState());
+    }
+
     public function testQueriesReplayParallelActivityFailureBeforeParentWorkflowTaskRuns(): void
     {
         Queue::fake();
@@ -643,5 +679,24 @@ final class V2QueryWorkflowTest extends TestCase
         };
 
         $this->app->call([$job, 'handle']);
+    }
+
+    private function runReadyActivityTaskForSequence(string $runId, int $sequence): void
+    {
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->where('sequence', $sequence)
+            ->firstOrFail();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->get()
+            ->sole(static fn (WorkflowTask $task): bool => ($task->payload['activity_execution_id'] ?? null) === $execution->id);
+
+        $this->app->call([new RunActivityTask($task->id), 'handle']);
     }
 }

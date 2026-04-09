@@ -68,6 +68,7 @@ final class ActivitySnapshot
             'parallel_group_base_sequence' => self::intValue($payload['parallel_group_base_sequence'] ?? null),
             'parallel_group_size' => self::intValue($payload['parallel_group_size'] ?? null),
             'parallel_group_index' => self::intValue($payload['parallel_group_index'] ?? null),
+            'parallel_group_path' => self::parallelGroupPath($payload),
             'result' => self::stringValue($payload['result'] ?? null),
             'created_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? self::timestamp($event->recorded_at)
@@ -124,6 +125,7 @@ final class ActivitySnapshot
             'parallel_group_base_sequence' => self::intValue($snapshot['parallel_group_base_sequence'] ?? null),
             'parallel_group_size' => self::intValue($snapshot['parallel_group_size'] ?? null),
             'parallel_group_index' => self::intValue($snapshot['parallel_group_index'] ?? null),
+            'parallel_group_path' => self::parallelGroupPath($snapshot),
             'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null),
             'status' => self::stringValue($snapshot['status'] ?? null),
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
@@ -218,5 +220,22 @@ final class ActivitySnapshot
         return is_int($value)
             ? $value
             : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>|null
+     */
+    private static function parallelGroupPath(array $payload): ?array
+    {
+        $path = ParallelChildGroup::metadataPathFromPayload($payload);
+
+        return $path === [] ? null : $path;
     }
 }

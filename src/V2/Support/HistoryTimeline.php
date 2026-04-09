@@ -85,6 +85,8 @@ final class HistoryTimeline
         $timerMetadata = self::timerMetadata($event, $timer, $payload, $timerId);
         $childMetadata = self::childMetadata($event, $payload);
         $failureMetadata = self::failureMetadata($event, $failure, $payload, $failureId);
+        $parallelMetadata = ParallelChildGroup::metadataFromPayload($payload);
+        $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload($payload);
 
         return [
             'id' => $event->id,
@@ -143,6 +145,12 @@ final class HistoryTimeline
             'child_workflow_type' => $childMetadata['type'] ?? null,
             'child_workflow_class' => $childMetadata['class'] ?? null,
             'child_status' => $childMetadata['status'] ?? null,
+            'parallel_group_kind' => $parallelMetadata['parallel_group_kind'] ?? null,
+            'parallel_group_id' => $parallelMetadata['parallel_group_id'] ?? null,
+            'parallel_group_base_sequence' => $parallelMetadata['parallel_group_base_sequence'] ?? null,
+            'parallel_group_size' => $parallelMetadata['parallel_group_size'] ?? null,
+            'parallel_group_index' => $parallelMetadata['parallel_group_index'] ?? null,
+            'parallel_group_path' => $parallelMetadataPath,
             'failure_id' => $failureMetadata['id'] ?? null,
             'exception_class' => $failureMetadata['exception_class'] ?? null,
             'message' => $failureMetadata['message'] ?? null,
@@ -373,6 +381,7 @@ final class HistoryTimeline
                     default => null,
                 },
             'run_number' => self::intValue($payload['child_run_number'] ?? null),
+            'parallel_group_path' => ParallelChildGroup::metadataPathFromPayload($payload),
         ];
     }
 
@@ -564,6 +573,7 @@ final class HistoryTimeline
             'class' => self::stringValue($snapshot['class'] ?? null)
                 ?? $activity?->activity_class
                 ?? self::stringValue($payload['activity_class'] ?? null),
+            'parallel_group_path' => ParallelChildGroup::metadataPathFromPayload($payload),
             'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null)
                 ?? ($event->event_type === HistoryEventType::ActivityScheduled
                     ? null

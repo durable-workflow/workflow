@@ -21,7 +21,7 @@ final class ParallelChildGroup
      *     parallel_group_index: int
      * }
      */
-    public static function itemMetadata(int $baseSequence, int $size, int $index, string $kind = 'child'): array
+    public static function groupEntry(int $baseSequence, int $size, int $index, string $kind = 'child'): array
     {
         return [
             'parallel_group_id' => self::groupId($kind, $baseSequence, $size),
@@ -38,10 +38,53 @@ final class ParallelChildGroup
      *     parallel_group_kind: string,
      *     parallel_group_base_sequence: int,
      *     parallel_group_size: int,
+     *     parallel_group_index: int,
+     *     parallel_group_path: list<array{
+     *         parallel_group_id: string,
+     *         parallel_group_kind: string,
+     *         parallel_group_base_sequence: int,
+     *         parallel_group_size: int,
+     *         parallel_group_index: int
+     *     }>
+     * }
+     */
+    public static function itemMetadata(int $baseSequence, int $size, int $index, string $kind = 'child'): array
+    {
+        return self::payloadForPath([
+            self::groupEntry($baseSequence, $size, $index, $kind),
+        ]);
+    }
+
+    /**
+     * @return array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
      *     parallel_group_index: int
      * }|null
      */
     public static function metadataForSequence(WorkflowRun $run, int $sequence): ?array
+    {
+        $path = self::metadataPathForSequence($run, $sequence);
+
+        if ($path === []) {
+            return null;
+        }
+
+        return $path[array_key_last($path)];
+    }
+
+    /**
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>
+     */
+    public static function metadataPathForSequence(WorkflowRun $run, int $sequence): array
     {
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
@@ -61,14 +104,57 @@ final class ParallelChildGroup
                 ],
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
-                && is_string($event->payload['parallel_group_id'] ?? null)
+                && (
+                    is_string($event->payload['parallel_group_id'] ?? null)
+                    || is_array($event->payload['parallel_group_path'] ?? null)
+                )
         );
 
         if (! $event instanceof WorkflowHistoryEvent || ! is_array($event->payload)) {
-            return null;
+            return [];
         }
 
-        return self::metadataFromPayload($event->payload);
+        return self::metadataPathFromPayload($event->payload);
+    }
+
+    /**
+     * @param list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }> $path
+     * @return array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int,
+     *     parallel_group_path: list<array{
+     *         parallel_group_id: string,
+     *         parallel_group_kind: string,
+     *         parallel_group_base_sequence: int,
+     *         parallel_group_size: int,
+     *         parallel_group_index: int
+     *     }>
+     * }
+     */
+    public static function payloadForPath(array $path): array
+    {
+        $path = self::normalizedPath($path);
+        $innermost = $path === []
+            ? null
+            : $path[array_key_last($path)];
+
+        if ($innermost === null) {
+            return [];
+        }
+
+        return [
+            ...$innermost,
+            'parallel_group_path' => $path,
+        ];
     }
 
     /**
@@ -82,6 +168,192 @@ final class ParallelChildGroup
      * }|null
      */
     public static function metadataFromPayload(array $payload): ?array
+    {
+        $path = self::metadataPathFromPayload($payload);
+
+        if ($path === []) {
+            return null;
+        }
+
+        return $path[array_key_last($path)];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>
+     */
+    public static function metadataPathFromPayload(array $payload): array
+    {
+        $path = [];
+
+        foreach (self::arrayValue($payload['parallel_group_path'] ?? null) as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $metadata = self::singleMetadataFromPayload($entry);
+
+            if ($metadata !== null) {
+                $path[] = $metadata;
+            }
+        }
+
+        if ($path !== []) {
+            return $path;
+        }
+
+        $metadata = self::singleMetadataFromPayload($payload);
+
+        return $metadata === null ? [] : [$metadata];
+    }
+
+    /**
+     * @param array{
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int
+     * } $metadata
+     * @return list<int>
+     */
+    public static function sequences(array $metadata): array
+    {
+        return range(
+            $metadata['parallel_group_base_sequence'],
+            $metadata['parallel_group_base_sequence'] + $metadata['parallel_group_size'] - 1,
+        );
+    }
+
+    public static function shouldWakeParentOnChildClosure(WorkflowRun $parentRun, array $metadata, RunStatus $closedChildStatus): bool
+    {
+        return self::shouldWakeParentOnClosure(
+            $parentRun,
+            self::normalizedPath($metadata),
+            'child',
+            $closedChildStatus,
+        );
+    }
+
+    public static function shouldWakeParentOnActivityClosure(WorkflowRun $parentRun, array $metadata, ActivityStatus $closedActivityStatus): bool
+    {
+        return self::shouldWakeParentOnClosure(
+            $parentRun,
+            self::normalizedPath($metadata),
+            'activity',
+            $closedActivityStatus,
+        );
+    }
+
+    /**
+     * @param list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }> $metadataPath
+     */
+    private static function shouldWakeParentOnClosure(
+        WorkflowRun $parentRun,
+        array $metadataPath,
+        string $closedKind,
+        ActivityStatus|RunStatus $closedStatus,
+    ): bool {
+        if (
+            ($closedKind === 'activity' && $closedStatus !== ActivityStatus::Completed)
+            || ($closedKind === 'child' && $closedStatus !== RunStatus::Completed)
+        ) {
+            return true;
+        }
+
+        foreach ($metadataPath as $metadata) {
+            if (! self::groupCompletedSuccessfully($parentRun, $metadata)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param array{
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int
+     * } $metadata
+     */
+    private static function groupCompletedSuccessfully(WorkflowRun $parentRun, array $metadata): bool
+    {
+        if ($metadata['parallel_group_size'] < 1) {
+            return true;
+        }
+
+        $parentRun->unsetRelation('historyEvents');
+        $parentRun->unsetRelation('activityExecutions');
+        $parentRun->unsetRelation('childLinks');
+
+        $activitiesBySequence = collect(RunActivityView::activitiesForRun($parentRun))
+            ->filter(static fn (array $activity): bool => is_int($activity['sequence'] ?? null))
+            ->keyBy(static fn (array $activity): string => (string) $activity['sequence']);
+
+        foreach (self::sequences($metadata) as $sequence) {
+            $activity = $activitiesBySequence->get((string) $sequence);
+
+            if (is_array($activity)) {
+                $status = is_string($activity['status'] ?? null)
+                    ? $activity['status']
+                    : null;
+
+                if ($status === null || in_array($status, [
+                    ActivityStatus::Pending->value,
+                    ActivityStatus::Running->value,
+                ], true)) {
+                    return false;
+                }
+
+                if ($status !== ActivityStatus::Completed->value) {
+                    return false;
+                }
+
+                continue;
+            }
+
+            $childRun = ChildRunHistory::childRunForSequence($parentRun, $sequence);
+            $childStatus = ChildRunHistory::resolvedStatus(
+                ChildRunHistory::resolutionEventForSequence($parentRun, $sequence),
+                $childRun,
+            );
+
+            if (! $childStatus instanceof RunStatus) {
+                return false;
+            }
+
+            if (in_array($childStatus, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
+                return false;
+            }
+
+            if ($childStatus !== RunStatus::Completed) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }|null
+     */
+    private static function singleMetadataFromPayload(array $payload): ?array
     {
         $groupId = is_string($payload['parallel_group_id'] ?? null)
             ? $payload['parallel_group_id']
@@ -113,111 +385,65 @@ final class ParallelChildGroup
     }
 
     /**
-     * @param array{
-     *     parallel_group_base_sequence: int,
-     *     parallel_group_size: int
-     * } $metadata
-     * @return list<int>
+     * @param mixed $value
+     * @return list<mixed>
      */
-    public static function sequences(array $metadata): array
+    private static function arrayValue(mixed $value): array
     {
-        return range(
-            $metadata['parallel_group_base_sequence'],
-            $metadata['parallel_group_base_sequence'] + $metadata['parallel_group_size'] - 1,
-        );
+        return is_array($value) ? array_values($value) : [];
     }
 
     /**
      * @param array{
+     *     parallel_group_id?: string,
+     *     parallel_group_kind?: string,
+     *     parallel_group_base_sequence?: int,
+     *     parallel_group_size?: int,
+     *     parallel_group_index?: int
+     * }|list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
      *     parallel_group_base_sequence: int,
-     *     parallel_group_size: int
-     * } $metadata
-     */
-    public static function shouldWakeParentOnChildClosure(
-        WorkflowRun $parentRun,
-        array $metadata,
-        RunStatus $closedChildStatus,
-    ): bool {
-        return self::shouldWakeParentOnClosure($parentRun, $metadata, 'child', $closedChildStatus);
-    }
-
-    public static function shouldWakeParentOnActivityClosure(
-        WorkflowRun $parentRun,
-        array $metadata,
-        ActivityStatus $closedActivityStatus,
-    ): bool {
-        return self::shouldWakeParentOnClosure($parentRun, $metadata, 'activity', $closedActivityStatus);
-    }
-
-    /**
-     * @param array{
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }> $metadata
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
      *     parallel_group_base_sequence: int,
-     *     parallel_group_size: int
-     * } $metadata
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>
      */
-    private static function shouldWakeParentOnClosure(
-        WorkflowRun $parentRun,
-        array $metadata,
-        string $closedKind,
-        ActivityStatus|RunStatus $closedStatus,
-    ): bool {
-        if (
-            ($closedKind === 'activity' && $closedStatus !== ActivityStatus::Completed)
-            || ($closedKind === 'child' && $closedStatus !== RunStatus::Completed)
-        ) {
-            return true;
+    private static function normalizedPath(array $metadata): array
+    {
+        if ($metadata === []) {
+            return [];
         }
 
-        $parentRun->unsetRelation('historyEvents');
-        $parentRun->unsetRelation('activityExecutions');
-        $parentRun->unsetRelation('childLinks');
+        $first = $metadata[array_key_first($metadata)] ?? null;
 
-        $activitiesBySequence = collect(RunActivityView::activitiesForRun($parentRun))
-            ->filter(static fn (array $activity): bool => is_int($activity['sequence'] ?? null))
-            ->keyBy(static fn (array $activity): string => (string) $activity['sequence']);
+        if (! is_array($first)) {
+            $single = self::singleMetadataFromPayload($metadata);
 
-        foreach (self::sequences($metadata) as $sequence) {
-            $activity = $activitiesBySequence->get((string) $sequence);
+            return $single === null ? [] : [$single];
+        }
 
-            if (is_array($activity)) {
-                $status = is_string($activity['status'] ?? null)
-                    ? $activity['status']
-                    : null;
+        $path = [];
 
-                if ($status === null || in_array($status, [
-                    ActivityStatus::Pending->value,
-                    ActivityStatus::Running->value,
-                ], true)) {
-                    return false;
-                }
-
-                if ($status !== ActivityStatus::Completed->value) {
-                    return true;
-                }
-
+        foreach ($metadata as $entry) {
+            if (! is_array($entry)) {
                 continue;
             }
 
-            $childRun = ChildRunHistory::childRunForSequence($parentRun, $sequence);
-            $childStatus = ChildRunHistory::resolvedStatus(
-                ChildRunHistory::resolutionEventForSequence($parentRun, $sequence),
-                $childRun,
-            );
+            $single = self::singleMetadataFromPayload($entry);
 
-            if (! $childStatus instanceof RunStatus) {
-                return false;
-            }
-
-            if (in_array($childStatus, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
-                return false;
-            }
-
-            if ($childStatus !== RunStatus::Completed) {
-                return true;
+            if ($single !== null) {
+                $path[] = $single;
             }
         }
 
-        return true;
+        return $path;
     }
 
     private static function groupId(string $kind, int $baseSequence, int $size): string

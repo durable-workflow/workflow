@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelWorkflow;
+use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
@@ -1260,6 +1261,78 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(2, $activityWaits[1]['parallel_group_size']);
         $this->assertSame(0, $activityWaits[0]['parallel_group_index']);
         $this->assertSame(1, $activityWaits[1]['parallel_group_index']);
+    }
+
+    public function testRunDetailViewExposesNestedParallelActivityPathsForOpenWaits(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestNestedParallelActivityWorkflow::class, 'detail-nested-parallel-activities');
+        $workflow->start('Taylor', 'Abigail', 'Selena');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runNextReadyTask();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $activityWaits = array_values(array_filter(
+            $detail['waits'],
+            static fn (array $wait): bool => ($wait['kind'] ?? null) === 'activity' && ($wait['status'] ?? null) === 'open',
+        ));
+
+        $this->assertSame('activity', $detail['wait_kind']);
+        $this->assertSame(3, $detail['open_wait_count']);
+        $this->assertCount(3, $activityWaits);
+
+        $this->assertSame('parallel-activities:1:3', $activityWaits[0]['parallel_group_id']);
+        $this->assertSame([
+            [
+                'parallel_group_id' => 'parallel-activities:1:3',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => 0,
+            ],
+        ], $activityWaits[0]['parallel_group_path']);
+
+        $this->assertSame('parallel-activities:2:2', $activityWaits[1]['parallel_group_id']);
+        $this->assertSame([
+            [
+                'parallel_group_id' => 'parallel-activities:1:3',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => 1,
+            ],
+            [
+                'parallel_group_id' => 'parallel-activities:2:2',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 2,
+                'parallel_group_size' => 2,
+                'parallel_group_index' => 0,
+            ],
+        ], $activityWaits[1]['parallel_group_path']);
+
+        $this->assertSame('parallel-activities:2:2', $activityWaits[2]['parallel_group_id']);
+        $this->assertSame([
+            [
+                'parallel_group_id' => 'parallel-activities:1:3',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => 2,
+            ],
+            [
+                'parallel_group_id' => 'parallel-activities:2:2',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 2,
+                'parallel_group_size' => 2,
+                'parallel_group_index' => 1,
+            ],
+        ], $activityWaits[2]['parallel_group_path']);
     }
 
     public function testRunDetailViewCountsOpenMixedBarrierWaitsAndExposesMixedGroupMetadata(): void

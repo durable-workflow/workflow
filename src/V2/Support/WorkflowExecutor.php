@@ -506,9 +506,12 @@ final class WorkflowExecutor
             if ($current instanceof AllCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
-                if ($current->calls === []) {
+                $leafDescriptors = $current->leafDescriptors($sequence);
+                $groupSize = count($leafDescriptors);
+
+                if ($groupSize === 0) {
                     try {
-                        $current = $result->send([]);
+                        $current = $result->send($current->nestedResults([]));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -522,26 +525,26 @@ final class WorkflowExecutor
                 $pending = false;
                 $results = [];
                 $failure = null;
-                $groupSize = count($current->calls);
-                $groupKind = $current->kind ?? 'activity';
 
-                foreach ($current->calls as $index => $call) {
-                    $itemSequence = $sequence + $index;
-                    $parallelMetadata = ParallelChildGroup::itemMetadata($sequence, $groupSize, $index, $groupKind);
+                foreach ($leafDescriptors as $descriptor) {
+                    $call = $descriptor['call'];
+                    $offset = $descriptor['offset'];
+                    $itemSequence = $sequence + $offset;
+                    $parallelMetadata = ParallelChildGroup::payloadForPath($descriptor['group_path']);
 
                     if ($call instanceof ActivityCall) {
                         $activityCompletion = $this->activityCompletionEvent($run, $itemSequence);
 
                         if ($activityCompletion !== null) {
                             if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                                $results[$index] = $this->activityResult($activityCompletion);
+                                $results[$offset] = $this->activityResult($activityCompletion);
 
                                 continue;
                             }
 
                             $failure = $this->selectParallelFailure(
                                 $failure,
-                                $index,
+                                $offset,
                                 $this->activityException($activityCompletion, null, $run),
                                 $activityCompletion->recorded_at?->getTimestampMs()
                                     ?? $activityCompletion->created_at?->getTimestampMs()
@@ -578,26 +581,19 @@ final class WorkflowExecutor
                         }
 
                         if ($execution->status === ActivityStatus::Completed) {
-                            $results[$index] = $execution->activityResult();
+                            $results[$offset] = $execution->activityResult();
 
                             continue;
                         }
 
                         $failure = $this->selectParallelFailure(
                             $failure,
-                            $index,
+                            $offset,
                             $this->activityException(null, $execution, $run),
                             $execution->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
                         );
 
                         continue;
-                    }
-
-                    if (! $call instanceof ChildWorkflowCall) {
-                        throw new LogicException(sprintf(
-                            'Workflow\\V2\\all() encountered unsupported call [%s].',
-                            get_debug_type($call),
-                        ));
                     }
 
                     $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $itemSequence);
@@ -617,14 +613,14 @@ final class WorkflowExecutor
 
                     if ($resolutionEvent !== null) {
                         if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                            $results[$index] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
+                            $results[$offset] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
 
                             continue;
                         }
 
                         $failure = $this->selectParallelFailure(
                             $failure,
-                            $index,
+                            $offset,
                             ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
                             $resolutionEvent->recorded_at?->getTimestampMs()
                                 ?? $resolutionEvent->created_at?->getTimestampMs()
@@ -670,14 +666,14 @@ final class WorkflowExecutor
                     }
 
                     if ($childStatus === RunStatus::Completed) {
-                        $results[$index] = ChildRunHistory::outputForChildRun($childRun);
+                        $results[$offset] = ChildRunHistory::outputForChildRun($childRun);
 
                         continue;
                     }
 
                     $failure = $this->selectParallelFailure(
                         $failure,
-                        $index,
+                        $offset,
                         ChildRunHistory::exceptionForChildRun($childRun),
                         $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
                     );
@@ -701,7 +697,7 @@ final class WorkflowExecutor
                     ksort($results);
 
                     try {
-                        $current = $result->send(array_values($results));
+                        $current = $result->send($current->nestedResults(array_values($results)));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -1291,7 +1287,8 @@ final class WorkflowExecutor
             ->sortByDesc('sequence')
             ->first();
         $failure = $childRun->failures->first();
-        $parallelMetadata = ParallelChildGroup::metadataForSequence($run, $sequence);
+        $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($run, $sequence);
+        $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
         return WorkflowHistoryEvent::record($run, $eventType, array_filter([
             'sequence' => $sequence,
@@ -1697,16 +1694,16 @@ final class WorkflowExecutor
                     'childLinks.childRun.historyEvents',
                 ]);
 
-                $parallelMetadata = ParallelChildGroup::metadataForSequence($parentRun, $parentReference['parent_sequence']);
+                $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($parentRun, $parentReference['parent_sequence']);
                 $childStatus = ChildRunHistory::resolvedStatus(
                     ChildRunHistory::resolutionEventForSequence($parentRun, $parentReference['parent_sequence']),
                     $childRun,
                 );
 
                 if (
-                    $parallelMetadata !== null
+                    $parallelMetadataPath !== []
                     && $childStatus instanceof RunStatus
-                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure($parentRun, $parallelMetadata, $childStatus)
+                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure($parentRun, $parallelMetadataPath, $childStatus)
                 ) {
                     RunSummaryProjector::project(
                         $parentRun->fresh([

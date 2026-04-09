@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestChildGreetingWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
@@ -130,6 +131,74 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('Workflow completed.', $timeline[5]['summary']);
         $this->assertNull($timeline[5]['command']);
         $this->assertNull($timeline[5]['failure']);
+    }
+
+    public function testTimelineIncludesNestedParallelActivityPathMetadata(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestNestedParallelActivityWorkflow::class, 'timeline-nested-parallel');
+        $workflow->start('Taylor', 'Abigail', 'Selena');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runNextReadyTask();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $timeline = collect(HistoryTimeline::forRun($run))
+            ->where('type', 'ActivityScheduled')
+            ->values();
+
+        $this->assertCount(3, $timeline);
+
+        $this->assertSame('parallel-activities:1:3', $timeline[0]['parallel_group_id']);
+        $this->assertSame([
+            [
+                'parallel_group_id' => 'parallel-activities:1:3',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => 0,
+            ],
+        ], $timeline[0]['parallel_group_path']);
+
+        $this->assertSame('parallel-activities:2:2', $timeline[1]['parallel_group_id']);
+        $this->assertSame([
+            [
+                'parallel_group_id' => 'parallel-activities:1:3',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => 1,
+            ],
+            [
+                'parallel_group_id' => 'parallel-activities:2:2',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 2,
+                'parallel_group_size' => 2,
+                'parallel_group_index' => 0,
+            ],
+        ], $timeline[1]['parallel_group_path']);
+
+        $this->assertSame('parallel-activities:2:2', $timeline[2]['parallel_group_id']);
+        $this->assertSame([
+            [
+                'parallel_group_id' => 'parallel-activities:1:3',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => 2,
+            ],
+            [
+                'parallel_group_id' => 'parallel-activities:2:2',
+                'parallel_group_kind' => 'activity',
+                'parallel_group_base_sequence' => 2,
+                'parallel_group_size' => 2,
+                'parallel_group_index' => 1,
+            ],
+        ], $timeline[2]['parallel_group_path']);
     }
 
     public function testTimelineIncludesTypedTimerEntriesForCompletedRun(): void
@@ -643,5 +712,26 @@ final class V2HistoryTimelineTest extends TestCase
         }
 
         $this->fail('Timed out draining ready workflow tasks.');
+    }
+
+    private function runNextReadyTask(): void
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->first();
+
+        if ($task === null) {
+            $this->fail('Expected a ready workflow task.');
+        }
+
+        $job = match ($task->task_type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
+
+        $this->app->call([$job, 'handle']);
     }
 }

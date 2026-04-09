@@ -166,10 +166,11 @@ final class RunActivityTask implements ShouldQueue
                 return null;
             }
 
-            $parallelMetadata = \Workflow\V2\Support\ParallelChildGroup::metadataForSequence(
+            $parallelMetadataPath = \Workflow\V2\Support\ParallelChildGroup::metadataPathForSequence(
                 $run,
                 (int) $lockedExecution->sequence,
             );
+            $parallelMetadata = \Workflow\V2\Support\ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
             if ($throwable === null) {
                 $lockedExecution->forceFill([
@@ -235,10 +236,10 @@ final class RunActivityTask implements ShouldQueue
                 : ActivityStatus::Failed;
 
             if (
-                $parallelMetadata !== null
+                $parallelMetadataPath !== []
                 && ! \Workflow\V2\Support\ParallelChildGroup::shouldWakeParentOnActivityClosure(
                     $run,
-                    $parallelMetadata,
+                    $parallelMetadataPath,
                     $closedStatus,
                 )
             ) {
@@ -337,10 +338,11 @@ final class RunActivityTask implements ShouldQueue
                 'lease_expires_at' => $task->lease_expires_at,
             ]);
 
-            $parallelMetadata = \Workflow\V2\Support\ParallelChildGroup::metadataForSequence(
+            $parallelMetadataPath = \Workflow\V2\Support\ParallelChildGroup::metadataPathForSequence(
                 $run,
                 (int) $execution->sequence,
             );
+            $parallelMetadata = \Workflow\V2\Support\ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
             WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([
                 'activity_execution_id' => $execution->id,

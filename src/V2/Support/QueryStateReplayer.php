@@ -249,8 +249,11 @@ final class QueryStateReplayer
             if ($current instanceof AllCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
 
-                if ($current->calls === []) {
-                    $current = $result->send([]);
+                $leafDescriptors = $current->leafDescriptors($sequence);
+                $groupSize = count($leafDescriptors);
+
+                if ($groupSize === 0) {
+                    $current = $result->send($current->nestedResults([]));
 
                     continue;
                 }
@@ -258,24 +261,25 @@ final class QueryStateReplayer
                 $pending = false;
                 $results = [];
                 $failure = null;
-                $groupSize = count($current->calls);
 
-                foreach ($current->calls as $index => $call) {
-                    $itemSequence = $sequence + $index;
+                foreach ($leafDescriptors as $descriptor) {
+                    $call = $descriptor['call'];
+                    $offset = $descriptor['offset'];
+                    $itemSequence = $sequence + $offset;
 
                     if ($call instanceof ActivityCall) {
                         $activityCompletion = $this->activityCompletionEvent($run, $itemSequence);
 
                         if ($activityCompletion !== null) {
                             if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                                $results[$index] = $this->activityResult($activityCompletion);
+                                $results[$offset] = $this->activityResult($activityCompletion);
 
                                 continue;
                             }
 
                             $failure = $this->selectParallelFailure(
                                 $failure,
-                                $index,
+                                $offset,
                                 $this->activityException($activityCompletion, null, $run),
                                 $activityCompletion->recorded_at?->getTimestampMs()
                                     ?? $activityCompletion->created_at?->getTimestampMs()
@@ -304,14 +308,14 @@ final class QueryStateReplayer
                         }
 
                         if ($execution->status === ActivityStatus::Completed) {
-                            $results[$index] = $execution->activityResult();
+                            $results[$offset] = $execution->activityResult();
 
                             continue;
                         }
 
                         $failure = $this->selectParallelFailure(
                             $failure,
-                            $index,
+                            $offset,
                             $this->activityException(null, $execution, $run),
                             $execution->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
                         );
@@ -319,26 +323,19 @@ final class QueryStateReplayer
                         continue;
                     }
 
-                    if (! $call instanceof ChildWorkflowCall) {
-                        throw new LogicException(sprintf(
-                            'Workflow\\V2\\all() encountered unsupported call [%s].',
-                            get_debug_type($call),
-                        ));
-                    }
-
                     $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $itemSequence);
                     $childRun = ChildRunHistory::childRunForSequence($run, $itemSequence);
 
                     if ($resolutionEvent !== null) {
                         if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                            $results[$index] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
+                            $results[$offset] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
 
                             continue;
                         }
 
                         $failure = $this->selectParallelFailure(
                             $failure,
-                            $index,
+                            $offset,
                             ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
                             $resolutionEvent->recorded_at?->getTimestampMs()
                                 ?? $resolutionEvent->created_at?->getTimestampMs()
@@ -367,14 +364,14 @@ final class QueryStateReplayer
                     }
 
                     if ($childStatus === RunStatus::Completed) {
-                        $results[$index] = ChildRunHistory::outputForChildRun($childRun);
+                        $results[$offset] = ChildRunHistory::outputForChildRun($childRun);
 
                         continue;
                     }
 
                     $failure = $this->selectParallelFailure(
                         $failure,
-                        $index,
+                        $offset,
                         ChildRunHistory::exceptionForChildRun($childRun),
                         $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
                     );
@@ -392,7 +389,7 @@ final class QueryStateReplayer
                 }
 
                 ksort($results);
-                $current = $result->send(array_values($results));
+                $current = $result->send($current->nestedResults(array_values($results)));
                 $sequence += $groupSize;
 
                 continue;

@@ -2257,16 +2257,16 @@ final class WorkflowStub
             }
 
             if (is_int($parentReference['parent_sequence'])) {
-                $parallelMetadata = ParallelChildGroup::metadataForSequence($parentRun, $parentReference['parent_sequence']);
+                $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($parentRun, $parentReference['parent_sequence']);
                 $childStatus = ChildRunHistory::resolvedStatus(
                     ChildRunHistory::resolutionEventForSequence($parentRun, $parentReference['parent_sequence']),
                     $childRun,
                 );
 
                 if (
-                    $parallelMetadata !== null
+                    $parallelMetadataPath !== []
                     && $childStatus instanceof RunStatus
-                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure($parentRun, $parallelMetadata, $childStatus)
+                    && ! ParallelChildGroup::shouldWakeParentOnChildClosure($parentRun, $parallelMetadataPath, $childStatus)
                 ) {
                     RunSummaryProjector::project(
                         $parentRun->fresh([

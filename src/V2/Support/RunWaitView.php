@@ -153,6 +153,7 @@ final class RunWaitView
             'parallel_group_base_sequence' => $activity['parallel_group_base_sequence'] ?? null,
             'parallel_group_size' => $activity['parallel_group_size'] ?? null,
             'parallel_group_index' => $activity['parallel_group_index'] ?? null,
+            'parallel_group_path' => $activity['parallel_group_path'] ?? [],
         ];
     }
 
@@ -421,6 +422,11 @@ final class RunWaitView
                     is_array($resolutionEvent?->payload) ? $resolutionEvent->payload : []
                 )
             );
+            $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload(
+                is_array($scheduledEvent?->payload) ? $scheduledEvent->payload : (
+                    is_array($resolutionEvent?->payload) ? $resolutionEvent->payload : []
+                )
+            );
 
             return [
                 'id' => sprintf('child:%s', $childCallId ?? $sequence),
@@ -459,6 +465,7 @@ final class RunWaitView
                 'parallel_group_base_sequence' => $parallelMetadata['parallel_group_base_sequence'] ?? null,
                 'parallel_group_size' => $parallelMetadata['parallel_group_size'] ?? null,
                 'parallel_group_index' => $parallelMetadata['parallel_group_index'] ?? null,
+                'parallel_group_path' => $parallelMetadataPath,
             ];
         }, $sequences));
     }

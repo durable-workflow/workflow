@@ -181,6 +181,7 @@ final class RunActivityView
             'parallel_group_base_sequence' => $state['parallel_group_base_sequence'] ?? null,
             'parallel_group_size' => $state['parallel_group_size'] ?? null,
             'parallel_group_index' => $state['parallel_group_index'] ?? null,
+            'parallel_group_path' => $state['parallel_group_path'] ?? [],
             'attempt_id' => $state['attempt_id'] ?? ($latestAttempt['id'] ?? null),
             'status' => $state['status'] ?? 'pending',
             'attempt_count' => $attemptCount,
