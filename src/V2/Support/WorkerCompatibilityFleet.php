@@ -19,12 +19,12 @@ final class WorkerCompatibilityFleet
     private const SOURCE_CACHE = 'cache';
 
     /**
-     * @var array<string, array{supported: list<string>, connection: ?string, queues: list<string>, recorded_at: int}>
+     * @var array<string, array{supported: list<string>, namespace: ?string, connection: ?string, queues: list<string>, recorded_at: int}>
      */
     private static array $lastRecorded = [];
 
     /**
-     * @var list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>|null
+     * @var list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>|null
      */
     private static ?array $snapshotCache = null;
 
@@ -55,10 +55,11 @@ final class WorkerCompatibilityFleet
     ): void {
         $workerId ??= self::workerId();
         $supported = self::normalizeMarkers($supported);
+        $namespace = self::scopeNamespace();
         $connection = self::normalizeValue($connection);
         $queues = self::normalizeQueues($queue);
 
-        if (self::shouldSkipRecord($workerId, $supported, $connection, $queues)) {
+        if (self::shouldSkipRecord($workerId, $supported, $namespace, $connection, $queues)) {
             return;
         }
 
@@ -69,6 +70,7 @@ final class WorkerCompatibilityFleet
         $rows = collect($queues === [] ? [null] : $queues)
             ->map(static function (?string $scopeQueue) use (
                 $workerId,
+                $namespace,
                 $connection,
                 $supported,
                 $now,
@@ -76,7 +78,8 @@ final class WorkerCompatibilityFleet
             ): array {
                 return [
                     'worker_id' => $workerId,
-                    'scope_key' => self::scopeKey($connection, $scopeQueue),
+                    'namespace' => $namespace,
+                    'scope_key' => self::scopeKey($namespace, $connection, $scopeQueue),
                     'host' => self::hostName(),
                     'process_id' => self::processId(),
                     'connection' => $connection,
@@ -101,6 +104,7 @@ final class WorkerCompatibilityFleet
 
         self::$lastRecorded[$workerId] = [
             'supported' => $supported,
+            'namespace' => $namespace,
             'connection' => $connection,
             'queues' => $queues,
             'recorded_at' => $now->getTimestamp(),
@@ -118,6 +122,7 @@ final class WorkerCompatibilityFleet
 
                 return [
                     'worker_id' => $snapshot['worker_id'],
+                    'namespace' => $snapshot['namespace'],
                     'host' => $snapshot['host'],
                     'process_id' => $snapshot['process_id'],
                     'connection' => $snapshot['connection'],
@@ -133,6 +138,11 @@ final class WorkerCompatibilityFleet
             },
             self::matchingSnapshots($connection, $queue),
         );
+    }
+
+    public static function scopeNamespace(): ?string
+    {
+        return self::normalizeValue(config('workflows.v2.compatibility.namespace'));
     }
 
     public static function clear(): void
@@ -196,6 +206,7 @@ final class WorkerCompatibilityFleet
     private static function shouldSkipRecord(
         string $workerId,
         array $supported,
+        ?string $namespace,
         ?string $connection,
         array $queues,
     ): bool {
@@ -207,6 +218,7 @@ final class WorkerCompatibilityFleet
 
         if (
             $last['supported'] !== $supported
+            || $last['namespace'] !== $namespace
             || $last['connection'] !== $connection
             || $last['queues'] !== $queues
         ) {
@@ -249,6 +261,7 @@ final class WorkerCompatibilityFleet
 
         $databaseSnapshots = WorkerCompatibilityHeartbeat::query()
             ->where('expires_at', '>=', now())
+            ->orderBy('namespace')
             ->orderBy('connection')
             ->orderBy('queue')
             ->orderBy('worker_id')
@@ -256,6 +269,7 @@ final class WorkerCompatibilityFleet
             ->map(static function (WorkerCompatibilityHeartbeat $snapshot): array {
                 return [
                     'worker_id' => (string) $snapshot->worker_id,
+                    'namespace' => self::normalizeValue($snapshot->namespace),
                     'host' => self::normalizeValue($snapshot->host),
                     'process_id' => self::normalizeValue($snapshot->process_id),
                     'connection' => self::normalizeValue($snapshot->connection),
@@ -300,9 +314,10 @@ final class WorkerCompatibilityFleet
         return (string) $pid;
     }
 
-    private static function scopeKey(?string $connection, ?string $queue): string
+    private static function scopeKey(?string $namespace, ?string $connection, ?string $queue): string
     {
         return hash('sha256', json_encode([
+            'namespace' => $namespace,
             'connection' => $connection,
             'queue' => $queue,
         ]));
@@ -327,16 +342,23 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
      */
     private static function matchingSnapshots(?string $connection = null, ?string $queue = null): array
     {
+        $requiredNamespace = self::scopeNamespace();
         $requiredConnection = self::normalizeValue($connection);
         $requiredQueue = self::normalizeValue($queue);
 
         return array_values(array_filter(
             self::activeSnapshots(),
-            static function (array $snapshot) use ($requiredConnection, $requiredQueue): bool {
+            static function (array $snapshot) use ($requiredNamespace, $requiredConnection, $requiredQueue): bool {
+                $snapshotNamespace = self::normalizeValue($snapshot['namespace'] ?? null);
+
+                if ($requiredNamespace !== null && $snapshotNamespace !== $requiredNamespace) {
+                    return false;
+                }
+
                 $snapshotConnection = self::normalizeValue($snapshot['connection'] ?? null);
 
                 if ($requiredConnection !== null && $snapshotConnection !== null && $snapshotConnection !== $requiredConnection) {
@@ -374,7 +396,7 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
      */
     private static function legacyCacheSnapshots(): array
     {
@@ -401,6 +423,7 @@ final class WorkerCompatibilityFleet
             }
 
             $supported = self::normalizeMarkers($snapshot['supported'] ?? []);
+            $namespace = self::normalizeValue($snapshot['namespace'] ?? null);
             $connection = self::normalizeValue($snapshot['connection'] ?? null);
             $queues = self::normalizeMarkers($snapshot['queues'] ?? []);
             $recordedAt = self::carbonFromTimestamp($snapshot['recorded_at'] ?? null);
@@ -409,6 +432,7 @@ final class WorkerCompatibilityFleet
             foreach ($queues === [] ? [null] : $queues as $scopeQueue) {
                 $snapshots[] = [
                     'worker_id' => $workerId,
+                    'namespace' => $namespace,
                     'host' => null,
                     'process_id' => null,
                     'connection' => $connection,
@@ -425,9 +449,9 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @param  list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $preferred
-     * @param  list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $fallback
-     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $preferred
+     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $fallback
+     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
      */
     private static function mergeSnapshots(array $preferred, array $fallback): array
     {
@@ -451,24 +475,32 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @param  array{worker_id: string, connection: ?string, queue: ?string}  $snapshot
+     * @param  array{worker_id: string, namespace: ?string, connection: ?string, queue: ?string}  $snapshot
      */
     private static function snapshotKey(array $snapshot): string
     {
         return implode('|', [
             $snapshot['worker_id'],
+            $snapshot['namespace'] ?? '',
             $snapshot['connection'] ?? '',
             $snapshot['queue'] ?? '',
         ]);
     }
 
     /**
-     * @param  list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $snapshots
-     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     * @param  list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $snapshots
+     * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
      */
     private static function sortSnapshots(array $snapshots): array
     {
         usort($snapshots, static function (array $left, array $right): int {
+            $leftNamespace = $left['namespace'] ?? '';
+            $rightNamespace = $right['namespace'] ?? '';
+
+            if ($leftNamespace !== $rightNamespace) {
+                return $leftNamespace <=> $rightNamespace;
+            }
+
             $leftConnection = $left['connection'] ?? '';
             $rightConnection = $right['connection'] ?? '';
 
@@ -508,8 +540,13 @@ final class WorkerCompatibilityFleet
     private static function scopeLabel(?string $connection, ?string $queue): string
     {
         $parts = [];
+        $namespace = self::scopeNamespace();
         $connection = self::normalizeValue($connection);
         $queue = self::normalizeValue($queue);
+
+        if ($namespace !== null) {
+            $parts[] = sprintf('namespace [%s]', $namespace);
+        }
 
         if ($connection !== null) {
             $parts[] = sprintf('connection [%s]', $connection);

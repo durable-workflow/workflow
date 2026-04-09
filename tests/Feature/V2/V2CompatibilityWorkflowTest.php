@@ -33,6 +33,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
     {
         parent::setUp();
 
+        config()->set('workflows.v2.compatibility.namespace', null);
         WorkerCompatibilityFleet::clear();
     }
 
@@ -410,6 +411,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testCompatibleFleetHeartbeatKeepsUnsupportedLocalTaskReady(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        config()->set('workflows.v2.compatibility.namespace', 'sample-app');
 
         WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-build-a');
 
@@ -479,6 +481,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('Workflow task ready', $summary->wait_reason);
         $this->assertSame(sprintf('Workflow task %s is ready to run.', $task->id), $summary->liveness_reason);
         $this->assertCount(1, WorkerCompatibilityHeartbeat::query()->get());
+        $this->assertSame('sample-app', WorkerCompatibilityHeartbeat::query()->sole()->namespace);
+        $this->assertSame('sample-app', $detail['compatibility_namespace']);
         $this->assertFalse($detail['compatibility_supported']);
         $this->assertTrue($detail['compatibility_supported_in_fleet']);
         $this->assertSame(
@@ -488,6 +492,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertNull($detail['compatibility_fleet_reason']);
         $this->assertCount(1, $detail['compatibility_fleet']);
         $this->assertSame('worker-build-a', $detail['compatibility_fleet'][0]['worker_id']);
+        $this->assertSame('sample-app', $detail['compatibility_fleet'][0]['namespace']);
         $this->assertSame('redis', $detail['compatibility_fleet'][0]['connection']);
         $this->assertSame('default', $detail['compatibility_fleet'][0]['queue']);
         $this->assertSame(['build-a'], $detail['compatibility_fleet'][0]['supported']);
@@ -501,6 +506,98 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertTrue($detail['tasks'][0]['compatibility_supported_in_fleet']);
         $this->assertNull($detail['tasks'][0]['compatibility_fleet_reason']);
         $this->assertSame('Workflow task ready to resume the selected run.', $detail['tasks'][0]['summary']);
+    }
+
+    public function testConfiguredCompatibilityNamespaceIgnoresOtherAppHeartbeats(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        config()->set('workflows.v2.compatibility.namespace', 'other-app');
+
+        WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-build-a');
+
+        config()->set('workflows.v2.compatibility.namespace', 'sample-app');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'compat-foreign-fleet-heartbeat',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'reserved_at' => now()
+                ->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'compatibility' => 'build-a',
+            'payload_codec' => config('workflows.serializer'),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinutes(2),
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinute(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh([
+            'summary',
+            'commands',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+            'parentLinks.parentRun.summary',
+            'childLinks.childRun.summary',
+            'instance.currentRun.summary',
+        ]));
+
+        $this->assertSame('sample-app', $detail['compatibility_namespace']);
+        $this->assertFalse($detail['compatibility_supported_in_fleet']);
+        $this->assertSame([], $detail['compatibility_fleet']);
+        $this->assertSame(
+            'No active worker heartbeat for namespace [sample-app] connection [redis] queue [default] advertises compatibility [build-a].',
+            $detail['compatibility_fleet_reason'],
+        );
+        $this->assertSame(
+            sprintf(
+                'Workflow task %s is ready but waiting for a compatible worker. Requires compatibility [build-a]; this worker supports [build-b]. No active worker heartbeat for namespace [sample-app] connection [redis] queue [default] advertises compatibility [build-a].',
+                $task->id,
+            ),
+            $detail['liveness_reason'],
+        );
+        $this->assertFalse($detail['tasks'][0]['compatibility_supported_in_fleet']);
+        $this->assertSame(
+            'No active worker heartbeat for namespace [sample-app] connection [redis] queue [default] advertises compatibility [build-a].',
+            $detail['tasks'][0]['compatibility_fleet_reason'],
+        );
     }
 
     public function testLegacyCacheHeartbeatKeepsUnsupportedLocalTaskReadyDuringMixedUpgrade(): void
@@ -611,6 +708,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testTaskWatchdogHeartbeatPersistsDurableWorkerSnapshot(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-watchdog']);
+        config()->set('workflows.v2.compatibility.namespace', 'watchdog-app');
 
         $this->wakeTaskWatchdog();
 
@@ -619,6 +717,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
 
         $this->assertSame('redis', $heartbeat->connection);
         $this->assertSame('default', $heartbeat->queue);
+        $this->assertSame('watchdog-app', $heartbeat->namespace);
         $this->assertSame(['build-watchdog'], $heartbeat->supported);
         $this->assertNotNull($heartbeat->recorded_at);
         $this->assertNotNull($heartbeat->expires_at);

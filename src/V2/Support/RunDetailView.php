@@ -102,6 +102,7 @@ final class RunDetailView
             'class' => $run->workflow_class,
             'workflow_type' => $run->workflow_type,
             'compatibility' => $summary?->compatibility ?? $run->compatibility,
+            'compatibility_namespace' => WorkerCompatibilityFleet::scopeNamespace(),
             'compatibility_supported' => WorkerCompatibility::supports($run->compatibility),
             'compatibility_reason' => WorkerCompatibility::mismatchReason($run->compatibility),
             'compatibility_supported_in_fleet' => $fleetCompatibility['supported'],
