@@ -19,6 +19,7 @@ use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
+use Tests\Fixtures\V2\TestUnsafeDeterminismWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
@@ -43,6 +44,56 @@ use Workflow\V2\WorkflowStub;
 
 final class V2RunDetailViewTest extends TestCase
 {
+    public function testRunDetailViewIncludesWorkflowDeterminismDiagnostics(): void
+    {
+        $instance = WorkflowInstance::create([
+            'id' => 'detail-determinism',
+            'workflow_class' => TestUnsafeDeterminismWorkflow::class,
+            'workflow_type' => TestUnsafeDeterminismWorkflow::class,
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::create([
+            'id' => '01JTESTFLOWRUNDETERMINISM01',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestUnsafeDeterminismWorkflow::class,
+            'workflow_type' => TestUnsafeDeterminismWorkflow::class,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(20),
+        ]);
+
+        $instance->update(['current_run_id' => $run->id]);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('warning', $detail['workflow_determinism_status']);
+        $this->assertSame('live_definition', $detail['workflow_determinism_source']);
+
+        $findings = collect($detail['workflow_determinism_findings'])->keyBy('rule');
+
+        $this->assertTrue($findings->has('workflow_database_facade_call'));
+        $this->assertTrue($findings->has('workflow_cache_facade_call'));
+        $this->assertTrue($findings->has('workflow_ambient_context_call'));
+        $this->assertTrue($findings->has('workflow_wall_clock_call'));
+        $this->assertTrue($findings->has('workflow_random_call'));
+
+        $symbols = collect($detail['workflow_determinism_findings'])->pluck('symbol')->all();
+
+        $this->assertContains('DB::table', $symbols);
+        $this->assertContains('Cache::get', $symbols);
+        $this->assertContains('request', $symbols);
+        $this->assertContains('now', $symbols);
+        $this->assertContains('random_int', $symbols);
+        $this->assertContains('Str::uuid', $symbols);
+        $this->assertNotNull($detail['workflow_determinism_findings'][0]['file']);
+        $this->assertIsInt($detail['workflow_determinism_findings'][0]['line']);
+    }
+
     public function testRunDetailViewIncludesResumeSourceForReadyWorkflowTask(): void
     {
         Queue::fake();

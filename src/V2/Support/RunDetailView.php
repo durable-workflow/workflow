@@ -96,6 +96,7 @@ final class RunDetailView
         $recordedDefinitionFingerprint = WorkflowDefinitionFingerprint::recordedForRun($run);
         $currentDefinitionFingerprint = WorkflowDefinitionFingerprint::currentForRun($run);
         $definitionMatchesCurrent = WorkflowDefinitionFingerprint::matchesCurrent($run);
+        $determinismDiagnostics = WorkflowDeterminismDiagnostics::forRun($run);
         $historyBudget = $summary === null
             ? HistoryBudget::forRun($run)
             : [
@@ -122,6 +123,9 @@ final class RunDetailView
             'workflow_definition_fingerprint' => $recordedDefinitionFingerprint,
             'workflow_definition_current_fingerprint' => $currentDefinitionFingerprint,
             'workflow_definition_matches_current' => $definitionMatchesCurrent,
+            'workflow_determinism_status' => $determinismDiagnostics['status'],
+            'workflow_determinism_source' => $determinismDiagnostics['source'],
+            'workflow_determinism_findings' => $determinismDiagnostics['findings'],
             'compatibility' => $summary?->compatibility ?? $run->compatibility,
             'compatibility_namespace' => WorkerCompatibilityFleet::scopeNamespace(),
             'compatibility_supported' => WorkerCompatibility::supports($run->compatibility),
