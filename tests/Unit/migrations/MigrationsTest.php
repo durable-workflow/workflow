@@ -30,6 +30,8 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasColumn('workflow_links', 'sequence'));
         $this->assertTrue(Schema::hasColumn('workflow_tasks', 'last_dispatch_attempt_at'));
         $this->assertTrue(Schema::hasColumn('workflow_tasks', 'last_dispatch_error'));
+        $this->assertTrue(Schema::hasColumn('workflow_commands', 'requested_workflow_run_id'));
+        $this->assertTrue(Schema::hasColumn('workflow_commands', 'resolved_workflow_run_id'));
 
         $this->artisan('migrate:reset', [
             '--path' => dirname(__DIR__, 3) . '/src/migrations',

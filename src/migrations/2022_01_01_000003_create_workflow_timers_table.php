@@ -6,8 +6,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-final class CreateWorkflowTimersTable extends Migration
-{
+return new class() extends Migration {
     /**
      * Run the migrations.
      */
@@ -35,4 +34,4 @@ final class CreateWorkflowTimersTable extends Migration
     {
         Schema::dropIfExists('workflow_timers');
     }
-}
+};

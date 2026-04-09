@@ -617,7 +617,9 @@ final class WorkflowStub
                         CommandType::Update,
                         'selected_run_not_current',
                         $this->commandTargetScope(),
-                        $updateCommandAttributes,
+                        array_merge($updateCommandAttributes, [
+                            'resolved_workflow_run_id' => $currentRun->id,
+                        ]),
                         HistoryEventType::UpdateRejected,
                         $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                     );
@@ -934,6 +936,9 @@ final class WorkflowStub
                         CommandType::Signal,
                         'selected_run_not_current',
                         $this->commandTargetScope(),
+                        [
+                            'resolved_workflow_run_id' => $currentRun->id,
+                        ],
                     );
 
                     return;
@@ -1089,6 +1094,9 @@ final class WorkflowStub
                         CommandType::Repair,
                         'selected_run_not_current',
                         $this->commandTargetScope(),
+                        [
+                            'resolved_workflow_run_id' => $currentRun->id,
+                        ],
                     );
 
                     return;
@@ -1335,6 +1343,9 @@ final class WorkflowStub
                         $commandType,
                         'selected_run_not_current',
                         $this->commandTargetScope(),
+                        [
+                            'resolved_workflow_run_id' => $currentRun->id,
+                        ],
                     );
 
                     return;

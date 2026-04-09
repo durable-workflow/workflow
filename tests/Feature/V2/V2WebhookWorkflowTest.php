@@ -151,7 +151,9 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'rejected')
             ->assertJsonPath('rejection_reason', 'instance_already_started')
-            ->assertJsonPath('run_id', $first->json('run_id'));
+            ->assertJsonPath('run_id', $first->json('run_id'))
+            ->assertJsonPath('requested_run_id', null)
+            ->assertJsonPath('resolved_run_id', $first->json('run_id'));
 
         $this->assertSame(1, WorkflowInstance::query()->count());
         $this->assertSame(2, WorkflowCommand::query()->count());
@@ -176,7 +178,9 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null)
-            ->assertJsonPath('run_id', $first->json('run_id'));
+            ->assertJsonPath('run_id', $first->json('run_id'))
+            ->assertJsonPath('requested_run_id', null)
+            ->assertJsonPath('resolved_run_id', $first->json('run_id'));
 
         $this->assertDatabaseHas('workflow_commands', [
             'id' => $second->json('command_id'),
@@ -792,6 +796,8 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('outcome', 'rejected_not_current')
             ->assertJsonPath('workflow_id', 'order-update-webhook-history')
             ->assertJsonPath('run_id', $historicalRun->id)
+            ->assertJsonPath('requested_run_id', $historicalRun->id)
+            ->assertJsonPath('resolved_run_id', $currentRun->id)
             ->assertJsonPath('target_scope', 'run')
             ->assertJsonPath('workflow_type', 'test-update-workflow')
             ->assertJsonPath('command_status', 'rejected')
@@ -804,6 +810,8 @@ final class V2WebhookWorkflowTest extends TestCase
         $command = WorkflowCommand::query()->findOrFail($response->json('command_id'));
 
         $this->assertSame('run', $command->target_scope);
+        $this->assertSame($historicalRun->id, $command->requestedRunId());
+        $this->assertSame($currentRun->id, $command->resolvedRunId());
         $this->assertSame(
             '/webhooks/instances/order-update-webhook-history/runs/' . $historicalRun->id . '/updates/approve',
             $command->requestPath(),

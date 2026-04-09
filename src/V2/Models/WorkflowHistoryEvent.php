@@ -129,6 +129,8 @@ class WorkflowHistoryEvent extends Model
             'sequence' => $command->command_sequence,
             'type' => $command->command_type?->value,
             'target_scope' => $command->target_scope,
+            'requested_run_id' => $command->requestedRunId(),
+            'resolved_run_id' => $command->resolvedRunId(),
             'target_name' => $command->targetName(),
             'payload_codec' => $command->payload_codec,
             'payload' => $command->payload,

@@ -84,6 +84,8 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('start', $timeline[0]['command']['type']);
         $this->assertSame('accepted', $timeline[0]['command']['status']);
         $this->assertSame('started_new', $timeline[0]['command']['outcome']);
+        $this->assertNull($timeline[0]['command']['requested_run_id']);
+        $this->assertSame($runId, $timeline[0]['command']['resolved_run_id']);
         $this->assertNull($timeline[0]['task']);
 
         $this->assertSame('activity', $timeline[2]['kind']);

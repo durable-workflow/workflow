@@ -622,6 +622,8 @@ final class V2WorkflowTest extends TestCase
         $this->assertNull($reused->rejectionReason());
         $this->assertSame('order-123', $reused->instanceId());
         $this->assertSame($accepted->runId(), $reused->runId());
+        $this->assertNull($reused->requestedRunId());
+        $this->assertSame($accepted->runId(), $reused->resolvedRunId());
 
         $this->assertDatabaseHas('workflow_commands', [
             'id' => $reused->commandId(),
@@ -3585,6 +3587,8 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('selected_run_not_current', $result->rejectionReason());
         $this->assertSame($instance->id, $result->instanceId());
         $this->assertSame($historicalRun->id, $result->runId());
+        $this->assertSame($historicalRun->id, $result->requestedRunId());
+        $this->assertSame($currentRun->id, $result->resolvedRunId());
 
         $selectedRun->refresh();
 
@@ -3667,6 +3671,8 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('selected_run_not_current', $result->rejectionReason());
         $this->assertSame($instance->id, $result->instanceId());
         $this->assertSame($historicalRun->id, $result->runId());
+        $this->assertSame($historicalRun->id, $result->requestedRunId());
+        $this->assertSame($currentRun->id, $result->resolvedRunId());
 
         $selectedRun->refresh();
 

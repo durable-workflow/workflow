@@ -6,8 +6,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-final class CreateWorkflowLogsTable extends Migration
-{
+return new class() extends Migration {
     /**
      * Run the migrations.
      */
@@ -38,4 +37,4 @@ final class CreateWorkflowLogsTable extends Migration
     {
         Schema::dropIfExists('workflow_logs');
     }
-}
+};

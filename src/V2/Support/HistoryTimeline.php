@@ -115,6 +115,8 @@ final class HistoryTimeline
             'recorded_at' => self::timestamp($event->recorded_at),
             'command_id' => $commandId,
             'command_sequence' => $commandMetadata['sequence'] ?? null,
+            'requested_run_id' => $commandMetadata['requested_run_id'] ?? null,
+            'resolved_run_id' => $commandMetadata['resolved_run_id'] ?? null,
             'task_id' => $taskId,
             'command_type' => $commandMetadata['type'] ?? null,
             'command_status' => $commandMetadata['status'] ?? null,
@@ -424,6 +426,10 @@ final class HistoryTimeline
                 ?? self::stringValue($payload['command_type'] ?? null),
             'target_scope' => self::stringValue($snapshot['target_scope'] ?? null)
                 ?? $command?->target_scope,
+            'requested_run_id' => self::stringValue($snapshot['requested_run_id'] ?? null)
+                ?? $command?->requestedRunId(),
+            'resolved_run_id' => self::stringValue($snapshot['resolved_run_id'] ?? null)
+                ?? $command?->resolvedRunId(),
             'target_name' => self::stringValue($snapshot['target_name'] ?? null)
                 ?? $command?->targetName()
                 ?? self::stringValue($payload['signal_name'] ?? null)

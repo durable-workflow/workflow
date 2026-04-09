@@ -48,6 +48,18 @@ class WorkflowCommand extends Model
             $attributes['command_sequence'] ??= CommandSequence::reserveNext($run);
         }
 
+        $targetScope = is_string($attributes['target_scope'] ?? null)
+            ? $attributes['target_scope']
+            : 'instance';
+
+        if ($targetScope === 'run' && $run !== null) {
+            $attributes['requested_workflow_run_id'] ??= $run->id;
+        }
+
+        if ($run !== null) {
+            $attributes['resolved_workflow_run_id'] ??= $run->id;
+        }
+
         $attributes['workflow_instance_id'] ??= $instance->id;
         $attributes['workflow_run_id'] ??= $run?->id;
         $attributes['workflow_class'] ??= $run?->workflow_class ?? $instance->workflow_class;
@@ -259,6 +271,36 @@ class WorkflowCommand extends Model
 
         return is_array($request) && is_string($request['request_id'] ?? null)
             ? $request['request_id']
+            : null;
+    }
+
+    public function requestedRunId(): ?string
+    {
+        if (is_string($this->requested_workflow_run_id ?? null) && $this->requested_workflow_run_id !== '') {
+            return $this->requested_workflow_run_id;
+        }
+
+        if ($this->target_scope !== 'run') {
+            return null;
+        }
+
+        return is_string($this->workflow_run_id ?? null) && $this->workflow_run_id !== ''
+            ? $this->workflow_run_id
+            : null;
+    }
+
+    public function resolvedRunId(): ?string
+    {
+        if (is_string($this->resolved_workflow_run_id ?? null) && $this->resolved_workflow_run_id !== '') {
+            return $this->resolved_workflow_run_id;
+        }
+
+        if ($this->target_scope === 'run' && $this->rejection_reason === 'selected_run_not_current') {
+            return null;
+        }
+
+        return is_string($this->workflow_run_id ?? null) && $this->workflow_run_id !== ''
+            ? $this->workflow_run_id
             : null;
     }
 

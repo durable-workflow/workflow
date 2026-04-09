@@ -18,6 +18,8 @@ final class CommandResponse
             'outcome' => $result->outcome(),
             'workflow_id' => $result->instanceId(),
             'run_id' => $result->runId(),
+            'requested_run_id' => $result->requestedRunId(),
+            'resolved_run_id' => $result->resolvedRunId(),
             'command_id' => $result->commandId(),
             'command_sequence' => $result->commandSequence(),
             'target_scope' => $result->targetScope(),

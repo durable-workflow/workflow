@@ -35,6 +35,16 @@ class CommandResult
         return $this->command->workflow_run_id;
     }
 
+    public function requestedRunId(): ?string
+    {
+        return $this->command->requestedRunId();
+    }
+
+    public function resolvedRunId(): ?string
+    {
+        return $this->command->resolvedRunId();
+    }
+
     public function workflowType(): ?string
     {
         return $this->command->workflow_type;

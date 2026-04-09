@@ -114,6 +114,8 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(1, $detail['commands'][0]['sequence']);
         $this->assertSame('start', $detail['commands'][0]['type']);
         $this->assertSame('started_new', $detail['commands'][0]['outcome']);
+        $this->assertNull($detail['commands'][0]['requested_run_id']);
+        $this->assertSame($runId, $detail['commands'][0]['resolved_run_id']);
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
         $this->assertSame($signalWait['signal_wait_id'], $detail['open_wait_id']);
         $this->assertSame('signal', $detail['resume_source_kind']);
