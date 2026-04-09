@@ -56,6 +56,8 @@ final class BackendCapabilities
             : self::normalize(config(sprintf('database.connections.%s.driver', $connection)));
         $issues = [];
 
+        $driverSupported = is_string($driver) && in_array($driver, ['mysql', 'pgsql', 'sqlite', 'sqlsrv'], true);
+
         if ($connection === null || $driver === null) {
             $issues[] = self::issue(
                 'database',
@@ -63,7 +65,7 @@ final class BackendCapabilities
                 'database_connection_missing',
                 'Workflow v2 requires a configured database connection for durable history, projections, and task leases.',
             );
-        } elseif (! in_array($driver, ['mysql', 'pgsql', 'sqlite', 'sqlsrv'], true)) {
+        } elseif (! $driverSupported) {
             $issues[] = self::issue(
                 'database',
                 'error',
@@ -80,10 +82,10 @@ final class BackendCapabilities
             'driver' => $driver,
             'supported' => self::hasErrors($issues) === false,
             'capabilities' => [
-                'transactions' => $driver !== null,
-                'after_commit_callbacks' => $driver !== null,
-                'durable_ordering' => $driver !== null,
-                'row_locks' => $driver !== null && $driver !== 'sqlite',
+                'transactions' => $driverSupported,
+                'after_commit_callbacks' => $driverSupported,
+                'durable_ordering' => $driverSupported,
+                'row_locks' => $driverSupported && $driver !== 'sqlite',
             ],
             'issues' => $issues,
         ];

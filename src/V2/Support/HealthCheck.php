@@ -1,0 +1,187 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Support;
+
+use Carbon\CarbonInterface;
+
+final class HealthCheck
+{
+    /**
+     * @return array<string, mixed>
+     */
+    public static function snapshot(?CarbonInterface $now = null): array
+    {
+        $now ??= now();
+        $metrics = OperatorMetrics::snapshot($now);
+        $checks = [
+            self::backendCheck($metrics['backend'] ?? []),
+            self::runSummaryProjectionCheck($metrics['projections']['run_summaries'] ?? []),
+            self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
+            self::workerCompatibilityCheck($metrics['workers'] ?? []),
+        ];
+        $status = self::status($checks);
+
+        return [
+            'generated_at' => $metrics['generated_at'] ?? $now->toJSON(),
+            'status' => $status,
+            'healthy' => $status !== 'error',
+            'checks' => $checks,
+            'operator_metrics' => $metrics,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     */
+    public static function httpStatus(array $snapshot): int
+    {
+        return ($snapshot['status'] ?? null) === 'error' ? 503 : 200;
+    }
+
+    /**
+     * @param array<string, mixed> $backend
+     * @return array<string, mixed>
+     */
+    private static function backendCheck(array $backend): array
+    {
+        $issues = is_array($backend['issues'] ?? null) ? $backend['issues'] : [];
+        $supported = BackendCapabilities::isSupported($backend);
+
+        return self::check(
+            'backend_capabilities',
+            $supported ? 'ok' : 'error',
+            $supported
+                ? 'The configured database, queue, and cache backends satisfy the v2 capability contract.'
+                : 'One or more configured v2 backend capabilities are unsupported.',
+            [
+                'issue_count' => count($issues),
+                'issues' => $issues,
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $projection
+     * @return array<string, mixed>
+     */
+    private static function runSummaryProjectionCheck(array $projection): array
+    {
+        $needsRebuild = self::integer($projection['needs_rebuild'] ?? 0);
+
+        return self::check(
+            'run_summary_projection',
+            $needsRebuild === 0 ? 'ok' : 'warning',
+            $needsRebuild === 0
+                ? 'Run-summary projections are aligned with durable v2 runs.'
+                : 'Run-summary projections are missing or orphaned; rebuild them before trusting Waterline lists.',
+            [
+                'needs_rebuild' => $needsRebuild,
+                'missing' => self::integer($projection['missing'] ?? 0),
+                'orphaned' => self::integer($projection['orphaned'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $tasks
+     * @param array<string, mixed> $backlog
+     * @return array<string, mixed>
+     */
+    private static function taskTransportCheck(array $tasks, array $backlog): array
+    {
+        $unhealthyTasks = self::integer($tasks['unhealthy'] ?? 0);
+
+        return self::check(
+            'task_transport',
+            $unhealthyTasks === 0 ? 'ok' : 'warning',
+            $unhealthyTasks === 0
+                ? 'No unhealthy durable task transport state is currently projected.'
+                : 'One or more durable tasks have unhealthy transport, claim, dispatch, or lease state.',
+            [
+                'unhealthy_tasks' => $unhealthyTasks,
+                'repair_needed_runs' => self::integer($backlog['repair_needed_runs'] ?? 0),
+                'claim_failed_runs' => self::integer($backlog['claim_failed_runs'] ?? 0),
+                'compatibility_blocked_runs' => self::integer($backlog['compatibility_blocked_runs'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $workers
+     * @return array<string, mixed>
+     */
+    private static function workerCompatibilityCheck(array $workers): array
+    {
+        $required = is_string($workers['required_compatibility'] ?? null)
+            ? $workers['required_compatibility']
+            : null;
+        $supportingWorkers = self::integer($workers['active_workers_supporting_required'] ?? 0);
+
+        if ($required === null || $supportingWorkers > 0) {
+            return self::check(
+                'worker_compatibility',
+                'ok',
+                $required === null
+                    ? 'No current v2 compatibility marker is required.'
+                    : 'At least one active worker heartbeat advertises the current v2 compatibility marker.',
+                [
+                    'required_compatibility' => $required,
+                    'active_workers' => self::integer($workers['active_workers'] ?? 0),
+                    'active_worker_scopes' => self::integer($workers['active_worker_scopes'] ?? 0),
+                    'active_workers_supporting_required' => $supportingWorkers,
+                ],
+            );
+        }
+
+        return self::check(
+            'worker_compatibility',
+            'warning',
+            'No active worker heartbeat advertises the current v2 compatibility marker.',
+            [
+                'required_compatibility' => $required,
+                'active_workers' => self::integer($workers['active_workers'] ?? 0),
+                'active_worker_scopes' => self::integer($workers['active_worker_scopes'] ?? 0),
+                'active_workers_supporting_required' => $supportingWorkers,
+            ],
+        );
+    }
+
+    /**
+     * @param list<array<string, mixed>> $checks
+     */
+    private static function status(array $checks): string
+    {
+        $statuses = array_column($checks, 'status');
+
+        if (in_array('error', $statuses, true)) {
+            return 'error';
+        }
+
+        if (in_array('warning', $statuses, true)) {
+            return 'warning';
+        }
+
+        return 'ok';
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private static function check(string $name, string $status, string $message, array $data): array
+    {
+        return [
+            'name' => $name,
+            'status' => $status,
+            'message' => $message,
+            'data' => $data,
+        ];
+    }
+
+    private static function integer(mixed $value): int
+    {
+        return is_numeric($value) ? (int) $value : 0;
+    }
+}

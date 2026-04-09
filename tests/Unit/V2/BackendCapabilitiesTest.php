@@ -79,4 +79,23 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertFalse($snapshot['queue']['capabilities']['async_delivery']);
         $this->assertContains('queue_sync_unsupported', array_column($snapshot['issues'], 'code'));
     }
+
+    public function testSnapshotDoesNotAdvertiseDatabaseCapabilitiesForUnsupportedDriver(): void
+    {
+        config()->set('database.connections.mongodb.driver', 'mongodb');
+
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'mongodb');
+
+        $this->assertFalse($snapshot['supported']);
+        $this->assertSame('mongodb', $snapshot['database']['connection']);
+        $this->assertSame('mongodb', $snapshot['database']['driver']);
+        $this->assertFalse($snapshot['database']['supported']);
+        $this->assertContains('database_driver_unsupported', array_column($snapshot['issues'], 'code'));
+        $this->assertSame([
+            'transactions' => false,
+            'after_commit_callbacks' => false,
+            'durable_ordering' => false,
+            'row_locks' => false,
+        ], $snapshot['database']['capabilities']);
+    }
 }
