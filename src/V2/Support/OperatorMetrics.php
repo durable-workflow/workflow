@@ -26,6 +26,7 @@ final class OperatorMetrics
             'backlog' => self::backlogMetrics($now),
             'history' => self::historyMetrics(),
             'workers' => self::workerMetrics(),
+            'repair_policy' => TaskRepairPolicy::snapshot(),
         ];
     }
 
@@ -204,7 +205,7 @@ final class OperatorMetrics
 
     private static function dispatchOverdueTasks(CarbonInterface $now): int
     {
-        $cutoff = $now->copy()->subSeconds(TaskRepairPolicy::REDISPATCH_AFTER_SECONDS);
+        $cutoff = $now->copy()->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
 
         return self::taskModel()::query()
             ->where('status', TaskStatus::Ready->value)

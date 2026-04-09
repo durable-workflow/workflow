@@ -76,6 +76,9 @@ final class WorkflowServiceProviderTest extends TestCase
             config('workflows.v2.command_model'),
         );
         $this->assertSame(30, config('workflows.v2.compatibility.heartbeat_ttl_seconds'));
+        $this->assertSame(3, config('workflows.v2.task_repair.redispatch_after_seconds'));
+        $this->assertSame(5, config('workflows.v2.task_repair.loop_throttle_seconds'));
+        $this->assertSame(25, config('workflows.v2.task_repair.scan_limit'));
     }
 
     public function testConfigIsPublished(): void

@@ -30,6 +30,9 @@ final class V2OperatorMetricsTest extends TestCase
         config()->set('workflows.v2.compatibility.namespace', 'metrics-test');
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 5);
         config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 5000);
+        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 7);
+        config()->set('workflows.v2.task_repair.loop_throttle_seconds', 11);
+        config()->set('workflows.v2.task_repair.scan_limit', 13);
         WorkerCompatibilityFleet::clear();
 
         $run = $this->createRunWithSummary(
@@ -118,6 +121,9 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(2, $snapshot['workers']['active_workers']);
         $this->assertSame(2, $snapshot['workers']['active_worker_scopes']);
         $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+        $this->assertSame(7, $snapshot['repair_policy']['redispatch_after_seconds']);
+        $this->assertSame(11, $snapshot['repair_policy']['loop_throttle_seconds']);
+        $this->assertSame(13, $snapshot['repair_policy']['scan_limit']);
     }
 
     private function createRunWithSummary(

@@ -26,7 +26,7 @@ final class TaskWatchdog
     {
         WorkerCompatibilityFleet::heartbeat($connection, $queue);
 
-        if (! Cache::add(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::LOOP_THROTTLE_SECONDS)) {
+        if (! Cache::add(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds())) {
             return;
         }
 
@@ -132,7 +132,7 @@ final class TaskWatchdog
             ->orderBy('wait_started_at')
             ->orderBy('started_at')
             ->orderBy('id')
-            ->limit(TaskRepairPolicy::SCAN_LIMIT)
+            ->limit(TaskRepairPolicy::scanLimit())
             ->pluck('id')
             ->all();
 
@@ -146,7 +146,7 @@ final class TaskWatchdog
     {
         $now = now();
         $staleDispatchCutoff = $now->copy()
-            ->subSeconds(TaskRepairPolicy::REDISPATCH_AFTER_SECONDS);
+            ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
 
         /** @var list<string> $ids */
         $ids = WorkflowTask::query()
@@ -172,7 +172,7 @@ final class TaskWatchdog
             })
             ->orderBy('available_at')
             ->orderBy('created_at')
-            ->limit(TaskRepairPolicy::SCAN_LIMIT)
+            ->limit(TaskRepairPolicy::scanLimit())
             ->pluck('id')
             ->all();
 

@@ -16,6 +16,42 @@ final class TaskRepairPolicy
 
     public const SCAN_LIMIT = 25;
 
+    public static function redispatchAfterSeconds(): int
+    {
+        return self::configuredPositiveInt(
+            'workflows.v2.task_repair.redispatch_after_seconds',
+            self::REDISPATCH_AFTER_SECONDS,
+        );
+    }
+
+    public static function loopThrottleSeconds(): int
+    {
+        return self::configuredPositiveInt(
+            'workflows.v2.task_repair.loop_throttle_seconds',
+            self::LOOP_THROTTLE_SECONDS,
+        );
+    }
+
+    public static function scanLimit(): int
+    {
+        return self::configuredPositiveInt(
+            'workflows.v2.task_repair.scan_limit',
+            self::SCAN_LIMIT,
+        );
+    }
+
+    /**
+     * @return array{redispatch_after_seconds: int, loop_throttle_seconds: int, scan_limit: int}
+     */
+    public static function snapshot(): array
+    {
+        return [
+            'redispatch_after_seconds' => self::redispatchAfterSeconds(),
+            'loop_throttle_seconds' => self::loopThrottleSeconds(),
+            'scan_limit' => self::scanLimit(),
+        ];
+    }
+
     public static function leaseExpired(WorkflowTask $task, ?CarbonInterface $now = null): bool
     {
         return $task->status === TaskStatus::Leased
@@ -61,11 +97,22 @@ final class TaskRepairPolicy
             return false;
         }
 
-        return $reference->lte(($now ?? now())->copy()->subSeconds(self::REDISPATCH_AFTER_SECONDS));
+        return $reference->lte(($now ?? now())->copy()->subSeconds(self::redispatchAfterSeconds()));
     }
 
     public static function readyTaskNeedsRedispatch(WorkflowTask $task, ?CarbonInterface $now = null): bool
     {
         return self::dispatchFailed($task) || self::dispatchOverdue($task, $now);
+    }
+
+    private static function configuredPositiveInt(string $key, int $default): int
+    {
+        $value = config($key, $default);
+
+        if (! is_numeric($value)) {
+            return $default;
+        }
+
+        return max(1, (int) $value);
     }
 }
