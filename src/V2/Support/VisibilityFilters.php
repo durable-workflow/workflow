@@ -11,12 +11,24 @@ final class VisibilityFilters
 {
     public const VERSION = 1;
 
-    private const EXACT_FIELDS = [
+    private const STRING_FIELDS = [
+        'instance_id',
+        'run_id',
         'workflow_type',
         'business_key',
         'compatibility',
         'queue',
         'connection',
+        'status',
+        'status_bucket',
+        'closed_reason',
+        'wait_kind',
+        'liveness_state',
+    ];
+
+    private const BOOLEAN_FIELDS = [
+        'archived',
+        'is_terminal',
     ];
 
     private const LABEL_KEY_PATTERN = '/^[A-Za-z0-9_.:-]{1,64}$/';
@@ -26,7 +38,43 @@ final class VisibilityFilters
      */
     public static function exactFields(): array
     {
-        return self::EXACT_FIELDS;
+        return [
+            ...self::STRING_FIELDS,
+            ...self::BOOLEAN_FIELDS,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function definition(): array
+    {
+        $fields = [];
+
+        foreach (self::STRING_FIELDS as $field) {
+            $fields[$field] = [
+                'type' => 'string',
+                'operator' => 'exact',
+            ];
+        }
+
+        foreach (self::BOOLEAN_FIELDS as $field) {
+            $fields[$field] = [
+                'type' => 'boolean',
+                'operator' => 'exact',
+            ];
+        }
+
+        return [
+            'version' => self::VERSION,
+            'fields' => $fields,
+            'labels' => [
+                'type' => 'map<string,string>',
+                'operator' => 'exact',
+                'query_parameters' => ['label[key]', 'labels[key]'],
+                'key_pattern' => '^[A-Za-z0-9_.:-]{1,64}$',
+            ],
+        ];
     }
 
     /**
@@ -37,8 +85,16 @@ final class VisibilityFilters
     {
         $normalized = [];
 
-        foreach (self::EXACT_FIELDS as $field) {
+        foreach (self::STRING_FIELDS as $field) {
             $value = self::stringValue($filters[$field] ?? null);
+
+            if ($value !== null) {
+                $normalized[$field] = $value;
+            }
+        }
+
+        foreach (self::BOOLEAN_FIELDS as $field) {
+            $value = self::booleanValue($filters[$field] ?? null);
 
             if ($value !== null) {
                 $normalized[$field] = $value;
@@ -61,7 +117,7 @@ final class VisibilityFilters
     {
         $filters = [];
 
-        foreach (self::EXACT_FIELDS as $field) {
+        foreach (self::exactFields() as $field) {
             $filters[$field] = $request->query($field);
         }
 
@@ -81,7 +137,7 @@ final class VisibilityFilters
         foreach ($filters as $filter) {
             $normalized = self::normalize($filter);
 
-            foreach (self::EXACT_FIELDS as $field) {
+            foreach (self::exactFields() as $field) {
                 if (array_key_exists($field, $normalized)) {
                     $merged[$field] = $normalized[$field];
                 }
@@ -111,10 +167,22 @@ final class VisibilityFilters
     {
         $normalized = self::normalize($filters);
 
-        foreach (self::EXACT_FIELDS as $field) {
+        foreach (self::STRING_FIELDS as $field) {
             if (array_key_exists($field, $normalized)) {
-                $query->where($field, $normalized[$field]);
+                $query->where(self::columnForField($field), $normalized[$field]);
             }
+        }
+
+        if (array_key_exists('archived', $normalized)) {
+            $normalized['archived']
+                ? $query->whereNotNull('archived_at')
+                : $query->whereNull('archived_at');
+        }
+
+        if (array_key_exists('is_terminal', $normalized)) {
+            $normalized['is_terminal']
+                ? $query->whereIn('status', self::terminalStatuses())
+                : $query->whereNotIn('status', self::terminalStatuses());
         }
 
         foreach ($normalized['labels'] ?? [] as $key => $value) {
@@ -137,6 +205,33 @@ final class VisibilityFilters
         }
 
         return $value;
+    }
+
+    private static function booleanValue(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value)) {
+            return match ($value) {
+                1 => true,
+                0 => false,
+                default => null,
+            };
+        }
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = strtolower(trim($value));
+
+        return match ($value) {
+            '1', 'true', 'yes' => true,
+            '0', 'false', 'no' => false,
+            default => null,
+        };
     }
 
     /**
@@ -166,5 +261,27 @@ final class VisibilityFilters
         ksort($normalized);
 
         return $normalized;
+    }
+
+    private static function columnForField(string $field): string
+    {
+        return match ($field) {
+            'instance_id' => 'workflow_instance_id',
+            'run_id' => 'id',
+            default => $field,
+        };
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private static function terminalStatuses(): array
+    {
+        return [
+            'completed',
+            'failed',
+            'cancelled',
+            'terminated',
+        ];
     }
 }
