@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestSignalThenUpdateWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -37,6 +38,7 @@ final class V2WebhookWorkflowTest extends TestCase
             TestGreetingWorkflow::class,
             TestSignalWorkflow::class,
             'test-timer-workflow' => TestTimerWorkflow::class,
+            TestQueryWorkflow::class,
             TestAliasedUpdateWorkflow::class,
             TestSignalThenUpdateWorkflow::class,
             TestUpdateWorkflow::class,
@@ -303,6 +305,118 @@ final class V2WebhookWorkflowTest extends TestCase
             'id' => 'order-configured-webhook',
             'workflow_type' => 'configured-webhook-workflow',
         ]);
+    }
+
+    public function testQueryWebhookReturnsSerializedResultForCurrentRun(): void
+    {
+        $workflow = WorkflowStub::make(TestQueryWorkflow::class, 'order-query-webhook');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-query-webhook/queries/countEventsByPrefix', [
+            'arguments' => [
+                'prefix' => 'start',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('query_name', 'events-starting-with')
+            ->assertJsonPath('workflow_id', 'order-query-webhook')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance');
+
+        $this->assertSame(1, unserialize((string) $response->json('result')));
+    }
+
+    public function testRunTargetedQueryWebhookReturnsSerializedResultForSelectedRun(): void
+    {
+        $workflow = WorkflowStub::make(TestQueryWorkflow::class, 'order-query-webhook-run');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson(
+            '/webhooks/instances/order-query-webhook-run/runs/' . $workflow->runId() . '/queries/events-starting-with',
+            [
+                'arguments' => [
+                    'prefix' => 'start',
+                ],
+            ]
+        );
+
+        $response
+            ->assertStatus(200)
+            ->assertJsonPath('query_name', 'events-starting-with')
+            ->assertJsonPath('workflow_id', 'order-query-webhook-run')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'run');
+
+        $this->assertSame(1, unserialize((string) $response->json('result')));
+    }
+
+    public function testQueryWebhookReturnsValidationErrorsForInvalidArguments(): void
+    {
+        $workflow = WorkflowStub::make(TestQueryWorkflow::class, 'order-query-webhook-invalid');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/order-query-webhook-invalid/queries/events-starting-with', [
+            'arguments' => [
+                'extra' => 'start',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonPath('query_name', 'events-starting-with')
+            ->assertJsonPath('workflow_id', 'order-query-webhook-invalid')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('validation_errors.prefix.0', 'The prefix argument is required.')
+            ->assertJsonPath('validation_errors.extra.0', 'Unknown argument [extra].');
+    }
+
+    public function testQueryWebhookReturnsBlockedReasonWhenWorkflowDefinitionCannotBeResolved(): void
+    {
+        $workflow = WorkflowStub::make(TestQueryWorkflow::class, 'order-query-webhook-definition-unavailable');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestQueryWorkflow',
+            'workflow_type' => 'missing-query-workflow',
+        ]);
+
+        $response = $this->postJson(
+            '/webhooks/instances/order-query-webhook-definition-unavailable/queries/events-starting-with',
+            [
+                'arguments' => [
+                    'prefix' => 'start',
+                ],
+            ]
+        );
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('query_name', 'events-starting-with')
+            ->assertJsonPath('workflow_id', 'order-query-webhook-definition-unavailable')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('blocked_reason', 'workflow_definition_unavailable')
+            ->assertJsonPath(
+                'message',
+                sprintf(
+                    'Workflow %s [%s] cannot execute query [%s] because the workflow definition is unavailable for durable type [%s].',
+                    $workflow->runId(),
+                    'order-query-webhook-definition-unavailable',
+                    'events-starting-with',
+                    'missing-query-workflow',
+                ),
+            );
     }
 
     public function testSignalWebhookReturnsTypedAcceptedResponse(): void

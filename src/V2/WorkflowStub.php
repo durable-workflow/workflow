@@ -227,6 +227,20 @@ final class WorkflowStub
     }
 
     /**
+     * @return array{name: string, method: string}|null
+     */
+    public function resolveQueryTarget(string $target): ?array
+    {
+        $this->refresh();
+
+        if (! $this->run instanceof WorkflowRun) {
+            return null;
+        }
+
+        return $this->resolveQueryTargetForRun($this->run, $target);
+    }
+
+    /**
      * @param array<int|string, mixed> $arguments
      */
     public function queryWithArguments(string $method, array $arguments): mixed

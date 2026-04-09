@@ -18,6 +18,7 @@ use Workflow\Auth\WebhookAuthenticator;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Support\CommandResponse;
+use Workflow\V2\Support\QueryResponse;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowInstanceId;
 
@@ -47,6 +48,41 @@ final class Webhooks
                 }, TypeRegistry::for($workflow));
             })->name("workflows.v2.start.{$alias}");
         }
+
+        Route::post("{$basePath}/instances/{workflowId}/runs/{runId}/queries/{query}", static function (
+            Request $request,
+            string $workflowId,
+            string $runId,
+            string $query,
+        ) {
+            $request = self::validateAuth($request);
+
+            $response = QueryResponse::execute(
+                self::selectionStub($workflowId, $runId),
+                $query,
+                self::resolveQueryArguments($request->all()),
+                'run',
+            );
+
+            return response()->json($response['payload'], $response['status']);
+        })->name('workflows.v2.runs.query');
+
+        Route::post("{$basePath}/instances/{workflowId}/queries/{query}", static function (
+            Request $request,
+            string $workflowId,
+            string $query,
+        ) {
+            $request = self::validateAuth($request);
+
+            $response = QueryResponse::execute(
+                self::selectionStub($workflowId),
+                $query,
+                self::resolveQueryArguments($request->all()),
+                'instance',
+            );
+
+            return response()->json($response['payload'], $response['status']);
+        })->name('workflows.v2.query');
 
         Route::post("{$basePath}/instances/{workflowId}/runs/{runId}/signals/{signal}", static function (
             Request $request,
@@ -320,6 +356,29 @@ final class Webhooks
      * @return array<int|string, mixed>
      */
     private static function resolveSignalArguments(array $payload): array
+    {
+        if (! array_key_exists('arguments', $payload)) {
+            return [];
+        }
+
+        $arguments = $payload['arguments'];
+
+        if (! is_array($arguments)) {
+            throw ValidationException::withMessages([
+                'arguments' => ['The arguments field must be an array.'],
+            ]);
+        }
+
+        return array_is_list($arguments)
+            ? array_values($arguments)
+            : $arguments;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<int|string, mixed>
+     */
+    private static function resolveQueryArguments(array $payload): array
     {
         if (! array_key_exists('arguments', $payload)) {
             return [];
