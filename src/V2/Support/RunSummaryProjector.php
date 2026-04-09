@@ -28,12 +28,7 @@ final class RunSummaryProjector
             ? null
             : CurrentRunResolver::forInstance($run->instance);
 
-        $isTerminal = in_array($run->status, [
-            RunStatus::Completed,
-            RunStatus::Failed,
-            RunStatus::Cancelled,
-            RunStatus::Terminated,
-        ], true);
+        $isTerminal = $run->status->isTerminal();
         $activities = RunActivityView::activitiesForRun($run);
 
         $openActivity = $isTerminal
@@ -150,11 +145,7 @@ final class RunSummaryProjector
             $openSignalWait,
         );
 
-        $statusBucket = match ($run->status) {
-            RunStatus::Completed => StatusBucket::Completed,
-            RunStatus::Cancelled, RunStatus::Terminated, RunStatus::Failed => StatusBucket::Failed,
-            default => StatusBucket::Running,
-        };
+        $statusBucket = $run->status->statusBucket();
 
         $durationMs = null;
 

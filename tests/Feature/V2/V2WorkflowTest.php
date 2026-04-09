@@ -3510,6 +3510,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertNotNull($summary);
         $this->assertSame('cancelled', $summary->status);
         $this->assertSame('failed', $summary->status_bucket);
+        $this->assertTrue($summary->is_terminal);
         $this->assertSame('cancelled', $summary->closed_reason);
         $this->assertNull($summary->wait_kind);
         $this->assertNotNull($summary->closed_at);
@@ -3625,6 +3626,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertNotNull($summary);
         $this->assertSame('terminated', $summary->status);
         $this->assertSame('failed', $summary->status_bucket);
+        $this->assertTrue($summary->is_terminal);
         $this->assertSame('terminated', $summary->closed_reason);
         $this->assertNull($summary->wait_kind);
 

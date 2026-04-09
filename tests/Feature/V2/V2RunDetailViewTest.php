@@ -90,6 +90,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($runId, $detail['current_run_id']);
         $this->assertSame('waiting', $detail['status']);
         $this->assertSame('running', $detail['status_bucket']);
+        $this->assertFalse($detail['is_terminal']);
         $this->assertSame('signal', $detail['wait_kind']);
         $this->assertSame('Waiting for signal name-provided', $detail['wait_reason']);
         $this->assertSame('waiting_for_signal', $detail['liveness_state']);
@@ -269,6 +270,7 @@ final class V2RunDetailViewTest extends TestCase
 
         $this->assertSame('completed', $detail['status']);
         $this->assertSame('completed', $detail['status_bucket']);
+        $this->assertTrue($detail['is_terminal']);
         $this->assertSame('completed', $detail['closed_reason']);
         $this->assertFalse($detail['can_issue_terminal_commands']);
         $this->assertFalse($detail['can_cancel']);

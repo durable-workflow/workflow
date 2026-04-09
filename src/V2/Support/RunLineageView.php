@@ -335,12 +335,7 @@ final class RunLineageView
 
     private static function statusBucket(?RunStatus $status): ?string
     {
-        return match ($status) {
-            RunStatus::Completed => 'completed',
-            RunStatus::Cancelled, RunStatus::Failed, RunStatus::Terminated => 'failed',
-            RunStatus::Pending, RunStatus::Running, RunStatus::Waiting => 'running',
-            default => null,
-        };
+        return $status?->statusBucket()->value;
     }
 
     private static function stringValue(mixed $value): ?string

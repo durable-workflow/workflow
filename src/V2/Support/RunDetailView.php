@@ -119,6 +119,7 @@ final class RunDetailView
             'queue' => $run->queue,
             'output' => $run->output === null ? serialize(null) : serialize($run->workflowOutput()),
             'status' => $run->status->value,
+            'is_terminal' => $run->status->isTerminal(),
             'declared_queries' => $commandContract['queries'],
             'declared_query_contracts' => $commandContract['query_contracts'],
             'declared_query_targets' => $commandContract['query_targets'],

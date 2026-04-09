@@ -6,6 +6,7 @@ namespace Workflow\V2\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\V2\Enums\RunStatus;
 
 class WorkflowRunSummary extends Model
 {
@@ -19,7 +20,7 @@ class WorkflowRunSummary extends Model
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
-    protected $appends = ['instance_id', 'selected_run_id', 'run_id', 'exceptions_count'];
+    protected $appends = ['instance_id', 'selected_run_id', 'run_id', 'exceptions_count', 'is_terminal'];
 
     protected $casts = [
         'is_current_run' => 'bool',
@@ -55,5 +56,10 @@ class WorkflowRunSummary extends Model
     public function getExceptionsCountAttribute(): int
     {
         return (int) $this->exception_count;
+    }
+
+    public function getIsTerminalAttribute(): bool
+    {
+        return RunStatus::from($this->status)->isTerminal();
     }
 }
