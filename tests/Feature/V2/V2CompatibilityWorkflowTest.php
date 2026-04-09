@@ -494,12 +494,118 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertTrue($detail['compatibility_fleet'][0]['supports_required']);
         $this->assertNotNull($detail['compatibility_fleet'][0]['recorded_at']);
         $this->assertNotNull($detail['compatibility_fleet'][0]['expires_at']);
+        $this->assertSame('database', $detail['compatibility_fleet'][0]['source']);
         $this->assertSame('workflow_task_ready', $detail['liveness_state']);
         $this->assertSame('build-a', $detail['tasks'][0]['compatibility']);
         $this->assertFalse($detail['tasks'][0]['compatibility_supported']);
         $this->assertTrue($detail['tasks'][0]['compatibility_supported_in_fleet']);
         $this->assertNull($detail['tasks'][0]['compatibility_fleet_reason']);
         $this->assertSame('Workflow task ready to resume the selected run.', $detail['tasks'][0]['summary']);
+    }
+
+    public function testLegacyCacheHeartbeatKeepsUnsupportedLocalTaskReadyDuringMixedUpgrade(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+
+        $this->seedLegacyFleetHeartbeat('worker-legacy-build-a', ['build-a'], 'redis', ['default']);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'compat-legacy-fleet-heartbeat',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'reserved_at' => now()
+                ->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'compatibility' => 'build-a',
+            'payload_codec' => config('workflows.serializer'),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinutes(2),
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinute(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh([
+            'summary',
+            'commands',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+            'parentLinks.parentRun.summary',
+            'childLinks.childRun.summary',
+            'instance.currentRun.summary',
+        ]));
+
+        $this->assertSame('workflow_task_ready', $summary->liveness_state);
+        $this->assertSame('Workflow task ready', $summary->wait_reason);
+        $this->assertCount(0, WorkerCompatibilityHeartbeat::query()->get());
+        $this->assertFalse($detail['compatibility_supported']);
+        $this->assertTrue($detail['compatibility_supported_in_fleet']);
+        $this->assertNull($detail['compatibility_fleet_reason']);
+        $this->assertCount(1, $detail['compatibility_fleet']);
+        $this->assertSame('worker-legacy-build-a', $detail['compatibility_fleet'][0]['worker_id']);
+        $this->assertSame('redis', $detail['compatibility_fleet'][0]['connection']);
+        $this->assertSame('default', $detail['compatibility_fleet'][0]['queue']);
+        $this->assertSame(['build-a'], $detail['compatibility_fleet'][0]['supported']);
+        $this->assertTrue($detail['compatibility_fleet'][0]['supports_required']);
+        $this->assertNull($detail['compatibility_fleet'][0]['host']);
+        $this->assertNull($detail['compatibility_fleet'][0]['process_id']);
+        $this->assertSame('cache', $detail['compatibility_fleet'][0]['source']);
+        $this->assertNotNull($detail['compatibility_fleet'][0]['recorded_at']);
+        $this->assertNotNull($detail['compatibility_fleet'][0]['expires_at']);
+        $this->assertTrue($detail['tasks'][0]['compatibility_supported_in_fleet']);
+        $this->assertNull($detail['tasks'][0]['compatibility_fleet_reason']);
+        $this->assertSame('Workflow task ready to resume the selected run.', $detail['tasks'][0]['summary']);
+    }
+
+    public function testDurableDatabaseHeartbeatWinsOverLegacyCacheSnapshotForSameWorkerScope(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+
+        WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-build-a');
+        $this->seedLegacyFleetHeartbeat('worker-build-a', ['build-legacy'], 'redis', ['default']);
+
+        $fleet = WorkerCompatibilityFleet::details('build-a', 'redis', 'default');
+
+        $this->assertCount(1, $fleet);
+        $this->assertSame('worker-build-a', $fleet[0]['worker_id']);
+        $this->assertSame(['build-a'], $fleet[0]['supported']);
+        $this->assertTrue($fleet[0]['supports_required']);
+        $this->assertSame('database', $fleet[0]['source']);
     }
 
     public function testTaskWatchdogHeartbeatPersistsDurableWorkerSnapshot(): void
@@ -787,5 +893,32 @@ final class V2CompatibilityWorkflowTest extends TestCase
     {
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
         TaskWatchdog::wake('redis', 'default');
+    }
+
+    /**
+     * @param  list<string>  $supported
+     * @param  list<string>  $queues
+     */
+    private function seedLegacyFleetHeartbeat(
+        string $workerId,
+        array $supported,
+        ?string $connection = null,
+        array $queues = [],
+    ): void {
+        $fleet = Cache::get('workflow:v2:compatibility:fleet');
+
+        if (! is_array($fleet)) {
+            $fleet = [];
+        }
+
+        $fleet[$workerId] = [
+            'supported' => $supported,
+            'connection' => $connection,
+            'queues' => $queues,
+            'recorded_at' => now()->subSeconds(5)->getTimestamp(),
+            'expires_at' => now()->addSeconds(30)->getTimestamp(),
+        ];
+
+        Cache::forever('workflow:v2:compatibility:fleet', $fleet);
     }
 }

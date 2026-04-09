@@ -4,19 +4,27 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 
 final class WorkerCompatibilityFleet
 {
+    private const LEGACY_CACHE_KEY = 'workflow:v2:compatibility:fleet';
+
+    private const SOURCE_DATABASE = 'database';
+
+    private const SOURCE_CACHE = 'cache';
+
     /**
      * @var array<string, array{supported: list<string>, connection: ?string, queues: list<string>, recorded_at: int}>
      */
     private static array $lastRecorded = [];
 
     /**
-     * @var list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null}>|null
+     * @var list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>|null
      */
     private static ?array $snapshotCache = null;
 
@@ -120,6 +128,7 @@ final class WorkerCompatibilityFleet
                         || in_array($required, $supported, true),
                     'recorded_at' => $snapshot['recorded_at'],
                     'expires_at' => $snapshot['expires_at'],
+                    'source' => $snapshot['source'],
                 ];
             },
             self::matchingSnapshots($connection, $queue),
@@ -129,6 +138,7 @@ final class WorkerCompatibilityFleet
     public static function clear(): void
     {
         WorkerCompatibilityHeartbeat::query()->delete();
+        Cache::forget(self::LEGACY_CACHE_KEY);
         self::$lastRecorded = [];
         self::$lastPrunedAt = null;
         self::forgetSnapshotCache();
@@ -237,7 +247,7 @@ final class WorkerCompatibilityFleet
 
         self::pruneExpired();
 
-        self::$snapshotCache = WorkerCompatibilityHeartbeat::query()
+        $databaseSnapshots = WorkerCompatibilityHeartbeat::query()
             ->where('expires_at', '>=', now())
             ->orderBy('connection')
             ->orderBy('queue')
@@ -253,10 +263,16 @@ final class WorkerCompatibilityFleet
                     'supported' => self::normalizeMarkers($snapshot->supported),
                     'recorded_at' => $snapshot->recorded_at,
                     'expires_at' => $snapshot->expires_at,
+                    'source' => self::SOURCE_DATABASE,
                 ];
             })
             ->values()
             ->all();
+
+        self::$snapshotCache = self::mergeSnapshots(
+            $databaseSnapshots,
+            self::legacyCacheSnapshots(),
+        );
         self::$snapshotCacheSecond = $nowSecond;
 
         return self::$snapshotCache;
@@ -311,7 +327,7 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null}>
+     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
      */
     private static function matchingSnapshots(?string $connection = null, ?string $queue = null): array
     {
@@ -355,6 +371,138 @@ final class WorkerCompatibilityFleet
         sort($markers);
 
         return $markers;
+    }
+
+    /**
+     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     */
+    private static function legacyCacheSnapshots(): array
+    {
+        $fleet = Cache::get(self::LEGACY_CACHE_KEY);
+
+        if (! is_array($fleet)) {
+            return [];
+        }
+
+        $now = now()->getTimestamp();
+        $snapshots = [];
+
+        foreach ($fleet as $workerId => $snapshot) {
+            if (! is_string($workerId) || ! is_array($snapshot)) {
+                continue;
+            }
+
+            $expiresAt = is_numeric($snapshot['expires_at'] ?? null)
+                ? (int) $snapshot['expires_at']
+                : null;
+
+            if ($expiresAt === null || $expiresAt < $now) {
+                continue;
+            }
+
+            $supported = self::normalizeMarkers($snapshot['supported'] ?? []);
+            $connection = self::normalizeValue($snapshot['connection'] ?? null);
+            $queues = self::normalizeMarkers($snapshot['queues'] ?? []);
+            $recordedAt = self::carbonFromTimestamp($snapshot['recorded_at'] ?? null);
+            $expiresAtCarbon = self::carbonFromTimestamp($expiresAt);
+
+            foreach ($queues === [] ? [null] : $queues as $scopeQueue) {
+                $snapshots[] = [
+                    'worker_id' => $workerId,
+                    'host' => null,
+                    'process_id' => null,
+                    'connection' => $connection,
+                    'queue' => self::normalizeValue($scopeQueue),
+                    'supported' => $supported,
+                    'recorded_at' => $recordedAt,
+                    'expires_at' => $expiresAtCarbon,
+                    'source' => self::SOURCE_CACHE,
+                ];
+            }
+        }
+
+        return self::sortSnapshots($snapshots);
+    }
+
+    /**
+     * @param  list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $preferred
+     * @param  list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $fallback
+     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     */
+    private static function mergeSnapshots(array $preferred, array $fallback): array
+    {
+        $merged = [];
+        $seen = [];
+
+        foreach ([$preferred, $fallback] as $snapshots) {
+            foreach ($snapshots as $snapshot) {
+                $key = self::snapshotKey($snapshot);
+
+                if (isset($seen[$key])) {
+                    continue;
+                }
+
+                $merged[] = $snapshot;
+                $seen[$key] = true;
+            }
+        }
+
+        return self::sortSnapshots($merged);
+    }
+
+    /**
+     * @param  array{worker_id: string, connection: ?string, queue: ?string}  $snapshot
+     */
+    private static function snapshotKey(array $snapshot): string
+    {
+        return implode('|', [
+            $snapshot['worker_id'],
+            $snapshot['connection'] ?? '',
+            $snapshot['queue'] ?? '',
+        ]);
+    }
+
+    /**
+     * @param  list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>  $snapshots
+     * @return list<array{worker_id: string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
+     */
+    private static function sortSnapshots(array $snapshots): array
+    {
+        usort($snapshots, static function (array $left, array $right): int {
+            $leftConnection = $left['connection'] ?? '';
+            $rightConnection = $right['connection'] ?? '';
+
+            if ($leftConnection !== $rightConnection) {
+                return $leftConnection <=> $rightConnection;
+            }
+
+            $leftQueue = $left['queue'] ?? '';
+            $rightQueue = $right['queue'] ?? '';
+
+            if ($leftQueue !== $rightQueue) {
+                return $leftQueue <=> $rightQueue;
+            }
+
+            $leftWorker = $left['worker_id'] ?? '';
+            $rightWorker = $right['worker_id'] ?? '';
+
+            if ($leftWorker !== $rightWorker) {
+                return $leftWorker <=> $rightWorker;
+            }
+
+            return ($left['source'] ?? '') <=> ($right['source'] ?? '');
+        });
+
+        return array_values($snapshots);
+    }
+
+    private static function carbonFromTimestamp(mixed $value): ?Carbon
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return Carbon::createFromTimestamp((int) $value);
     }
 
     private static function scopeLabel(?string $connection, ?string $queue): string
