@@ -10,6 +10,7 @@ use LogicException;
 use ReflectionMethod;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
@@ -301,7 +302,7 @@ final class WorkflowStub
     /**
      * @return array<string, mixed>
      */
-    public function historyExport(): array
+    public function historyExport(HistoryExportRedactor|callable|null $redactor = null): array
     {
         $this->refresh();
 
@@ -309,7 +310,7 @@ final class WorkflowStub
             throw new LogicException(sprintf('Workflow instance [%s] has not started yet.', $this->instance->id));
         }
 
-        return HistoryExport::forRun($this->run);
+        return HistoryExport::forRun($this->run, redactor: $redactor);
     }
 
     public function refresh(): self

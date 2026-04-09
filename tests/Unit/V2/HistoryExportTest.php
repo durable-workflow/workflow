@@ -6,8 +6,10 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
@@ -18,6 +20,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
@@ -209,6 +212,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('workflow-serializer', $bundle['payloads']['codec']);
         $this->assertSame($run->arguments, $bundle['payloads']['arguments']['data']);
         $this->assertSame($run->output, $bundle['payloads']['output']['data']);
+        $this->assertFalse($bundle['redaction']['applied']);
         $this->assertSame(2, $bundle['summary']['history_event_count']);
         $this->assertSame(['StartAccepted', 'WorkflowCompleted'], array_column($bundle['history_events'], 'type'));
         $this->assertSame($command->id, $bundle['commands'][0]['id']);
@@ -222,5 +226,133 @@ final class HistoryExportTest extends TestCase
 
         $this->assertSame($bundle['history_events'], $stubBundle['history_events']);
         $this->assertSame($bundle['workflow']['run_id'], $stubBundle['workflow']['run_id']);
+    }
+
+    public function testItAppliesConfiguredRedactionPolicyToPayloadAndDiagnosticSlots(): void
+    {
+        config()->set('workflows.v2.history_export.redactor', new class() implements HistoryExportRedactor {
+            /**
+             * @param array<string, mixed> $context
+             *
+             * @return array<string, mixed>
+             */
+            public function redact(mixed $value, array $context): array
+            {
+                return [
+                    'redacted' => true,
+                    'path' => $context['path'],
+                    'category' => $context['category'],
+                ];
+            }
+        });
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'history-export-redacted',
+            'workflow_class' => 'App\\Workflows\\RedactedExportWorkflow',
+            'workflow_type' => 'export.redacted',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\RedactedExportWorkflow',
+            'workflow_type' => 'export.redacted',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'payload_codec' => 'workflow-serializer',
+            'arguments' => Serializer::serialize(['secret-order']),
+            'output' => Serializer::serialize(['secret' => true]),
+            'started_at' => now()->subMinutes(5),
+            'closed_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        $command = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Start->value,
+            'target_scope' => 'instance',
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize(['arguments' => ['secret-order']]),
+            'context' => ['workflow' => ['parent_instance_id' => 'secret-parent']],
+            'source' => 'php',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::StartedNew->value,
+            'accepted_at' => now()->subMinutes(5),
+            'applied_at' => now()->subMinutes(5),
+        ]);
+
+        WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::WorkflowStarted,
+            ['arguments' => ['secret-order']],
+            command: $command,
+        );
+
+        WorkflowTask::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Completed->value,
+            'payload' => ['secret' => 'task'],
+            'available_at' => now()->subMinutes(5),
+            'last_dispatched_at' => now()->subMinutes(5),
+        ]);
+
+        ActivityExecution::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => 'App\\Activities\\RedactedExportActivity',
+            'activity_type' => 'export.redacted.activity',
+            'status' => 'completed',
+            'arguments' => Serializer::serialize(['secret-order']),
+            'result' => Serializer::serialize(['activity-secret' => true]),
+        ]);
+
+        WorkflowFailure::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'source_kind' => 'workflow',
+            'source_id' => $run->id,
+            'propagation_kind' => 'terminal',
+            'handled' => false,
+            'exception_class' => RuntimeException::class,
+            'message' => 'secret failure message',
+            'file' => '/app/secret.php',
+            'line' => 10,
+            'trace_preview' => 'secret trace',
+        ]);
+
+        $bundle = HistoryExport::forRun($run->refresh());
+
+        $this->assertTrue($bundle['redaction']['applied']);
+        $this->assertIsString($bundle['redaction']['policy']);
+        $this->assertContains('payloads.arguments.data', $bundle['redaction']['paths']);
+        $this->assertContains('history_events.0.payload', $bundle['redaction']['paths']);
+        $this->assertContains('commands.0.payload', $bundle['redaction']['paths']);
+        $this->assertContains('commands.0.context', $bundle['redaction']['paths']);
+        $this->assertContains('tasks.0.payload', $bundle['redaction']['paths']);
+        $this->assertContains('activities.0.arguments', $bundle['redaction']['paths']);
+        $this->assertContains('failures.0.message', $bundle['redaction']['paths']);
+        $this->assertSame('payloads.arguments.data', $bundle['payloads']['arguments']['data']['path']);
+        $this->assertSame('workflow_payload', $bundle['payloads']['arguments']['data']['category']);
+        $this->assertSame('history_events.0.payload', $bundle['history_events'][0]['payload']['path']);
+        $this->assertSame('failure_diagnostic', $bundle['failures'][0]['message']['category']);
+
+        $stubBundle = WorkflowStub::loadRun($run->id)->historyExport(new class() implements HistoryExportRedactor {
+            /**
+             * @param array<string, mixed> $context
+             */
+            public function redact(mixed $value, array $context): string
+            {
+                return 'inline-redacted:'.$context['path'];
+            }
+        });
+
+        $this->assertSame('inline-redacted:payloads.arguments.data', $stubBundle['payloads']['arguments']['data']);
     }
 }

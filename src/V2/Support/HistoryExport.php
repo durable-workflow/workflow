@@ -5,7 +5,12 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Closure;
 use Illuminate\Support\Collection;
+use InvalidArgumentException;
+use LogicException;
+use Throwable;
+use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -27,7 +32,11 @@ final class HistoryExport
     /**
      * @return array<string, mixed>
      */
-    public static function forRun(WorkflowRun $run, ?CarbonInterface $exportedAt = null): array
+    public static function forRun(
+        WorkflowRun $run,
+        ?CarbonInterface $exportedAt = null,
+        HistoryExportRedactor|callable|null $redactor = null,
+    ): array
     {
         $exportedAt ??= now();
 
@@ -50,7 +59,7 @@ final class HistoryExport
             : CurrentRunResolver::forInstance($run->instance, ['summary']);
         $summary = $run->summary;
 
-        return [
+        $bundle = [
             'schema' => self::SCHEMA,
             'schema_version' => self::SCHEMA_VERSION,
             'exported_at' => self::timestamp($exportedAt),
@@ -120,6 +129,332 @@ final class HistoryExport
                 'children' => self::links($run->childLinks, $run, 'child'),
             ],
         ];
+
+        return self::withRedaction($bundle, $run, $redactor);
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     *
+     * @return array<string, mixed>
+     */
+    private static function withRedaction(
+        array $bundle,
+        WorkflowRun $run,
+        HistoryExportRedactor|callable|null $redactor,
+    ): array {
+        $resolvedRedactor = self::resolveRedactor($redactor);
+
+        if ($resolvedRedactor === null) {
+            $bundle['redaction'] = [
+                'applied' => false,
+                'policy' => null,
+                'paths' => [],
+            ];
+
+            return $bundle;
+        }
+
+        $paths = [];
+        $callback = $resolvedRedactor['callback'];
+
+        if (isset($bundle['payloads']['arguments']) && is_array($bundle['payloads']['arguments'])) {
+            self::redactField(
+                $bundle['payloads']['arguments'],
+                'data',
+                $callback,
+                self::redactionContext($run, 'payloads.arguments.data', 'workflow_payload', ['field' => 'arguments']),
+                $paths,
+            );
+        }
+
+        if (isset($bundle['payloads']['output']) && is_array($bundle['payloads']['output'])) {
+            self::redactField(
+                $bundle['payloads']['output'],
+                'data',
+                $callback,
+                self::redactionContext($run, 'payloads.output.data', 'workflow_payload', ['field' => 'output']),
+                $paths,
+            );
+        }
+
+        if (isset($bundle['history_events']) && is_array($bundle['history_events'])) {
+            foreach ($bundle['history_events'] as $index => &$event) {
+                if (! is_array($event)) {
+                    continue;
+                }
+
+                self::redactField(
+                    $event,
+                    'payload',
+                    $callback,
+                    self::redactionContext($run, "history_events.{$index}.payload", 'history_event', [
+                        'history_event_id' => $event['id'] ?? null,
+                        'history_event_type' => $event['type'] ?? null,
+                        'sequence' => $event['sequence'] ?? null,
+                    ]),
+                    $paths,
+                );
+            }
+
+            unset($event);
+        }
+
+        if (isset($bundle['commands']) && is_array($bundle['commands'])) {
+            foreach ($bundle['commands'] as $index => &$command) {
+                if (! is_array($command)) {
+                    continue;
+                }
+
+                self::redactField(
+                    $command,
+                    'payload',
+                    $callback,
+                    self::redactionContext($run, "commands.{$index}.payload", 'command_payload', [
+                        'command_id' => $command['id'] ?? null,
+                        'command_type' => $command['type'] ?? null,
+                        'sequence' => $command['sequence'] ?? null,
+                    ]),
+                    $paths,
+                );
+
+                self::redactField(
+                    $command,
+                    'context',
+                    $callback,
+                    self::redactionContext($run, "commands.{$index}.context", 'command_context', [
+                        'command_id' => $command['id'] ?? null,
+                        'command_type' => $command['type'] ?? null,
+                        'sequence' => $command['sequence'] ?? null,
+                    ]),
+                    $paths,
+                );
+            }
+
+            unset($command);
+        }
+
+        if (isset($bundle['updates']) && is_array($bundle['updates'])) {
+            foreach ($bundle['updates'] as $index => &$update) {
+                if (! is_array($update)) {
+                    continue;
+                }
+
+                foreach (['arguments', 'result'] as $field) {
+                    self::redactField(
+                        $update,
+                        $field,
+                        $callback,
+                        self::redactionContext($run, "updates.{$index}.{$field}", 'update_payload', [
+                            'update_id' => $update['id'] ?? null,
+                            'update_name' => $update['name'] ?? null,
+                            'field' => $field,
+                        ]),
+                        $paths,
+                    );
+                }
+            }
+
+            unset($update);
+        }
+
+        if (isset($bundle['tasks']) && is_array($bundle['tasks'])) {
+            foreach ($bundle['tasks'] as $index => &$task) {
+                if (! is_array($task)) {
+                    continue;
+                }
+
+                self::redactField(
+                    $task,
+                    'payload',
+                    $callback,
+                    self::redactionContext($run, "tasks.{$index}.payload", 'task_payload', [
+                        'task_id' => $task['id'] ?? null,
+                        'task_type' => $task['type'] ?? null,
+                    ]),
+                    $paths,
+                );
+            }
+
+            unset($task);
+        }
+
+        if (isset($bundle['activities']) && is_array($bundle['activities'])) {
+            foreach ($bundle['activities'] as $index => &$activity) {
+                if (! is_array($activity)) {
+                    continue;
+                }
+
+                foreach (['arguments', 'result'] as $field) {
+                    self::redactField(
+                        $activity,
+                        $field,
+                        $callback,
+                        self::redactionContext($run, "activities.{$index}.{$field}", 'activity_payload', [
+                            'activity_execution_id' => $activity['id'] ?? null,
+                            'activity_type' => $activity['activity_type'] ?? null,
+                            'field' => $field,
+                        ]),
+                        $paths,
+                    );
+                }
+            }
+
+            unset($activity);
+        }
+
+        if (isset($bundle['failures']) && is_array($bundle['failures'])) {
+            foreach ($bundle['failures'] as $index => &$failure) {
+                if (! is_array($failure)) {
+                    continue;
+                }
+
+                foreach (['message', 'file', 'trace_preview'] as $field) {
+                    self::redactField(
+                        $failure,
+                        $field,
+                        $callback,
+                        self::redactionContext($run, "failures.{$index}.{$field}", 'failure_diagnostic', [
+                            'failure_id' => $failure['id'] ?? null,
+                            'source_kind' => $failure['source_kind'] ?? null,
+                            'source_id' => $failure['source_id'] ?? null,
+                            'field' => $field,
+                        ]),
+                        $paths,
+                    );
+                }
+            }
+
+            unset($failure);
+        }
+
+        $bundle['redaction'] = [
+            'applied' => true,
+            'policy' => $resolvedRedactor['policy'],
+            'paths' => array_values(array_unique($paths)),
+        ];
+
+        return $bundle;
+    }
+
+    /**
+     * @return array{callback: callable(mixed, array<string, mixed>): mixed, policy: string}|null
+     */
+    private static function resolveRedactor(HistoryExportRedactor|callable|null $redactor): ?array
+    {
+        $configured = $redactor ?? config('workflows.v2.history_export.redactor');
+
+        if ($configured === null || $configured === false || $configured === '') {
+            return null;
+        }
+
+        if (is_string($configured) && class_exists($configured)) {
+            $configured = app($configured);
+        }
+
+        if ($configured instanceof HistoryExportRedactor) {
+            return [
+                'callback' => static fn (mixed $value, array $context): mixed => $configured->redact($value, $context),
+                'policy' => $configured::class,
+            ];
+        }
+
+        if (is_callable($configured)) {
+            return [
+                'callback' => $configured,
+                'policy' => self::redactorName($configured),
+            ];
+        }
+
+        throw new InvalidArgumentException(
+            'Configured workflow v2 history export redactor must implement '
+            . HistoryExportRedactor::class
+            . ' or be callable.',
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $target
+     * @param callable(mixed, array<string, mixed>): mixed $redactor
+     * @param array<string, mixed> $context
+     * @param list<string> $paths
+     */
+    private static function redactField(
+        array &$target,
+        string $field,
+        callable $redactor,
+        array $context,
+        array &$paths,
+    ): void {
+        if (! array_key_exists($field, $target)) {
+            return;
+        }
+
+        $target[$field] = self::redactValue($target[$field], $redactor, $context);
+        $paths[] = (string) $context['path'];
+    }
+
+    /**
+     * @param callable(mixed, array<string, mixed>): mixed $redactor
+     * @param array<string, mixed> $context
+     */
+    private static function redactValue(mixed $value, callable $redactor, array $context): mixed
+    {
+        try {
+            return $redactor($value, $context);
+        } catch (Throwable $exception) {
+            throw new LogicException(
+                sprintf(
+                    'Workflow v2 history export redactor failed for [%s]: %s',
+                    $context['path'] ?? 'unknown',
+                    $exception->getMessage(),
+                ),
+                previous: $exception,
+            );
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $extra
+     *
+     * @return array<string, mixed>
+     */
+    private static function redactionContext(WorkflowRun $run, string $path, string $category, array $extra = []): array
+    {
+        return array_merge([
+            'path' => $path,
+            'category' => $category,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'workflow_type' => $run->workflow_type,
+        ], $extra);
+    }
+
+    private static function redactorName(callable $redactor): string
+    {
+        if ($redactor instanceof Closure) {
+            return 'closure';
+        }
+
+        if (is_array($redactor)) {
+            $target = $redactor[0] ?? null;
+            $method = $redactor[1] ?? '__invoke';
+            $targetName = is_object($target)
+                ? $target::class
+                : (is_string($target) ? $target : 'callable');
+
+            return $targetName . '::' . (is_string($method) ? $method : '__invoke');
+        }
+
+        if (is_object($redactor)) {
+            return $redactor::class;
+        }
+
+        if (is_string($redactor)) {
+            return $redactor;
+        }
+
+        return 'callable';
     }
 
     private static function dedupeKey(WorkflowRun $run): string

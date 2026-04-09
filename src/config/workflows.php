@@ -46,6 +46,9 @@ return [
             'continue_as_new_event_threshold' => (int) env('WORKFLOW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD', 10000),
             'continue_as_new_size_bytes_threshold' => (int) env('WORKFLOW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD', 5242880),
         ],
+        'history_export' => [
+            'redactor' => null,
+        ],
         'task_repair' => [
             'redispatch_after_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 3),
             'loop_throttle_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS', 5),
