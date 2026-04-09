@@ -6,8 +6,12 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
+use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\CommandStatus;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -38,13 +42,14 @@ final class V2OperatorMetricsTest extends TestCase
         $run = $this->createRunWithSummary(
             instanceId: 'metrics-instance-a',
             runId: '01JMETRICSFLOWRUN000000001',
-            status: 'waiting',
+            status: 'pending',
             statusBucket: 'running',
             livenessState: 'repair_needed',
             historyEventCount: 7,
             historySizeBytes: 4096,
             continueAsNewRecommended: true,
         );
+        $this->createStartCommand($run, now()->subSeconds(30));
         $this->createRunWithSummary(
             instanceId: 'metrics-instance-b',
             runId: '01JMETRICSFLOWRUN000000002',
@@ -111,6 +116,11 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(3, $snapshot['backlog']['unhealthy_tasks']);
         $this->assertSame(1, $snapshot['backlog']['repair_needed_runs']);
         $this->assertSame(1, $snapshot['backlog']['compatibility_blocked_runs']);
+        $this->assertSame(1, $snapshot['starts']['pending_runs']);
+        $this->assertSame(1, $snapshot['starts']['pending_commands']);
+        $this->assertSame(3, $snapshot['starts']['ready_tasks']);
+        $this->assertSame('2026-04-09T11:59:30.000000Z', $snapshot['starts']['oldest_pending_start_at']);
+        $this->assertSame(30000, $snapshot['starts']['max_pending_ms']);
         $this->assertSame(1, $snapshot['history']['continue_as_new_recommended_runs']);
         $this->assertSame(7, $snapshot['history']['max_event_count']);
         $this->assertSame(4096, $snapshot['history']['max_size_bytes']);
@@ -177,6 +187,23 @@ final class V2OperatorMetricsTest extends TestCase
         ]);
 
         return $run;
+    }
+
+    private function createStartCommand(WorkflowRun $run, Carbon $acceptedAt): WorkflowCommand
+    {
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+
+        return WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Start->value,
+            'target_scope' => 'instance',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::StartedNew->value,
+            'accepted_at' => $acceptedAt,
+            'applied_at' => $acceptedAt,
+            'created_at' => $acceptedAt,
+            'updated_at' => $acceptedAt,
+        ]);
     }
 
     /**

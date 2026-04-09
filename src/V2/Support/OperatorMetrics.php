@@ -5,8 +5,13 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\CommandStatus;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -24,6 +29,7 @@ final class OperatorMetrics
             'runs' => self::runMetrics(),
             'tasks' => self::taskMetrics($now),
             'backlog' => self::backlogMetrics($now),
+            'starts' => self::startMetrics($now),
             'history' => self::historyMetrics(),
             'workers' => self::workerMetrics(),
             'repair_policy' => TaskRepairPolicy::snapshot(),
@@ -90,6 +96,24 @@ final class OperatorMetrics
     }
 
     /**
+     * @return array<string, int|string|null>
+     */
+    private static function startMetrics(CarbonInterface $now): array
+    {
+        $oldestPendingStartAt = self::oldestPendingStartAt();
+
+        return [
+            'pending_runs' => self::pendingStartRuns(),
+            'pending_commands' => self::pendingStartCommands(),
+            'ready_tasks' => self::readyPendingStartTasks($now),
+            'oldest_pending_start_at' => $oldestPendingStartAt?->toJSON(),
+            'max_pending_ms' => $oldestPendingStartAt === null
+                ? 0
+                : (int) $oldestPendingStartAt->diffInMilliseconds($now),
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function workerMetrics(): array
@@ -147,6 +171,70 @@ final class OperatorMetrics
         return self::summaryModel()::query()
             ->where('liveness_state', 'like', '%_task_waiting_for_compatible_worker')
             ->count();
+    }
+
+    private static function pendingStartRuns(): int
+    {
+        return self::summaryModel()::query()
+            ->where('status', RunStatus::Pending->value)
+            ->count();
+    }
+
+    private static function pendingStartCommands(): int
+    {
+        return self::commandModel()::query()
+            ->where('command_type', CommandType::Start->value)
+            ->where('status', CommandStatus::Accepted->value)
+            ->where('outcome', CommandOutcome::StartedNew->value)
+            ->whereHas('run', static function ($query): void {
+                $query->where('status', RunStatus::Pending->value);
+            })
+            ->count();
+    }
+
+    private static function readyPendingStartTasks(CarbonInterface $now): int
+    {
+        return self::taskModel()::query()
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->where(static function ($query) use ($now): void {
+                $query->whereNull('available_at')
+                    ->orWhere('available_at', '<=', $now);
+            })
+            ->whereHas('run', static function ($query): void {
+                $query->where('status', RunStatus::Pending->value);
+            })
+            ->count();
+    }
+
+    private static function oldestPendingStartAt(): ?CarbonInterface
+    {
+        /** @var WorkflowCommand|null $command */
+        $command = self::commandModel()::query()
+            ->where('command_type', CommandType::Start->value)
+            ->where('status', CommandStatus::Accepted->value)
+            ->where('outcome', CommandOutcome::StartedNew->value)
+            ->whereNotNull('accepted_at')
+            ->whereHas('run', static function ($query): void {
+                $query->where('status', RunStatus::Pending->value);
+            })
+            ->orderBy('accepted_at')
+            ->orderBy('id')
+            ->first();
+
+        if ($command?->accepted_at instanceof CarbonInterface) {
+            return $command->accepted_at;
+        }
+
+        /** @var WorkflowRunSummary|null $summary */
+        $summary = self::summaryModel()::query()
+            ->where('status', RunStatus::Pending->value)
+            ->whereNotNull('started_at')
+            ->orderBy('started_at')
+            ->orderBy('id')
+            ->first();
+
+        return $summary?->started_at;
     }
 
     private static function openTasks(): int
@@ -269,6 +357,17 @@ final class OperatorMetrics
     {
         /** @var class-string<WorkflowRunSummary> $model */
         $model = config('workflows.v2.run_summary_model', WorkflowRunSummary::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<WorkflowCommand>
+     */
+    private static function commandModel(): string
+    {
+        /** @var class-string<WorkflowCommand> $model */
+        $model = config('workflows.v2.command_model', WorkflowCommand::class);
 
         return $model;
     }
