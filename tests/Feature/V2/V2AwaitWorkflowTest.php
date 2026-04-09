@@ -27,6 +27,8 @@ final class V2AwaitWorkflowTest extends TestCase
     public function testAwaitWorkflowRecordsConditionWaitAndResumesAfterUpdate(): void
     {
         Queue::fake();
+        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 3);
+        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
 
         $workflow = WorkflowStub::make(TestAwaitWorkflow::class, 'await-update');
         $workflow->start();
@@ -36,11 +38,19 @@ final class V2AwaitWorkflowTest extends TestCase
         $this->assertSame('waiting', $workflow->refresh()->status());
         $this->assertSame('condition', $workflow->summary()?->wait_kind);
         $this->assertSame('Waiting for condition', $workflow->summary()?->wait_reason);
+        $this->assertSame(3, $workflow->summary()?->history_event_count);
+        $this->assertGreaterThan(0, $workflow->summary()?->history_size_bytes);
+        $this->assertTrue($workflow->summary()?->continue_as_new_recommended);
 
         $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
         $conditionWait = $this->findConditionWait($detail['waits']);
 
         $this->assertSame('condition', $detail['wait_kind']);
+        $this->assertSame(3, $detail['history_event_count']);
+        $this->assertGreaterThan(0, $detail['history_size_bytes']);
+        $this->assertSame(3, $detail['history_event_threshold']);
+        $this->assertSame(1000000, $detail['history_size_bytes_threshold']);
+        $this->assertTrue($detail['continue_as_new_recommended']);
         $this->assertSame($conditionWait['condition_wait_id'], $detail['open_wait_id']);
         $this->assertSame('external_input', $detail['resume_source_kind']);
         $this->assertNull($detail['resume_source_id']);
@@ -64,6 +74,9 @@ final class V2AwaitWorkflowTest extends TestCase
             'workflow_id' => 'await-update',
             'run_id' => $workflow->runId(),
         ], $workflow->output());
+
+        $this->assertSame(8, $workflow->summary()?->history_event_count);
+        $this->assertTrue($workflow->summary()?->continue_as_new_recommended);
 
         $this->assertSame([
             'StartAccepted',

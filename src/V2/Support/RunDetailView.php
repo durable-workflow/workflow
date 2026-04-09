@@ -90,6 +90,13 @@ final class RunDetailView
         $recordedDefinitionFingerprint = WorkflowDefinitionFingerprint::recordedForRun($run);
         $currentDefinitionFingerprint = WorkflowDefinitionFingerprint::currentForRun($run);
         $definitionMatchesCurrent = WorkflowDefinitionFingerprint::matchesCurrent($run);
+        $historyBudget = $summary === null
+            ? HistoryBudget::forRun($run)
+            : [
+                'history_event_count' => (int) $summary->history_event_count,
+                'history_size_bytes' => (int) $summary->history_size_bytes,
+                'continue_as_new_recommended' => (bool) $summary->continue_as_new_recommended,
+            ];
 
         return [
             'id' => $run->id,
@@ -151,6 +158,11 @@ final class RunDetailView
             'liveness_reason' => $summary?->liveness_reason,
             'exception_count' => $summary?->exception_count ?? $run->failures->count(),
             'exceptions_count' => $summary?->exceptions_count ?? $run->failures->count(),
+            'history_event_count' => $historyBudget['history_event_count'],
+            'history_size_bytes' => $historyBudget['history_size_bytes'],
+            'history_event_threshold' => HistoryBudget::eventThreshold(),
+            'history_size_bytes_threshold' => HistoryBudget::sizeBytesThreshold(),
+            'continue_as_new_recommended' => $historyBudget['continue_as_new_recommended'],
             'can_issue_terminal_commands' => $canIssueTerminalCommands,
             'can_query' => $canQuery,
             'query_blocked_reason' => $queryBlockedReason,

@@ -42,6 +42,10 @@ return [
             'namespace' => env('WORKFLOW_V2_COMPATIBILITY_NAMESPACE'),
             'heartbeat_ttl_seconds' => (int) env('WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL', 30),
         ],
+        'history_budget' => [
+            'continue_as_new_event_threshold' => (int) env('WORKFLOW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD', 10000),
+            'continue_as_new_size_bytes_threshold' => (int) env('WORKFLOW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD', 5242880),
+        ],
     ],
 
     'serializer' => Workflow\Serializers\Y::class,

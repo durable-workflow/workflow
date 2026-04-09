@@ -24,6 +24,7 @@ final class OperatorMetrics
             'runs' => self::runMetrics(),
             'tasks' => self::taskMetrics($now),
             'backlog' => self::backlogMetrics($now),
+            'history' => self::historyMetrics(),
             'workers' => self::workerMetrics(),
         ];
     }
@@ -119,6 +120,24 @@ final class OperatorMetrics
             'active_workers' => count($workerIds),
             'active_worker_scopes' => count($snapshots),
             'active_workers_supporting_required' => count($supportingWorkerIds),
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private static function historyMetrics(): array
+    {
+        $summaryModel = self::summaryModel();
+
+        return [
+            'continue_as_new_recommended_runs' => $summaryModel::query()
+                ->where('continue_as_new_recommended', true)
+                ->count(),
+            'max_event_count' => (int) $summaryModel::query()->max('history_event_count'),
+            'max_size_bytes' => (int) $summaryModel::query()->max('history_size_bytes'),
+            'event_threshold' => HistoryBudget::eventThreshold(),
+            'size_bytes_threshold' => HistoryBudget::sizeBytesThreshold(),
         ];
     }
 

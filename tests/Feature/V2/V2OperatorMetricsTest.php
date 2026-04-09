@@ -28,6 +28,8 @@ final class V2OperatorMetricsTest extends TestCase
         config()->set('workflows.v2.compatibility.current', 'build-a');
         config()->set('workflows.v2.compatibility.supported', ['build-a']);
         config()->set('workflows.v2.compatibility.namespace', 'metrics-test');
+        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 5);
+        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 5000);
         WorkerCompatibilityFleet::clear();
 
         $run = $this->createRunWithSummary(
@@ -36,6 +38,9 @@ final class V2OperatorMetricsTest extends TestCase
             status: 'waiting',
             statusBucket: 'running',
             livenessState: 'repair_needed',
+            historyEventCount: 7,
+            historySizeBytes: 4096,
+            continueAsNewRecommended: true,
         );
         $this->createRunWithSummary(
             instanceId: 'metrics-instance-b',
@@ -103,6 +108,11 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(3, $snapshot['backlog']['unhealthy_tasks']);
         $this->assertSame(1, $snapshot['backlog']['repair_needed_runs']);
         $this->assertSame(1, $snapshot['backlog']['compatibility_blocked_runs']);
+        $this->assertSame(1, $snapshot['history']['continue_as_new_recommended_runs']);
+        $this->assertSame(7, $snapshot['history']['max_event_count']);
+        $this->assertSame(4096, $snapshot['history']['max_size_bytes']);
+        $this->assertSame(5, $snapshot['history']['event_threshold']);
+        $this->assertSame(5000, $snapshot['history']['size_bytes_threshold']);
         $this->assertSame('metrics-test', $snapshot['workers']['compatibility_namespace']);
         $this->assertSame('build-a', $snapshot['workers']['required_compatibility']);
         $this->assertSame(2, $snapshot['workers']['active_workers']);
@@ -116,6 +126,9 @@ final class V2OperatorMetricsTest extends TestCase
         string $status,
         string $statusBucket,
         string $livenessState,
+        int $historyEventCount = 0,
+        int $historySizeBytes = 0,
+        bool $continueAsNewRecommended = false,
     ): WorkflowRun {
         $instance = WorkflowInstance::query()->create([
             'id' => $instanceId,
@@ -150,6 +163,9 @@ final class V2OperatorMetricsTest extends TestCase
             'status_bucket' => $statusBucket,
             'started_at' => now()->subMinutes(10),
             'liveness_state' => $livenessState,
+            'history_event_count' => $historyEventCount,
+            'history_size_bytes' => $historySizeBytes,
+            'continue_as_new_recommended' => $continueAsNewRecommended,
             'created_at' => now()->subMinutes(10),
             'updated_at' => now(),
         ]);

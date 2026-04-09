@@ -24,6 +24,9 @@ class WorkflowRunSummary extends Model
 
     protected $casts = [
         'is_current_run' => 'bool',
+        'history_event_count' => 'integer',
+        'history_size_bytes' => 'integer',
+        'continue_as_new_recommended' => 'bool',
         'started_at' => 'datetime',
         'sort_timestamp' => 'datetime',
         'closed_at' => 'datetime',

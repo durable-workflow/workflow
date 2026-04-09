@@ -146,6 +146,7 @@ final class RunSummaryProjector
         );
 
         $statusBucket = $run->status->statusBucket();
+        $historyBudget = HistoryBudget::forRun($run);
 
         $durationMs = null;
 
@@ -198,6 +199,9 @@ final class RunSummaryProjector
                 'next_task_status' => $nextTask?->status->value,
                 'next_task_lease_expires_at' => $nextTask?->lease_expires_at,
                 'exception_count' => $run->failures->count(),
+                'history_event_count' => $historyBudget['history_event_count'],
+                'history_size_bytes' => $historyBudget['history_size_bytes'],
+                'continue_as_new_recommended' => $historyBudget['continue_as_new_recommended'],
                 'created_at' => $run->created_at,
                 'updated_at' => $run->closed_at ?? $run->last_progress_at ?? $run->updated_at,
             ],
