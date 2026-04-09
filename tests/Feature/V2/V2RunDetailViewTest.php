@@ -1344,6 +1344,8 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewKeepsCurrentContinuedChildFromHistoryWhenLinksDisappear(): void
     {
         Queue::fake();
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
 
         $instanceId = 'detail-child-history';
 
@@ -1369,7 +1371,7 @@ final class V2RunDetailViewTest extends TestCase
         $childStarted = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $parentRunId)
             ->where('event_type', 'ChildRunStarted')
-            ->orderBy('sequence')
+            ->orderByDesc('sequence')
             ->firstOrFail();
         $childInstanceId = $childStarted->payload['child_workflow_instance_id'] ?? null;
         $childCallId = $childStarted->payload['child_call_id'] ?? null;
@@ -1382,6 +1384,23 @@ final class V2RunDetailViewTest extends TestCase
             ->where('workflow_instance_id', $childInstanceId)
             ->orderByDesc('run_number')
             ->firstOrFail();
+
+        $detailWithLinks = RunDetailView::forRun(WorkflowRun::query()->findOrFail($parentRunId)->fresh(['summary']));
+        $this->assertCount(1, $detailWithLinks['continuedWorkflows']);
+        $this->assertSame($currentChildRun->id, $detailWithLinks['continuedWorkflows'][0]['child_workflow_run_id']);
+
+        WorkflowRun::query()->create([
+            'workflow_instance_id' => $childInstanceId,
+            'run_number' => $currentChildRun->run_number + 1,
+            'workflow_class' => $currentChildRun->workflow_class,
+            'workflow_type' => $currentChildRun->workflow_type,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([999, 1000]),
+            'connection' => $currentChildRun->connection,
+            'queue' => $currentChildRun->queue,
+            'started_at' => now()->addMinute(),
+            'last_progress_at' => now()->addMinute(),
+        ]);
 
         WorkflowInstance::query()
             ->findOrFail($childInstanceId)

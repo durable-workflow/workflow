@@ -39,4 +39,17 @@ final class TestParentWaitingOnContinuingChildWorkflow extends Workflow
             'call_id' => $handle->callId(),
         ];
     }
+
+    #[QueryMethod('child-handles')]
+    public function childHandles(): array
+    {
+        return array_map(
+            static fn ($handle): array => [
+                'instance_id' => $handle->instanceId(),
+                'run_id' => $handle->runId(),
+                'call_id' => $handle->callId(),
+            ],
+            $this->children(),
+        );
+    }
 }

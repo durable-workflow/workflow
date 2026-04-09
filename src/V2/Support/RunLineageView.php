@@ -150,18 +150,23 @@ final class RunLineageView
                 continue;
             }
 
-            $key = self::key('child_workflow', $childRunId);
-
-            if (isset($seen[$key])) {
-                continue;
-            }
-
             $childInstanceId = $childRun?->workflow_instance_id
                 ?? self::stringValue($resolutionEvent?->payload['child_workflow_instance_id'] ?? null)
                 ?? self::stringValue($startedEvent?->payload['child_workflow_instance_id'] ?? null)
                 ?? self::stringValue($scheduledEvent?->payload['child_workflow_instance_id'] ?? null)
                 ?? $link?->child_workflow_instance_id;
             $childCallId = ChildRunHistory::childCallIdForSequence($run, $sequence);
+
+            $key = self::childIdentityKey(
+                $childCallId,
+                $sequence,
+                $childInstanceId,
+                $childRunId,
+            );
+
+            if (isset($seen[$key])) {
+                continue;
+            }
 
             if ($childInstanceId === null) {
                 continue;
@@ -187,7 +192,17 @@ final class RunLineageView
                 continue;
             }
 
-            $key = self::key($link->link_type, $link->child_workflow_run_id);
+            $childCallId = $link->link_type === 'child_workflow' && $link->sequence !== null
+                ? ChildRunHistory::childCallIdForSequence($run, (int) $link->sequence)
+                : null;
+            $key = $link->link_type === 'child_workflow'
+                ? self::childIdentityKey(
+                    $childCallId,
+                    $link->sequence,
+                    $link->child_workflow_instance_id,
+                    $link->child_workflow_run_id,
+                )
+                : self::key($link->link_type, $link->child_workflow_run_id);
 
             if (isset($seen[$key])) {
                 continue;
@@ -196,7 +211,7 @@ final class RunLineageView
             $entries[] = self::entry(
                 id: $link->link_type === 'child_workflow'
                     ? (
-                        ($link->sequence !== null ? ChildRunHistory::childCallIdForSequence($run, (int) $link->sequence) : null)
+                        $childCallId
                         ?? $link->id
                     )
                     : $link->id,
@@ -207,9 +222,7 @@ final class RunLineageView
                 instanceId: $link->child_workflow_instance_id,
                 runId: $link->child_workflow_run_id,
                 relationPrefix: 'child',
-                childCallId: $link->link_type === 'child_workflow' && $link->sequence !== null
-                    ? ChildRunHistory::childCallIdForSequence($run, (int) $link->sequence)
-                    : null,
+                childCallId: $childCallId,
             );
 
             $seen[$key] = true;
@@ -331,6 +344,31 @@ final class RunLineageView
     private static function key(string $linkType, string $runId): string
     {
         return sprintf('%s:%s', $linkType, $runId);
+    }
+
+    private static function childIdentityKey(
+        ?string $childCallId,
+        ?int $sequence,
+        ?string $instanceId,
+        ?string $runId,
+    ): string {
+        if ($childCallId !== null) {
+            return sprintf('child_call:%s', $childCallId);
+        }
+
+        if ($sequence !== null && $instanceId !== null) {
+            return sprintf('child_sequence:%d:%s', $sequence, $instanceId);
+        }
+
+        if ($sequence !== null) {
+            return sprintf('child_sequence:%d', $sequence);
+        }
+
+        if ($instanceId !== null) {
+            return sprintf('child_instance:%s', $instanceId);
+        }
+
+        return self::key('child_workflow', $runId ?? 'missing-run');
     }
 
     private static function statusBucket(?RunStatus $status): ?string

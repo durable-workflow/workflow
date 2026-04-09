@@ -1512,8 +1512,10 @@ final class WorkflowExecutor
             ->lockForUpdate()
             ->get();
 
+        $parentRunsToProject = [];
+
         foreach ($parentChildLinks as $parentChildLink) {
-            WorkflowLink::query()->create([
+            $continuedChildLink = WorkflowLink::query()->create([
                 'link_type' => 'child_workflow',
                 'sequence' => $parentChildLink->sequence,
                 'parent_workflow_instance_id' => $parentChildLink->parent_workflow_instance_id,
@@ -1522,6 +1524,60 @@ final class WorkflowExecutor
                 'child_workflow_run_id' => $continuedRun->id,
                 'is_primary_parent' => $parentChildLink->is_primary_parent,
             ]);
+
+            if (
+                ! is_string($parentChildLink->parent_workflow_run_id)
+                || $parentChildLink->parent_workflow_run_id === ''
+            ) {
+                continue;
+            }
+
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = WorkflowRun::query()
+                ->lockForUpdate()
+                ->find($parentChildLink->parent_workflow_run_id);
+
+            if (
+                ! $parentRun instanceof WorkflowRun
+                || in_array($parentRun->status, [
+                    RunStatus::Completed,
+                    RunStatus::Failed,
+                    RunStatus::Cancelled,
+                    RunStatus::Terminated,
+                ], true)
+            ) {
+                continue;
+            }
+
+            $parentRunsToProject[$parentRun->id] = true;
+            $parentRun->loadMissing('historyEvents');
+
+            $alreadyRecorded = $parentRun->historyEvents->contains(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted
+                    && ($event->payload['sequence'] ?? null) === $parentChildLink->sequence
+                    && ($event->payload['child_workflow_run_id'] ?? null) === $continuedRun->id
+            );
+
+            if ($alreadyRecorded) {
+                continue;
+            }
+
+            $parallelMetadata = is_int($parentChildLink->sequence)
+                ? ParallelChildGroup::payloadForPath(
+                    ParallelChildGroup::metadataPathForSequence($parentRun, $parentChildLink->sequence)
+                )
+                : [];
+
+            WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildRunStarted, array_filter(array_merge([
+                'sequence' => $parentChildLink->sequence,
+                'workflow_link_id' => $continuedChildLink->id,
+                'child_call_id' => $childCallId,
+                'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+                'child_workflow_run_id' => $continuedRun->id,
+                'child_workflow_class' => $continuedRun->workflow_class,
+                'child_workflow_type' => $continuedRun->workflow_type,
+                'child_run_number' => $continuedRun->run_number,
+            ], $parallelMetadata), static fn ($value): bool => $value !== null));
         }
 
         $run->forceFill([
@@ -1595,6 +1651,28 @@ final class WorkflowExecutor
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+        foreach (array_keys($parentRunsToProject) as $parentRunId) {
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = WorkflowRun::query()->find($parentRunId);
+
+            if (! $parentRun instanceof WorkflowRun) {
+                continue;
+            }
+
+            RunSummaryProjector::project(
+                $parentRun->fresh([
+                    'instance',
+                    'tasks',
+                    'activityExecutions',
+                    'timers',
+                    'failures',
+                    'historyEvents',
+                    'childLinks.childRun.instance.currentRun',
+                    'childLinks.childRun.failures',
+                    'childLinks.childRun.historyEvents',
+                ])
+            );
+        }
         RunSummaryProjector::project(
             $continuedRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );

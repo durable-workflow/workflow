@@ -637,6 +637,8 @@ final class V2QueryWorkflowTest extends TestCase
     public function testQueriesFollowTheLatestContinuedChildRunOnCurrentHandle(): void
     {
         Queue::fake();
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
 
         $workflow = WorkflowStub::make(
             TestParentWaitingOnContinuingChildWorkflow::class,
@@ -663,27 +665,55 @@ final class V2QueryWorkflowTest extends TestCase
         $childStarted = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $parentRunId)
             ->where('event_type', HistoryEventType::ChildRunStarted->value)
-            ->orderBy('sequence')
+            ->orderByDesc('sequence')
             ->firstOrFail();
+        $childInstanceId = $childStarted->payload['child_workflow_instance_id'] ?? null;
+        $childCallId = $childStarted->payload['child_call_id'] ?? null;
 
-        /** @var WorkflowLink $link */
-        $link = WorkflowLink::query()
-            ->where('parent_workflow_run_id', $parentRunId)
-            ->where('link_type', 'child_workflow')
-            ->orderByDesc('created_at')
-            ->firstOrFail();
+        $this->assertIsString($childInstanceId);
+        $this->assertIsString($childCallId);
 
         /** @var WorkflowRun $latestChildRun */
         $latestChildRun = WorkflowRun::query()
-            ->where('workflow_instance_id', $link->child_workflow_instance_id)
+            ->where('workflow_instance_id', $childInstanceId)
             ->orderByDesc('run_number')
             ->firstOrFail();
 
+        WorkflowRun::query()->create([
+            'workflow_instance_id' => $childInstanceId,
+            'run_number' => $latestChildRun->run_number + 1,
+            'workflow_class' => $latestChildRun->workflow_class,
+            'workflow_type' => $latestChildRun->workflow_type,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([999, 1000]),
+            'connection' => $latestChildRun->connection,
+            'queue' => $latestChildRun->queue,
+            'started_at' => now()->addMinute(),
+            'last_progress_at' => now()->addMinute(),
+        ]);
+
+        WorkflowInstance::query()
+            ->findOrFail($childInstanceId)
+            ->forceFill([
+                'current_run_id' => null,
+            ])
+            ->save();
+
+        WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->delete();
+
         $this->assertSame([
-            'instance_id' => $link->child_workflow_instance_id,
+            'instance_id' => $childInstanceId,
             'run_id' => $latestChildRun->id,
-            'call_id' => $childStarted->payload['child_call_id'] ?? null,
+            'call_id' => $childCallId,
         ], $workflow->query('current-child-handle'));
+        $this->assertSame([[
+            'instance_id' => $childInstanceId,
+            'run_id' => $latestChildRun->id,
+            'call_id' => $childCallId,
+        ]], $workflow->query('child-handles'));
     }
 
     public function testQueriesReplayParallelChildFailureBeforeParentWorkflowTaskRuns(): void

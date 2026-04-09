@@ -155,6 +155,10 @@ final class ChildRunHistory
             ? $link?->childRun
             : self::loadRun($childRunId);
 
+        if ($childRun instanceof WorkflowRun && ($startedEvent !== null || $resolutionEvent !== null)) {
+            return $childRun;
+        }
+
         if (! $childRun instanceof WorkflowRun && $childInstanceId !== null) {
             $childRun = self::loadCurrentRunForInstance($childInstanceId);
         }

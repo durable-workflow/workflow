@@ -1114,6 +1114,8 @@ final class V2WorkflowTest extends TestCase
     public function testParentCompletesAfterChildContinuesAsNewWithoutWorkflowLinks(): void
     {
         Queue::fake();
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
 
         $instanceId = 'child-continue-history';
 
@@ -1178,6 +1180,18 @@ final class V2WorkflowTest extends TestCase
                 'run_id' => $currentChildRun->id,
             ],
         ], $workflow->output());
+
+        $childStarts = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildRunStarted')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $childStarts);
+        $this->assertSame($childCallId, $childStarts[0]->payload['child_call_id'] ?? null);
+        $this->assertSame($childCallId, $childStarts[1]->payload['child_call_id'] ?? null);
+        $this->assertSame($currentChildRun->id, $childStarts[1]->payload['child_workflow_run_id'] ?? null);
+        $this->assertSame($currentChildRun->run_number, $childStarts[1]->payload['child_run_number'] ?? null);
 
         /** @var WorkflowHistoryEvent $childCompleted */
         $childCompleted = WorkflowHistoryEvent::query()
