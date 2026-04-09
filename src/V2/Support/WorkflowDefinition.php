@@ -15,6 +15,11 @@ use Workflow\V2\Workflow;
 final class WorkflowDefinition
 {
     /**
+     * @var array<class-string, string|null>
+     */
+    private static array $fingerprints = [];
+
+    /**
      * @var array<class-string, list<string>>
      */
     private static array $queryMethods = [];
@@ -264,6 +269,30 @@ final class WorkflowDefinition
             'updates' => self::updateMethods($class),
             'update_contracts' => self::updateContracts($class),
         ];
+    }
+
+    /**
+     * @param class-string $class
+     */
+    public static function fingerprint(string $class): ?string
+    {
+        if (! self::isWorkflowClass($class)) {
+            return null;
+        }
+
+        if (! array_key_exists($class, self::$fingerprints)) {
+            $sources = [];
+            $seen = [];
+
+            self::collectFingerprintSources(new ReflectionClass($class), $sources, $seen);
+            ksort($sources);
+
+            self::$fingerprints[$class] = $sources === []
+                ? null
+                : 'sha256:' . hash('sha256', json_encode($sources, JSON_THROW_ON_ERROR));
+        }
+
+        return self::$fingerprints[$class];
     }
 
     /**
@@ -685,5 +714,69 @@ final class WorkflowDefinition
     private static function isWorkflowClass(string $class): bool
     {
         return class_exists($class) && is_subclass_of($class, Workflow::class);
+    }
+
+    /**
+     * @param array<string, array{symbol: string, kind: string, source: string}> $sources
+     * @param array<string, true> $seen
+     */
+    private static function collectFingerprintSources(
+        ReflectionClass $reflection,
+        array &$sources,
+        array &$seen,
+    ): void {
+        $name = $reflection->getName();
+
+        if (isset($seen[$name])) {
+            return;
+        }
+
+        $seen[$name] = true;
+
+        if ($name !== Workflow::class) {
+            $source = self::reflectionSource($reflection);
+
+            if ($source !== null) {
+                $sources[$name] = [
+                    'symbol' => $name,
+                    'kind' => $reflection->isTrait() ? 'trait' : 'class',
+                    'source' => $source,
+                ];
+            }
+        }
+
+        foreach ($reflection->getTraits() as $trait) {
+            self::collectFingerprintSources($trait, $sources, $seen);
+        }
+
+        $parent = $reflection->getParentClass();
+
+        if ($parent instanceof ReflectionClass && is_subclass_of($parent->getName(), Workflow::class)) {
+            self::collectFingerprintSources($parent, $sources, $seen);
+        }
+    }
+
+    private static function reflectionSource(ReflectionClass $reflection): ?string
+    {
+        $file = $reflection->getFileName();
+
+        if (! is_string($file) || $file === '') {
+            return null;
+        }
+
+        $startLine = $reflection->getStartLine();
+        $endLine = $reflection->getEndLine();
+
+        if (! is_int($startLine) || ! is_int($endLine) || $startLine < 1 || $endLine < $startLine) {
+            return null;
+        }
+
+        $lines = @file($file);
+
+        if (! is_array($lines)) {
+            return null;
+        }
+
+        return implode('', array_slice($lines, $startLine - 1, $endLine - $startLine + 1));
     }
 }

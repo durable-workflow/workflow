@@ -80,6 +80,10 @@ final class VersionResolver
             return true;
         }
 
+        if (self::runDefinitionFingerprintDiffersFromCurrent($run)) {
+            return true;
+        }
+
         return self::sequenceAlreadyOccupied($run, $sequence);
     }
 
@@ -134,6 +138,16 @@ final class VersionResolver
             static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow'
                 && $link->sequence === $sequence
         );
+    }
+
+    private static function runDefinitionFingerprintDiffersFromCurrent(WorkflowRun $run): bool
+    {
+        $recordedFingerprint = WorkflowDefinitionFingerprint::recordedForRun($run);
+        $currentFingerprint = WorkflowDefinitionFingerprint::currentForRun($run);
+
+        return $recordedFingerprint !== null
+            && $currentFingerprint !== null
+            && ! hash_equals($recordedFingerprint, $currentFingerprint);
     }
 
     private static function assertSupported(int $version, VersionCall $versionCall): void

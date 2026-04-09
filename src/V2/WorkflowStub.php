@@ -458,6 +458,7 @@ final class WorkflowStub
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'workflow_command_id' => $command->id,
+                'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
                 'declared_queries' => $commandContract['queries'],
                 'declared_query_contracts' => $commandContract['query_contracts'],
                 'declared_signals' => $commandContract['signals'],

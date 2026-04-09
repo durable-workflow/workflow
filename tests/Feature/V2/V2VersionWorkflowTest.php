@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestVersionAfterSignalWorkflow;
+use Tests\Fixtures\V2\TestVersionBeforeSignalWorkflow;
 use Tests\Fixtures\V2\TestVersionMinSupportedWorkflow;
 use Tests\Fixtures\V2\TestVersionWorkflow;
 use Tests\TestCase;
@@ -24,6 +25,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\WorkflowStub;
 
@@ -45,10 +47,28 @@ final class V2VersionWorkflowTest extends TestCase
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
 
         $detail = RunDetailView::forRun($run);
         $versionMarker = collect($detail['timeline'])->firstWhere('type', HistoryEventType::VersionMarkerRecorded->value);
 
+        $this->assertSame(
+            WorkflowDefinition::fingerprint(TestVersionWorkflow::class),
+            $started->payload['workflow_definition_fingerprint'] ?? null,
+        );
+        $this->assertSame(
+            WorkflowDefinition::fingerprint(TestVersionWorkflow::class),
+            $detail['workflow_definition_fingerprint'],
+        );
+        $this->assertSame(
+            WorkflowDefinition::fingerprint(TestVersionWorkflow::class),
+            $detail['workflow_definition_current_fingerprint'],
+        );
+        $this->assertTrue($detail['workflow_definition_matches_current']);
         $this->assertIsArray($versionMarker);
         $this->assertSame('version', $versionMarker['kind']);
         $this->assertSame('version_marker', $versionMarker['source_kind']);
@@ -235,6 +255,67 @@ final class V2VersionWorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame(3, $execution->sequence);
+    }
+
+    public function testSameCompatibilityUsesRecordedDefinitionFingerprintToKeepOlderRunOnDefaultVersion(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-b');
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestVersionBeforeSignalWorkflow::class, 'version-after-signal-fingerprint');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+
+        WorkflowInstance::query()->whereKey('version-after-signal-fingerprint')->update([
+            'workflow_class' => TestVersionAfterSignalWorkflow::class,
+            'workflow_type' => 'test-version-after-signal-workflow',
+        ]);
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => TestVersionAfterSignalWorkflow::class,
+            'workflow_type' => 'test-version-after-signal-workflow',
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary', 'historyEvents')->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+
+        $this->assertSame(
+            WorkflowDefinition::fingerprint(TestVersionBeforeSignalWorkflow::class),
+            $detail['workflow_definition_fingerprint'],
+        );
+        $this->assertSame(
+            WorkflowDefinition::fingerprint(TestVersionAfterSignalWorkflow::class),
+            $detail['workflow_definition_current_fingerprint'],
+        );
+        $this->assertFalse($detail['workflow_definition_matches_current']);
+
+        $workflow = WorkflowStub::loadRun($workflow->runId());
+        $workflow->signal('go', 'proceed');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'gate' => 'proceed',
+            'version' => WorkflowStub::DEFAULT_VERSION,
+            'result' => 'v1_result',
+            'workflow_id' => 'version-after-signal-fingerprint',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+
+        $this->assertNull(WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
+            ->first());
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        $this->assertSame(2, $execution->sequence);
     }
 
     public function testOlderCompatibilityFallsBackToDefaultVersionWithoutRecordingMarkerAfterEarlierSignal(): void

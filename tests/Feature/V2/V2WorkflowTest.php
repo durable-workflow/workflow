@@ -1717,6 +1717,10 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame(TestConfiguredContinueSignalWorkflow::class, $instance->fresh()->workflow_class);
         $this->assertSame(TestConfiguredContinueSignalWorkflow::class, $continuedRun->workflow_class);
+        $this->assertSame(
+            \Workflow\V2\Support\WorkflowDefinition::fingerprint(TestConfiguredContinueSignalWorkflow::class),
+            $started->payload['workflow_definition_fingerprint'] ?? null,
+        );
         $this->assertSame(['current-count'], $started->payload['declared_queries'] ?? null);
         $this->assertSame('current-count', $started->payload['declared_query_contracts'][0]['name'] ?? null);
         $this->assertSame(['name-provided'], $started->payload['declared_signals'] ?? null);

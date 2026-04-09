@@ -87,6 +87,9 @@ final class RunDetailView
         $resumeSourceId = $summary?->resume_source_id
             ?? $currentOpenWait['resume_source_id']
             ?? $workflowTaskResumeSource['resume_source_id'];
+        $recordedDefinitionFingerprint = WorkflowDefinitionFingerprint::recordedForRun($run);
+        $currentDefinitionFingerprint = WorkflowDefinitionFingerprint::currentForRun($run);
+        $definitionMatchesCurrent = WorkflowDefinitionFingerprint::matchesCurrent($run);
 
         return [
             'id' => $run->id,
@@ -101,6 +104,9 @@ final class RunDetailView
             'engine_source' => 'v2',
             'class' => $run->workflow_class,
             'workflow_type' => $run->workflow_type,
+            'workflow_definition_fingerprint' => $recordedDefinitionFingerprint,
+            'workflow_definition_current_fingerprint' => $currentDefinitionFingerprint,
+            'workflow_definition_matches_current' => $definitionMatchesCurrent,
             'compatibility' => $summary?->compatibility ?? $run->compatibility,
             'compatibility_namespace' => WorkerCompatibilityFleet::scopeNamespace(),
             'compatibility_supported' => WorkerCompatibility::supports($run->compatibility),
