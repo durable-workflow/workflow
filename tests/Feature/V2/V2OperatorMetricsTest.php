@@ -1,0 +1,181 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\V2;
+
+use Illuminate\Support\Carbon;
+use Tests\TestCase;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\OperatorMetrics;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
+
+final class V2OperatorMetricsTest extends TestCase
+{
+    public function testSnapshotSummarizesDurableBacklogRepairCompatibilityAndWorkerFleet(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+            WorkerCompatibilityFleet::clear();
+        });
+
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()->set('workflows.v2.compatibility.namespace', 'metrics-test');
+        WorkerCompatibilityFleet::clear();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'metrics-instance-a',
+            runId: '01JMETRICSFLOWRUN000000001',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'repair_needed',
+        );
+        $this->createRunWithSummary(
+            instanceId: 'metrics-instance-b',
+            runId: '01JMETRICSFLOWRUN000000002',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_waiting_for_compatible_worker',
+        );
+        $this->createRunWithSummary(
+            instanceId: 'metrics-instance-c',
+            runId: '01JMETRICSFLOWRUN000000003',
+            status: 'completed',
+            statusBucket: 'completed',
+            livenessState: 'closed',
+        );
+
+        $this->createTask($run, '01JMETRICSTASK000000000001', TaskStatus::Ready->value, [
+            'available_at' => now()->subSecond(),
+            'created_at' => now(),
+        ]);
+        $this->createTask($run, '01JMETRICSTASK000000000002', TaskStatus::Ready->value, [
+            'available_at' => now()->addMinute(),
+        ]);
+        $this->createTask($run, '01JMETRICSTASK000000000003', TaskStatus::Leased->value, [
+            'leased_at' => now(),
+            'lease_expires_at' => now()->addMinute(),
+        ]);
+        $this->createTask($run, '01JMETRICSTASK000000000004', TaskStatus::Leased->value, [
+            'leased_at' => now()->subMinutes(2),
+            'lease_expires_at' => now()->subMinute(),
+        ]);
+        $this->createTask($run, '01JMETRICSTASK000000000005', TaskStatus::Ready->value, [
+            'available_at' => now()->subSeconds(10),
+            'last_dispatch_attempt_at' => now()->subSecond(),
+            'last_dispatch_error' => 'Queue transport unavailable.',
+        ]);
+        $this->createTask($run, '01JMETRICSTASK000000000006', TaskStatus::Ready->value, [
+            'available_at' => now()->subSeconds(10),
+            'last_dispatched_at' => now()->subSeconds(10),
+        ]);
+
+        WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'imports', 'worker-b');
+
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertSame('2026-04-09T12:00:00.000000Z', $snapshot['generated_at']);
+        $this->assertSame(3, $snapshot['runs']['total']);
+        $this->assertSame(2, $snapshot['runs']['running']);
+        $this->assertSame(1, $snapshot['runs']['completed']);
+        $this->assertSame(1, $snapshot['runs']['repair_needed']);
+        $this->assertSame(1, $snapshot['runs']['compatibility_blocked']);
+        $this->assertSame(6, $snapshot['tasks']['open']);
+        $this->assertSame(4, $snapshot['tasks']['ready']);
+        $this->assertSame(3, $snapshot['tasks']['ready_due']);
+        $this->assertSame(1, $snapshot['tasks']['delayed']);
+        $this->assertSame(2, $snapshot['tasks']['leased']);
+        $this->assertSame(1, $snapshot['tasks']['dispatch_failed']);
+        $this->assertSame(1, $snapshot['tasks']['dispatch_overdue']);
+        $this->assertSame(1, $snapshot['tasks']['lease_expired']);
+        $this->assertSame(3, $snapshot['tasks']['unhealthy']);
+        $this->assertSame(3, $snapshot['backlog']['runnable_tasks']);
+        $this->assertSame(1, $snapshot['backlog']['delayed_tasks']);
+        $this->assertSame(2, $snapshot['backlog']['leased_tasks']);
+        $this->assertSame(3, $snapshot['backlog']['unhealthy_tasks']);
+        $this->assertSame(1, $snapshot['backlog']['repair_needed_runs']);
+        $this->assertSame(1, $snapshot['backlog']['compatibility_blocked_runs']);
+        $this->assertSame('metrics-test', $snapshot['workers']['compatibility_namespace']);
+        $this->assertSame('build-a', $snapshot['workers']['required_compatibility']);
+        $this->assertSame(2, $snapshot['workers']['active_workers']);
+        $this->assertSame(2, $snapshot['workers']['active_worker_scopes']);
+        $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+    }
+
+    private function createRunWithSummary(
+        string $instanceId,
+        string $runId,
+        string $status,
+        string $statusBucket,
+        string $livenessState,
+    ): WorkflowRun {
+        $instance = WorkflowInstance::query()->create([
+            'id' => $instanceId,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'id' => $runId,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => $status,
+            'started_at' => now()->subMinutes(10),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => $status,
+            'status_bucket' => $statusBucket,
+            'started_at' => now()->subMinutes(10),
+            'liveness_state' => $livenessState,
+            'created_at' => now()->subMinutes(10),
+            'updated_at' => now(),
+        ]);
+
+        return $run;
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    private function createTask(WorkflowRun $run, string $id, string $status, array $attributes = []): WorkflowTask
+    {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create(array_merge([
+            'id' => $id,
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => $status,
+            'available_at' => now(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $attributes));
+
+        return $task;
+    }
+}
