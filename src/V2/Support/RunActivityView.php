@@ -7,6 +7,8 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Carbon;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -225,6 +227,9 @@ final class RunActivityView
                     'started_at' => $attempt->started_at,
                     'last_heartbeat_at' => $attempt->last_heartbeat_at,
                     'closed_at' => $attempt->closed_at,
+                    'can_continue' => self::attemptCanContinue($attempt, $execution),
+                    'cancel_requested' => self::attemptCancelRequested($attempt, $execution),
+                    'stop_reason' => self::attemptStopReason($attempt, $execution),
                 ];
             }
         }
@@ -285,7 +290,102 @@ final class RunActivityView
             'started_at' => $state['started_at'] ?? $execution?->started_at,
             'last_heartbeat_at' => $state['last_heartbeat_at'] ?? $execution?->last_heartbeat_at,
             'closed_at' => $state['closed_at'] ?? $execution?->closed_at,
+            'can_continue' => self::syntheticAttemptCanContinue($state, $execution),
+            'cancel_requested' => self::syntheticAttemptCancelRequested($state, $execution),
+            'stop_reason' => self::syntheticAttemptStopReason($state, $execution),
         ];
+    }
+
+    private static function attemptCanContinue(ActivityAttempt $attempt, ActivityExecution $execution): bool
+    {
+        return $attempt->status === ActivityAttemptStatus::Running
+            && $execution->status === ActivityStatus::Running
+            && $execution->current_attempt_id === $attempt->id
+            && $execution->attempt_count === $attempt->attempt_number;
+    }
+
+    private static function attemptCancelRequested(ActivityAttempt $attempt, ActivityExecution $execution): bool
+    {
+        return $attempt->status === ActivityAttemptStatus::Cancelled
+            || $execution->status === ActivityStatus::Cancelled;
+    }
+
+    private static function attemptStopReason(ActivityAttempt $attempt, ActivityExecution $execution): ?string
+    {
+        if ($attempt->status === ActivityAttemptStatus::Cancelled) {
+            return 'attempt_cancelled';
+        }
+
+        if ($execution->status === ActivityStatus::Cancelled) {
+            return 'activity_cancelled';
+        }
+
+        if ($attempt->status === ActivityAttemptStatus::Expired) {
+            return 'attempt_expired';
+        }
+
+        if (in_array($attempt->status, [ActivityAttemptStatus::Completed, ActivityAttemptStatus::Failed], true)) {
+            return 'attempt_closed';
+        }
+
+        if (in_array($execution->status, [ActivityStatus::Completed, ActivityStatus::Failed], true)) {
+            return 'activity_closed';
+        }
+
+        if (! self::attemptCanContinue($attempt, $execution)) {
+            return 'stale_attempt';
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     */
+    private static function syntheticAttemptCanContinue(array $state, ?ActivityExecution $execution): bool
+    {
+        if ($execution instanceof ActivityExecution) {
+            return self::stringValue($state['attempt_id'] ?? null) === self::stringValue($execution->current_attempt_id)
+                && $execution->status === ActivityStatus::Running
+                && self::stringValue($state['status'] ?? null) === ActivityStatus::Running->value;
+        }
+
+        return self::stringValue($state['status'] ?? null) === ActivityStatus::Running->value;
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     */
+    private static function syntheticAttemptCancelRequested(array $state, ?ActivityExecution $execution): bool
+    {
+        return self::stringValue($state['status'] ?? null) === ActivityStatus::Cancelled->value
+            || $execution?->status === ActivityStatus::Cancelled;
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     */
+    private static function syntheticAttemptStopReason(array $state, ?ActivityExecution $execution): ?string
+    {
+        $status = self::stringValue($state['status'] ?? null) ?? $execution?->status?->value;
+
+        if ($status === ActivityStatus::Cancelled->value || $execution?->status === ActivityStatus::Cancelled) {
+            return 'activity_cancelled';
+        }
+
+        if ($status === ActivityStatus::Completed->value || $status === ActivityStatus::Failed->value) {
+            return 'attempt_closed';
+        }
+
+        if ($status === ActivityStatus::Pending->value || $execution?->status === ActivityStatus::Pending) {
+            return null;
+        }
+
+        if (! self::syntheticAttemptCanContinue($state, $execution)) {
+            return 'stale_attempt';
+        }
+
+        return null;
     }
 
     private static function publicSerializedValue(mixed $value, mixed $default): string

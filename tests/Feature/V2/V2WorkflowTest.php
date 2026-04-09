@@ -624,6 +624,81 @@ final class V2WorkflowTest extends TestCase
         }
     }
 
+    public function testActivityTaskBridgeHeartbeatReportsCancellationAndClosesAttempt(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-bridge-cancel');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $claim = ActivityTaskBridge::claim($task->id, 'external-worker-cancel');
+
+        $this->assertIsArray($claim);
+
+        $runningStatus = ActivityTaskBridge::status($claim['activity_attempt_id']);
+
+        $this->assertTrue($runningStatus['can_continue']);
+        $this->assertFalse($runningStatus['cancel_requested']);
+        $this->assertNull($runningStatus['reason']);
+        $this->assertFalse($runningStatus['heartbeat_recorded']);
+        $this->assertSame('waiting', $runningStatus['run_status']);
+        $this->assertSame('running', $runningStatus['activity_status']);
+        $this->assertSame('running', $runningStatus['attempt_status']);
+        $this->assertSame('leased', $runningStatus['task_status']);
+
+        $cancelled = $workflow->cancel();
+
+        $this->assertTrue($cancelled->accepted());
+        $this->assertSame('cancelled', $cancelled->outcome());
+
+        $cancelStatus = ActivityTaskBridge::heartbeatStatus($claim['activity_attempt_id']);
+
+        $this->assertFalse($cancelStatus['can_continue']);
+        $this->assertTrue($cancelStatus['cancel_requested']);
+        $this->assertSame('run_cancelled', $cancelStatus['reason']);
+        $this->assertFalse($cancelStatus['heartbeat_recorded']);
+        $this->assertSame('cancelled', $cancelStatus['run_status']);
+        $this->assertSame('cancelled', $cancelStatus['activity_status']);
+        $this->assertSame('cancelled', $cancelStatus['attempt_status']);
+        $this->assertSame('cancelled', $cancelStatus['task_status']);
+        $this->assertNull($cancelStatus['lease_expires_at']);
+
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()
+            ->whereKey($claim['activity_attempt_id'])
+            ->firstOrFail();
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->whereKey($claim['activity_execution_id'])
+            ->firstOrFail();
+        /** @var WorkflowTask $claimedTask */
+        $claimedTask = WorkflowTask::query()
+            ->whereKey($claim['task_id'])
+            ->firstOrFail();
+
+        $this->assertSame('cancelled', $attempt->status->value);
+        $this->assertSame('cancelled', $execution->status->value);
+        $this->assertSame('cancelled', $claimedTask->status->value);
+        $this->assertNotNull($attempt->closed_at);
+
+        $lateCompletion = ActivityTaskBridge::complete($claim['activity_attempt_id'], 'too late');
+
+        $this->assertFalse($lateCompletion['recorded']);
+        $this->assertSame('stale_attempt', $lateCompletion['reason']);
+    }
+
     public function testActivityHeartbeatRenewsCurrentAttemptLease(): void
     {
         $startedAt = Carbon::parse('2026-04-08 12:00:00');
