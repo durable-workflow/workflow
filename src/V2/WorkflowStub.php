@@ -866,21 +866,22 @@ final class WorkflowStub
                 'last_progress_at' => now(),
             ])->save();
 
-            if (
-                ! $this->hasOpenWorkflowTask($run->id)
-                && ($replayState->current instanceof AwaitCall || $replayState->current instanceof AwaitWithTimeoutCall)
-            ) {
-                /** @var WorkflowTask $resumeTask */
-                $resumeTask = WorkflowTask::query()->create([
-                    'workflow_run_id' => $run->id,
-                    'task_type' => TaskType::Workflow->value,
-                    'status' => TaskStatus::Ready->value,
-                    'available_at' => now(),
-                    'payload' => [],
-                    'connection' => $run->connection,
-                    'queue' => $run->queue,
-                    'compatibility' => $run->compatibility,
-                ]);
+            if ($replayState->current instanceof AwaitCall || $replayState->current instanceof AwaitWithTimeoutCall) {
+                $resumeTask = $this->readyWorkflowTaskForDispatch($run->id);
+
+                if (! $resumeTask instanceof WorkflowTask && ! $this->hasOpenWorkflowTask($run->id)) {
+                    /** @var WorkflowTask $resumeTask */
+                    $resumeTask = WorkflowTask::query()->create([
+                        'workflow_run_id' => $run->id,
+                        'task_type' => TaskType::Workflow->value,
+                        'status' => TaskStatus::Ready->value,
+                        'available_at' => now(),
+                        'payload' => [],
+                        'connection' => $run->connection,
+                        'queue' => $run->queue,
+                        'compatibility' => $run->compatibility,
+                    ]);
+                }
             }
 
             RunSummaryProjector::project(
@@ -2241,6 +2242,21 @@ final class WorkflowStub
             ->where('task_type', TaskType::Workflow->value)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
             ->exists();
+    }
+
+    private function readyWorkflowTaskForDispatch(string $runId): ?WorkflowTask
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('available_at')
+            ->orderBy('created_at')
+            ->lockForUpdate()
+            ->first();
+
+        return $task;
     }
 
     private function loadLockedRunRelations(WorkflowRun $run, WorkflowInstance $instance): void

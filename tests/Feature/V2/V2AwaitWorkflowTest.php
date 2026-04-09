@@ -95,6 +95,47 @@ final class V2AwaitWorkflowTest extends TestCase
             ->all());
     }
 
+    public function testAwaitWorkflowUpdateRedispatchesExistingReadyWorkflowTaskBeforeWorkerRuns(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestAwaitWorkflow::class, 'await-update-before-worker');
+        $workflow->start();
+
+        /** @var WorkflowTask $initialTask */
+        $initialTask = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        Queue::fake();
+
+        $update = $workflow->attemptUpdate('approve', true);
+
+        $this->assertTrue($update->accepted());
+        $this->assertTrue($update->completed());
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->count());
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $initialTask->id,
+        );
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'approved' => true,
+            'stage' => 'completed',
+            'workflow_id' => 'await-update-before-worker',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+    }
+
     public function testAwaitWithTimeoutProjectsConditionWaitAndTimesOut(): void
     {
         Queue::fake();
