@@ -177,7 +177,8 @@ final class HistoryTimeline
             HistoryEventType::UpdateRejected,
             HistoryEventType::RepairRequested,
             HistoryEventType::CancelRequested,
-            HistoryEventType::TerminateRequested => 'command',
+            HistoryEventType::TerminateRequested,
+            HistoryEventType::ArchiveRequested => 'command',
             HistoryEventType::SignalWaitOpened,
             HistoryEventType::SignalApplied => 'signal',
             HistoryEventType::UpdateApplied,
@@ -299,6 +300,12 @@ final class HistoryTimeline
             HistoryEventType::WorkflowCancelled => 'Workflow cancelled.',
             HistoryEventType::TerminateRequested => 'Terminate requested.',
             HistoryEventType::WorkflowTerminated => 'Workflow terminated.',
+            HistoryEventType::ArchiveRequested => match ($outcome) {
+                'archive_not_needed' => 'Archive accepted; the run was already archived.',
+                'archived' => 'Archive requested.',
+                default => 'Archive accepted.',
+            },
+            HistoryEventType::WorkflowArchived => 'Workflow archived.',
             HistoryEventType::ActivityScheduled => sprintf('Scheduled %s.', $activityLabel),
             HistoryEventType::ActivityStarted => sprintf('Started %s.', $activityLabel),
             HistoryEventType::ActivityHeartbeatRecorded => sprintf('Recorded heartbeat for %s.', $activityLabel),
@@ -709,7 +716,8 @@ final class HistoryTimeline
             HistoryEventType::UpdateCompleted,
             HistoryEventType::RepairRequested,
             HistoryEventType::CancelRequested,
-            HistoryEventType::TerminateRequested => 'workflow_command',
+            HistoryEventType::TerminateRequested,
+            HistoryEventType::ArchiveRequested => 'workflow_command',
             HistoryEventType::SignalWaitOpened,
             HistoryEventType::SignalApplied => 'signal_wait',
             HistoryEventType::ChildWorkflowScheduled,
@@ -783,7 +791,8 @@ final class HistoryTimeline
             HistoryEventType::UpdateCompleted,
             HistoryEventType::RepairRequested,
             HistoryEventType::CancelRequested,
-            HistoryEventType::TerminateRequested => 'accepted',
+            HistoryEventType::TerminateRequested,
+            HistoryEventType::ArchiveRequested => 'accepted',
             default => $command?->status?->value,
         };
     }
@@ -811,6 +820,7 @@ final class HistoryTimeline
                 : 'update_completed',
             HistoryEventType::CancelRequested => 'cancelled',
             HistoryEventType::TerminateRequested => 'terminated',
+            HistoryEventType::ArchiveRequested => 'archived',
             default => $command?->outcome?->value,
         };
     }

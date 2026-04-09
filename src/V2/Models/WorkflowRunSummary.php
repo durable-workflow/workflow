@@ -30,6 +30,7 @@ class WorkflowRunSummary extends Model
         'started_at' => 'datetime',
         'sort_timestamp' => 'datetime',
         'closed_at' => 'datetime',
+        'archived_at' => 'datetime',
         'wait_started_at' => 'datetime',
         'wait_deadline_at' => 'datetime',
         'next_task_at' => 'datetime',

@@ -1163,6 +1163,129 @@ final class WorkflowStub
         );
     }
 
+    public function archive(?string $reason = null): CommandResult
+    {
+        $result = $this->attemptArchive($reason);
+
+        if ($result->rejected()) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] cannot be archived: %s.',
+                $this->instance->id,
+                $result->rejectionReason() ?? 'unknown',
+            ));
+        }
+
+        return $result;
+    }
+
+    public function attemptArchive(?string $reason = null): CommandResult
+    {
+        /** @var WorkflowCommand|null $command */
+        $command = null;
+
+        DB::transaction(function () use (&$command, $reason): void {
+            /** @var WorkflowInstance $instance */
+            $instance = WorkflowInstance::query()
+                ->lockForUpdate()
+                ->findOrFail($this->instance->id);
+
+            $currentRun = $this->currentRunForInstance($instance, true);
+
+            if (! $currentRun instanceof WorkflowRun) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    null,
+                    CommandType::Archive,
+                    'instance_not_started',
+                    $this->commandTargetScope(),
+                    $this->archiveCommandPayloadAttributes($reason),
+                );
+
+                return;
+            }
+
+            if ($this->runTargeted) {
+                /** @var WorkflowRun $run */
+                $run = WorkflowRun::query()
+                    ->lockForUpdate()
+                    ->findOrFail($this->selectedRunId);
+            } else {
+                $run = $currentRun;
+            }
+
+            if (! $run->status->isTerminal()) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Archive,
+                    'run_not_closed',
+                    $this->commandTargetScope(),
+                    $this->archiveCommandPayloadAttributes($reason, [
+                        'resolved_workflow_run_id' => $currentRun->id,
+                    ]),
+                );
+
+                return;
+            }
+
+            $alreadyArchived = $run->archived_at !== null;
+
+            /** @var WorkflowCommand $command */
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+                'command_type' => CommandType::Archive->value,
+                'target_scope' => $this->commandTargetScope(),
+                'status' => CommandStatus::Accepted->value,
+                'outcome' => $alreadyArchived
+                    ? CommandOutcome::ArchiveNotNeeded->value
+                    : CommandOutcome::Archived->value,
+                ...$this->archiveCommandPayloadAttributes($reason),
+                'accepted_at' => now(),
+                'applied_at' => now(),
+            ]));
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::ArchiveRequested, array_filter([
+                'workflow_command_id' => $command->id,
+                'workflow_instance_id' => $instance->id,
+                'workflow_run_id' => $run->id,
+                'command_type' => CommandType::Archive->value,
+                'outcome' => $command->outcome?->value,
+                'reason' => $reason,
+            ], static fn (mixed $value): bool => $value !== null), null, $command);
+
+            if (! $alreadyArchived) {
+                $run->forceFill([
+                    'archived_at' => now(),
+                    'archive_command_id' => $command->id,
+                    'archive_reason' => $reason,
+                    'last_progress_at' => now(),
+                ])->save();
+
+                WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowArchived, array_filter([
+                    'workflow_command_id' => $command->id,
+                    'workflow_instance_id' => $instance->id,
+                    'workflow_run_id' => $run->id,
+                    'archive_command_id' => $command->id,
+                    'reason' => $reason,
+                ], static fn (mixed $value): bool => $value !== null), null, $command);
+            }
+
+            RunSummaryProjector::project(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+            );
+        });
+
+        $this->refresh();
+
+        if (! $command instanceof WorkflowCommand) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] failed to record an archive command.',
+                $this->instance->id,
+            ));
+        }
+
+        return new CommandResult($command);
+    }
+
     /**
      * @param array<int|string, mixed> $arguments
      */
@@ -1752,6 +1875,7 @@ final class WorkflowStub
             'instance_not_started' => CommandOutcome::RejectedNotStarted->value,
             'run_not_active' => CommandOutcome::RejectedNotActive->value,
             'selected_run_not_current' => CommandOutcome::RejectedNotCurrent->value,
+            'run_not_closed' => CommandOutcome::RejectedRunNotClosed->value,
             'unknown_signal' => CommandOutcome::RejectedUnknownSignal->value,
             'unknown_update' => CommandOutcome::RejectedUnknownUpdate->value,
             'invalid_signal_arguments' => CommandOutcome::RejectedInvalidArguments->value,
@@ -1800,6 +1924,20 @@ final class WorkflowStub
                 'validation_errors' => $validationErrors,
             ]),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @return array<string, mixed>
+     */
+    private function archiveCommandPayloadAttributes(?string $reason, array $attributes = []): array
+    {
+        return array_merge([
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'reason' => $reason,
+            ]),
+        ], $attributes);
     }
 
     /**

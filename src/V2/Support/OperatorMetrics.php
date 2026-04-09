@@ -52,6 +52,7 @@ final class OperatorMetrics
             'failed' => $summaryModel::query()->where('status', RunStatus::Failed->value)->count(),
             'cancelled' => $summaryModel::query()->where('status', RunStatus::Cancelled->value)->count(),
             'terminated' => $summaryModel::query()->where('status', RunStatus::Terminated->value)->count(),
+            'archived' => $summaryModel::query()->whereNotNull('archived_at')->count(),
             'repair_needed' => $summaryModel::query()->where('liveness_state', 'repair_needed')->count(),
             'compatibility_blocked' => self::compatibilityBlockedRuns(),
         ];

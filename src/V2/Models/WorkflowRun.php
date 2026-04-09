@@ -31,6 +31,7 @@ class WorkflowRun extends Model
         'last_command_sequence' => 'integer',
         'started_at' => 'datetime',
         'closed_at' => 'datetime',
+        'archived_at' => 'datetime',
         'last_progress_at' => 'datetime',
     ];
 

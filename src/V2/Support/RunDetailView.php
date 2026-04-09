@@ -48,6 +48,7 @@ final class RunDetailView
         $queryBlockedReason = self::queryBlockedReason($run);
         $updateBlockedReason = self::updateBlockedReason($run, $isCurrentRun);
         $repairBlockedReason = self::repairBlockedReason($run, $isCurrentRun, $summary?->liveness_state);
+        $archiveBlockedReason = self::archiveBlockedReason($run);
         $canCancel = $cancelBlockedReason === null;
         $canTerminate = $terminateBlockedReason === null;
         $canIssueTerminalCommands = $canCancel && $canTerminate;
@@ -55,6 +56,7 @@ final class RunDetailView
         $canSignal = $signalBlockedReason === null;
         $canUpdate = $updateBlockedReason === null;
         $canRepair = $repairBlockedReason === null;
+        $canArchive = $archiveBlockedReason === null;
         $compatibilityFleet = WorkerCompatibilityFleet::details(
             $run->compatibility,
             $run->connection,
@@ -144,6 +146,9 @@ final class RunDetailView
             'status_bucket' => $summary?->status_bucket,
             'closed_reason' => $summary?->closed_reason ?? $run->closed_reason,
             'closed_at' => $summary?->closed_at ?? $run->closed_at,
+            'archived_at' => $summary?->archived_at ?? $run->archived_at,
+            'archive_command_id' => $summary?->archive_command_id ?? $run->archive_command_id,
+            'archive_reason' => $summary?->archive_reason ?? $run->archive_reason,
             'duration_ms' => $summary?->duration_ms,
             'wait_kind' => $summary?->wait_kind,
             'wait_reason' => $summary?->wait_reason,
@@ -180,6 +185,8 @@ final class RunDetailView
             'update_blocked_reason' => $updateBlockedReason,
             'can_repair' => $canRepair,
             'repair_blocked_reason' => $repairBlockedReason,
+            'can_archive' => $canArchive,
+            'archive_blocked_reason' => $archiveBlockedReason,
             'read_only_reason' => self::readOnlyReason($run, $isCurrentRun),
             'created_at' => $summary?->started_at ?? $run->started_at ?? $run->created_at,
             'updated_at' => $summary?->closed_at ?? $run->last_progress_at ?? $run->updated_at,
@@ -438,8 +445,25 @@ final class RunDetailView
         return 'repair_not_needed';
     }
 
+    private static function archiveBlockedReason(WorkflowRun $run): ?string
+    {
+        if ($run->archived_at !== null) {
+            return 'run_archived';
+        }
+
+        if (! self::isClosed($run)) {
+            return 'run_not_closed';
+        }
+
+        return null;
+    }
+
     private static function readOnlyReason(WorkflowRun $run, bool $isCurrentRun): ?string
     {
+        if ($run->archived_at !== null) {
+            return 'Run is archived.';
+        }
+
         return match (self::actionBlockedReason($run, $isCurrentRun)) {
             'selected_run_not_current' => 'Selected run is historical. Issue commands against the current active run.',
             'run_closed' => 'Run is closed.',
