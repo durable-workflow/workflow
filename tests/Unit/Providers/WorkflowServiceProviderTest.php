@@ -114,6 +114,7 @@ final class WorkflowServiceProviderTest extends TestCase
             'make:workflow',
             'workflow:v2:doctor',
             'workflow:v2:history-export',
+            'workflow:v2:rebuild-projections',
         ];
 
         foreach ($expectedCommands as $command) {

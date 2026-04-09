@@ -11,6 +11,7 @@ use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
 use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
+use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
@@ -41,6 +42,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             WorkflowMakeCommand::class,
             V2DoctorCommand::class,
             V2HistoryExportCommand::class,
+            V2RebuildProjectionsCommand::class,
         ]);
 
         Event::listen(Looping::class, static function (Looping $event): void {

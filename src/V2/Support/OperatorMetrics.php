@@ -12,6 +12,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -31,6 +32,7 @@ final class OperatorMetrics
             'backlog' => self::backlogMetrics($now),
             'starts' => self::startMetrics($now),
             'history' => self::historyMetrics(),
+            'projections' => self::projectionMetrics(),
             'workers' => self::workerMetrics(),
             'backend' => BackendCapabilities::snapshot($now),
             'repair_policy' => TaskRepairPolicy::snapshot(),
@@ -165,6 +167,34 @@ final class OperatorMetrics
             'max_size_bytes' => (int) $summaryModel::query()->max('history_size_bytes'),
             'event_threshold' => HistoryBudget::eventThreshold(),
             'size_bytes_threshold' => HistoryBudget::sizeBytesThreshold(),
+        ];
+    }
+
+    /**
+     * @return array<string, array<string, int|string|null>>
+     */
+    private static function projectionMetrics(): array
+    {
+        $runModel = self::runModel();
+        $summaryModel = self::summaryModel();
+
+        $missing = $runModel::query()
+            ->whereNotIn('id', $summaryModel::query()->select('id'))
+            ->count();
+        $orphaned = $summaryModel::query()
+            ->whereNotIn('id', $runModel::query()->select('id'))
+            ->count();
+
+        return [
+            'run_summaries' => [
+                'runs' => $runModel::query()->count(),
+                'summaries' => $summaryModel::query()->count(),
+                'missing' => $missing,
+                'orphaned' => $orphaned,
+                'needs_rebuild' => $missing + $orphaned,
+                'oldest_updated_at' => self::jsonTimestamp($summaryModel::query()->min('updated_at')),
+                'newest_updated_at' => self::jsonTimestamp($summaryModel::query()->max('updated_at')),
+            ],
         ];
     }
 
@@ -364,6 +394,17 @@ final class OperatorMetrics
     }
 
     /**
+     * @return class-string<WorkflowRun>
+     */
+    private static function runModel(): string
+    {
+        /** @var class-string<WorkflowRun> $model */
+        $model = config('workflows.v2.run_model', WorkflowRun::class);
+
+        return $model;
+    }
+
+    /**
      * @return class-string<WorkflowCommand>
      */
     private static function commandModel(): string
@@ -383,5 +424,18 @@ final class OperatorMetrics
         $model = config('workflows.v2.task_model', WorkflowTask::class);
 
         return $model;
+    }
+
+    private static function jsonTimestamp(mixed $value): ?string
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value->toJSON();
+        }
+
+        if (is_string($value) && $value !== '') {
+            return \Illuminate\Support\Carbon::parse($value)->toJSON();
+        }
+
+        return null;
     }
 }
