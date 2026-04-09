@@ -146,6 +146,7 @@ final class ActivitySnapshot
         return match ($eventType) {
             HistoryEventType::ActivityScheduled => 'pending',
             HistoryEventType::ActivityStarted => 'running',
+            HistoryEventType::ActivityHeartbeatRecorded => 'running',
             HistoryEventType::ActivityCompleted => 'completed',
             HistoryEventType::ActivityFailed => 'failed',
             default => null,
@@ -163,6 +164,7 @@ final class ActivitySnapshot
     ): int {
         $taskAttemptCount = in_array($eventType, [
             HistoryEventType::ActivityStarted,
+            HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
         ], true)

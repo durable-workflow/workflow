@@ -190,6 +190,7 @@ final class HistoryTimeline
             HistoryEventType::ConditionWaitTimedOut => 'condition',
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityStarted,
+            HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
             HistoryEventType::SideEffectRecorded => 'side_effect',
@@ -309,6 +310,7 @@ final class HistoryTimeline
             HistoryEventType::WorkflowTerminated => 'Workflow terminated.',
             HistoryEventType::ActivityScheduled => sprintf('Scheduled %s.', $activityLabel),
             HistoryEventType::ActivityStarted => sprintf('Started %s.', $activityLabel),
+            HistoryEventType::ActivityHeartbeatRecorded => sprintf('Recorded heartbeat for %s.', $activityLabel),
             HistoryEventType::ActivityCompleted => sprintf('Completed %s.', $activityLabel),
             HistoryEventType::ActivityFailed => $message === null
                 ? sprintf('Failed %s.', $activityLabel)
@@ -582,6 +584,7 @@ final class HistoryTimeline
                 ?? match ($event->event_type) {
                     HistoryEventType::ActivityScheduled => 'pending',
                     HistoryEventType::ActivityStarted => 'running',
+                    HistoryEventType::ActivityHeartbeatRecorded => 'running',
                     HistoryEventType::ActivityCompleted => 'completed',
                     HistoryEventType::ActivityFailed => 'failed',
                     default => $activity?->status?->value,
@@ -609,6 +612,8 @@ final class HistoryTimeline
             ], true)
                 ? self::timestamp($activity?->closed_at ?? self::stringValue($snapshot['closed_at'] ?? null))
                 : null,
+            'last_heartbeat_at' => self::timestamp($snapshot['last_heartbeat_at'] ?? null)
+                ?? self::timestamp($activity?->last_heartbeat_at),
         ];
     }
 
@@ -720,6 +725,7 @@ final class HistoryTimeline
             HistoryEventType::ConditionWaitTimedOut => 'condition_wait',
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityStarted,
+            HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity_execution',
             HistoryEventType::VersionMarkerRecorded => 'version_marker',
@@ -819,6 +825,7 @@ final class HistoryTimeline
 
         return match ($event->event_type) {
             HistoryEventType::ActivityStarted,
+            HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
             HistoryEventType::TimerFired => 'timer',
@@ -833,7 +840,8 @@ final class HistoryTimeline
         }
 
         return match ($event->event_type) {
-            HistoryEventType::ActivityStarted => 'leased',
+            HistoryEventType::ActivityStarted,
+            HistoryEventType::ActivityHeartbeatRecorded => 'leased',
             HistoryEventType::WorkflowFailed => 'failed',
             default => 'completed',
         };

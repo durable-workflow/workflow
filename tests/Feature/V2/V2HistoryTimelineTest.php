@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestChildGreetingWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestHeartbeatWorkflow;
 use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
@@ -131,6 +132,45 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('Workflow completed.', $timeline[5]['summary']);
         $this->assertNull($timeline[5]['command']);
         $this->assertNull($timeline[5]['failure']);
+    }
+
+    public function testTimelineIncludesTypedActivityHeartbeatEntries(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHeartbeatWorkflow::class, 'timeline-heartbeat');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        /** @var ActivityExecution $activity */
+        $activity = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        $timeline = collect(HistoryTimeline::forRun($run));
+        $heartbeat = $timeline->firstWhere('type', 'ActivityHeartbeatRecorded');
+
+        $this->assertIsArray($heartbeat);
+        $this->assertSame('activity', $heartbeat['kind']);
+        $this->assertSame('activity_execution', $heartbeat['source_kind']);
+        $this->assertSame($activity->id, $heartbeat['source_id']);
+        $this->assertSame('Recorded heartbeat for TestHeartbeatActivity.', $heartbeat['summary']);
+        $this->assertSame($activity->id, $heartbeat['activity_execution_id']);
+        $this->assertSame('running', $heartbeat['activity_status']);
+        $this->assertSame('activity', $heartbeat['task']['type']);
+        $this->assertSame('leased', $heartbeat['task']['status']);
+        $this->assertSame($activity->current_attempt_id, $heartbeat['activity']['attempt_id']);
+        $this->assertSame(1, $heartbeat['activity']['attempt_count']);
+        $this->assertSame($activity->last_heartbeat_at?->toJSON(), $heartbeat['activity']['last_heartbeat_at']);
     }
 
     public function testTimelineIncludesNestedParallelActivityPathMetadata(): void
