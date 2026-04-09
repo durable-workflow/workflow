@@ -130,6 +130,7 @@ final class TaskRepair
                     'connection' => $execution->connection ?? $run->connection,
                     'queue' => $execution->queue ?? $run->queue,
                     'compatibility' => $run->compatibility,
+                    'attempt_count' => max(0, (int) $execution->attempt_count),
                     'repair_count' => 1,
                 ]);
 

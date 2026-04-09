@@ -28,6 +28,8 @@ abstract class Activity
 
     public ?string $queue = null;
 
+    public int $tries = 1;
+
     final public function __construct(
         public readonly ActivityExecution $execution,
         public readonly WorkflowRun $run,
@@ -62,6 +64,14 @@ abstract class Activity
         $attemptCount = is_int($this->execution->attempt_count) ? $this->execution->attempt_count : 0;
 
         return $attemptCount > 0 ? $attemptCount : 1;
+    }
+
+    /**
+     * @return int|list<int>
+     */
+    public function backoff(): int|array
+    {
+        return [1, 2, 5, 10, 15, 30, 60, 120];
     }
 
     public function heartbeat(): void

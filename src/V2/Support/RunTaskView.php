@@ -96,6 +96,10 @@ final class RunTaskView
                         'activity_execution_id' => $activityExecutionId,
                         'activity_type' => self::stringValue($activity['type'] ?? null),
                         'activity_class' => self::stringValue($activity['class'] ?? null),
+                        'retry_of_task_id' => self::stringValue($task->payload['retry_of_task_id'] ?? null),
+                        'retry_after_attempt_id' => self::stringValue($task->payload['retry_after_attempt_id'] ?? null),
+                        'retry_after_attempt' => self::intValue($task->payload['retry_after_attempt'] ?? null),
+                        'retry_backoff_seconds' => self::intValue($task->payload['retry_backoff_seconds'] ?? null),
                         'timer_id' => $timerId,
                         'timer_sequence' => $timer?->sequence,
                         'timer_fire_at' => $timer?->fire_at,
@@ -224,6 +228,21 @@ final class RunTaskView
     private static function activitySummary(WorkflowTask $task, ?array $activity): string
     {
         $label = self::activityLabel($activity);
+        $retryAfterAttempt = self::intValue($task->payload['retry_after_attempt'] ?? null);
+
+        if ($retryAfterAttempt !== null) {
+            $retryNumber = $retryAfterAttempt + 1;
+
+            return match ($task->status) {
+                TaskStatus::Ready => $task->available_at !== null && $task->available_at->isFuture()
+                    ? sprintf('Activity retry %d for %s scheduled for %s.', $retryNumber, $label, $task->available_at->toJSON())
+                    : sprintf('Activity retry %d ready for %s.', $retryNumber, $label),
+                TaskStatus::Leased => sprintf('Activity retry %d leased for %s.', $retryNumber, $label),
+                TaskStatus::Completed => sprintf('Activity retry %d completed for %s.', $retryNumber, $label),
+                TaskStatus::Cancelled => sprintf('Activity retry %d cancelled for %s.', $retryNumber, $label),
+                TaskStatus::Failed => sprintf('Activity retry %d failed for %s.', $retryNumber, $label),
+            };
+        }
 
         return match ($task->status) {
             TaskStatus::Ready => sprintf('Activity task ready for %s.', $label),
@@ -326,5 +345,18 @@ final class RunTaskView
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && is_numeric($value)) {
+            return (int) $value;
+        }
+
+        return null;
     }
 }

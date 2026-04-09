@@ -34,6 +34,7 @@ use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestReclaimDuringExecutionActivity;
+use Tests\Fixtures\V2\TestRetryWorkflow;
 use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
@@ -230,6 +231,127 @@ final class V2WorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+    }
+
+    public function testActivityRetriesBeforeResumingWorkflow(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'activity-retry-runtime');
+            $workflow->start('Taylor');
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+            $this->runReadyTaskForRun($runId, TaskType::Activity);
+
+            /** @var ActivityExecution $execution */
+            $execution = ActivityExecution::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+            /** @var ActivityAttempt $firstAttempt */
+            $firstAttempt = ActivityAttempt::query()
+                ->where('activity_execution_id', $execution->id)
+                ->where('attempt_number', 1)
+                ->firstOrFail();
+            /** @var WorkflowTask $retryTask */
+            $retryTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->firstOrFail();
+
+            $this->assertSame(ActivityStatus::Pending, $execution->refresh()->status);
+            $this->assertSame('failed', $firstAttempt->status->value);
+            $this->assertSame(1, $execution->attempt_count);
+            $this->assertSame(1, $retryTask->attempt_count);
+            $this->assertSame($execution->id, $retryTask->payload['activity_execution_id'] ?? null);
+            $this->assertSame($firstAttempt->workflow_task_id, $retryTask->payload['retry_of_task_id'] ?? null);
+            $this->assertSame($firstAttempt->id, $retryTask->payload['retry_after_attempt_id'] ?? null);
+            $this->assertSame(1, $retryTask->payload['retry_after_attempt'] ?? null);
+            $this->assertSame(5, $retryTask->payload['retry_backoff_seconds'] ?? null);
+            $this->assertSame(Carbon::parse('2026-04-09 12:00:05')->toJSON(), $retryTask->available_at?->toJSON());
+
+            /** @var WorkflowHistoryEvent $retryScheduled */
+            $retryScheduled = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
+                ->sole();
+
+            $this->assertSame($execution->id, $retryScheduled->payload['activity_execution_id'] ?? null);
+            $this->assertSame($retryTask->id, $retryScheduled->payload['retry_task_id'] ?? null);
+            $this->assertSame($firstAttempt->id, $retryScheduled->payload['retry_after_attempt_id'] ?? null);
+            $this->assertSame(1, $retryScheduled->payload['retry_after_attempt'] ?? null);
+            $this->assertSame(5, $retryScheduled->payload['retry_backoff_seconds'] ?? null);
+            $this->assertSame('retry me', $retryScheduled->payload['message'] ?? null);
+            $this->assertSame('pending', $retryScheduled->payload['activity']['status'] ?? null);
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+
+            $this->assertSame('pending', $detail['activities'][0]['status']);
+            $this->assertSame(1, $detail['activities'][0]['attempt_count']);
+            $this->assertSame('failed', $detail['activities'][0]['attempts'][0]['status']);
+            $this->assertSame('ActivityRetryScheduled', $detail['timeline'][4]['type']);
+            $this->assertSame('Scheduled retry 2 for TestRetryActivity.', $detail['timeline'][4]['summary']);
+            $this->assertSame($retryTask->id, $detail['timeline'][4]['retry_task_id']);
+            $this->assertSame('scheduled', $detail['tasks'][0]['transport_state']);
+            $this->assertSame(1, $detail['tasks'][0]['retry_after_attempt']);
+
+            Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:05'));
+
+            $this->runReadyTaskForRun($runId, TaskType::Activity);
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            $workflow->refresh();
+            $execution->refresh();
+
+            $this->assertTrue($workflow->completed());
+            $this->assertSame(ActivityStatus::Completed, $execution->status);
+            $this->assertSame(2, $execution->attempt_count);
+            $this->assertNull($execution->exception);
+
+            $attempts = ActivityAttempt::query()
+                ->where('activity_execution_id', $execution->id)
+                ->orderBy('attempt_number')
+                ->get();
+
+            $this->assertCount(2, $attempts);
+            $this->assertSame('failed', $attempts[0]->status->value);
+            $this->assertSame('completed', $attempts[1]->status->value);
+            $this->assertSame($execution->current_attempt_id, $attempts[1]->id);
+
+            $this->assertSame([
+                'workflow_id' => $workflow->id(),
+                'run_id' => $runId,
+                'activity' => [
+                    'message' => 'Hello, Taylor!',
+                    'activity_id' => $execution->id,
+                    'attempt_id' => $execution->current_attempt_id,
+                    'attempt_count' => 2,
+                ],
+            ], $workflow->output());
+
+            $this->assertSame([
+                'StartAccepted',
+                'WorkflowStarted',
+                'ActivityScheduled',
+                'ActivityStarted',
+                'ActivityRetryScheduled',
+                'ActivityStarted',
+                'ActivityCompleted',
+                'WorkflowCompleted',
+            ], WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($eventType) => $eventType->value)
+                ->all());
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function testActivityHeartbeatRenewsCurrentAttemptLease(): void

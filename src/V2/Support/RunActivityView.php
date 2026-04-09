@@ -152,6 +152,7 @@ final class RunActivityView
                 HistoryEventType::ActivityScheduled,
                 HistoryEventType::ActivityStarted,
                 HistoryEventType::ActivityHeartbeatRecorded,
+                HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
             ], true))

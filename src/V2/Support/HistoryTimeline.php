@@ -138,6 +138,11 @@ final class HistoryTimeline
             'activity_type' => $activityMetadata['type'] ?? null,
             'activity_class' => $activityMetadata['class'] ?? null,
             'activity_status' => $activityMetadata['status'] ?? null,
+            'retry_task_id' => self::stringValue($payload['retry_task_id'] ?? null),
+            'retry_available_at' => self::timestamp($payload['retry_available_at'] ?? null),
+            'retry_backoff_seconds' => self::intValue($payload['retry_backoff_seconds'] ?? null),
+            'retry_after_attempt_id' => self::stringValue($payload['retry_after_attempt_id'] ?? null),
+            'retry_after_attempt' => self::intValue($payload['retry_after_attempt'] ?? null),
             'timer_id' => $timerMetadata['id'] ?? null,
             'delay_seconds' => self::intValue(
                 $payload['timeout_seconds'] ?? null
@@ -195,6 +200,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded,
+            HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
             HistoryEventType::SideEffectRecorded => 'side_effect',
@@ -309,6 +315,11 @@ final class HistoryTimeline
             HistoryEventType::ActivityScheduled => sprintf('Scheduled %s.', $activityLabel),
             HistoryEventType::ActivityStarted => sprintf('Started %s.', $activityLabel),
             HistoryEventType::ActivityHeartbeatRecorded => sprintf('Recorded heartbeat for %s.', $activityLabel),
+            HistoryEventType::ActivityRetryScheduled => sprintf(
+                'Scheduled retry %d for %s.',
+                (self::intValue($payload['retry_after_attempt'] ?? null) ?? 0) + 1,
+                $activityLabel,
+            ),
             HistoryEventType::ActivityCompleted => sprintf('Completed %s.', $activityLabel),
             HistoryEventType::ActivityFailed => $message === null
                 ? sprintf('Failed %s.', $activityLabel)
@@ -592,6 +603,7 @@ final class HistoryTimeline
                     HistoryEventType::ActivityScheduled => 'pending',
                     HistoryEventType::ActivityStarted => 'running',
                     HistoryEventType::ActivityHeartbeatRecorded => 'running',
+                    HistoryEventType::ActivityRetryScheduled => 'pending',
                     HistoryEventType::ActivityCompleted => 'completed',
                     HistoryEventType::ActivityFailed => 'failed',
                     default => $activity?->status?->value,
@@ -732,6 +744,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityScheduled,
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded,
+            HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity_execution',
             HistoryEventType::VersionMarkerRecorded => 'version_marker',
@@ -834,6 +847,7 @@ final class HistoryTimeline
         return match ($event->event_type) {
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded,
+            HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
             HistoryEventType::TimerFired => 'timer',

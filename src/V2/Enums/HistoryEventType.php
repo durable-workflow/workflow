@@ -36,6 +36,7 @@ enum HistoryEventType: string
     case ActivityScheduled = 'ActivityScheduled';
     case ActivityStarted = 'ActivityStarted';
     case ActivityHeartbeatRecorded = 'ActivityHeartbeatRecorded';
+    case ActivityRetryScheduled = 'ActivityRetryScheduled';
     case ActivityCompleted = 'ActivityCompleted';
     case ActivityFailed = 'ActivityFailed';
     case SideEffectRecorded = 'SideEffectRecorded';

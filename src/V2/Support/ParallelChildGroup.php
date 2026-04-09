@@ -93,6 +93,7 @@ final class ParallelChildGroup
                 [
                     HistoryEventType::ActivityScheduled,
                     HistoryEventType::ActivityStarted,
+                    HistoryEventType::ActivityRetryScheduled,
                     HistoryEventType::ActivityCompleted,
                     HistoryEventType::ActivityFailed,
                     HistoryEventType::ChildWorkflowScheduled,

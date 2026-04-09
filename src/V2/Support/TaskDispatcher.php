@@ -78,7 +78,7 @@ final class TaskDispatcher
             $job->onQueue($task->queue);
         }
 
-        if ($task->task_type === TaskType::Timer && $task->available_at !== null) {
+        if ($task->available_at !== null && $task->available_at->isFuture()) {
             $job->delay($task->available_at);
         }
 

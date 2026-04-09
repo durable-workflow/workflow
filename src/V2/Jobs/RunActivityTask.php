@@ -13,7 +13,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use ReflectionMethod;
 use Throwable;
+use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Activity;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -58,7 +60,13 @@ final class RunActivityTask implements ShouldQueue
             is_string($this->queue ?? null) ? $this->queue : null,
         );
 
-        $claim = $this->claimTask();
+        [$claim, $releaseIn] = $this->claimTask();
+
+        if ($releaseIn !== null) {
+            $this->release($releaseIn);
+
+            return;
+        }
 
         if ($claim === null) {
             return;
@@ -89,12 +97,17 @@ final class RunActivityTask implements ShouldQueue
             $throwable = $error;
         }
 
-        $resumeTask = DB::transaction(function () use (
+        $maxAttempts = self::maxAttempts($activity);
+        $backoffSeconds = self::backoffSeconds($activity, $attemptCount);
+
+        $nextTask = DB::transaction(function () use (
             $execution,
             $result,
             $throwable,
             $attemptId,
             $attemptCount,
+            $maxAttempts,
+            $backoffSeconds,
         ): ?WorkflowTask {
             /** @var WorkflowTask $task */
             $task = WorkflowTask::query()
@@ -177,6 +190,7 @@ final class RunActivityTask implements ShouldQueue
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,
                     'result' => Serializer::serialize($result),
+                    'exception' => null,
                     'closed_at' => now(),
                 ])->save();
 
@@ -190,6 +204,63 @@ final class RunActivityTask implements ShouldQueue
                 ], $parallelMetadata ?? []), $task);
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
+            } elseif (self::shouldRetry($throwable, $attemptCount, $maxAttempts)) {
+                $exceptionPayload = FailureFactory::payload($throwable);
+                $retryAvailableAt = now()->addSeconds($backoffSeconds);
+
+                self::closeAttempt($attemptId, ActivityAttemptStatus::Failed);
+
+                $lockedExecution->forceFill([
+                    'status' => ActivityStatus::Pending,
+                    'exception' => Serializer::serialize($exceptionPayload),
+                    'last_heartbeat_at' => null,
+                ])->save();
+
+                $task->forceFill([
+                    'status' => TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                ])->save();
+
+                /** @var WorkflowTask $retryTask */
+                $retryTask = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Activity->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $retryAvailableAt,
+                    'payload' => [
+                        'activity_execution_id' => $lockedExecution->id,
+                        'retry_of_task_id' => $task->id,
+                        'retry_after_attempt_id' => $attemptId,
+                        'retry_after_attempt' => $attemptCount,
+                        'retry_backoff_seconds' => $backoffSeconds,
+                    ],
+                    'connection' => $lockedExecution->connection,
+                    'queue' => $lockedExecution->queue,
+                    'compatibility' => $run->compatibility,
+                    'attempt_count' => $attemptCount,
+                ]);
+
+                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityRetryScheduled, array_merge([
+                    'activity_execution_id' => $lockedExecution->id,
+                    'activity_class' => $lockedExecution->activity_class,
+                    'activity_type' => $lockedExecution->activity_type,
+                    'sequence' => $lockedExecution->sequence,
+                    'retry_task_id' => $retryTask->id,
+                    'retry_available_at' => $retryAvailableAt->toJSON(),
+                    'retry_backoff_seconds' => $backoffSeconds,
+                    'retry_after_attempt_id' => $attemptId,
+                    'retry_after_attempt' => $attemptCount,
+                    'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
+                    'exception_class' => $exceptionPayload['class'] ?? get_class($throwable),
+                    'message' => $exceptionPayload['message'] ?? $throwable->getMessage(),
+                    'code' => $throwable->getCode(),
+                    'exception' => $exceptionPayload,
+                    'activity' => ActivitySnapshot::fromExecution($lockedExecution),
+                ], $parallelMetadata ?? []), $task);
+
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+                return $retryTask;
             } else {
                 $exceptionPayload = FailureFactory::payload($throwable);
 
@@ -266,30 +337,36 @@ final class RunActivityTask implements ShouldQueue
             return $resumeTask;
         });
 
-        if ($resumeTask instanceof WorkflowTask) {
-            TaskDispatcher::dispatch($resumeTask);
+        if ($nextTask instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($nextTask);
         }
     }
 
     /**
-     * @return array{activity_execution_id: string, attempt_id: string, attempt_count: int}|null
+     * @return array{0: array{activity_execution_id: string, attempt_id: string, attempt_count: int}|null, 1: int|null}
      */
-    private function claimTask(): ?array
+    private function claimTask(): array
     {
-        return DB::transaction(function (): ?array {
+        return DB::transaction(function (): array {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
                 ->find($this->taskId);
 
             if ($task === null || $task->task_type !== TaskType::Activity || $task->status !== TaskStatus::Ready) {
-                return null;
+                return [null, null];
+            }
+
+            if ($task->available_at !== null && $task->available_at->isFuture()) {
+                $remainingMilliseconds = max(1, $task->available_at->getTimestampMs() - now()->getTimestampMs());
+
+                return [null, (int) ceil($remainingMilliseconds / 1000)];
             }
 
             $activityExecutionId = $task->payload['activity_execution_id'] ?? null;
 
             if (! is_string($activityExecutionId)) {
-                return null;
+                return [null, null];
             }
 
             /** @var ActivityExecution $execution */
@@ -305,13 +382,13 @@ final class RunActivityTask implements ShouldQueue
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return null;
+                return [null, null];
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return null;
+                return [null, null];
             }
 
             $task->forceFill([
@@ -363,11 +440,11 @@ final class RunActivityTask implements ShouldQueue
 
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-            return [
+            return [[
                 'activity_execution_id' => $activityExecutionId,
                 'attempt_id' => $attemptId,
                 'attempt_count' => $attemptCount,
-            ];
+            ], null];
         });
     }
 
@@ -396,5 +473,41 @@ final class RunActivityTask implements ShouldQueue
             : ActivityAttemptStatus::Expired;
 
         self::closeAttempt($attemptId, $status);
+    }
+
+    private static function maxAttempts(Activity $activity): int
+    {
+        $tries = $activity->tries;
+
+        return $tries <= 0 ? PHP_INT_MAX : $tries;
+    }
+
+    private static function shouldRetry(Throwable $throwable, int $attemptCount, int $maxAttempts): bool
+    {
+        return ! $throwable instanceof NonRetryableExceptionContract
+            && $attemptCount < $maxAttempts;
+    }
+
+    private static function backoffSeconds(Activity $activity, int $attemptCount): int
+    {
+        $backoff = $activity->backoff();
+
+        if (is_int($backoff)) {
+            return max(0, $backoff);
+        }
+
+        $values = array_values(array_filter(
+            $backoff,
+            static fn (mixed $value): bool => is_int($value) || (is_string($value) && is_numeric($value)),
+        ));
+
+        if ($values === []) {
+            return 0;
+        }
+
+        $index = max(0, $attemptCount - 1);
+        $value = $values[min($index, count($values) - 1)];
+
+        return max(0, (int) $value);
     }
 }

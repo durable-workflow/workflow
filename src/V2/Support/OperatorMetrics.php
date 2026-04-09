@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -29,6 +33,7 @@ final class OperatorMetrics
             'generated_at' => $now->toJSON(),
             'runs' => self::runMetrics(),
             'tasks' => self::taskMetrics($now),
+            'activities' => self::activityMetrics(),
             'backlog' => self::backlogMetrics($now),
             'starts' => self::startMetrics($now),
             'history' => self::historyMetrics(),
@@ -92,6 +97,7 @@ final class OperatorMetrics
             'runnable_tasks' => self::readyDueTasks($now),
             'delayed_tasks' => self::delayedTasks($now),
             'leased_tasks' => self::leasedTasks(),
+            'retrying_activities' => self::retryingActivities(),
             'unhealthy_tasks' => self::dispatchFailedTasks()
                 + self::claimFailedTasks()
                 + self::dispatchOverdueTasks($now)
@@ -101,6 +107,30 @@ final class OperatorMetrics
                 ->count(),
             'claim_failed_runs' => self::claimFailedRuns(),
             'compatibility_blocked_runs' => self::compatibilityBlockedRuns(),
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private static function activityMetrics(): array
+    {
+        return [
+            'open' => self::activityExecutionModel()::query()
+                ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
+                ->count(),
+            'pending' => self::activityExecutionModel()::query()
+                ->where('status', ActivityStatus::Pending->value)
+                ->count(),
+            'running' => self::activityExecutionModel()::query()
+                ->where('status', ActivityStatus::Running->value)
+                ->count(),
+            'retrying' => self::retryingActivities(),
+            'failed_attempts' => self::activityAttemptModel()::query()
+                ->where('status', ActivityAttemptStatus::Failed->value)
+                ->count(),
+            'max_attempt_count' => (int) self::activityExecutionModel()::query()
+                ->max('attempt_count'),
         ];
     }
 
@@ -214,6 +244,14 @@ final class OperatorMetrics
     {
         return self::summaryModel()::query()
             ->where('liveness_state', 'like', '%_task_claim_failed')
+            ->count();
+    }
+
+    private static function retryingActivities(): int
+    {
+        return self::activityExecutionModel()::query()
+            ->where('status', ActivityStatus::Pending->value)
+            ->where('attempt_count', '>', 0)
             ->count();
     }
 
@@ -459,6 +497,28 @@ final class OperatorMetrics
     {
         /** @var class-string<WorkflowTask> $model */
         $model = config('workflows.v2.task_model', WorkflowTask::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<ActivityExecution>
+     */
+    private static function activityExecutionModel(): string
+    {
+        /** @var class-string<ActivityExecution> $model */
+        $model = config('workflows.v2.activity_execution_model', ActivityExecution::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<ActivityAttempt>
+     */
+    private static function activityAttemptModel(): string
+    {
+        /** @var class-string<ActivityAttempt> $model */
+        $model = config('workflows.v2.activity_attempt_model', ActivityAttempt::class);
 
         return $model;
     }
