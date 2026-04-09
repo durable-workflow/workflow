@@ -48,6 +48,8 @@ return [
         ],
         'history_export' => [
             'redactor' => null,
+            'signing_key' => env('WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY'),
+            'signing_key_id' => env('WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID'),
         ],
         'task_repair' => [
             'redispatch_after_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 3),

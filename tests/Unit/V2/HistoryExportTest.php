@@ -248,6 +248,15 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($run->arguments, $bundle['payloads']['arguments']['data']);
         $this->assertSame($run->output, $bundle['payloads']['output']['data']);
         $this->assertFalse($bundle['redaction']['applied']);
+        $this->assertSame('json-recursive-ksort-v1', $bundle['integrity']['canonicalization']);
+        $this->assertSame('sha256', $bundle['integrity']['checksum_algorithm']);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $bundle['integrity']['checksum']);
+        $this->assertNull($bundle['integrity']['signature_algorithm']);
+        $this->assertNull($bundle['integrity']['signature']);
+        $this->assertNull($bundle['integrity']['key_id']);
+        $unsignedBundle = $bundle;
+        unset($unsignedBundle['integrity']);
+        $this->assertSame(hash('sha256', self::canonicalJson($unsignedBundle)), $bundle['integrity']['checksum']);
         $this->assertSame(2, $bundle['summary']['history_event_count']);
         $this->assertSame(['StartAccepted', 'WorkflowCompleted'], array_column($bundle['history_events'], 'type'));
         $this->assertSame($command->id, $bundle['commands'][0]['id']);
@@ -423,5 +432,92 @@ final class HistoryExportTest extends TestCase
         });
 
         $this->assertSame('inline-redacted:payloads.arguments.data', $stubBundle['payloads']['arguments']['data']);
+    }
+
+    public function testItSignsHistoryExportIntegrityWhenSigningKeyIsConfigured(): void
+    {
+        config()->set('workflows.v2.history_export.signing_key', 'history-export-secret');
+        config()->set('workflows.v2.history_export.signing_key_id', '2026-04-primary');
+
+        $run = $this->createMinimalCompletedRun('history-export-signed');
+
+        $bundle = HistoryExport::forRun($run, Carbon::parse('2026-04-09 13:00:00'));
+        $unsignedBundle = $bundle;
+        unset($unsignedBundle['integrity']);
+        $canonicalJson = self::canonicalJson($unsignedBundle);
+
+        $this->assertSame('json-recursive-ksort-v1', $bundle['integrity']['canonicalization']);
+        $this->assertSame('sha256', $bundle['integrity']['checksum_algorithm']);
+        $this->assertSame(hash('sha256', $canonicalJson), $bundle['integrity']['checksum']);
+        $this->assertSame('hmac-sha256', $bundle['integrity']['signature_algorithm']);
+        $this->assertSame(hash_hmac('sha256', $canonicalJson, 'history-export-secret'), $bundle['integrity']['signature']);
+        $this->assertSame('2026-04-primary', $bundle['integrity']['key_id']);
+    }
+
+    private function createMinimalCompletedRun(string $instanceId): WorkflowRun
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => $instanceId,
+            'workflow_class' => 'App\\Workflows\\SignedExportWorkflow',
+            'workflow_type' => 'export.signed',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\SignedExportWorkflow',
+            'workflow_type' => 'export.signed',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize(['signed']),
+            'output' => Serializer::serialize(['ok' => true]),
+            'started_at' => now()->subMinutes(2),
+            'closed_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_type' => 'export.signed',
+        ]);
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::WorkflowCompleted, [
+            'result_available' => true,
+        ]);
+
+        return $run->refresh();
+    }
+
+    private static function canonicalJson(mixed $value): string
+    {
+        return json_encode(
+            self::canonicalize($value),
+            JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR,
+        );
+    }
+
+    private static function canonicalize(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(static fn (mixed $item): mixed => self::canonicalize($item), $value);
+        }
+
+        $canonical = [];
+
+        foreach ($value as $key => $item) {
+            $canonical[$key] = self::canonicalize($item);
+        }
+
+        ksort($canonical, SORT_STRING);
+
+        return $canonical;
     }
 }

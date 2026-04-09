@@ -30,6 +30,8 @@ final class HistoryExport
 
     public const SCHEMA_VERSION = 1;
 
+    private const INTEGRITY_CANONICALIZATION = 'json-recursive-ksort-v1';
+
     /**
      * @return array<string, mixed>
      */
@@ -138,7 +140,31 @@ final class HistoryExport
             ],
         ];
 
-        return self::withRedaction($bundle, $run, $redactor);
+        return self::withIntegrity(self::withRedaction($bundle, $run, $redactor));
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     *
+     * @return array<string, mixed>
+     */
+    private static function withIntegrity(array $bundle): array
+    {
+        unset($bundle['integrity']);
+
+        $canonicalJson = self::canonicalJson($bundle);
+        $signingKey = self::signingKey();
+
+        $bundle['integrity'] = [
+            'canonicalization' => self::INTEGRITY_CANONICALIZATION,
+            'checksum_algorithm' => 'sha256',
+            'checksum' => hash('sha256', $canonicalJson),
+            'signature_algorithm' => $signingKey === null ? null : 'hmac-sha256',
+            'signature' => $signingKey === null ? null : hash_hmac('sha256', $canonicalJson, $signingKey),
+            'key_id' => $signingKey === null ? null : self::signingKeyId(),
+        ];
+
+        return $bundle;
     }
 
     /**
@@ -488,6 +514,67 @@ final class HistoryExport
         }
 
         return 'callable';
+    }
+
+    private static function canonicalJson(mixed $value): string
+    {
+        $json = json_encode(
+            self::canonicalize($value),
+            JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR,
+        );
+
+        if (! is_string($json)) {
+            throw new LogicException('Failed to canonicalize workflow history export.');
+        }
+
+        return $json;
+    }
+
+    private static function canonicalize(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(static fn (mixed $item): mixed => self::canonicalize($item), $value);
+        }
+
+        $canonical = [];
+
+        foreach ($value as $key => $item) {
+            $canonical[$key] = self::canonicalize($item);
+        }
+
+        ksort($canonical, SORT_STRING);
+
+        return $canonical;
+    }
+
+    private static function signingKey(): ?string
+    {
+        $key = config('workflows.v2.history_export.signing_key');
+
+        if (! is_string($key)) {
+            return null;
+        }
+
+        $key = trim($key);
+
+        return $key === '' ? null : $key;
+    }
+
+    private static function signingKeyId(): ?string
+    {
+        $keyId = config('workflows.v2.history_export.signing_key_id');
+
+        if (! is_string($keyId)) {
+            return null;
+        }
+
+        $keyId = trim($keyId);
+
+        return $keyId === '' ? null : $keyId;
     }
 
     private static function dedupeKey(WorkflowRun $run): string
