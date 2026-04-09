@@ -49,6 +49,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\ActivityTaskBridge;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -421,6 +422,187 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame(17, $retryTask->payload['retry_backoff_seconds'] ?? null);
             $this->assertSame(17, $retryScheduled->payload['retry_backoff_seconds'] ?? null);
             $this->assertSame($execution->refresh()->retry_policy, $retryScheduled->payload['retry_policy'] ?? null);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testActivityTaskBridgeClaimsHeartbeatsAndCompletesAttemptWithoutExecutingPhpActivity(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-bridge-complete');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $claim = ActivityTaskBridge::claim($task->id, 'external-worker-1');
+
+        $this->assertIsArray($claim);
+        $this->assertSame($task->id, $claim['task_id']);
+        $this->assertSame($runId, $claim['workflow_run_id']);
+        $this->assertSame('activity-bridge-complete', $claim['workflow_instance_id']);
+        $this->assertSame('external-worker-1', $claim['lease_owner']);
+        $this->assertSame(1, $claim['attempt_number']);
+        $this->assertSame(['Taylor'], Serializer::unserialize($claim['arguments']));
+        $this->assertTrue(ActivityTaskBridge::heartbeat($claim['activity_attempt_id']));
+
+        $outcome = ActivityTaskBridge::complete($claim['activity_attempt_id'], 'Hello from bridge!');
+
+        $this->assertTrue($outcome['recorded']);
+        $this->assertNull($outcome['reason']);
+        $this->assertNotNull($outcome['next_task_id']);
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()
+            ->whereKey($claim['activity_attempt_id'])
+            ->firstOrFail();
+
+        $this->assertSame(ActivityStatus::Completed, $execution->status);
+        $this->assertSame('completed', $attempt->status->value);
+        $this->assertNotNull($attempt->last_heartbeat_at);
+        $this->assertSame('external-worker-1', $attempt->lease_owner);
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityStarted->value)
+            ->sole();
+        /** @var WorkflowHistoryEvent $completed */
+        $completed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityCompleted->value)
+            ->sole();
+
+        $this->assertSame($claim['activity_attempt_id'], $started->payload['activity_attempt_id'] ?? null);
+        $this->assertSame($claim['activity_attempt_id'], $completed->payload['activity_attempt_id'] ?? null);
+        $this->assertSame(1, $completed->payload['attempt_number'] ?? null);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+        $this->assertSame([
+            'greeting' => 'Hello from bridge!',
+            'workflow_id' => 'activity-bridge-complete',
+            'run_id' => $runId,
+        ], $workflow->output());
+    }
+
+    public function testActivityTaskBridgeUsesSnappedRetryPolicyForExternalFailures(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'activity-bridge-retry');
+            $workflow->start('Taylor');
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            /** @var WorkflowTask $firstTask */
+            $firstTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->firstOrFail();
+
+            $firstClaim = ActivityTaskBridge::claim($firstTask->id, 'external-worker-1');
+
+            $this->assertIsArray($firstClaim);
+
+            $failed = ActivityTaskBridge::fail($firstClaim['activity_attempt_id'], [
+                'class' => \RuntimeException::class,
+                'message' => 'external retry me',
+                'code' => 7,
+            ]);
+
+            $this->assertTrue($failed['recorded']);
+            $this->assertNotNull($failed['next_task_id']);
+
+            /** @var ActivityExecution $execution */
+            $execution = ActivityExecution::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+            /** @var WorkflowTask $retryTask */
+            $retryTask = WorkflowTask::query()
+                ->whereKey($failed['next_task_id'])
+                ->firstOrFail();
+
+            $this->assertSame(ActivityStatus::Pending, $execution->status);
+            $this->assertSame([
+                'snapshot_version' => 1,
+                'max_attempts' => 2,
+                'backoff_seconds' => [5],
+            ], $execution->retry_policy);
+            $this->assertSame($execution->id, $retryTask->payload['activity_execution_id'] ?? null);
+            $this->assertSame($firstClaim['activity_attempt_id'], $retryTask->payload['retry_after_attempt_id'] ?? null);
+            $this->assertSame(1, $retryTask->payload['retry_after_attempt'] ?? null);
+            $this->assertSame(5, $retryTask->payload['retry_backoff_seconds'] ?? null);
+            $this->assertSame(2, $retryTask->payload['max_attempts'] ?? null);
+
+            /** @var WorkflowHistoryEvent $retryScheduled */
+            $retryScheduled = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
+                ->sole();
+
+            $this->assertSame('external retry me', $retryScheduled->payload['message'] ?? null);
+            $this->assertSame($execution->retry_policy, $retryScheduled->payload['retry_policy'] ?? null);
+
+            Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:05'));
+
+            $secondClaim = ActivityTaskBridge::claim($retryTask->id, 'external-worker-2');
+
+            $this->assertIsArray($secondClaim);
+            $this->assertSame(2, $secondClaim['attempt_number']);
+
+            $completed = ActivityTaskBridge::complete($secondClaim['activity_attempt_id'], [
+                'message' => 'Hello, Taylor!',
+                'activity_id' => $execution->id,
+                'attempt_id' => $secondClaim['activity_attempt_id'],
+                'attempt_count' => 2,
+            ]);
+
+            $this->assertTrue($completed['recorded']);
+            $this->assertNotNull($completed['next_task_id']);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            $workflow->refresh();
+            $execution->refresh();
+
+            $this->assertTrue($workflow->completed());
+            $this->assertSame(ActivityStatus::Completed, $execution->status);
+            $this->assertSame(2, $execution->attempt_count);
+            $this->assertSame([
+                'workflow_id' => 'activity-bridge-retry',
+                'run_id' => $runId,
+                'activity' => [
+                    'message' => 'Hello, Taylor!',
+                    'activity_id' => $execution->id,
+                    'attempt_id' => $secondClaim['activity_attempt_id'],
+                    'attempt_count' => 2,
+                ],
+            ], $workflow->output());
         } finally {
             Carbon::setTestNow();
         }

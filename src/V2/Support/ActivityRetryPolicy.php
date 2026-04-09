@@ -61,6 +61,38 @@ final class ActivityRetryPolicy
         return $backoff[min($index, count($backoff) - 1)];
     }
 
+    public static function maxAttemptsFromSnapshot(ActivityExecution $execution): int
+    {
+        $policy = self::policy($execution);
+        $maxAttempts = $policy['max_attempts'] ?? null;
+
+        if (is_int($maxAttempts)) {
+            return max(1, $maxAttempts);
+        }
+
+        if ($maxAttempts === null && array_key_exists('max_attempts', $policy)) {
+            return PHP_INT_MAX;
+        }
+
+        return 1;
+    }
+
+    public static function backoffSecondsFromSnapshot(ActivityExecution $execution, int $attemptCount): int
+    {
+        $policy = self::policy($execution);
+        $backoff = is_array($policy['backoff_seconds'] ?? null)
+            ? self::normalizeBackoff($policy['backoff_seconds'])
+            : [];
+
+        if ($backoff === []) {
+            return 0;
+        }
+
+        $index = max(0, $attemptCount - 1);
+
+        return $backoff[min($index, count($backoff) - 1)];
+    }
+
     /**
      * @return array<string, mixed>
      */
