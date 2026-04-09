@@ -9,27 +9,14 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use ReflectionMethod;
 use Throwable;
-use Workflow\V2\Enums\ActivityAttemptStatus;
-use Workflow\V2\Enums\ActivityStatus;
-use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Enums\TaskStatus;
-use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
-use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivityRetryPolicy;
-use Workflow\V2\Support\ActivitySnapshot;
-use Workflow\V2\Support\RunSummaryProjector;
-use Workflow\V2\Support\TaskBackendCapabilities;
-use Workflow\V2\Support\TaskCompatibility;
+use Workflow\V2\Support\ActivityTaskClaim;
+use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -68,14 +55,12 @@ final class RunActivityTask implements ShouldQueue
             return;
         }
 
-        $activityExecutionId = $claim['activity_execution_id'];
-        $attemptId = $claim['attempt_id'];
-        $attemptCount = $claim['attempt_count'];
+        $attemptId = $claim->attemptId();
+        $attemptCount = $claim->attemptNumber();
 
         /** @var ActivityExecution $execution */
-        $execution = ActivityExecution::query()
-            ->with('run')
-            ->findOrFail($activityExecutionId);
+        $execution = $claim->execution;
+        $execution->setRelation('run', $claim->run);
 
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = new $activityClass($execution, $execution->run, $this->taskId);
@@ -114,110 +99,10 @@ final class RunActivityTask implements ShouldQueue
     }
 
     /**
-     * @return array{0: array{activity_execution_id: string, attempt_id: string, attempt_count: int}|null, 1: int|null}
+     * @return array{0: ActivityTaskClaim|null, 1: int|null}
      */
     private function claimTask(): array
     {
-        return DB::transaction(function (): array {
-            /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
-                ->lockForUpdate()
-                ->find($this->taskId);
-
-            if ($task === null || $task->task_type !== TaskType::Activity || $task->status !== TaskStatus::Ready) {
-                return [null, null];
-            }
-
-            if ($task->available_at !== null && $task->available_at->isFuture()) {
-                $remainingMilliseconds = max(1, $task->available_at->getTimestampMs() - now()->getTimestampMs());
-
-                return [null, (int) ceil($remainingMilliseconds / 1000)];
-            }
-
-            $activityExecutionId = $task->payload['activity_execution_id'] ?? null;
-
-            if (! is_string($activityExecutionId)) {
-                return [null, null];
-            }
-
-            /** @var ActivityExecution $execution */
-            $execution = ActivityExecution::query()
-                ->lockForUpdate()
-                ->findOrFail($activityExecutionId);
-
-            /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()->findOrFail($execution->workflow_run_id);
-
-            TaskCompatibility::sync($task, $run);
-
-            if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
-
-                return [null, null];
-            }
-
-            if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
-
-                return [null, null];
-            }
-
-            $task->forceFill([
-                'status' => TaskStatus::Leased,
-                'leased_at' => now(),
-                'lease_owner' => $this->taskId,
-                'lease_expires_at' => ActivityLease::expiresAt(),
-                'attempt_count' => $task->attempt_count + 1,
-                'last_claim_failed_at' => null,
-                'last_claim_error' => null,
-            ])->save();
-
-            $attemptId = (string) Str::ulid();
-            $attemptCount = $task->attempt_count;
-
-            $execution->forceFill([
-                'status' => ActivityStatus::Running,
-                'attempt_count' => $attemptCount,
-                'current_attempt_id' => $attemptId,
-                'started_at' => now(),
-                'last_heartbeat_at' => null,
-            ])->save();
-
-            ActivityAttempt::query()->create([
-                'id' => $attemptId,
-                'workflow_run_id' => $run->id,
-                'activity_execution_id' => $execution->id,
-                'workflow_task_id' => $task->id,
-                'attempt_number' => $attemptCount,
-                'status' => ActivityAttemptStatus::Running->value,
-                'lease_owner' => $task->lease_owner,
-                'started_at' => $execution->started_at ?? now(),
-                'lease_expires_at' => $task->lease_expires_at,
-            ]);
-
-            $parallelMetadataPath = \Workflow\V2\Support\ParallelChildGroup::metadataPathForSequence(
-                $run,
-                (int) $execution->sequence,
-            );
-            $parallelMetadata = \Workflow\V2\Support\ParallelChildGroup::payloadForPath($parallelMetadataPath);
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([
-                'activity_execution_id' => $execution->id,
-                'activity_attempt_id' => $attemptId,
-                'activity_class' => $execution->activity_class,
-                'activity_type' => $execution->activity_type,
-                'sequence' => $execution->sequence,
-                'attempt_number' => $attemptCount,
-                'activity' => ActivitySnapshot::fromExecution($execution),
-            ], $parallelMetadata ?? []), $task);
-
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
-
-            return [[
-                'activity_execution_id' => $activityExecutionId,
-                'attempt_id' => $attemptId,
-                'attempt_count' => $attemptCount,
-            ], null];
-        });
+        return ActivityTaskClaimer::claim($this->taskId, $this->taskId, releaseFutureTasks: true);
     }
 }

@@ -13,6 +13,7 @@ use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\ActivityTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -284,6 +285,64 @@ final class V2TaskDispatchTest extends TestCase
         ]);
 
         $this->app->call([new RunActivityTask($task->id), 'handle']);
+
+        $task->refresh();
+        $execution->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(0, $task->attempt_count);
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
+        $this->assertNull($execution->current_attempt_id);
+        $this->assertSame(0, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityStarted->value)
+            ->count());
+        $this->assertNotNull($task->last_claim_failed_at);
+        $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_claim_error);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('activity_task_claim_failed', $summary->liveness_state);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertTrue($detail['tasks'][0]['claim_failed']);
+        $this->assertSame('claim_failed', $detail['tasks'][0]['transport_state']);
+    }
+
+    public function testActivityTaskBridgeClaimFailureRecordsUnsupportedQueueCapabilityWithoutStartingAttempt(): void
+    {
+        $this->configureUnsupportedSyncTaskConnection();
+
+        $run = $this->createWaitingRun('01J00000000000000000000007');
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'status' => ActivityStatus::Pending->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'sync',
+            'queue' => 'default',
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => ['activity_execution_id' => $execution->id],
+            'connection' => 'sync',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_dispatched_at' => now()->subSecond(),
+        ]);
+
+        $this->assertNull(ActivityTaskBridge::claim($task->id, 'external-worker-unsupported'));
 
         $task->refresh();
         $execution->refresh();

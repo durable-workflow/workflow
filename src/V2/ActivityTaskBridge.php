@@ -5,14 +5,12 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
-use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -22,11 +20,8 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\FailureFactory;
-use Workflow\V2\Support\ParallelChildGroup;
-use Workflow\V2\Support\RunSummaryProjector;
-use Workflow\V2\Support\TaskBackendCapabilities;
-use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 
 final class ActivityTaskBridge
@@ -53,122 +48,34 @@ final class ActivityTaskBridge
      */
     public static function claim(string $taskId, ?string $leaseOwner = null): ?array
     {
-        return DB::transaction(function () use ($taskId, $leaseOwner): ?array {
-            /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
-                ->lockForUpdate()
-                ->find($taskId);
+        [$claim] = ActivityTaskClaimer::claim($taskId, $leaseOwner);
 
-            if ($task === null || $task->task_type !== TaskType::Activity || $task->status !== TaskStatus::Ready) {
-                return null;
-            }
+        if ($claim === null) {
+            return null;
+        }
 
-            if ($task->available_at !== null && $task->available_at->isFuture()) {
-                return null;
-            }
+        $task = $claim->task;
+        $run = $claim->run;
+        $execution = $claim->execution;
 
-            $activityExecutionId = $task->payload['activity_execution_id'] ?? null;
-
-            if (! is_string($activityExecutionId) || $activityExecutionId === '') {
-                return null;
-            }
-
-            /** @var ActivityExecution $execution */
-            $execution = ActivityExecution::query()
-                ->lockForUpdate()
-                ->findOrFail($activityExecutionId);
-
-            /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()
-                ->lockForUpdate()
-                ->findOrFail($execution->workflow_run_id);
-
-            TaskCompatibility::sync($task, $run);
-
-            if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
-
-                return null;
-            }
-
-            if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
-
-                return null;
-            }
-
-            $now = now();
-            $attemptId = (string) Str::ulid();
-
-            $task->forceFill([
-                'status' => TaskStatus::Leased,
-                'leased_at' => $now,
-                'lease_owner' => self::nonEmptyString($leaseOwner) ?? $taskId,
-                'lease_expires_at' => ActivityLease::expiresAt(),
-                'attempt_count' => $task->attempt_count + 1,
-                'last_claim_failed_at' => null,
-                'last_claim_error' => null,
-            ])->save();
-
-            $attemptCount = $task->attempt_count;
-
-            $execution->forceFill([
-                'status' => ActivityStatus::Running,
-                'attempt_count' => $attemptCount,
-                'current_attempt_id' => $attemptId,
-                'started_at' => $now,
-                'last_heartbeat_at' => null,
-            ])->save();
-
-            ActivityAttempt::query()->create([
-                'id' => $attemptId,
-                'workflow_run_id' => $run->id,
-                'activity_execution_id' => $execution->id,
-                'workflow_task_id' => $task->id,
-                'attempt_number' => $attemptCount,
-                'status' => ActivityAttemptStatus::Running->value,
-                'lease_owner' => $task->lease_owner,
-                'started_at' => $execution->started_at ?? $now,
-                'lease_expires_at' => $task->lease_expires_at,
-            ]);
-
-            $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence(
-                $run,
-                (int) $execution->sequence,
-            );
-            $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([
-                'activity_execution_id' => $execution->id,
-                'activity_attempt_id' => $attemptId,
-                'activity_class' => $execution->activity_class,
-                'activity_type' => $execution->activity_type,
-                'sequence' => $execution->sequence,
-                'attempt_number' => $attemptCount,
-                'activity' => ActivitySnapshot::fromExecution($execution),
-            ], $parallelMetadata ?? []), $task);
-
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
-
-            return [
-                'task_id' => $task->id,
-                'workflow_instance_id' => $run->workflow_instance_id,
-                'workflow_run_id' => $run->id,
-                'activity_execution_id' => $execution->id,
-                'activity_attempt_id' => $attemptId,
-                'attempt_number' => $attemptCount,
-                'activity_type' => self::nonEmptyString($execution->activity_type),
-                'activity_class' => self::nonEmptyString($execution->activity_class),
-                'idempotency_key' => $execution->id,
-                'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-                'arguments' => self::nonEmptyString($execution->arguments),
-                'retry_policy' => is_array($execution->retry_policy) ? $execution->retry_policy : null,
-                'connection' => self::nonEmptyString($execution->connection),
-                'queue' => self::nonEmptyString($execution->queue),
-                'lease_owner' => self::nonEmptyString($task->lease_owner),
-                'lease_expires_at' => $task->lease_expires_at?->toJSON(),
-            ];
-        });
+        return [
+            'task_id' => $task->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'activity_execution_id' => $execution->id,
+            'activity_attempt_id' => $claim->attemptId(),
+            'attempt_number' => $claim->attemptNumber(),
+            'activity_type' => self::nonEmptyString($execution->activity_type),
+            'activity_class' => self::nonEmptyString($execution->activity_class),
+            'idempotency_key' => $execution->id,
+            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+            'arguments' => self::nonEmptyString($execution->arguments),
+            'retry_policy' => is_array($execution->retry_policy) ? $execution->retry_policy : null,
+            'connection' => self::nonEmptyString($execution->connection),
+            'queue' => self::nonEmptyString($execution->queue),
+            'lease_owner' => self::nonEmptyString($task->lease_owner),
+            'lease_expires_at' => $task->lease_expires_at?->toJSON(),
+        ];
     }
 
     /**
@@ -176,9 +83,7 @@ final class ActivityTaskBridge
      */
     public static function complete(string $attemptId, mixed $result): array
     {
-        return self::dispatchingOutcome(
-            ActivityOutcomeRecorder::recordForAttempt($attemptId, $result, null)
-        );
+        return self::dispatchingOutcome(ActivityOutcomeRecorder::recordForAttempt($attemptId, $result, null));
     }
 
     /**
@@ -194,7 +99,7 @@ final class ActivityTaskBridge
 
     public static function heartbeat(string $attemptId): bool
     {
-        return DB::transaction(function () use ($attemptId): bool {
+        return DB::transaction(static function () use ($attemptId): bool {
             /** @var ActivityAttempt|null $attempt */
             $attempt = ActivityAttempt::query()
                 ->lockForUpdate()

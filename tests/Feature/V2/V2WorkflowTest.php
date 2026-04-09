@@ -455,6 +455,19 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('external-worker-1', $claim['lease_owner']);
         $this->assertSame(1, $claim['attempt_number']);
         $this->assertSame(['Taylor'], Serializer::unserialize($claim['arguments']));
+
+        /** @var ActivityAttempt $startedAttempt */
+        $startedAttempt = ActivityAttempt::query()
+            ->whereKey($claim['activity_attempt_id'])
+            ->firstOrFail();
+
+        $task->refresh();
+
+        $this->assertSame('running', $startedAttempt->status->value);
+        $this->assertSame($task->id, $startedAttempt->workflow_task_id);
+        $this->assertSame('external-worker-1', $startedAttempt->lease_owner);
+        $this->assertSame($task->lease_expires_at?->jsonSerialize(), $startedAttempt->lease_expires_at?->jsonSerialize());
+
         $this->assertTrue(ActivityTaskBridge::heartbeat($claim['activity_attempt_id']));
 
         $outcome = ActivityTaskBridge::complete($claim['activity_attempt_id'], 'Hello from bridge!');
@@ -489,6 +502,9 @@ final class V2WorkflowTest extends TestCase
             ->sole();
 
         $this->assertSame($claim['activity_attempt_id'], $started->payload['activity_attempt_id'] ?? null);
+        $this->assertSame(1, $started->payload['attempt_number'] ?? null);
+        $this->assertSame($claim['activity_attempt_id'], $started->payload['activity']['attempt_id'] ?? null);
+        $this->assertSame(1, $started->payload['activity']['attempt_count'] ?? null);
         $this->assertSame($claim['activity_attempt_id'], $completed->payload['activity_attempt_id'] ?? null);
         $this->assertSame(1, $completed->payload['attempt_number'] ?? null);
 
