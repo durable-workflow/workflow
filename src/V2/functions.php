@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Carbon\CarbonInterval;
+use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\V2\Support\AllCall;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\AwaitCall;
@@ -54,6 +55,13 @@ if (! function_exists(__NAMESPACE__ . '\\all')) {
     function all(iterable $calls): AllCall
     {
         return new AllCall($calls);
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\async')) {
+    function async(callable $callback): ChildWorkflowCall
+    {
+        return child(AsyncWorkflow::class, new SerializableClosure($callback));
     }
 }
 

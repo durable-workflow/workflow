@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use LogicException;
 use ReflectionException;
+use Tests\Fixtures\V2\TestAsyncWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredContinueSignalWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
@@ -39,6 +40,7 @@ use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\AsyncWorkflow;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -1612,6 +1614,67 @@ final class V2WorkflowTest extends TestCase
             'stage' => 'caught-activity-failure',
             'message' => 'boom',
         ], $workflow->output());
+    }
+
+    public function testAsyncHelperRunsClosureAsDurableChildWorkflow(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestAsyncWorkflow::class, 'async-child-workflow');
+        $workflow->start('Taylor');
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+        $this->assertSame([
+            'workflow_id' => 'async-child-workflow',
+            'run_id' => $workflow->runId(),
+            'async' => [
+                'greeting' => 'Hello, Taylor!',
+                'in_console' => true,
+            ],
+        ], $workflow->output());
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        /** @var WorkflowRun $asyncRun */
+        $asyncRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $this->assertSame(AsyncWorkflow::class, $asyncRun->workflow_class);
+        $this->assertSame('durable-workflow.async', $asyncRun->workflow_type);
+        $this->assertSame(RunStatus::Completed, $asyncRun->status);
+
+        /** @var WorkflowHistoryEvent $childScheduled */
+        $childScheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', 'ChildWorkflowScheduled')
+            ->firstOrFail();
+
+        $this->assertSame($link->id, $childScheduled->payload['child_call_id'] ?? null);
+        $this->assertSame($asyncRun->id, $childScheduled->payload['child_workflow_run_id'] ?? null);
+        $this->assertSame('durable-workflow.async', $childScheduled->payload['child_workflow_type'] ?? null);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ActivityScheduled',
+            'ActivityStarted',
+            'ActivityCompleted',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $asyncRun->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
     }
 
     public function testMixedAllWaitsForChildWhenActivityCompletesFirst(): void
