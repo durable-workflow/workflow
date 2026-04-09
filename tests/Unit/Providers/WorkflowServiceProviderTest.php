@@ -67,14 +67,8 @@ final class WorkflowServiceProviderTest extends TestCase
 
         $this->assertSame('legacy-webhooks', config('workflows.webhooks_route'));
         $this->assertSame(Serializer::class, config('workflows.serializer'));
-        $this->assertSame(
-            \Workflow\V2\Models\WorkflowInstance::class,
-            config('workflows.v2.instance_model'),
-        );
-        $this->assertSame(
-            \Workflow\V2\Models\WorkflowCommand::class,
-            config('workflows.v2.command_model'),
-        );
+        $this->assertSame(\Workflow\V2\Models\WorkflowInstance::class, config('workflows.v2.instance_model'));
+        $this->assertSame(\Workflow\V2\Models\WorkflowCommand::class, config('workflows.v2.command_model'));
         $this->assertSame(30, config('workflows.v2.compatibility.heartbeat_ttl_seconds'));
         $this->assertSame(3, config('workflows.v2.task_repair.redispatch_after_seconds'));
         $this->assertSame(5, config('workflows.v2.task_repair.loop_throttle_seconds'));
@@ -115,7 +109,12 @@ final class WorkflowServiceProviderTest extends TestCase
     {
         $registeredCommands = array_keys(Artisan::all());
 
-        $expectedCommands = ['make:activity', 'make:workflow'];
+        $expectedCommands = [
+            'make:activity',
+            'make:workflow',
+            'workflow:v2:doctor',
+            'workflow:v2:history-export',
+        ];
 
         foreach ($expectedCommands as $command) {
             $this->assertContains(

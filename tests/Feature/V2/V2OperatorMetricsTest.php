@@ -29,14 +29,30 @@ final class V2OperatorMetricsTest extends TestCase
             WorkerCompatibilityFleet::clear();
         });
 
-        config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
-        config()->set('workflows.v2.compatibility.namespace', 'metrics-test');
-        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 5);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 5000);
-        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 7);
-        config()->set('workflows.v2.task_repair.loop_throttle_seconds', 11);
-        config()->set('workflows.v2.task_repair.scan_limit', 13);
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'metrics-test');
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_event_threshold', 5);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 5000);
+        config()
+            ->set('workflows.v2.task_repair.redispatch_after_seconds', 7);
+        config()
+            ->set('workflows.v2.task_repair.loop_throttle_seconds', 11);
+        config()
+            ->set('workflows.v2.task_repair.scan_limit', 13);
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
         WorkerCompatibilityFleet::clear();
 
         $run = $this->createRunWithSummary(
@@ -66,28 +82,37 @@ final class V2OperatorMetricsTest extends TestCase
         );
 
         $this->createTask($run, '01JMETRICSTASK000000000001', TaskStatus::Ready->value, [
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'created_at' => now(),
         ]);
         $this->createTask($run, '01JMETRICSTASK000000000002', TaskStatus::Ready->value, [
-            'available_at' => now()->addMinute(),
+            'available_at' => now()
+                ->addMinute(),
         ]);
         $this->createTask($run, '01JMETRICSTASK000000000003', TaskStatus::Leased->value, [
             'leased_at' => now(),
-            'lease_expires_at' => now()->addMinute(),
+            'lease_expires_at' => now()
+                ->addMinute(),
         ]);
         $this->createTask($run, '01JMETRICSTASK000000000004', TaskStatus::Leased->value, [
-            'leased_at' => now()->subMinutes(2),
-            'lease_expires_at' => now()->subMinute(),
+            'leased_at' => now()
+                ->subMinutes(2),
+            'lease_expires_at' => now()
+                ->subMinute(),
         ]);
         $this->createTask($run, '01JMETRICSTASK000000000005', TaskStatus::Ready->value, [
-            'available_at' => now()->subSeconds(10),
-            'last_dispatch_attempt_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSeconds(10),
+            'last_dispatch_attempt_at' => now()
+                ->subSecond(),
             'last_dispatch_error' => 'Queue transport unavailable.',
         ]);
         $this->createTask($run, '01JMETRICSTASK000000000006', TaskStatus::Ready->value, [
-            'available_at' => now()->subSeconds(10),
-            'last_dispatched_at' => now()->subSeconds(10),
+            'available_at' => now()
+                ->subSeconds(10),
+            'last_dispatched_at' => now()
+                ->subSeconds(10),
         ]);
 
         WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
@@ -131,6 +156,11 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(2, $snapshot['workers']['active_workers']);
         $this->assertSame(2, $snapshot['workers']['active_worker_scopes']);
         $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+        $this->assertTrue($snapshot['backend']['supported']);
+        $this->assertSame('redis', $snapshot['backend']['queue']['connection']);
+        $this->assertSame('redis', $snapshot['backend']['queue']['driver']);
+        $this->assertSame('array', $snapshot['backend']['cache']['store']);
+        $this->assertSame([], $snapshot['backend']['issues']);
         $this->assertSame(7, $snapshot['repair_policy']['redispatch_after_seconds']);
         $this->assertSame(11, $snapshot['repair_policy']['loop_throttle_seconds']);
         $this->assertSame(13, $snapshot['repair_policy']['scan_limit']);
@@ -161,11 +191,15 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'status' => $status,
-            'started_at' => now()->subMinutes(10),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(10),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         WorkflowRunSummary::query()->create([
             'id' => $run->id,
@@ -177,12 +211,14 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => $status,
             'status_bucket' => $statusBucket,
-            'started_at' => now()->subMinutes(10),
+            'started_at' => now()
+                ->subMinutes(10),
             'liveness_state' => $livenessState,
             'history_event_count' => $historyEventCount,
             'history_size_bytes' => $historySizeBytes,
             'continue_as_new_recommended' => $continueAsNewRecommended,
-            'created_at' => now()->subMinutes(10),
+            'created_at' => now()
+                ->subMinutes(10),
             'updated_at' => now(),
         ]);
 

@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
+use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\TaskWatchdog;
@@ -38,6 +39,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->commands([
             ActivityMakeCommand::class,
             WorkflowMakeCommand::class,
+            V2DoctorCommand::class,
             V2HistoryExportCommand::class,
         ]);
 

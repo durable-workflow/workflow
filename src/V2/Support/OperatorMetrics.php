@@ -32,6 +32,7 @@ final class OperatorMetrics
             'starts' => self::startMetrics($now),
             'history' => self::historyMetrics(),
             'workers' => self::workerMetrics(),
+            'backend' => BackendCapabilities::snapshot($now),
             'repair_policy' => TaskRepairPolicy::snapshot(),
         ];
     }
