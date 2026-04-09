@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
+use Tests\Fixtures\V2\TestChildHandleParentWorkflow;
 use Tests\Fixtures\V2\TestSignalThenUpdateWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
@@ -18,6 +19,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -226,6 +228,76 @@ final class V2UpdateWorkflowTest extends TestCase
             'workflow_id' => 'order-update',
             'run_id' => $workflow->runId(),
         ], $workflow->output());
+    }
+
+    public function testAttemptUpdateCanSignalAWaitingChildThroughTheCurrentHandle(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestChildHandleParentWorkflow::class, 'update-child-handle');
+        $workflow->start();
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runReadyWorkflowTask($parentRunId);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $childRunId = $link->child_workflow_run_id;
+
+        $this->assertIsString($childRunId);
+
+        $childWorkflow = WorkflowStub::load($link->child_workflow_instance_id);
+
+        $this->runReadyWorkflowTask($childRunId);
+
+        $this->assertSame('waiting', $childWorkflow->refresh()->status());
+        $this->assertSame('waiting-for-approval', $childWorkflow->query('current-stage'));
+
+        $update = $workflow->attemptUpdate('approve-child', 'Taylor');
+
+        $this->assertTrue($update->accepted());
+        $this->assertTrue($update->completed());
+        $this->assertSame('update_completed', $update->outcome());
+        $this->assertNull($update->result());
+        $this->assertSame('waiting-for-approval', $childWorkflow->query('current-stage'));
+
+        $this->runReadyWorkflowTask($childRunId);
+        $this->runReadyWorkflowTask($parentRunId);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertTrue($childWorkflow->refresh()->completed());
+        $this->assertSame([
+            'parent_workflow_id' => 'update-child-handle',
+            'parent_run_id' => $parentRunId,
+            'child' => [
+                'approved_by' => 'Taylor',
+                'workflow_id' => $link->child_workflow_instance_id,
+                'run_id' => $childRunId,
+            ],
+        ], $workflow->output());
+        $this->assertSame([
+            'approved_by' => 'Taylor',
+            'workflow_id' => $link->child_workflow_instance_id,
+            'run_id' => $childRunId,
+        ], $childWorkflow->output());
+        $this->assertSame(1, WorkflowCommand::query()
+            ->where('workflow_instance_id', $link->child_workflow_instance_id)
+            ->where('command_type', 'signal')
+            ->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $childRunId)
+            ->where('event_type', 'SignalReceived')
+            ->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $childRunId)
+            ->where('event_type', 'SignalApplied')
+            ->count());
     }
 
     public function testSubmitUpdateRecordsAcceptedLifecycleAndWorkerAppliesIt(): void

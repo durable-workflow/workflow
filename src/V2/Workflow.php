@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use Workflow\V2\Support\ChildWorkflowHandles;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -14,6 +15,10 @@ abstract class Workflow
     public ?string $connection = null;
 
     public ?string $queue = null;
+
+    private int $visibleSequence = 1;
+
+    private bool $commandDispatchEnabled = true;
 
     final public function __construct(
         public readonly WorkflowRun $run,
@@ -28,5 +33,38 @@ abstract class Workflow
     public function runId(): string
     {
         return $this->run->id;
+    }
+
+    public function child(): ?ChildWorkflowHandle
+    {
+        $children = $this->children();
+
+        if ($children === []) {
+            return null;
+        }
+
+        return $children[array_key_last($children)];
+    }
+
+    /**
+     * @return list<ChildWorkflowHandle>
+     */
+    public function children(): array
+    {
+        return ChildWorkflowHandles::forRun(
+            $this->run,
+            $this->visibleSequence,
+            $this->commandDispatchEnabled,
+        );
+    }
+
+    public function syncExecutionCursor(int $visibleSequence): void
+    {
+        $this->visibleSequence = max(1, $visibleSequence);
+    }
+
+    public function setCommandDispatchEnabled(bool $enabled): void
+    {
+        $this->commandDispatchEnabled = $enabled;
     }
 }

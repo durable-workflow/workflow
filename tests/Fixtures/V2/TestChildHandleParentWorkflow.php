@@ -6,16 +6,17 @@ namespace Tests\Fixtures\V2;
 
 use Generator;
 use Workflow\QueryMethod;
+use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\child;
 use Workflow\V2\Workflow;
 
-#[Type('test-parent-waiting-on-continuing-child-workflow')]
-final class TestParentWaitingOnContinuingChildWorkflow extends Workflow
+#[Type('test-child-handle-parent-workflow')]
+final class TestChildHandleParentWorkflow extends Workflow
 {
-    public function execute(int $count = 0, int $max = 1): Generator
+    public function execute(): Generator
     {
-        $child = yield child(TestContinueAsNewWorkflow::class, $count, $max);
+        $child = yield child(TestChildHandleChildWorkflow::class);
 
         return [
             'parent_workflow_id' => $this->workflowId(),
@@ -38,5 +39,11 @@ final class TestParentWaitingOnContinuingChildWorkflow extends Workflow
             'run_id' => $handle->runId(),
             'call_id' => $handle->callId(),
         ];
+    }
+
+    #[UpdateMethod('approve-child')]
+    public function approveChild(string $approvedBy): void
+    {
+        $this->child()?->signal('approved-by', $approvedBy);
     }
 }

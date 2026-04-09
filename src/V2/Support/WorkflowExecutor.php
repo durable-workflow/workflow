@@ -35,6 +35,7 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Workflow;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -85,10 +86,12 @@ final class WorkflowExecutor
         }
 
         $sequence = 1;
+        $this->syncWorkflowCursor($workflow, $sequence);
 
         while (true) {
             if (! $result->valid()) {
                 try {
+                    $this->syncWorkflowCursor($workflow, $sequence);
                     $this->completeRun($run, $task, $result->getReturn());
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -98,6 +101,8 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof ActivityCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
                 if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
@@ -106,6 +111,7 @@ final class WorkflowExecutor
 
                 if ($activityCompletion !== null) {
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
                             $current = $result->send($this->activityResult($activityCompletion));
                         } else {
@@ -138,14 +144,17 @@ final class WorkflowExecutor
                 $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
 
                 if ($execution === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->scheduleActivity($run, $task, $sequence, $current);
                 }
 
                 if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
                 try {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($execution->status === ActivityStatus::Completed) {
                         $current = $result->send($execution->activityResult());
                     } else {
@@ -171,6 +180,8 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof AwaitCall || $current instanceof AwaitWithTimeoutCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
                 if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
@@ -179,6 +190,7 @@ final class WorkflowExecutor
 
                 if ($resolutionEvent !== null) {
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $result->send(
                             $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied
                         );
@@ -224,6 +236,7 @@ final class WorkflowExecutor
                     );
 
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $result->send(false);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -251,6 +264,7 @@ final class WorkflowExecutor
                     $this->recordConditionWaitSatisfied($run, $task, $sequence, $waitId, $timeoutTimer, $current);
 
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $result->send(true);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -282,6 +296,7 @@ final class WorkflowExecutor
                         );
 
                         try {
+                            $this->syncWorkflowCursor($workflow, $sequence + 1);
                             $current = $result->send(false);
                         } catch (Throwable $throwable) {
                             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -294,14 +309,18 @@ final class WorkflowExecutor
                     }
 
                     if ($timeoutTimer === null) {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         return $this->scheduleConditionTimeout($run, $task, $sequence, $waitId, $current);
                     }
                 }
 
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
                 return $this->waitForNextResumeSource($run, $task);
             }
 
             if ($current instanceof SideEffectCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
                 if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
@@ -313,6 +332,7 @@ final class WorkflowExecutor
                         $sideEffectEvent = $this->recordSideEffect($run, $task, $sequence, $current);
                     }
 
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     $current = $result->send($this->sideEffectResult($sideEffectEvent));
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -325,6 +345,8 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof VersionCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
                 if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
@@ -339,6 +361,7 @@ final class WorkflowExecutor
                         $versionMarkerEvent = $this->recordVersionMarker($run, $task, $sequence, $current, $version);
                     }
 
+                    $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
                     $current = $result->send($version);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -354,12 +377,15 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof TimerCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
                 if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
                 if ($this->timerFiredEvent($run, $sequence) !== null) {
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $result->send(true);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -379,6 +405,7 @@ final class WorkflowExecutor
                         $this->fireImmediateTimer($run, $task, $sequence, $current);
 
                         try {
+                            $this->syncWorkflowCursor($workflow, $sequence + 1);
                             $current = $result->send(true);
                         } catch (Throwable $throwable) {
                             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -391,14 +418,17 @@ final class WorkflowExecutor
                         continue;
                     }
 
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->scheduleTimer($run, $task, $sequence, $current);
                 }
 
                 if ($timer->status === TimerStatus::Pending) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
                 try {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     $current = $result->send(true);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -411,6 +441,8 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof SignalCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
                 if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
@@ -419,6 +451,7 @@ final class WorkflowExecutor
 
                 if ($signalEvent !== null) {
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $result->send($this->signalValue($signalEvent));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -447,6 +480,7 @@ final class WorkflowExecutor
                     );
 
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $result->send($this->signalValue($signalEvent));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -460,10 +494,13 @@ final class WorkflowExecutor
 
                 $this->recordSignalWait($run, $task, $sequence, $current);
 
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
                 return $this->waitForNextResumeSource($run, $task);
             }
 
             if ($current instanceof ChildWorkflowCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
                 if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
@@ -473,6 +510,7 @@ final class WorkflowExecutor
 
                 if ($resolutionEvent !== null) {
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                             $current = $result->send(
                                 ChildRunHistory::outputForResolution($resolutionEvent, $childRun)
@@ -495,21 +533,25 @@ final class WorkflowExecutor
                 if ($childRun === null) {
                     if (ChildRunHistory::scheduledEventForSequence($run, $sequence) !== null
                         || ChildRunHistory::startedEventForSequence($run, $sequence) !== null) {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
                         return $this->waitForNextResumeSource($run, $task);
                     }
 
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->scheduleChildWorkflow($run, $task, $sequence, $current);
                 }
 
                 $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
 
                 if (in_array($childStatus, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
                 $resolutionEvent = $this->recordChildResolution($run, $task, $sequence, $childRun);
 
                 try {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                         $current = $result->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
                     } else {
@@ -526,6 +568,8 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof AllCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
                 if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
@@ -535,6 +579,7 @@ final class WorkflowExecutor
 
                 if ($groupSize === 0) {
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence);
                         $current = $result->send($current->nestedResults([]));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -705,6 +750,7 @@ final class WorkflowExecutor
 
                 if ($failure !== null) {
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
                         $current = $result->throw($failure['exception']);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -721,6 +767,7 @@ final class WorkflowExecutor
                     ksort($results);
 
                     try {
+                        $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
                         $current = $result->send($current->nestedResults(array_values($results)));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -739,6 +786,7 @@ final class WorkflowExecutor
                     TaskDispatcher::dispatch($scheduledTask);
                 }
 
+                $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
                 return null;
             }
 
@@ -1966,38 +2014,44 @@ final class WorkflowExecutor
             )
             ->sortBy('sequence');
 
-        foreach ($events as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
+        $workflow->setCommandDispatchEnabled(false);
+
+        try {
+            foreach ($events as $event) {
+                if (! $event instanceof WorkflowHistoryEvent) {
+                    continue;
+                }
+
+                /** @var WorkflowCommand|null $command */
+                $command = $event->workflow_command_id === null
+                    ? null
+                    : $run->commands->firstWhere('id', $event->workflow_command_id);
+
+                $target = $event->payload['update_name'] ?? $command?->targetName();
+
+                if (! is_string($target) || $target === '') {
+                    throw new LogicException(sprintf(
+                        'Workflow update event [%s] is missing an update method name.',
+                        $event->id,
+                    ));
+                }
+
+                $method = WorkflowDefinition::resolveUpdateTarget($workflow::class, $target)['method'] ?? $target;
+
+                $serializedArguments = $event->payload['arguments'] ?? null;
+                $arguments = is_string($serializedArguments)
+                    ? Serializer::unserialize($serializedArguments)
+                    : $command?->payloadArguments();
+
+                $parameters = $workflow->resolveMethodDependencies(
+                    is_array($arguments) ? array_values($arguments) : [],
+                    new ReflectionMethod($workflow, $method),
+                );
+
+                $workflow->{$method}(...$parameters);
             }
-
-            /** @var WorkflowCommand|null $command */
-            $command = $event->workflow_command_id === null
-                ? null
-                : $run->commands->firstWhere('id', $event->workflow_command_id);
-
-            $target = $event->payload['update_name'] ?? $command?->targetName();
-
-            if (! is_string($target) || $target === '') {
-                throw new LogicException(sprintf(
-                    'Workflow update event [%s] is missing an update method name.',
-                    $event->id,
-                ));
-            }
-
-            $method = WorkflowDefinition::resolveUpdateTarget($workflow::class, $target)['method'] ?? $target;
-
-            $serializedArguments = $event->payload['arguments'] ?? null;
-            $arguments = is_string($serializedArguments)
-                ? Serializer::unserialize($serializedArguments)
-                : $command?->payloadArguments();
-
-            $parameters = $workflow->resolveMethodDependencies(
-                is_array($arguments) ? array_values($arguments) : [],
-                new ReflectionMethod($workflow, $method),
-            );
-
-            $workflow->{$method}(...$parameters);
+        } finally {
+            $workflow->setCommandDispatchEnabled(true);
         }
 
         if ($task instanceof WorkflowTask && ! $this->applyPendingUpdates($run, $task, $workflow, $sequence)) {
@@ -2311,5 +2365,98 @@ final class WorkflowExecutor
                 'last_error' => null,
             ])->save();
         }
+    }
+
+    private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence): void
+    {
+        $workflow->syncExecutionCursor($visibleSequence);
+        $workflow->setCommandDispatchEnabled(true);
+    }
+
+    private function syncWorkflowCursorForCurrent(
+        Workflow $workflow,
+        WorkflowRun $run,
+        mixed $current,
+        int $sequence,
+    ): void {
+        $this->syncWorkflowCursor(
+            $workflow,
+            $this->visibleSequenceForCurrent($run, $current, $sequence),
+        );
+    }
+
+    private function visibleSequenceForCurrent(
+        WorkflowRun $run,
+        mixed $current,
+        int $sequence,
+    ): int {
+        return match (true) {
+            $current instanceof ActivityCall => (
+                $this->activityCompletionEvent($run, $sequence) !== null
+                || $run->activityExecutions->firstWhere('sequence', $sequence) instanceof ActivityExecution
+            ) ? $sequence + 1 : $sequence,
+            $current instanceof AwaitCall => (
+                $this->conditionWaitOpenedEvent($run, $sequence) !== null
+                || $this->conditionWaitResolutionEvent($run, $sequence) !== null
+            ) ? $sequence + 1 : $sequence,
+            $current instanceof AwaitWithTimeoutCall => (
+                $this->conditionWaitOpenedEvent($run, $sequence) !== null
+                || $this->conditionWaitResolutionEvent($run, $sequence) !== null
+                || $run->timers->firstWhere('sequence', $sequence) instanceof WorkflowTimer
+            ) ? $sequence + 1 : $sequence,
+            $current instanceof TimerCall => (
+                $this->timerFiredEvent($run, $sequence) !== null
+                || $run->timers->firstWhere('sequence', $sequence) instanceof WorkflowTimer
+            ) ? $sequence + 1 : $sequence,
+            $current instanceof SignalCall => (
+                $this->appliedSignalEvent($run, $sequence, $current) !== null
+                || $this->pendingSignalCommand($run, $current) !== null
+                || SignalWaits::openWaitIdForName($run, $current->name) !== null
+            ) ? $sequence + 1 : $sequence,
+            $current instanceof ChildWorkflowCall => (
+                ChildRunHistory::scheduledEventForSequence($run, $sequence) !== null
+                || ChildRunHistory::startedEventForSequence($run, $sequence) !== null
+                || ChildRunHistory::resolutionEventForSequence($run, $sequence) !== null
+                || ChildRunHistory::childRunForSequence($run, $sequence) instanceof WorkflowRun
+            ) ? $sequence + 1 : $sequence,
+            $current instanceof AllCall => $this->visibleSequenceForAllCall($run, $current, $sequence),
+            default => $sequence,
+        };
+    }
+
+    private function visibleSequenceForAllCall(WorkflowRun $run, AllCall $current, int $sequence): int
+    {
+        $groupSize = $current->leafCount();
+
+        if ($groupSize === 0) {
+            return $sequence;
+        }
+
+        foreach ($current->leafDescriptors($sequence) as $descriptor) {
+            $call = $descriptor['call'];
+            $itemSequence = $sequence + $descriptor['offset'];
+
+            if ($call instanceof ActivityCall) {
+                if (
+                    $this->activityCompletionEvent($run, $itemSequence) !== null
+                    || $run->activityExecutions->firstWhere('sequence', $itemSequence) instanceof ActivityExecution
+                ) {
+                    return $sequence + $groupSize;
+                }
+
+                continue;
+            }
+
+            if (
+                ChildRunHistory::scheduledEventForSequence($run, $itemSequence) !== null
+                || ChildRunHistory::startedEventForSequence($run, $itemSequence) !== null
+                || ChildRunHistory::resolutionEventForSequence($run, $itemSequence) !== null
+                || ChildRunHistory::childRunForSequence($run, $itemSequence) instanceof WorkflowRun
+            ) {
+                return $sequence + $groupSize;
+            }
+        }
+
+        return $sequence;
     }
 }

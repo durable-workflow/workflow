@@ -1050,6 +1050,7 @@ final class WorkflowStub
             ], null, $command);
 
             try {
+                $replayState->workflow->setCommandDispatchEnabled(true);
                 $parameters = $replayState->workflow->resolveMethodDependencies(
                     $arguments,
                     new ReflectionMethod($replayState->workflow, $updateMethod),

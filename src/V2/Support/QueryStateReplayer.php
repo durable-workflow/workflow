@@ -20,12 +20,14 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Workflow;
 
 final class QueryStateReplayer
 {
     public function query(WorkflowRun $run, string $method, array $arguments = []): mixed
     {
         $workflow = $this->replay($run);
+        $workflow->setCommandDispatchEnabled(false);
         $parameters = $workflow->resolveMethodDependencies($arguments, new ReflectionMethod($workflow, $method));
 
         return $workflow->{$method}(...$parameters);
@@ -53,6 +55,7 @@ final class QueryStateReplayer
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         $workflow = new $workflowClass($run);
+        $this->syncWorkflowCursor($workflow, 1);
         $arguments = $workflow->resolveMethodDependencies(
             $run->workflowArguments(),
             new ReflectionMethod($workflow, 'execute'),
@@ -60,6 +63,7 @@ final class QueryStateReplayer
         $result = $workflow->execute(...$arguments);
 
         if (! $result instanceof Generator) {
+            $this->syncWorkflowCursor($workflow, 0);
             return new ReplayState($workflow, 0, null);
         }
 
@@ -68,6 +72,7 @@ final class QueryStateReplayer
 
         while (true) {
             if (! $result->valid()) {
+                $this->syncWorkflowCursor($workflow, $sequence);
                 return new ReplayState($workflow, $sequence, null);
             }
 
@@ -75,6 +80,7 @@ final class QueryStateReplayer
                 $activityCompletion = $this->activityCompletionEvent($run, $sequence);
 
                 if ($activityCompletion !== null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
                         $current = $result->send($this->activityResult($activityCompletion));
                     } else {
@@ -95,10 +101,12 @@ final class QueryStateReplayer
                     true
                 )) {
                     $this->applyRecordedUpdates($run, $workflow, $sequence);
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
                 if ($execution->status === ActivityStatus::Completed) {
                     $current = $result->send($execution->activityResult());
                 } else {
@@ -116,9 +124,11 @@ final class QueryStateReplayer
                 $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
 
                 if ($resolutionEvent === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
                 $current = $result->send(
                     $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied
                 );
@@ -130,6 +140,7 @@ final class QueryStateReplayer
 
             if ($current instanceof TimerCall) {
                 if ($this->timerFiredEvent($run, $sequence) !== null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     $current = $result->send(true);
 
                     ++$sequence;
@@ -141,10 +152,12 @@ final class QueryStateReplayer
 
                 if ($timer === null || $timer->status === TimerStatus::Pending) {
                     $this->applyRecordedUpdates($run, $workflow, $sequence);
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
                 $current = $result->send(true);
 
                 ++$sequence;
@@ -158,9 +171,11 @@ final class QueryStateReplayer
                 $sideEffectEvent = $this->sideEffectEvent($run, $sequence);
 
                 if ($sideEffectEvent === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
                 $current = $result->send($this->sideEffectResult($sideEffectEvent));
 
                 ++$sequence;
@@ -178,6 +193,7 @@ final class QueryStateReplayer
                     $sequence,
                 );
 
+                $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
                 $current = $result->send($resolution->version);
 
                 if ($resolution->advancesSequence) {
@@ -193,9 +209,11 @@ final class QueryStateReplayer
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
 
                 if ($signalEvent === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
                 $current = $result->send($this->signalValue($signalEvent));
 
                 ++$sequence;
@@ -210,6 +228,7 @@ final class QueryStateReplayer
                 $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
 
                 if ($resolutionEvent !== null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                         $current = $result->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
                     } else {
@@ -222,6 +241,7 @@ final class QueryStateReplayer
                 }
 
                 if ($childRun === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
@@ -232,9 +252,11 @@ final class QueryStateReplayer
                     RunStatus::Running,
                     RunStatus::Waiting,
                 ], true)) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
                 if ($childStatus === RunStatus::Completed) {
                     $current = $result->send(ChildRunHistory::outputForChildRun($childRun));
                 } else {
@@ -253,6 +275,7 @@ final class QueryStateReplayer
                 $groupSize = count($leafDescriptors);
 
                 if ($groupSize === 0) {
+                    $this->syncWorkflowCursor($workflow, $sequence);
                     $current = $result->send($current->nestedResults([]));
 
                     continue;
@@ -378,6 +401,7 @@ final class QueryStateReplayer
                 }
 
                 if ($failure !== null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
                     $current = $result->throw($failure['exception']);
                     $sequence += $groupSize;
 
@@ -385,10 +409,12 @@ final class QueryStateReplayer
                 }
 
                 if ($pending) {
+                    $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
                 ksort($results);
+                $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
                 $current = $result->send($current->nestedResults(array_values($results)));
                 $sequence += $groupSize;
 
@@ -396,9 +422,11 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof ContinueAsNewCall) {
+                $this->syncWorkflowCursor($workflow, $sequence);
                 return new ReplayState($workflow, $sequence, $current);
             }
 
+            $this->syncWorkflowCursor($workflow, $sequence);
             throw new UnsupportedWorkflowYieldException(sprintf(
                 'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), all(), sideEffect(), getVersion(), timer(), awaitSignal(), and continueAsNew() only.',
                 $run->workflow_class,
@@ -633,5 +661,11 @@ final class QueryStateReplayer
         }
 
         return $command?->payloadArguments() ?? [];
+    }
+
+    private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence): void
+    {
+        $workflow->syncExecutionCursor($visibleSequence);
+        $workflow->setCommandDispatchEnabled(false);
     }
 }

@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestChildHandleParentWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
@@ -14,10 +15,12 @@ use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelFailureWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelWorkflow;
 use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
+use Tests\Fixtures\V2\TestParallelChildHandlesWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
@@ -463,6 +466,125 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame([
             'stage' => 'waiting-for-children',
         ], $workflow->currentState());
+    }
+
+    public function testQueriesExposeCurrentChildHandleWhileParentWaitsOnChild(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestChildHandleParentWorkflow::class, 'query-child-handle');
+        $workflow->start();
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $deadline = microtime(true) + 5;
+
+        while ($workflow->refresh()->summary()?->wait_kind !== 'child') {
+            if (microtime(true) >= $deadline) {
+                $this->fail('Timed out waiting for the parent workflow to project a child wait.');
+            }
+
+            usleep(100000);
+        }
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $this->assertSame([
+            'instance_id' => $link->child_workflow_instance_id,
+            'run_id' => $link->child_workflow_run_id,
+            'call_id' => $link->id,
+        ], $workflow->query('current-child-handle'));
+    }
+
+    public function testQueriesExposeParallelChildHandlesInSequenceOrder(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelChildHandlesWorkflow::class, 'query-child-handles');
+        $workflow->start();
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(3, $links);
+
+        $expectedHandles = $links
+            ->map(static fn (WorkflowLink $link): array => [
+                'instance_id' => $link->child_workflow_instance_id,
+                'run_id' => $link->child_workflow_run_id,
+                'call_id' => $link->id,
+            ])
+            ->all();
+
+        $this->assertSame($expectedHandles, $workflow->query('child-handles'));
+        $this->assertSame($expectedHandles[2], $workflow->query('latest-child-handle'));
+    }
+
+    public function testQueriesFollowTheLatestContinuedChildRunOnCurrentHandle(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            TestParentWaitingOnContinuingChildWorkflow::class,
+            'query-continued-child-handle',
+        );
+        $workflow->start(0, 1);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $deadline = microtime(true) + 10;
+
+        while (WorkflowRun::query()
+            ->where('workflow_type', 'test-continue-as-new-workflow')
+            ->count() < 2) {
+            if (microtime(true) >= $deadline) {
+                $this->fail('Timed out waiting for the child workflow to continue as new.');
+            }
+
+            $this->runNextReadyTask();
+        }
+
+        /** @var WorkflowHistoryEvent $childStarted */
+        $childStarted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', HistoryEventType::ChildRunStarted->value)
+            ->orderBy('sequence')
+            ->firstOrFail();
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderByDesc('created_at')
+            ->firstOrFail();
+
+        /** @var WorkflowRun $latestChildRun */
+        $latestChildRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $link->child_workflow_instance_id)
+            ->orderByDesc('run_number')
+            ->firstOrFail();
+
+        $this->assertSame([
+            'instance_id' => $link->child_workflow_instance_id,
+            'run_id' => $latestChildRun->id,
+            'call_id' => $childStarted->payload['child_call_id'] ?? null,
+        ], $workflow->query('current-child-handle'));
     }
 
     public function testQueriesReplayParallelChildFailureBeforeParentWorkflowTaskRuns(): void
