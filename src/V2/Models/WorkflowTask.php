@@ -34,6 +34,7 @@ class WorkflowTask extends Model
         'lease_expires_at' => 'datetime',
         'last_dispatch_attempt_at' => 'datetime',
         'last_dispatched_at' => 'datetime',
+        'last_claim_failed_at' => 'datetime',
     ];
 
     public function run(): BelongsTo

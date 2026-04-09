@@ -9,18 +9,28 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
 use RuntimeException;
+use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\UnsupportedBackendCapabilitiesException;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\TaskDispatcher;
 
@@ -194,6 +204,166 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertSame($task->last_dispatch_error, $detail['tasks'][0]['last_dispatch_error']);
     }
 
+    public function testWorkflowTaskClaimFailureRecordsUnsupportedQueueCapabilityWithoutLeasing(): void
+    {
+        $this->configureUnsupportedSyncTaskConnection();
+
+        $run = $this->createWaitingRun('01J00000000000000000000004');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'sync',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_dispatched_at' => now()->subSecond(),
+        ]);
+
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(0, $task->attempt_count);
+        $this->assertNull($task->leased_at);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+        $this->assertNotNull($task->last_claim_failed_at);
+        $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_claim_error);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('workflow-task', $summary->wait_kind);
+        $this->assertSame('Workflow task claim failed', $summary->wait_reason);
+        $this->assertSame('workflow_task_claim_failed', $summary->liveness_state);
+        $this->assertStringContainsString('could not be claimed by a worker', (string) $summary->liveness_reason);
+        $this->assertStringContainsString('queue_sync_unsupported', (string) $summary->liveness_reason);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('workflow_task_claim_failed', $detail['liveness_state']);
+        $this->assertTrue($detail['tasks'][0]['claim_failed']);
+        $this->assertSame('claim_failed', $detail['tasks'][0]['transport_state']);
+        $this->assertSame($task->last_claim_error, $detail['tasks'][0]['last_claim_error']);
+        $this->assertNotNull($detail['tasks'][0]['last_claim_failed_at']);
+    }
+
+    public function testActivityTaskClaimFailureRecordsUnsupportedQueueCapabilityWithoutStartingAttempt(): void
+    {
+        $this->configureUnsupportedSyncTaskConnection();
+
+        $run = $this->createWaitingRun('01J00000000000000000000005');
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'status' => ActivityStatus::Pending->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'sync',
+            'queue' => 'default',
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => ['activity_execution_id' => $execution->id],
+            'connection' => 'sync',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_dispatched_at' => now()->subSecond(),
+        ]);
+
+        $this->app->call([new RunActivityTask($task->id), 'handle']);
+
+        $task->refresh();
+        $execution->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(0, $task->attempt_count);
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
+        $this->assertNull($execution->current_attempt_id);
+        $this->assertSame(0, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityStarted->value)
+            ->count());
+        $this->assertNotNull($task->last_claim_failed_at);
+        $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_claim_error);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('activity_task_claim_failed', $summary->liveness_state);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertTrue($detail['tasks'][0]['claim_failed']);
+        $this->assertSame('claim_failed', $detail['tasks'][0]['transport_state']);
+    }
+
+    public function testTimerTaskClaimFailureRecordsUnsupportedQueueCapabilityWithoutFiringTimer(): void
+    {
+        $this->configureUnsupportedSyncTaskConnection();
+
+        $run = $this->createWaitingRun('01J00000000000000000000006');
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => 1,
+            'fire_at' => now()->subSecond(),
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => ['timer_id' => $timer->id],
+            'connection' => 'sync',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'last_dispatched_at' => now()->subSecond(),
+        ]);
+
+        $this->app->call([new RunTimerTask($task->id), 'handle']);
+
+        $task->refresh();
+        $timer->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(0, $task->attempt_count);
+        $this->assertSame(TimerStatus::Pending, $timer->status);
+        $this->assertNull($timer->fired_at);
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerFired->value)
+            ->count());
+        $this->assertNotNull($task->last_claim_failed_at);
+        $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_claim_error);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('timer_task_claim_failed', $summary->liveness_state);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertTrue($detail['tasks'][0]['claim_failed']);
+        $this->assertSame('claim_failed', $detail['tasks'][0]['transport_state']);
+    }
+
     private function createWaitingRun(string $instanceId): WorkflowRun
     {
         /** @var WorkflowInstance $instance */
@@ -226,5 +396,14 @@ final class V2TaskDispatchTest extends TestCase
         ])->save();
 
         return $run;
+    }
+
+    private function configureUnsupportedSyncTaskConnection(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('queue.connections.sync.driver', 'sync');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
     }
 }

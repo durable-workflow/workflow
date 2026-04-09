@@ -30,6 +30,7 @@ use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TypeRegistry;
@@ -301,6 +302,12 @@ final class RunActivityTask implements ShouldQueue
 
             TaskCompatibility::sync($task, $run);
 
+            if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+                return null;
+            }
+
             if (! TaskCompatibility::supported($task, $run)) {
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
@@ -313,6 +320,8 @@ final class RunActivityTask implements ShouldQueue
                 'lease_owner' => $this->taskId,
                 'lease_expires_at' => ActivityLease::expiresAt(),
                 'attempt_count' => $task->attempt_count + 1,
+                'last_claim_failed_at' => null,
+                'last_claim_error' => null,
             ])->save();
 
             $attemptId = (string) Str::ulid();

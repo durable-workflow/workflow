@@ -17,6 +17,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\OperatorMetrics;
+use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class V2OperatorMetricsTest extends TestCase
@@ -80,6 +81,13 @@ final class V2OperatorMetricsTest extends TestCase
             statusBucket: 'completed',
             livenessState: 'closed',
         );
+        $claimFailedRun = $this->createRunWithSummary(
+            instanceId: 'metrics-instance-d',
+            runId: '01JMETRICSFLOWRUN000000004',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_claim_failed',
+        );
 
         $this->createTask($run, '01JMETRICSTASK000000000001', TaskStatus::Ready->value, [
             'available_at' => now()
@@ -114,6 +122,15 @@ final class V2OperatorMetricsTest extends TestCase
             'last_dispatched_at' => now()
                 ->subSeconds(10),
         ]);
+        $claimFailedTask = $this->createTask($claimFailedRun, '01JMETRICSTASK000000000007', TaskStatus::Ready->value, [
+            'available_at' => now()
+                ->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSeconds(10),
+            'last_claim_failed_at' => now()
+                ->subSeconds(10),
+            'last_claim_error' => 'Workflow v2 backend capabilities are unsupported: [queue_sync_unsupported] sync.',
+        ]);
 
         WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
         WorkerCompatibilityFleet::record(['build-b'], 'redis', 'imports', 'worker-b');
@@ -121,25 +138,28 @@ final class V2OperatorMetricsTest extends TestCase
         $snapshot = OperatorMetrics::snapshot();
 
         $this->assertSame('2026-04-09T12:00:00.000000Z', $snapshot['generated_at']);
-        $this->assertSame(3, $snapshot['runs']['total']);
-        $this->assertSame(2, $snapshot['runs']['running']);
+        $this->assertSame(4, $snapshot['runs']['total']);
+        $this->assertSame(3, $snapshot['runs']['running']);
         $this->assertSame(1, $snapshot['runs']['completed']);
         $this->assertSame(1, $snapshot['runs']['repair_needed']);
+        $this->assertSame(1, $snapshot['runs']['claim_failed']);
         $this->assertSame(1, $snapshot['runs']['compatibility_blocked']);
-        $this->assertSame(6, $snapshot['tasks']['open']);
-        $this->assertSame(4, $snapshot['tasks']['ready']);
-        $this->assertSame(3, $snapshot['tasks']['ready_due']);
+        $this->assertSame(7, $snapshot['tasks']['open']);
+        $this->assertSame(5, $snapshot['tasks']['ready']);
+        $this->assertSame(4, $snapshot['tasks']['ready_due']);
         $this->assertSame(1, $snapshot['tasks']['delayed']);
         $this->assertSame(2, $snapshot['tasks']['leased']);
         $this->assertSame(1, $snapshot['tasks']['dispatch_failed']);
+        $this->assertSame(1, $snapshot['tasks']['claim_failed']);
         $this->assertSame(1, $snapshot['tasks']['dispatch_overdue']);
         $this->assertSame(1, $snapshot['tasks']['lease_expired']);
-        $this->assertSame(3, $snapshot['tasks']['unhealthy']);
-        $this->assertSame(3, $snapshot['backlog']['runnable_tasks']);
+        $this->assertSame(4, $snapshot['tasks']['unhealthy']);
+        $this->assertSame(4, $snapshot['backlog']['runnable_tasks']);
         $this->assertSame(1, $snapshot['backlog']['delayed_tasks']);
         $this->assertSame(2, $snapshot['backlog']['leased_tasks']);
-        $this->assertSame(3, $snapshot['backlog']['unhealthy_tasks']);
+        $this->assertSame(4, $snapshot['backlog']['unhealthy_tasks']);
         $this->assertSame(1, $snapshot['backlog']['repair_needed_runs']);
+        $this->assertSame(1, $snapshot['backlog']['claim_failed_runs']);
         $this->assertSame(1, $snapshot['backlog']['compatibility_blocked_runs']);
         $this->assertSame(1, $snapshot['starts']['pending_runs']);
         $this->assertSame(1, $snapshot['starts']['pending_commands']);
@@ -164,6 +184,8 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(7, $snapshot['repair_policy']['redispatch_after_seconds']);
         $this->assertSame(11, $snapshot['repair_policy']['loop_throttle_seconds']);
         $this->assertSame(13, $snapshot['repair_policy']['scan_limit']);
+        $this->assertFalse(TaskRepairPolicy::dispatchOverdue($claimFailedTask->fresh()));
+        $this->assertTrue(TaskRepairPolicy::readyTaskNeedsRedispatch($claimFailedTask->fresh()));
     }
 
     private function createRunWithSummary(

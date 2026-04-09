@@ -755,6 +755,8 @@ final class HistoryExport
             'last_dispatch_attempt_at' => self::timestamp($task->last_dispatch_attempt_at),
             'last_dispatched_at' => self::timestamp($task->last_dispatched_at),
             'last_dispatch_error' => $task->last_dispatch_error,
+            'last_claim_failed_at' => self::timestamp($task->last_claim_failed_at),
+            'last_claim_error' => $task->last_claim_error,
         ];
     }
 

@@ -16,6 +16,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -125,6 +126,12 @@ final class RunWorkflowTask implements ShouldQueue
 
             TaskCompatibility::sync($task, $run);
 
+            if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+                return false;
+            }
+
             if (! TaskCompatibility::supported($task, $run)) {
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
@@ -138,6 +145,8 @@ final class RunWorkflowTask implements ShouldQueue
                 'lease_expires_at' => now()
                     ->addMinutes(5),
                 'attempt_count' => $task->attempt_count + 1,
+                'last_claim_failed_at' => null,
+                'last_claim_error' => null,
             ])->save();
 
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));

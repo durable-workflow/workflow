@@ -76,12 +76,15 @@ final class RunTaskView
                         'compatibility_fleet_reason' => TaskCompatibility::fleetMismatchReason($task, $run),
                         'dispatch_failed' => TaskRepairPolicy::dispatchFailed($task),
                         'dispatch_overdue' => TaskRepairPolicy::dispatchOverdue($task),
+                        'claim_failed' => TaskRepairPolicy::claimFailed($task),
                         'is_open' => in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true),
                         'available_at' => $task->available_at,
                         'last_dispatch_attempt_at' => $task->last_dispatch_attempt_at,
                         'leased_at' => $task->leased_at,
                         'last_dispatched_at' => $task->last_dispatched_at,
                         'last_dispatch_error' => $task->last_dispatch_error,
+                        'last_claim_failed_at' => $task->last_claim_failed_at,
+                        'last_claim_error' => $task->last_claim_error,
                         'lease_expired' => TaskRepairPolicy::leaseExpired($task),
                         'lease_owner' => $task->lease_owner,
                         'lease_expires_at' => $task->lease_expires_at,
@@ -177,6 +180,20 @@ final class RunTaskView
             };
         }
 
+        if (TaskRepairPolicy::claimFailed($task)) {
+            return match ($task->task_type) {
+                TaskType::Workflow => 'Workflow task claim failed; worker backend capability is unsupported.',
+                TaskType::Activity => sprintf(
+                    'Activity task claim failed for %s; worker backend capability is unsupported.',
+                    $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                ),
+                TaskType::Timer => sprintf(
+                    '%s claim failed; worker backend capability is unsupported.',
+                    ucfirst(self::timerLabel($task, $timer) . ' task'),
+                ),
+            };
+        }
+
         if (TaskRepairPolicy::dispatchOverdue($task)) {
             return match ($task->task_type) {
                 TaskType::Workflow => 'Workflow task is ready but dispatch is overdue.',
@@ -267,6 +284,10 @@ final class RunTaskView
 
         if (TaskRepairPolicy::dispatchFailed($task)) {
             return 'dispatch_failed';
+        }
+
+        if (TaskRepairPolicy::claimFailed($task)) {
+            return 'claim_failed';
         }
 
         if (TaskRepairPolicy::dispatchOverdue($task)) {

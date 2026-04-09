@@ -100,6 +100,7 @@ final class RunSummaryProjector
                     $run
                 ) => 'Workflow task waiting for a compatible worker',
                 TaskRepairPolicy::dispatchFailed($nextTask) => 'Workflow task dispatch failed',
+                TaskRepairPolicy::claimFailed($nextTask) => 'Workflow task claim failed',
                 TaskRepairPolicy::leaseExpired($nextTask) => 'Workflow task lease expired',
                 TaskRepairPolicy::dispatchOverdue($nextTask) => 'Workflow task ready but dispatch is overdue',
                 $nextTask->status === TaskStatus::Leased => 'Workflow task leased to worker',
@@ -310,9 +311,11 @@ final class RunSummaryProjector
         if ($openConditionWait !== null) {
             if ($openConditionWait['timer_id'] !== null) {
                 if ($nextTask !== null) {
-                    if (TaskRepairPolicy::leaseExpired($nextTask) || TaskRepairPolicy::readyTaskNeedsRedispatch(
-                        $nextTask
-                    )) {
+                    if (
+                        TaskRepairPolicy::leaseExpired($nextTask)
+                        || TaskRepairPolicy::readyTaskNeedsRedispatch($nextTask)
+                        || TaskRepairPolicy::claimFailed($nextTask)
+                    ) {
                         return self::taskLiveness($nextTask, $run, 'Condition timeout');
                     }
 
@@ -336,9 +339,11 @@ final class RunSummaryProjector
 
         if ($openTimer !== null) {
             if ($nextTask !== null) {
-                if (TaskRepairPolicy::leaseExpired($nextTask) || TaskRepairPolicy::readyTaskNeedsRedispatch(
-                    $nextTask
-                )) {
+                if (
+                    TaskRepairPolicy::leaseExpired($nextTask)
+                    || TaskRepairPolicy::readyTaskNeedsRedispatch($nextTask)
+                    || TaskRepairPolicy::claimFailed($nextTask)
+                ) {
                     return self::taskLiveness($nextTask, $run, 'Timer');
                 }
 
@@ -563,6 +568,19 @@ final class RunSummaryProjector
                     $task->id,
                     $task->last_dispatch_attempt_at?->toJSON() ?? 'an unknown time',
                     trim($task->last_dispatch_error ?? 'The queue driver rejected the task.'),
+                ),
+            ];
+        }
+
+        if (TaskRepairPolicy::claimFailed($task)) {
+            return [
+                sprintf('%s_task_claim_failed', $task->task_type->value),
+                sprintf(
+                    '%s task %s could not be claimed by a worker at %s. %s',
+                    $label,
+                    $task->id,
+                    $task->last_claim_failed_at?->toJSON() ?? 'an unknown time',
+                    trim($task->last_claim_error ?? 'The worker backend capability check rejected the task.'),
                 ),
             ];
         }

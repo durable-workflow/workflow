@@ -56,6 +56,7 @@ final class OperatorMetrics
             'terminated' => $summaryModel::query()->where('status', RunStatus::Terminated->value)->count(),
             'archived' => $summaryModel::query()->whereNotNull('archived_at')->count(),
             'repair_needed' => $summaryModel::query()->where('liveness_state', 'repair_needed')->count(),
+            'claim_failed' => self::claimFailedRuns(),
             'compatibility_blocked' => self::compatibilityBlockedRuns(),
         ];
     }
@@ -72,9 +73,11 @@ final class OperatorMetrics
             'delayed' => self::delayedTasks($now),
             'leased' => self::leasedTasks(),
             'dispatch_failed' => self::dispatchFailedTasks(),
+            'claim_failed' => self::claimFailedTasks(),
             'dispatch_overdue' => self::dispatchOverdueTasks($now),
             'lease_expired' => self::leaseExpiredTasks($now),
             'unhealthy' => self::dispatchFailedTasks()
+                + self::claimFailedTasks()
                 + self::dispatchOverdueTasks($now)
                 + self::leaseExpiredTasks($now),
         ];
@@ -90,11 +93,13 @@ final class OperatorMetrics
             'delayed_tasks' => self::delayedTasks($now),
             'leased_tasks' => self::leasedTasks(),
             'unhealthy_tasks' => self::dispatchFailedTasks()
+                + self::claimFailedTasks()
                 + self::dispatchOverdueTasks($now)
                 + self::leaseExpiredTasks($now),
             'repair_needed_runs' => self::summaryModel()::query()
                 ->where('liveness_state', 'repair_needed')
                 ->count(),
+            'claim_failed_runs' => self::claimFailedRuns(),
             'compatibility_blocked_runs' => self::compatibilityBlockedRuns(),
         ];
     }
@@ -202,6 +207,13 @@ final class OperatorMetrics
     {
         return self::summaryModel()::query()
             ->where('liveness_state', 'like', '%_task_waiting_for_compatible_worker')
+            ->count();
+    }
+
+    private static function claimFailedRuns(): int
+    {
+        return self::summaryModel()::query()
+            ->where('liveness_state', 'like', '%_task_claim_failed')
             ->count();
     }
 
@@ -323,6 +335,11 @@ final class OperatorMetrics
         return self::dispatchFailedQuery()->count();
     }
 
+    private static function claimFailedTasks(): int
+    {
+        return self::claimFailedQuery()->count();
+    }
+
     private static function dispatchOverdueTasks(CarbonInterface $now): int
     {
         $cutoff = $now->copy()->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
@@ -335,6 +352,9 @@ final class OperatorMetrics
             })
             ->where(static function ($query): void {
                 self::applyDispatchHealthy($query);
+            })
+            ->where(static function ($query): void {
+                self::applyClaimHealthy($query);
             })
             ->where(static function ($query) use ($cutoff): void {
                 $query->where(static function ($dispatched) use ($cutoff): void {
@@ -355,6 +375,15 @@ final class OperatorMetrics
         self::applyDispatchFailed($query);
 
         return $query;
+    }
+
+    private static function claimFailedQuery()
+    {
+        return self::taskModel()::query()
+            ->where('status', TaskStatus::Ready->value)
+            ->whereNotNull('last_claim_failed_at')
+            ->whereNotNull('last_claim_error')
+            ->where('last_claim_error', '!=', '');
     }
 
     private static function applyDispatchFailed($query): void
@@ -380,6 +409,14 @@ final class OperatorMetrics
                 $successfulDispatch->whereNotNull('last_dispatched_at')
                     ->whereColumn('last_dispatch_attempt_at', '<=', 'last_dispatched_at');
             });
+    }
+
+    private static function applyClaimHealthy($query): void
+    {
+        $query
+            ->whereNull('last_claim_failed_at')
+            ->orWhereNull('last_claim_error')
+            ->orWhere('last_claim_error', '');
     }
 
     /**

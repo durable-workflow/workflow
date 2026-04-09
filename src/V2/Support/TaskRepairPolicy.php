@@ -91,6 +91,10 @@ final class TaskRepairPolicy
             return false;
         }
 
+        if (self::claimFailed($task)) {
+            return false;
+        }
+
         $reference = $task->last_dispatched_at ?? $task->created_at;
 
         if ($reference === null) {
@@ -100,9 +104,35 @@ final class TaskRepairPolicy
         return $reference->lte(($now ?? now())->copy()->subSeconds(self::redispatchAfterSeconds()));
     }
 
+    public static function claimFailed(WorkflowTask $task): bool
+    {
+        if ($task->status !== TaskStatus::Ready) {
+            return false;
+        }
+
+        if ($task->last_claim_failed_at === null) {
+            return false;
+        }
+
+        return is_string($task->last_claim_error) && trim($task->last_claim_error) !== '';
+    }
+
+    public static function claimFailedNeedsRedispatch(WorkflowTask $task, ?CarbonInterface $now = null): bool
+    {
+        if (! self::claimFailed($task)) {
+            return false;
+        }
+
+        return $task->last_claim_failed_at->lte(
+            ($now ?? now())->copy()->subSeconds(self::redispatchAfterSeconds())
+        );
+    }
+
     public static function readyTaskNeedsRedispatch(WorkflowTask $task, ?CarbonInterface $now = null): bool
     {
-        return self::dispatchFailed($task) || self::dispatchOverdue($task, $now);
+        return self::dispatchFailed($task)
+            || self::claimFailedNeedsRedispatch($task, $now)
+            || self::dispatchOverdue($task, $now);
     }
 
     private static function configuredPositiveInt(string $key, int $default): int
