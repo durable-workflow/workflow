@@ -602,6 +602,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('workflow_type', 'test-update-workflow')
             ->assertJsonPath('command_sequence', 2)
             ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('update_id', $response->json('update_id'))
             ->assertJsonPath('rejection_reason', null)
             ->assertJsonPath('failure_id', null)
             ->assertJsonPath('failure_message', null)
@@ -611,6 +612,18 @@ final class V2WebhookWorkflowTest extends TestCase
                     'events' => ['started', 'approved:yes:webhook'],
                 ],
             ]);
+
+        $this->assertNotNull($response->json('update_id'));
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $response->json('update_id'),
+            'workflow_command_id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-webhook',
+            'workflow_run_id' => $workflow->runId(),
+            'update_name' => 'approve',
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+        ]);
 
         $this->assertSame([
             'stage' => 'waiting-for-name',
@@ -650,8 +663,22 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('workflow_type', 'test-signal-then-update-workflow')
             ->assertJsonPath('command_sequence', 3)
             ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('update_id', $response->json('update_id'))
             ->assertJsonPath('rejection_reason', 'earlier_signal_pending')
             ->assertJsonPath('result', null);
+
+        $this->assertNotNull($response->json('update_id'));
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $response->json('update_id'),
+            'workflow_command_id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-webhook-linearized',
+            'workflow_run_id' => $workflow->runId(),
+            'update_name' => 'approve',
+            'status' => 'rejected',
+            'outcome' => 'rejected_pending_signal',
+            'rejection_reason' => 'earlier_signal_pending',
+        ]);
 
         $this->assertSame([
             'stage' => 'waiting-for-advance',
@@ -837,16 +864,29 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('run_id', $workflow->runId())
             ->assertJsonPath('workflow_type', 'test-update-workflow')
             ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('update_id', $response->json('update_id'))
             ->assertJsonPath('rejection_reason', 'unknown_update')
             ->assertJsonPath('result', null)
             ->assertJsonPath('failure_id', null)
             ->assertJsonPath('failure_message', null);
+
+        $this->assertNotNull($response->json('update_id'));
 
         $this->assertDatabaseHas('workflow_commands', [
             'id' => $response->json('command_id'),
             'workflow_instance_id' => 'order-update-web-unk',
             'workflow_run_id' => $workflow->runId(),
             'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_unknown_update',
+            'rejection_reason' => 'unknown_update',
+        ]);
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $response->json('update_id'),
+            'workflow_command_id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-web-unk',
+            'workflow_run_id' => $workflow->runId(),
+            'update_name' => 'missing-update',
             'status' => 'rejected',
             'outcome' => 'rejected_unknown_update',
             'rejection_reason' => 'unknown_update',

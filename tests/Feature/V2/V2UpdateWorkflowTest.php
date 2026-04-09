@@ -16,6 +16,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\WorkflowStub;
@@ -108,6 +109,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertTrue($update->completed());
         $this->assertSame('update_completed', $update->outcome());
         $this->assertSame(2, $update->commandSequence());
+        $this->assertNotNull($update->updateId());
         $this->assertSame([
             'approved' => true,
             'events' => ['started', 'approved:yes:api'],
@@ -146,6 +148,18 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('approve', $updateEntries[2]['update_name']);
         $this->assertSame([null, null, 'update_completed'], array_column($updateEntries, 'command_outcome'));
 
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $update->updateId(),
+            'workflow_command_id' => $update->commandId(),
+            'workflow_instance_id' => 'order-update',
+            'workflow_run_id' => $workflow->runId(),
+            'update_name' => 'approve',
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+            'command_sequence' => 2,
+            'workflow_sequence' => 1,
+        ]);
+
         $detail = RunDetailView::forRun($run->fresh());
 
         $this->assertTrue($detail['can_update']);
@@ -175,11 +189,26 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertCount(2, $detail['commands']);
         $this->assertSame('update', $detail['commands'][1]['type']);
         $this->assertSame('approve', $detail['commands'][1]['target_name']);
+        $this->assertSame($update->updateId(), $detail['commands'][1]['update_id']);
+        $this->assertSame('completed', $detail['commands'][1]['update_status']);
         $this->assertTrue($detail['commands'][1]['result_available']);
         $this->assertSame([
             'approved' => true,
             'events' => ['started', 'approved:yes:api'],
         ], unserialize($detail['commands'][1]['result']));
+        $this->assertCount(1, $detail['updates']);
+        $this->assertSame($update->updateId(), $detail['updates'][0]['id']);
+        $this->assertSame($update->commandId(), $detail['updates'][0]['command_id']);
+        $this->assertSame(2, $detail['updates'][0]['command_sequence']);
+        $this->assertSame(1, $detail['updates'][0]['workflow_sequence']);
+        $this->assertSame('approve', $detail['updates'][0]['name']);
+        $this->assertSame('completed', $detail['updates'][0]['status']);
+        $this->assertSame('update_completed', $detail['updates'][0]['outcome']);
+        $this->assertTrue($detail['updates'][0]['result_available']);
+        $this->assertSame([
+            'approved' => true,
+            'events' => ['started', 'approved:yes:api'],
+        ], unserialize($detail['updates'][0]['result']));
 
         $signal = $workflow->signal('name-provided', 'Taylor');
 
@@ -678,10 +707,17 @@ final class V2UpdateWorkflowTest extends TestCase
         $failure = WorkflowFailure::query()
             ->where('source_id', $result->commandId())
             ->firstOrFail();
+        $update = WorkflowUpdate::query()
+            ->where('workflow_command_id', $result->commandId())
+            ->firstOrFail();
 
         $this->assertSame('workflow_command', $failure->source_kind);
         $this->assertSame('update', $failure->propagation_kind);
         $this->assertSame('boom', $failure->message);
+        $this->assertSame('failed', $update->status->value);
+        $this->assertSame('update_failed', $update->outcome?->value);
+        $this->assertSame($failure->id, $update->failure_id);
+        $this->assertSame('boom', $update->failure_message);
 
         $this->assertSame([
             'StartAccepted',
@@ -721,6 +757,15 @@ final class V2UpdateWorkflowTest extends TestCase
             'workflow_instance_id' => 'order-update-unknown',
             'workflow_run_id' => $workflow->runId(),
             'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_unknown_update',
+            'rejection_reason' => 'unknown_update',
+        ]);
+        $this->assertDatabaseHas('workflow_updates', [
+            'workflow_command_id' => $result->commandId(),
+            'workflow_instance_id' => 'order-update-unknown',
+            'workflow_run_id' => $workflow->runId(),
+            'update_name' => 'missingUpdate',
             'status' => 'rejected',
             'outcome' => 'rejected_unknown_update',
             'rejection_reason' => 'unknown_update',

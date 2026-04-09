@@ -59,6 +59,15 @@ class WorkflowRun extends Model
             ->oldest('id');
     }
 
+    public function updates(): HasMany
+    {
+        return $this->hasMany(WorkflowUpdate::class, 'workflow_run_id')
+            ->orderBy('command_sequence')
+            ->oldest('accepted_at')
+            ->oldest('created_at')
+            ->oldest('id');
+    }
+
     public function activityExecutions(): HasMany
     {
         return $this->hasMany(ActivityExecution::class)

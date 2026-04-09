@@ -38,4 +38,13 @@ class WorkflowInstance extends Model
         return $this->hasMany(WorkflowCommand::class)
             ->oldest('created_at');
     }
+
+    public function updates(): HasMany
+    {
+        return $this->hasMany(WorkflowUpdate::class)
+            ->orderBy('command_sequence')
+            ->oldest('accepted_at')
+            ->oldest('created_at')
+            ->oldest('id');
+    }
 }

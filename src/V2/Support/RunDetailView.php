@@ -22,6 +22,8 @@ final class RunDetailView
         $run->loadMissing([
             'summary',
             'commands',
+            'updates.command',
+            'updates.failure',
             'tasks',
             'activityExecutions.attempts',
             'timers',
@@ -61,12 +63,10 @@ final class RunDetailView
 
         $activities = RunActivityView::activitiesForRun($run);
         $activityClasses = collect(RunActivityView::classesFromActivities($activities));
-        $updateCompletions = $run->historyEvents
-            ->filter(
-                static fn ($event): bool => $event->event_type === HistoryEventType::UpdateCompleted
-                    && $event->workflow_command_id !== null
-            )
-            ->keyBy('workflow_command_id');
+        $updates = RunUpdateView::forRun($run);
+        $updatesByCommandId = collect($updates)
+            ->filter(static fn (array $update): bool => is_string($update['command_id'] ?? null))
+            ->keyBy('command_id');
         $failureEvents = $run->historyEvents
             ->filter(static fn ($event): bool => is_string($event->payload['failure_id'] ?? null))
             ->keyBy(static fn ($event): string => $event->payload['failure_id']);
@@ -190,54 +190,53 @@ final class RunDetailView
             'activities' => $activities,
             'commands_scope' => 'selected_run',
             'commands' => $run->commands
-                ->map(static fn (WorkflowCommand $command): array => [
-                    'id' => $command->id,
-                    'sequence' => $command->command_sequence,
-                    'type' => $command->command_type->value,
-                    'target_scope' => $command->target_scope,
-                    'requested_run_id' => $command->requestedRunId(),
-                    'resolved_run_id' => $command->resolvedRunId(),
-                    'target_name' => $command->targetName(),
-                    'payload_codec' => $command->payload_codec,
-                    'payload_available' => CommandPayloadPreview::available($command->payload),
-                    'payload' => CommandPayloadPreview::preview($command->payload),
-                    'source' => $command->source,
-                    'context' => $command->publicContext(),
-                    'caller_label' => $command->callerLabel(),
-                    'auth_status' => $command->authStatus(),
-                    'auth_method' => $command->authMethod(),
-                    'request_method' => $command->requestMethod(),
-                    'request_path' => $command->requestPath(),
-                    'request_route_name' => $command->requestRouteName(),
-                    'request_fingerprint' => $command->requestFingerprint(),
-                    'request_id' => $command->requestId(),
-                    'correlation_id' => $command->correlationId(),
-                    'status' => $command->status->value,
-                    'outcome' => $command->outcome?->value,
-                    'rejection_reason' => $command->rejection_reason,
-                    'validation_errors' => $command->validationErrors(),
-                    'workflow_type' => $command->workflow_type,
-                    'workflow_class' => $command->workflow_class,
-                    'accepted_at' => $command->accepted_at,
-                    'applied_at' => $command->applied_at,
-                    'rejected_at' => $command->rejected_at,
-                    'result_available' => $updateCompletions->has($command->id)
-                        && array_key_exists('result', (array) $updateCompletions->get($command->id)?->payload),
-                    'result' => $updateCompletions->has($command->id)
-                        ? self::normalizeUpdateResult($updateCompletions->get($command->id)?->payload['result'] ?? null)
-                        : null,
-                    'failure_id' => $updateCompletions->has($command->id)
-                        ? $updateCompletions->get($command->id)?->payload['failure_id'] ?? null
-                        : null,
-                    'failure_message' => $updateCompletions->has($command->id)
-                        ? $updateCompletions->get($command->id)?->payload['message'] ?? null
-                        : null,
-                    'completed_at' => $updateCompletions->has($command->id)
-                        ? $updateCompletions->get($command->id)?->recorded_at
-                        : null,
-                ])
+                ->map(static function (WorkflowCommand $command) use ($updatesByCommandId): array {
+                    $update = $updatesByCommandId->get($command->id);
+
+                    return [
+                        'id' => $command->id,
+                        'sequence' => $command->command_sequence,
+                        'type' => $command->command_type->value,
+                        'target_scope' => $command->target_scope,
+                        'requested_run_id' => $command->requestedRunId(),
+                        'resolved_run_id' => $command->resolvedRunId(),
+                        'target_name' => $command->targetName(),
+                        'payload_codec' => $command->payload_codec,
+                        'payload_available' => CommandPayloadPreview::available($command->payload),
+                        'payload' => CommandPayloadPreview::preview($command->payload),
+                        'source' => $command->source,
+                        'context' => $command->publicContext(),
+                        'caller_label' => $command->callerLabel(),
+                        'auth_status' => $command->authStatus(),
+                        'auth_method' => $command->authMethod(),
+                        'request_method' => $command->requestMethod(),
+                        'request_path' => $command->requestPath(),
+                        'request_route_name' => $command->requestRouteName(),
+                        'request_fingerprint' => $command->requestFingerprint(),
+                        'request_id' => $command->requestId(),
+                        'correlation_id' => $command->correlationId(),
+                        'status' => $command->status->value,
+                        'outcome' => $command->outcome?->value,
+                        'rejection_reason' => $command->rejection_reason,
+                        'validation_errors' => $command->validationErrors(),
+                        'workflow_type' => $command->workflow_type,
+                        'workflow_class' => $command->workflow_class,
+                        'accepted_at' => $command->accepted_at,
+                        'applied_at' => $command->applied_at,
+                        'rejected_at' => $command->rejected_at,
+                        'update_id' => $update['id'] ?? null,
+                        'update_status' => $update['status'] ?? null,
+                        'result_available' => $update['result_available'] ?? false,
+                        'result' => $update['result'] ?? null,
+                        'failure_id' => $update['failure_id'] ?? null,
+                        'failure_message' => $update['failure_message'] ?? null,
+                        'completed_at' => $update['closed_at'] ?? null,
+                    ];
+                })
                 ->values()
                 ->all(),
+            'updates_scope' => 'selected_run',
+            'updates' => $updates,
             'waits_scope' => 'selected_run',
             'waits' => $waits,
             'tasks_scope' => 'selected_run',
@@ -467,15 +466,6 @@ final class RunDetailView
         }
 
         return $entries;
-    }
-
-    private static function normalizeUpdateResult(mixed $result): mixed
-    {
-        if (! is_string($result)) {
-            return $result;
-        }
-
-        return serialize(Serializer::unserialize($result));
     }
 
     private static function timestampToMilliseconds(mixed $timestamp): int

@@ -20,6 +20,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\ActivityExecution;
@@ -31,6 +32,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\AwaitCall;
 use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\FailureFactory;
@@ -570,6 +572,8 @@ final class WorkflowStub
 
         /** @var WorkflowCommand|null $command */
         $command = null;
+        /** @var WorkflowUpdate|null $update */
+        $update = null;
         /** @var WorkflowFailure|null $failure */
         $failure = null;
         $result = null;
@@ -579,6 +583,7 @@ final class WorkflowStub
             $method,
             $arguments,
             &$command,
+            &$update,
             &$failure,
             &$result,
             &$resumeTask,
@@ -600,6 +605,8 @@ final class WorkflowStub
                     $this->updateCommandPayloadAttributes($method, $arguments),
                 );
 
+                $update = $this->recordRejectedUpdate($command, $method, $arguments);
+
                 return;
             }
 
@@ -612,17 +619,16 @@ final class WorkflowStub
                 $updateCommandAttributes = $this->updateCommandPayloadAttributes($updateName, $arguments);
 
                 if ($run->id !== $currentRun->id) {
-                    $command = $this->rejectCommand(
+                    [$command, $update] = $this->rejectUpdateCommand(
                         $instance,
                         $run,
-                        CommandType::Update,
+                        $updateName,
+                        $arguments,
                         'selected_run_not_current',
                         $this->commandTargetScope(),
                         array_merge($updateCommandAttributes, [
                             'resolved_workflow_run_id' => $currentRun->id,
                         ]),
-                        HistoryEventType::UpdateRejected,
-                        $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                     );
 
                     return;
@@ -639,15 +645,14 @@ final class WorkflowStub
                 RunStatus::Cancelled,
                 RunStatus::Terminated,
             ], true)) {
-                $command = $this->rejectCommand(
+                [$command, $update] = $this->rejectUpdateCommand(
                     $instance,
                     $run,
-                    CommandType::Update,
+                    $updateName,
+                    $arguments,
                     'run_not_active',
                     $this->commandTargetScope(),
                     $updateCommandAttributes,
-                    HistoryEventType::UpdateRejected,
-                    $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                 );
 
                 return;
@@ -656,15 +661,14 @@ final class WorkflowStub
             $this->loadLockedRunRelations($run, $instance);
 
             if (! RunCommandContract::hasUpdateMethod($run, $updateName)) {
-                $command = $this->rejectCommand(
+                [$command, $update] = $this->rejectUpdateCommand(
                     $instance,
                     $run,
-                    CommandType::Update,
+                    $updateName,
+                    $arguments,
                     'unknown_update',
                     $this->commandTargetScope(),
                     $updateCommandAttributes,
-                    HistoryEventType::UpdateRejected,
-                    $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                 );
 
                 return;
@@ -679,36 +683,29 @@ final class WorkflowStub
                     $validatedArguments['validation_errors'],
                 );
 
-                $command = $this->rejectCommand(
+                [$command, $update] = $this->rejectUpdateCommand(
                     $instance,
                     $run,
-                    CommandType::Update,
+                    $updateName,
+                    $arguments,
                     'invalid_update_arguments',
                     $this->commandTargetScope(),
                     $updateCommandAttributes,
-                    HistoryEventType::UpdateRejected,
-                    $this->updateRejectedEventPayload(
-                        $instance,
-                        $run,
-                        $updateName,
-                        $arguments,
-                        $validatedArguments['validation_errors'],
-                    ),
+                    $validatedArguments['validation_errors'],
                 );
 
                 return;
             }
 
             if (UpdateCommandGate::blockedReason($run) !== null) {
-                $command = $this->rejectCommand(
+                [$command, $update] = $this->rejectUpdateCommand(
                     $instance,
                     $run,
-                    CommandType::Update,
+                    $updateName,
+                    $arguments,
                     UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL,
                     $this->commandTargetScope(),
                     $updateCommandAttributes,
-                    HistoryEventType::UpdateRejected,
-                    $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                 );
 
                 return;
@@ -718,15 +715,14 @@ final class WorkflowStub
             $workflowExecutionBlockedReason = WorkflowExecutionGate::blockedReason($run);
 
             if ($workflowExecutionBlockedReason !== null) {
-                $command = $this->rejectCommand(
+                [$command, $update] = $this->rejectUpdateCommand(
                     $instance,
                     $run,
-                    CommandType::Update,
+                    $updateName,
+                    $arguments,
                     $workflowExecutionBlockedReason,
                     $this->commandTargetScope(),
                     $updateCommandAttributes,
-                    HistoryEventType::UpdateRejected,
-                    $this->updateRejectedEventPayload($instance, $run, $updateName, $arguments),
                 );
 
                 return;
@@ -743,8 +739,26 @@ final class WorkflowStub
                 'accepted_at' => now(),
             ], $updateCommandAttributes)));
 
+            /** @var WorkflowUpdate $update */
+            $update = WorkflowUpdate::query()->create([
+                'workflow_command_id' => $command->id,
+                'workflow_instance_id' => $instance->id,
+                'workflow_run_id' => $run->id,
+                'target_scope' => $command->target_scope,
+                'requested_workflow_run_id' => $command->requestedRunId(),
+                'resolved_workflow_run_id' => $command->resolvedRunId(),
+                'update_name' => $updateName,
+                'status' => UpdateStatus::Accepted->value,
+                'command_sequence' => $command->command_sequence,
+                'workflow_sequence' => $replayState->sequence,
+                'payload_codec' => config('workflows.serializer'),
+                'arguments' => Serializer::serialize($arguments),
+                'accepted_at' => $command->accepted_at,
+            ]);
+
             WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
                 'workflow_command_id' => $command->id,
+                'update_id' => $update->id,
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'update_name' => $updateName,
@@ -761,6 +775,7 @@ final class WorkflowStub
 
                 WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
                     'workflow_command_id' => $command->id,
+                    'update_id' => $update->id,
                     'workflow_instance_id' => $instance->id,
                     'workflow_run_id' => $run->id,
                     'update_name' => $updateName,
@@ -770,6 +785,7 @@ final class WorkflowStub
 
                 WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
                     'workflow_command_id' => $command->id,
+                    'update_id' => $update->id,
                     'workflow_instance_id' => $instance->id,
                     'workflow_run_id' => $run->id,
                     'update_name' => $updateName,
@@ -777,9 +793,17 @@ final class WorkflowStub
                     'result' => Serializer::serialize($result),
                 ], null, $command);
 
+                $update->forceFill([
+                    'status' => UpdateStatus::Completed->value,
+                    'outcome' => CommandOutcome::UpdateCompleted->value,
+                    'result' => Serializer::serialize($result),
+                    'applied_at' => now(),
+                    'closed_at' => now(),
+                ])->save();
+
                 $command->forceFill([
                     'outcome' => CommandOutcome::UpdateCompleted->value,
-                    'applied_at' => now(),
+                    'applied_at' => $update->applied_at,
                 ])->save();
             } catch (Throwable $throwable) {
                 /** @var WorkflowFailure $failure */
@@ -796,6 +820,7 @@ final class WorkflowStub
 
                 WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
                     'workflow_command_id' => $command->id,
+                    'update_id' => $update->id,
                     'workflow_instance_id' => $instance->id,
                     'workflow_run_id' => $run->id,
                     'update_name' => $updateName,
@@ -807,9 +832,18 @@ final class WorkflowStub
                     'exception' => FailureFactory::payload($throwable),
                 ], null, $command);
 
+                $update->forceFill([
+                    'status' => UpdateStatus::Failed->value,
+                    'outcome' => CommandOutcome::UpdateFailed->value,
+                    'failure_id' => $failure->id,
+                    'failure_message' => $failure->message,
+                    'applied_at' => now(),
+                    'closed_at' => now(),
+                ])->save();
+
                 $command->forceFill([
                     'outcome' => CommandOutcome::UpdateFailed->value,
-                    'applied_at' => now(),
+                    'applied_at' => $update->applied_at,
                 ])->save();
             }
 
@@ -852,7 +886,7 @@ final class WorkflowStub
             ));
         }
 
-        return UpdateResult::fromCommand($command, $result, $failure);
+        return UpdateResult::fromCommand($command, $result, $failure, $update);
     }
 
     public function repair(): CommandResult
@@ -1494,18 +1528,7 @@ final class WorkflowStub
             'command_type' => $commandType->value,
             'target_scope' => $targetScope,
             'status' => CommandStatus::Rejected->value,
-            'outcome' => match ($reason) {
-                'instance_not_started' => CommandOutcome::RejectedNotStarted->value,
-                'run_not_active' => CommandOutcome::RejectedNotActive->value,
-                'selected_run_not_current' => CommandOutcome::RejectedNotCurrent->value,
-                'unknown_signal' => CommandOutcome::RejectedUnknownSignal->value,
-                'unknown_update' => CommandOutcome::RejectedUnknownUpdate->value,
-                'invalid_signal_arguments' => CommandOutcome::RejectedInvalidArguments->value,
-                'invalid_update_arguments' => CommandOutcome::RejectedInvalidArguments->value,
-                UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL => CommandOutcome::RejectedPendingSignal->value,
-                WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE => CommandOutcome::RejectedWorkflowDefinitionUnavailable->value,
-                default => null,
-            },
+            'outcome' => $this->rejectionOutcome($reason),
             'payload_codec' => config('workflows.serializer'),
             'rejection_reason' => $reason,
             'rejected_at' => now(),
@@ -1526,6 +1549,121 @@ final class WorkflowStub
         }
 
         return $command;
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     * @param array<string, mixed> $commandAttributes
+     * @param array<string, list<string>> $validationErrors
+     * @return array{0: WorkflowCommand, 1: WorkflowUpdate}
+     */
+    private function rejectUpdateCommand(
+        WorkflowInstance $instance,
+        ?WorkflowRun $run,
+        string $updateName,
+        array $arguments,
+        string $reason,
+        string $targetScope = 'instance',
+        array $commandAttributes = [],
+        array $validationErrors = [],
+    ): array {
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
+            'command_type' => CommandType::Update->value,
+            'target_scope' => $targetScope,
+            'status' => CommandStatus::Rejected->value,
+            'outcome' => $this->rejectionOutcome($reason),
+            'payload_codec' => config('workflows.serializer'),
+            'rejection_reason' => $reason,
+            'rejected_at' => now(),
+        ], $commandAttributes)));
+
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run?->id,
+            'target_scope' => $command->target_scope,
+            'requested_workflow_run_id' => $command->requestedRunId(),
+            'resolved_workflow_run_id' => $command->resolvedRunId(),
+            'update_name' => $updateName,
+            'status' => UpdateStatus::Rejected->value,
+            'outcome' => $command->outcome?->value,
+            'command_sequence' => $command->command_sequence,
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize($arguments),
+            'validation_errors' => $validationErrors,
+            'rejection_reason' => $reason,
+            'rejected_at' => $command->rejected_at,
+            'closed_at' => $command->rejected_at,
+        ]);
+
+        if ($run instanceof WorkflowRun) {
+            WorkflowHistoryEvent::record(
+                $run,
+                HistoryEventType::UpdateRejected,
+                array_filter([
+                    'workflow_command_id' => $command->id,
+                    'update_id' => $update->id,
+                    'workflow_instance_id' => $instance->id,
+                    'workflow_run_id' => $run->id,
+                    'update_name' => $updateName,
+                    'arguments' => Serializer::serialize($arguments),
+                    'validation_errors' => $validationErrors,
+                ], static fn (mixed $value): bool => $value !== null && $value !== []),
+                null,
+                $command,
+            );
+        }
+
+        return [$command, $update];
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    private function recordRejectedUpdate(
+        WorkflowCommand $command,
+        string $updateName,
+        array $arguments,
+    ): WorkflowUpdate {
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $command->workflow_instance_id,
+            'workflow_run_id' => $command->workflow_run_id,
+            'target_scope' => $command->target_scope,
+            'requested_workflow_run_id' => $command->requestedRunId(),
+            'resolved_workflow_run_id' => $command->resolvedRunId(),
+            'update_name' => $updateName,
+            'status' => UpdateStatus::Rejected->value,
+            'outcome' => $command->outcome?->value,
+            'command_sequence' => $command->command_sequence,
+            'payload_codec' => $command->payload_codec,
+            'arguments' => Serializer::serialize($arguments),
+            'validation_errors' => $command->validationErrors(),
+            'rejection_reason' => $command->rejection_reason,
+            'rejected_at' => $command->rejected_at,
+            'closed_at' => $command->rejected_at,
+        ]);
+
+        return $update;
+    }
+
+    private function rejectionOutcome(string $reason): ?string
+    {
+        return match ($reason) {
+            'instance_not_started' => CommandOutcome::RejectedNotStarted->value,
+            'run_not_active' => CommandOutcome::RejectedNotActive->value,
+            'selected_run_not_current' => CommandOutcome::RejectedNotCurrent->value,
+            'unknown_signal' => CommandOutcome::RejectedUnknownSignal->value,
+            'unknown_update' => CommandOutcome::RejectedUnknownUpdate->value,
+            'invalid_signal_arguments' => CommandOutcome::RejectedInvalidArguments->value,
+            'invalid_update_arguments' => CommandOutcome::RejectedInvalidArguments->value,
+            UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL => CommandOutcome::RejectedPendingSignal->value,
+            WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE => CommandOutcome::RejectedWorkflowDefinitionUnavailable->value,
+            default => null,
+        };
     }
 
     /**
@@ -1567,27 +1705,6 @@ final class WorkflowStub
                 'arguments' => $arguments,
                 'validation_errors' => $validationErrors,
             ]),
-        ];
-    }
-
-    /**
-     * @param array<int|string, mixed> $arguments
-     * @param array<string, list<string>> $validationErrors
-     * @return array<string, mixed>
-     */
-    private function updateRejectedEventPayload(
-        WorkflowInstance $instance,
-        WorkflowRun $run,
-        string $updateName,
-        array $arguments,
-        array $validationErrors = [],
-    ): array {
-        return [
-            'workflow_instance_id' => $instance->id,
-            'workflow_run_id' => $run->id,
-            'update_name' => $updateName,
-            'arguments' => Serializer::serialize($arguments),
-            'validation_errors' => $validationErrors,
         ];
     }
 

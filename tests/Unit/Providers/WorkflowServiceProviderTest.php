@@ -55,6 +55,29 @@ final class WorkflowServiceProviderTest extends TestCase
         );
     }
 
+    public function testProviderMergesV2DefaultsIntoLegacyPublishedConfig(): void
+    {
+        config()->set('workflows', [
+            'stored_workflow_model' => StoredWorkflow::class,
+            'serializer' => Serializer::class,
+            'webhooks_route' => 'legacy-webhooks',
+        ]);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame('legacy-webhooks', config('workflows.webhooks_route'));
+        $this->assertSame(Serializer::class, config('workflows.serializer'));
+        $this->assertSame(
+            \Workflow\V2\Models\WorkflowInstance::class,
+            config('workflows.v2.instance_model'),
+        );
+        $this->assertSame(
+            \Workflow\V2\Models\WorkflowCommand::class,
+            config('workflows.v2.command_model'),
+        );
+        $this->assertSame(30, config('workflows.v2.compatibility.heartbeat_ttl_seconds'));
+    }
+
     public function testConfigIsPublished(): void
     {
         Artisan::call('vendor:publish', [

@@ -15,6 +15,11 @@ use Workflow\Watchdog;
 
 final class WorkflowServiceProvider extends ServiceProvider
 {
+    public function register(): void
+    {
+        $this->mergeConfigFrom(__DIR__ . '/../config/workflows.php', 'workflows');
+    }
+
     public function boot(): void
     {
         SerializableClosure::setSecretKey(config('app.key'));

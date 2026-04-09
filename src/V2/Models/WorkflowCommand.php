@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
@@ -84,6 +85,11 @@ class WorkflowCommand extends Model
     public function historyEvents(): HasMany
     {
         return $this->hasMany(WorkflowHistoryEvent::class, 'workflow_command_id');
+    }
+
+    public function updateRecord(): HasOne
+    {
+        return $this->hasOne(WorkflowUpdate::class, 'workflow_command_id');
     }
 
     /**
