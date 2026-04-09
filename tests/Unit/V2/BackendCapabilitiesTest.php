@@ -61,4 +61,22 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertTrue($snapshot['cache']['supported']);
         $this->assertTrue($snapshot['cache']['capabilities']['atomic_locks']);
     }
+
+    public function testSnapshotCanInspectAnExplicitTaskQueueConnection(): void
+    {
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot(queueConnection: 'sync');
+
+        $this->assertFalse($snapshot['supported']);
+        $this->assertSame('sync', $snapshot['queue']['connection']);
+        $this->assertSame('sync', $snapshot['queue']['driver']);
+        $this->assertFalse($snapshot['queue']['capabilities']['async_delivery']);
+        $this->assertContains('queue_sync_unsupported', array_column($snapshot['issues'], 'code'));
+    }
 }

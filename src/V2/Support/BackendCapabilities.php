@@ -13,13 +13,18 @@ final class BackendCapabilities
     /**
      * @return array<string, mixed>
      */
-    public static function snapshot(?CarbonInterface $now = null): array
+    public static function snapshot(
+        ?CarbonInterface $now = null,
+        ?string $databaseConnection = null,
+        ?string $queueConnection = null,
+        ?string $cacheStore = null,
+    ): array
     {
         $now ??= now();
 
-        $database = self::database();
-        $queue = self::queue();
-        $cache = self::cache();
+        $database = self::database($databaseConnection);
+        $queue = self::queue($queueConnection);
+        $cache = self::cache($cacheStore);
         $issues = array_values(array_merge($database['issues'], $queue['issues'], $cache['issues']));
 
         return [
@@ -43,9 +48,9 @@ final class BackendCapabilities
     /**
      * @return array<string, mixed>
      */
-    private static function database(): array
+    private static function database(?string $configuredConnection = null): array
     {
-        $connection = self::normalize(config('database.default'));
+        $connection = self::normalize($configuredConnection) ?? self::normalize(config('database.default'));
         $driver = $connection === null
             ? null
             : self::normalize(config(sprintf('database.connections.%s.driver', $connection)));
@@ -87,9 +92,9 @@ final class BackendCapabilities
     /**
      * @return array<string, mixed>
      */
-    private static function queue(): array
+    private static function queue(?string $configuredConnection = null): array
     {
-        $connection = self::normalize(config('queue.default'));
+        $connection = self::normalize($configuredConnection) ?? self::normalize(config('queue.default'));
         $driver = $connection === null
             ? null
             : self::normalize(config(sprintf('queue.connections.%s.driver', $connection)));
@@ -131,9 +136,9 @@ final class BackendCapabilities
     /**
      * @return array<string, mixed>
      */
-    private static function cache(): array
+    private static function cache(?string $configuredStore = null): array
     {
-        $store = self::normalize(config('cache.default') ?? config('cache.driver'));
+        $store = self::normalize($configuredStore) ?? self::normalize(config('cache.default') ?? config('cache.driver'));
         $driver = $store === null
             ? null
             : self::normalize(config(sprintf('cache.stores.%s.driver', $store)));

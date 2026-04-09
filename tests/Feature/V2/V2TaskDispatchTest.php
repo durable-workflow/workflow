@@ -15,6 +15,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\UnsupportedBackendCapabilitiesException;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -139,6 +140,58 @@ final class V2TaskDispatchTest extends TestCase
             $detail['tasks'][0]['last_dispatch_attempt_at']?->toJSON(),
         );
         $this->assertSame('Queue transport unavailable.', $detail['tasks'][0]['last_dispatch_error']);
+    }
+
+    public function testTaskDispatchFailureRecordsUnsupportedQueueCapabilityWithoutRunningInline(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('queue.connections.sync.driver', 'sync');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+
+        $this->mock(BusDispatcher::class, static function (MockInterface $mock): void {
+            $mock->shouldNotReceive('dispatch');
+        });
+
+        $run = $this->createWaitingRun('01J00000000000000000000003');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSeconds(5),
+            'payload' => [],
+            'connection' => 'sync',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        try {
+            TaskDispatcher::dispatch($task);
+            $this->fail('Expected dispatch to throw.');
+        } catch (UnsupportedBackendCapabilitiesException $exception) {
+            $this->assertSame('sync', $exception->snapshot()['queue']['connection']);
+            $this->assertContains('queue_sync_unsupported', array_column($exception->snapshot()['issues'], 'code'));
+        }
+
+        $task->refresh();
+
+        $this->assertNotNull($task->last_dispatch_attempt_at);
+        $this->assertNull($task->last_dispatched_at);
+        $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_dispatch_error);
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('workflow-task', $summary->wait_kind);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame('Workflow task dispatch failed', $summary->wait_reason);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('dispatch_failed', $detail['tasks'][0]['transport_state']);
+        $this->assertSame($task->last_dispatch_error, $detail['tasks'][0]['last_dispatch_error']);
     }
 
     private function createWaitingRun(string $instanceId): WorkflowRun

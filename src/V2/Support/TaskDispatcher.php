@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\UnsupportedBackendCapabilitiesException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -41,12 +42,23 @@ final class TaskDispatcher
         $attemptedAt = now();
 
         try {
+            self::ensureBackendSupportsDispatch($task);
+
             app(BusDispatcher::class)->dispatch($job);
             self::markDispatched($task, $attemptedAt);
         } catch (Throwable $throwable) {
             self::markDispatchFailure($task, $attemptedAt, $throwable->getMessage());
 
             throw $throwable;
+        }
+    }
+
+    private static function ensureBackendSupportsDispatch(WorkflowTask $task): void
+    {
+        $snapshot = BackendCapabilities::snapshot(queueConnection: $task->connection);
+
+        if (! BackendCapabilities::isSupported($snapshot)) {
+            throw new UnsupportedBackendCapabilitiesException($snapshot);
         }
     }
 
