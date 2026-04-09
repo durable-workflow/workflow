@@ -144,13 +144,23 @@ final class VisibilityFiltersTest extends TestCase
         $definition = VisibilityFilters::definition();
 
         $this->assertSame(VisibilityFilters::VERSION, $definition['version']);
+        $this->assertSame('Instance ID', $definition['fields']['instance_id']['label']);
         $this->assertSame('string', $definition['fields']['instance_id']['type']);
+        $this->assertSame('text', $definition['fields']['instance_id']['input']);
+        $this->assertSame(0, $definition['fields']['instance_id']['order']);
         $this->assertSame('string', $definition['fields']['run_id']['type']);
         $this->assertSame('boolean', $definition['fields']['archived']['type']);
+        $this->assertSame('boolean_select', $definition['fields']['archived']['input']);
+        $this->assertSame('Yes', $definition['fields']['archived']['options'][0]['label']);
+        $this->assertTrue($definition['fields']['archived']['options'][0]['value']);
         $this->assertSame('boolean', $definition['fields']['is_terminal']['type']);
         $this->assertSame('exact', $definition['fields']['wait_kind']['operator']);
+        $this->assertSame('wait_kind', $definition['fields']['wait_kind']['query_parameter']);
+        $this->assertSame('Labels', $definition['labels']['label']);
         $this->assertSame('map<string,string>', $definition['labels']['type']);
+        $this->assertSame('key_value_textarea', $definition['labels']['input']);
         $this->assertSame('exact', $definition['labels']['operator']);
         $this->assertSame(['label[key]', 'labels[key]'], $definition['labels']['query_parameters']);
+        $this->assertSame('tenant=acme'."\n".'region=us-east', $definition['labels']['placeholder']);
     }
 }

@@ -11,6 +11,23 @@ final class VisibilityFilters
 {
     public const VERSION = 1;
 
+    private const FIELD_LABELS = [
+        'instance_id' => 'Instance ID',
+        'run_id' => 'Run ID',
+        'workflow_type' => 'Workflow Type',
+        'business_key' => 'Business Key',
+        'compatibility' => 'Compatibility',
+        'queue' => 'Queue',
+        'connection' => 'Connection',
+        'status' => 'Status',
+        'status_bucket' => 'Status Bucket',
+        'closed_reason' => 'Closed Reason',
+        'wait_kind' => 'Wait Kind',
+        'liveness_state' => 'Liveness State',
+        'archived' => 'Archived',
+        'is_terminal' => 'Terminal',
+    ];
+
     private const STRING_FIELDS = [
         'instance_id',
         'run_id',
@@ -31,6 +48,8 @@ final class VisibilityFilters
         'is_terminal',
     ];
 
+    private const LABEL_KEY_REGEX = '^[A-Za-z0-9_.:-]{1,64}$';
+
     private const LABEL_KEY_PATTERN = '/^[A-Za-z0-9_.:-]{1,64}$/';
 
     /**
@@ -50,29 +69,29 @@ final class VisibilityFilters
     public static function definition(): array
     {
         $fields = [];
+        $order = 0;
 
         foreach (self::STRING_FIELDS as $field) {
-            $fields[$field] = [
-                'type' => 'string',
-                'operator' => 'exact',
-            ];
+            $fields[$field] = self::fieldDefinition($field, 'string', $order++);
         }
 
         foreach (self::BOOLEAN_FIELDS as $field) {
-            $fields[$field] = [
-                'type' => 'boolean',
-                'operator' => 'exact',
-            ];
+            $fields[$field] = self::fieldDefinition($field, 'boolean', $order++);
         }
 
         return [
             'version' => self::VERSION,
             'fields' => $fields,
             'labels' => [
+                'label' => 'Labels',
                 'type' => 'map<string,string>',
+                'input' => 'key_value_textarea',
                 'operator' => 'exact',
                 'query_parameters' => ['label[key]', 'labels[key]'],
-                'key_pattern' => '^[A-Za-z0-9_.:-]{1,64}$',
+                'key_pattern' => self::LABEL_KEY_REGEX,
+                'key_value_separator' => '=',
+                'placeholder' => "tenant=acme\nregion=us-east",
+                'help' => 'One exact-match label per line in key=value format.',
             ],
         ];
     }
@@ -261,6 +280,30 @@ final class VisibilityFilters
         ksort($normalized);
 
         return $normalized;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function fieldDefinition(string $field, string $type, int $order): array
+    {
+        $definition = [
+            'label' => self::FIELD_LABELS[$field] ?? $field,
+            'type' => $type,
+            'input' => $type === 'boolean' ? 'boolean_select' : 'text',
+            'operator' => 'exact',
+            'order' => $order,
+            'query_parameter' => $field,
+        ];
+
+        if ($type === 'boolean') {
+            $definition['options'] = [
+                ['label' => 'Yes', 'value' => true],
+                ['label' => 'No', 'value' => false],
+            ];
+        }
+
+        return $definition;
     }
 
     private static function columnForField(string $field): string
