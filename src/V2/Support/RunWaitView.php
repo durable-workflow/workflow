@@ -8,12 +8,10 @@ use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
-use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Models\WorkflowTimer;
 
 final class RunWaitView
 {
@@ -56,16 +54,17 @@ final class RunWaitView
 
         $waits = array_merge($waits, self::conditionWaits($conditionWaits, $taskByTimerId));
 
-        foreach ($run->timers as $timer) {
-            if (! $timer instanceof WorkflowTimer) {
+        foreach (RunTimerView::timersForRun($run) as $timer) {
+            if (
+                in_array($timer['id'] ?? null, $conditionTimerIds, true)
+                || ($timer['timer_kind'] ?? null) === 'condition_timeout'
+            ) {
                 continue;
             }
 
-            if (in_array($timer->id, $conditionTimerIds, true)) {
-                continue;
-            }
+            $timerId = self::stringValue($timer['id'] ?? null);
 
-            $waits[] = self::timerWait($timer, $taskByTimerId[$timer->id] ?? null);
+            $waits[] = self::timerWait($timer, $timerId === null ? null : ($taskByTimerId[$timerId] ?? null));
         }
 
         $waits = array_merge($waits, self::childWaits($run));
@@ -156,34 +155,36 @@ final class RunWaitView
     /**
      * @return array<string, mixed>
      */
-    private static function timerWait(WorkflowTimer $timer, ?WorkflowTask $task): array
+    private static function timerWait(array $timer, ?WorkflowTask $task): array
     {
-        $status = match ($timer->status) {
-            TimerStatus::Pending => 'open',
-            TimerStatus::Cancelled => 'cancelled',
+        $sourceStatus = self::stringValue($timer['status'] ?? null) ?? 'pending';
+        $status = match ($sourceStatus) {
+            'pending' => 'open',
+            'cancelled' => 'cancelled',
             default => 'resolved',
         };
+        $timerId = self::stringValue($timer['id'] ?? null) ?? 'timer';
 
         return [
-            'id' => sprintf('timer:%s', $timer->id),
+            'id' => sprintf('timer:%s', $timerId),
             'kind' => 'timer',
-            'sequence' => $timer->sequence,
+            'sequence' => $timer['sequence'] ?? null,
             'status' => $status,
-            'source_status' => $timer->status->value,
+            'source_status' => $sourceStatus,
             'summary' => match ($status) {
                 'open' => 'Waiting for timer.',
                 'cancelled' => 'Timer wait was cancelled.',
                 default => 'Timer fired.',
             },
-            'opened_at' => $timer->created_at,
-            'deadline_at' => $timer->fire_at,
-            'resolved_at' => $timer->fired_at,
+            'opened_at' => $timer['created_at'] ?? null,
+            'deadline_at' => $timer['fire_at'] ?? null,
+            'resolved_at' => $timer['fired_at'] ?? null,
             'target_name' => null,
             'target_type' => 'timer',
             'task_backed' => self::isOpenTask($task),
             'external_only' => false,
             'resume_source_kind' => 'timer',
-            'resume_source_id' => $timer->id,
+            'resume_source_id' => $timerId,
             'task_id' => $task?->id,
             'task_type' => $task?->task_type?->value,
             'task_status' => $task?->status?->value,

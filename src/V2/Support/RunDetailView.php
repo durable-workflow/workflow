@@ -9,7 +9,6 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowTimer;
 
 final class RunDetailView
 {
@@ -296,16 +295,16 @@ final class RunDetailView
                 ]
             )->values(),
             'lineage_scope' => 'selected_run',
-            'timers' => $run->timers->map(
-                static fn (WorkflowTimer $timer): array => [
-                    'id' => $timer->id,
-                    'sequence' => $timer->sequence,
-                    'status' => $timer->status->value,
-                    'delay_seconds' => $timer->delay_seconds,
-                    'fire_at' => $timer->fire_at,
-                    'fired_at' => $timer->fired_at,
-                ]
-            )->values(),
+            'timers' => collect(RunTimerView::timersForRun($run))
+                ->map(static fn (array $timer): array => [
+                    'id' => $timer['id'],
+                    'sequence' => $timer['sequence'],
+                    'status' => $timer['status'],
+                    'delay_seconds' => $timer['delay_seconds'],
+                    'fire_at' => $timer['fire_at'],
+                    'fired_at' => $timer['fired_at'],
+                ])
+                ->values(),
             'parents' => RunLineageView::parentsForRun($run),
             'continuedWorkflows' => RunLineageView::continuedWorkflowsForRun($run),
             'chartData' => self::chartData($run, $activities),

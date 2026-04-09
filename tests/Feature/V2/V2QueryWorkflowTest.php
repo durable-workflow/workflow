@@ -15,6 +15,7 @@ use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelFailureWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelWorkflow;
 use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
+use Tests\Fixtures\V2\TestPendingTimerSignalWorkflow;
 use Tests\Fixtures\V2\TestParallelChildHandlesWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
@@ -353,6 +354,47 @@ final class V2QueryWorkflowTest extends TestCase
             'stage' => 'completed',
             'events' => ['started', 'timer-fired', 'signal:ready'],
         ], $workflow->output());
+    }
+
+    public function testQueriesAndReplayStayBlockedOnScheduledTimerHistoryWhenTimerRowClaimsItAlreadyFired(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestPendingTimerSignalWorkflow::class, 'query-pending-timer-history');
+        $workflow->start(60);
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame('before-timer', $workflow->currentStage());
+        $this->assertSame(['started'], $workflow->currentEvents());
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        $timer->forceFill([
+            'status' => TimerStatus::Fired,
+            'fired_at' => now(),
+        ])->save();
+
+        $this->assertSame('before-timer', $workflow->refresh()->currentStage());
+        $this->assertSame(['started'], $workflow->currentEvents());
+
+        $workflow->signal('resume', 'go');
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame('before-timer', $workflow->currentStage());
+        $this->assertSame(['started'], $workflow->currentEvents());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::TimerScheduled->value)
+            ->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::TimerFired->value)
+            ->count());
     }
 
     public function testQueriesUseTypedParentChildCompletionHistoryWhenChildRowsDrift(): void

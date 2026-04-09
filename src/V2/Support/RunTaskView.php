@@ -9,7 +9,6 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Models\WorkflowTimer;
 
 final class RunTaskView
 {
@@ -18,13 +17,16 @@ final class RunTaskView
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $run->loadMissing(['tasks', 'activityExecutions', 'timers']);
+        $run->loadMissing(['tasks', 'activityExecutions', 'timers', 'historyEvents']);
 
         /** @var Collection<string, array<string, mixed>> $activities */
         $activities = collect(RunActivityView::activitiesForRun($run))
             ->filter(static fn (array $activity): bool => is_string($activity['id'] ?? null))
             ->keyBy(static fn (array $activity): string => $activity['id']);
-        $timers = $run->timers->keyBy('id');
+        /** @var Collection<string, array<string, mixed>> $timers */
+        $timers = collect(RunTimerView::timersForRun($run))
+            ->filter(static fn (array $timer): bool => is_string($timer['id'] ?? null))
+            ->keyBy(static fn (array $timer): string => $timer['id']);
 
         return $run->tasks
             ->sort(static function (WorkflowTask $left, WorkflowTask $right): int {
@@ -60,7 +62,7 @@ final class RunTaskView
 
                     /** @var array<string, mixed>|null $activity */
                     $activity = $activityExecutionId === null ? null : $activities->get($activityExecutionId);
-                    /** @var WorkflowTimer|null $timer */
+                    /** @var array<string, mixed>|null $timer */
                     $timer = $timerId === null ? null : $timers->get($timerId);
 
                     return [
@@ -103,8 +105,8 @@ final class RunTaskView
                         'retry_max_attempts' => self::intValue($task->payload['max_attempts'] ?? null),
                         'retry_policy' => is_array($task->payload['retry_policy'] ?? null) ? $task->payload['retry_policy'] : null,
                         'timer_id' => $timerId,
-                        'timer_sequence' => $timer?->sequence,
-                        'timer_fire_at' => $timer?->fire_at,
+                        'timer_sequence' => self::intValue($timer['sequence'] ?? null),
+                        'timer_fire_at' => $timer['fire_at'] ?? null,
                         'condition_wait_id' => $conditionWaitId,
                         'created_at' => $task->created_at,
                         'updated_at' => $task->updated_at,
@@ -118,7 +120,7 @@ final class RunTaskView
     private static function summaryFor(
         WorkflowTask $task,
         ?array $activity,
-        ?WorkflowTimer $timer,
+        ?array $timer,
         ?string $compatibility,
     ): string {
         if (self::taskWaitingForCompatibleWorker($task, $compatibility)) {
@@ -255,7 +257,7 @@ final class RunTaskView
         };
     }
 
-    private static function timerSummary(WorkflowTask $task, ?WorkflowTimer $timer): string
+    private static function timerSummary(WorkflowTask $task, ?array $timer): string
     {
         $label = self::timerLabel($task, $timer);
 
@@ -325,21 +327,23 @@ final class RunTaskView
             ?? 'activity';
     }
 
-    private static function timerLabel(WorkflowTask $task, ?WorkflowTimer $timer): string
+    private static function timerLabel(WorkflowTask $task, ?array $timer): string
     {
+        $delaySeconds = self::intValue($timer['delay_seconds'] ?? null);
+
         if (self::stringValue($task->payload['condition_wait_id'] ?? null) !== null) {
-            return $timer?->delay_seconds === null
+            return $delaySeconds === null
                 ? 'condition timeout'
                 : sprintf(
                     'condition timeout for %s second%s',
-                    $timer->delay_seconds,
-                    $timer->delay_seconds === 1 ? '' : 's',
+                    $delaySeconds,
+                    $delaySeconds === 1 ? '' : 's',
                 );
         }
 
-        return $timer?->delay_seconds === null
+        return $delaySeconds === null
             ? 'timer'
-            : sprintf('timer for %s second%s', $timer->delay_seconds, $timer->delay_seconds === 1 ? '' : 's');
+            : sprintf('timer for %s second%s', $delaySeconds, $delaySeconds === 1 ? '' : 's');
     }
 
     private static function stringValue(mixed $value): ?string

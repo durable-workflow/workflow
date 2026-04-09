@@ -8,11 +8,9 @@ use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Models\WorkflowTimer;
 
 final class RunSummaryProjector
 {
@@ -46,10 +44,11 @@ final class RunSummaryProjector
 
         $openTimer = $isTerminal
             ? null
-            : $run->timers
+            : collect(RunTimerView::timersForRun($run))
                 ->first(
-                    static fn (WorkflowTimer $timer): bool => $timer->status === TimerStatus::Pending
-                        && $timer->id !== ($openConditionWait['timer_id'] ?? null)
+                    static fn (array $timer): bool => ($timer['status'] ?? null) === 'pending'
+                        && ($timer['timer_kind'] ?? null) !== 'condition_timeout'
+                        && ($timer['id'] ?? null) !== ($openConditionWait['timer_id'] ?? null)
                 );
 
         $openChildWait = $isTerminal || $openActivity !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
@@ -84,11 +83,11 @@ final class RunSummaryProjector
         } elseif ($openTimer !== null) {
             $waitKind = 'timer';
             $waitReason = 'Waiting for timer';
-            $waitStartedAt = $openTimer->created_at;
-            $waitDeadlineAt = $openTimer->fire_at;
-            $openWaitId = sprintf('timer:%s', $openTimer->id);
+            $waitStartedAt = $openTimer['created_at'] ?? null;
+            $waitDeadlineAt = $openTimer['fire_at'] ?? null;
+            $openWaitId = sprintf('timer:%s', $openTimer['id']);
             $resumeSourceKind = 'timer';
-            $resumeSourceId = $openTimer->id;
+            $resumeSourceId = $openTimer['id'];
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
@@ -273,7 +272,7 @@ final class RunSummaryProjector
         bool $isTerminal,
         ?array $openActivity,
         ?array $openConditionWait,
-        ?WorkflowTimer $openTimer,
+        ?array $openTimer,
         ?WorkflowTask $nextTask,
         ?array $openChildWait,
         ?array $openSignalWait,
@@ -353,12 +352,12 @@ final class RunSummaryProjector
                         sprintf(
                             'Timer task %s is scheduled to fire at %s.',
                             $nextTask->id,
-                            $openTimer->fire_at?->toJSON()
+                            $openTimer['fire_at']?->toJSON()
                         ),
                     ];
             }
 
-            return ['repair_needed', sprintf('Timer %s is pending without an open timer task.', $openTimer->id)];
+            return ['repair_needed', sprintf('Timer %s is pending without an open timer task.', $openTimer['id'])];
         }
 
         if ($nextTask !== null) {

@@ -397,6 +397,12 @@ final class WorkflowExecutor
                     continue;
                 }
 
+                if ($this->timerScheduledEvent($run, $sequence) !== null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return $this->waitForNextResumeSource($run, $task);
+                }
+
                 /** @var WorkflowTimer|null $timer */
                 $timer = $run->timers->firstWhere('sequence', $sequence);
 
@@ -2035,6 +2041,19 @@ final class WorkflowExecutor
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
+                && ($event->payload['timer_kind'] ?? null) !== 'condition_timeout'
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function timerScheduledEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
+                && ($event->payload['timer_kind'] ?? null) !== 'condition_timeout'
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
 

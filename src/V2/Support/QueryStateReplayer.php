@@ -148,6 +148,13 @@ final class QueryStateReplayer
                     continue;
                 }
 
+                if ($this->timerScheduledEvent($run, $sequence) !== null) {
+                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
                 $timer = $run->timers->firstWhere('sequence', $sequence);
 
                 if ($timer === null || $timer->status === TimerStatus::Pending) {
@@ -549,6 +556,19 @@ final class QueryStateReplayer
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
+                && ($event->payload['timer_kind'] ?? null) !== 'condition_timeout'
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function timerScheduledEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
+                && ($event->payload['timer_kind'] ?? null) !== 'condition_timeout'
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
 

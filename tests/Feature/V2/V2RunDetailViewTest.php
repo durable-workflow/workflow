@@ -37,6 +37,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -1616,7 +1617,8 @@ final class V2RunDetailViewTest extends TestCase
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'timer');
+        $this->runNextReadyTask();
+        $this->assertSame('timer', $workflow->refresh()->summary()?->wait_kind);
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
@@ -1643,6 +1645,55 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($timerWait['resume_source_id'], $timerTask['timer_id']);
         $this->assertSame(1, $timerTask['timer_sequence']);
         $this->assertNotNull($timerTask['timer_fire_at']);
+    }
+
+    public function testRunDetailViewKeepsTimerWaitAndTaskMetadataWhenTimerRowDrifts(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-timer-history');
+        $workflow->start(60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runNextReadyTask();
+        $this->assertSame('timer', $workflow->refresh()->summary()?->wait_kind);
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        $timerId = $timer->id;
+        $deadlineAt = $timer->fire_at?->toJSON();
+
+        $timer->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']));
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+        $timerWait = $this->findWait($detail['waits'], 'timer');
+        $timerTask = $this->findTask($detail['tasks'], 'timer');
+
+        $this->assertSame('timer', $detail['wait_kind']);
+        $this->assertSame('Waiting for timer', $detail['wait_reason']);
+        $this->assertSame('timer_scheduled', $detail['liveness_state']);
+        $this->assertSame('timer', $detail['resume_source_kind']);
+        $this->assertSame($timerId, $detail['resume_source_id']);
+        $this->assertSame($deadlineAt, $detail['wait_deadline_at']?->toJSON());
+        $this->assertCount(1, $detail['timers']);
+        $this->assertSame($timerId, $detail['timers'][0]['id']);
+        $this->assertSame('pending', $detail['timers'][0]['status']);
+        $this->assertSame($deadlineAt, $detail['timers'][0]['fire_at']?->toJSON());
+        $this->assertSame('open', $timerWait['status']);
+        $this->assertSame('pending', $timerWait['source_status']);
+        $this->assertTrue($timerWait['task_backed']);
+        $this->assertSame($timerId, $timerWait['resume_source_id']);
+        $this->assertSame($deadlineAt, $timerWait['deadline_at']?->toJSON());
+        $this->assertSame($timerId, $timerTask['timer_id']);
+        $this->assertSame(1, $timerTask['timer_sequence']);
+        $this->assertSame($deadlineAt, $timerTask['timer_fire_at']?->toJSON());
     }
 
     public function testRunDetailViewPrefersOpenTimerTaskOverHistoricalClosedTimerTask(): void
@@ -1749,7 +1800,8 @@ final class V2RunDetailViewTest extends TestCase
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'timer');
+        $this->runNextReadyTask();
+        $this->assertSame('timer', $workflow->refresh()->summary()?->wait_kind);
 
         WorkflowTask::query()
             ->where('workflow_run_id', $runId)
