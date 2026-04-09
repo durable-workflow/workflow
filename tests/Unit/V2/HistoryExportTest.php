@@ -282,6 +282,102 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($bundle['workflow']['run_id'], $stubBundle['workflow']['run_id']);
     }
 
+    public function testItExportsTypedFailureSnapshotsWhenFailureRowsAreMissing(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'history-export-failure-history-only',
+            'workflow_class' => 'App\\Workflows\\FailedExportWorkflow',
+            'workflow_type' => 'export.failed',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\FailedExportWorkflow',
+            'workflow_type' => 'export.failed',
+            'status' => RunStatus::Failed->value,
+            'closed_reason' => 'failed',
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'workflow',
+            'started_at' => now()->subMinutes(2),
+            'closed_at' => now()->subMinute(),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'App\\Workflows\\FailedExportWorkflow',
+            'workflow_type' => 'export.failed',
+            'status' => RunStatus::Failed->value,
+            'status_bucket' => 'failed',
+            'closed_reason' => 'failed',
+            'connection' => 'redis',
+            'queue' => 'workflow',
+            'started_at' => $run->started_at,
+            'closed_at' => $run->closed_at,
+            'duration_ms' => 60000,
+            'exception_count' => 1,
+            'history_event_count' => 1,
+            'history_size_bytes' => 128,
+            'continue_as_new_recommended' => false,
+            'created_at' => now()->subMinutes(2),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        WorkflowHistoryEvent::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'event_type' => HistoryEventType::WorkflowFailed->value,
+            'payload' => [
+                'failure_id' => '01JTESTFAILUREHISTORYONLY000001',
+                'source_kind' => 'workflow_run',
+                'source_id' => $run->id,
+                'exception_class' => RuntimeException::class,
+                'message' => 'history-only boom',
+                'exception' => [
+                    'class' => RuntimeException::class,
+                    'message' => 'history-only boom',
+                    'code' => 99,
+                    'file' => __FILE__,
+                    'line' => 222,
+                    'trace' => [[
+                        'class' => 'App\\Workflows\\FailedExportWorkflow',
+                        'type' => '->',
+                        'function' => 'execute',
+                        'file' => __FILE__,
+                        'line' => 221,
+                    ]],
+                    'properties' => [],
+                ],
+            ],
+            'recorded_at' => now()->subMinute(),
+        ]);
+
+        $bundle = HistoryExport::forRun($run->fresh(['summary']));
+
+        $this->assertCount(1, $bundle['failures']);
+        $this->assertSame('01JTESTFAILUREHISTORYONLY000001', $bundle['failures'][0]['id']);
+        $this->assertSame('workflow_run', $bundle['failures'][0]['source_kind']);
+        $this->assertSame($run->id, $bundle['failures'][0]['source_id']);
+        $this->assertSame('terminal', $bundle['failures'][0]['propagation_kind']);
+        $this->assertSame(RuntimeException::class, $bundle['failures'][0]['exception_class']);
+        $this->assertSame('history-only boom', $bundle['failures'][0]['message']);
+        $this->assertSame(__FILE__, $bundle['failures'][0]['file']);
+        $this->assertSame(222, $bundle['failures'][0]['line']);
+        $this->assertNotSame('', $bundle['failures'][0]['trace_preview']);
+    }
+
     public function testItAppliesConfiguredRedactionPolicyToPayloadAndDiagnosticSlots(): void
     {
         config()->set('workflows.v2.history_export.redactor', new class() implements HistoryExportRedactor {

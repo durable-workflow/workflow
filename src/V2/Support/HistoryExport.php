@@ -14,7 +14,6 @@ use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
-use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
@@ -132,8 +131,8 @@ final class HistoryExport
                 ->map(static fn (WorkflowTimer $timer): array => self::timer($timer))
                 ->values()
                 ->all(),
-            'failures' => $run->failures
-                ->map(static fn (WorkflowFailure $failure): array => self::failure($failure))
+            'failures' => collect(FailureSnapshots::forRun($run))
+                ->map(static fn (array $failure): array => self::failure($failure))
                 ->values()
                 ->all(),
             'links' => [
@@ -830,20 +829,20 @@ final class HistoryExport
     /**
      * @return array<string, mixed>
      */
-    private static function failure(WorkflowFailure $failure): array
+    private static function failure(array $failure): array
     {
         return [
-            'id' => $failure->id,
-            'source_kind' => $failure->source_kind,
-            'source_id' => $failure->source_id,
-            'propagation_kind' => $failure->propagation_kind,
-            'handled' => (bool) $failure->handled,
-            'exception_class' => $failure->exception_class,
-            'message' => $failure->message,
-            'file' => $failure->file,
-            'line' => $failure->line,
-            'trace_preview' => $failure->trace_preview,
-            'created_at' => self::timestamp($failure->created_at),
+            'id' => $failure['id'] ?? null,
+            'source_kind' => $failure['source_kind'] ?? null,
+            'source_id' => $failure['source_id'] ?? null,
+            'propagation_kind' => $failure['propagation_kind'] ?? null,
+            'handled' => (bool) ($failure['handled'] ?? false),
+            'exception_class' => $failure['exception_class'] ?? null,
+            'message' => $failure['message'] ?? null,
+            'file' => $failure['file'] ?? null,
+            'line' => $failure['line'] ?? null,
+            'trace_preview' => $failure['trace_preview'] ?? null,
+            'created_at' => self::timestamp($failure['created_at'] ?? null),
         ];
     }
 

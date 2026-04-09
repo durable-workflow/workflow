@@ -7,7 +7,6 @@ namespace Workflow\V2\Support;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
-use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
 
 final class RunDetailView
@@ -72,9 +71,7 @@ final class RunDetailView
         $updatesByCommandId = collect($updates)
             ->filter(static fn (array $update): bool => is_string($update['command_id'] ?? null))
             ->keyBy('command_id');
-        $failureEvents = $run->historyEvents
-            ->filter(static fn ($event): bool => is_string($event->payload['failure_id'] ?? null))
-            ->keyBy(static fn ($event): string => $event->payload['failure_id']);
+        $failureSnapshots = FailureSnapshots::forRun($run);
         $tasks = RunTaskView::forRun($run);
         $waits = RunWaitView::forRun($run);
         $openWaitCount = collect($waits)
@@ -170,8 +167,8 @@ final class RunDetailView
             'next_task_lease_expires_at' => $summary?->next_task_lease_expires_at,
             'liveness_state' => $summary?->liveness_state,
             'liveness_reason' => $summary?->liveness_reason,
-            'exception_count' => $summary?->exception_count ?? $run->failures->count(),
-            'exceptions_count' => $summary?->exceptions_count ?? $run->failures->count(),
+            'exception_count' => $summary?->exception_count ?? count($failureSnapshots),
+            'exceptions_count' => $summary?->exceptions_count ?? count($failureSnapshots),
             'history_event_count' => $historyBudget['history_event_count'],
             'history_size_bytes' => $historyBudget['history_size_bytes'],
             'history_event_threshold' => HistoryBudget::eventThreshold(),
@@ -279,21 +276,20 @@ final class RunDetailView
             'timeline_scope' => 'selected_run',
             'timeline' => HistoryTimeline::forRun($run),
             'logs' => RunActivityView::logsFromActivities($activities),
-            'exceptions' => $run->failures->map(
-                static fn (WorkflowFailure $failure): array => [
-                    'id' => $failure->id,
-                    'code' => $failure->trace_preview,
-                    'exception' => serialize(self::exceptionPayload(
-                        $failure,
-                        is_object($failureEvents->get($failure->id))
-                            ? $failureEvents->get($failure->id)?->payload['exception'] ?? null
-                            : null,
-                    )),
-                    'class' => $activityClasses[$failure->source_id]
-                        ?? $failure->exception_class,
-                    'created_at' => $failure->created_at,
-                ]
-            )->values(),
+            'exceptions' => collect($failureSnapshots)
+                ->map(static function (array $failure) use ($activityClasses): array {
+                    $sourceId = self::stringValue($failure['source_id'] ?? null);
+
+                    return [
+                        'id' => $failure['id'] ?? null,
+                        'code' => $failure['trace_preview'] ?? null,
+                        'exception' => serialize(self::exceptionPayload($failure)),
+                        'class' => ($sourceId === null ? null : ($activityClasses[$sourceId] ?? null))
+                            ?? ($failure['exception_class'] ?? null),
+                        'created_at' => $failure['created_at'] ?? null,
+                    ];
+                })
+                ->values(),
             'lineage_scope' => 'selected_run',
             'timers' => collect(RunTimerView::timersForRun($run))
                 ->map(static fn (array $timer): array => [
@@ -533,19 +529,21 @@ final class RunDetailView
         return 0;
     }
 
+    private static function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
+    }
+
     /**
      * @return array<string, mixed>
      */
-    private static function exceptionPayload(WorkflowFailure $failure, mixed $payload): array
+    private static function exceptionPayload(array $failure): array
     {
-        if (is_string($payload)) {
-            $payload = Serializer::unserialize($payload);
-        }
-
-        if (! is_array($payload)) {
-            $payload = [];
-        }
-
+        $payload = is_array($failure['exception_payload'] ?? null)
+            ? $failure['exception_payload']
+            : [];
         $trace = is_array($payload['trace'] ?? null)
             ? array_values(array_filter($payload['trace'], static fn (mixed $frame): bool => is_array($frame)))
             : [];
@@ -556,21 +554,21 @@ final class RunDetailView
             : [];
 
         return [
-            '__constructor' => is_string($payload['class'] ?? null)
-                ? $payload['class']
-                : $failure->exception_class,
+            '__constructor' => is_string($payload['__constructor'] ?? null)
+                ? $payload['__constructor']
+                : ($failure['exception_class'] ?? null),
             'message' => is_string($payload['message'] ?? null)
                 ? $payload['message']
-                : $failure->message,
+                : ($failure['message'] ?? null),
             'code' => is_int($payload['code'] ?? null)
                 ? $payload['code']
-                : 0,
+                : (is_int($failure['code'] ?? null) ? $failure['code'] : 0),
             'file' => is_string($payload['file'] ?? null)
                 ? $payload['file']
-                : $failure->file,
+                : ($failure['file'] ?? null),
             'line' => is_int($payload['line'] ?? null)
                 ? $payload['line']
-                : $failure->line,
+                : (is_int($failure['line'] ?? null) ? $failure['line'] : null),
             'trace' => $trace,
             'properties' => $properties,
         ];

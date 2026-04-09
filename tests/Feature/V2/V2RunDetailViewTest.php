@@ -681,6 +681,52 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertNotEmpty($exception['trace']);
     }
 
+    public function testRunDetailViewKeepsTypedFailureCountAndPayloadWhenFailureRowsAreMissing(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryReplayedFailureWorkflow::class, 'detail-history-failure-missing');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('source_kind', 'activity_execution')
+            ->firstOrFail();
+
+        $failureId = $failure->id;
+        $failure->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $exception = unserialize($detail['exceptions'][0]['exception']);
+        $properties = collect($exception['properties'] ?? [])->keyBy('name');
+
+        $this->assertSame(1, $detail['exception_count']);
+        $this->assertSame(1, $detail['exceptions_count']);
+        $this->assertCount(1, $detail['exceptions']);
+        $this->assertSame($failureId, $detail['exceptions'][0]['id']);
+        $this->assertIsString($detail['exceptions'][0]['code']);
+        $this->assertNotSame('', $detail['exceptions'][0]['code']);
+        $this->assertSame(1, $run->fresh(['summary'])->summary?->exception_count);
+        $this->assertSame(\Tests\Fixtures\V2\TestReplayedDomainException::class, $exception['__constructor']);
+        $this->assertSame('Order order-123 rejected via api', $exception['message']);
+        $this->assertSame(422, $exception['code']);
+        $this->assertSame('order-123', $properties->get('orderId')['value'] ?? null);
+        $this->assertSame('api', $properties->get('channel')['value'] ?? null);
+        $this->assertNotEmpty($exception['trace']);
+    }
+
     public function testRunDetailViewDistinguishesRepeatedSameNamedSignalWaits(): void
     {
         Queue::fake();

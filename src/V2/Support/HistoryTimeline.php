@@ -10,7 +10,6 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
-use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -33,8 +32,10 @@ final class HistoryTimeline
         $activities = $run->activityExecutions->keyBy('id');
         /** @var Collection<string, WorkflowTimer> $timers */
         $timers = $run->timers->keyBy('id');
-        /** @var Collection<string, WorkflowFailure> $failures */
-        $failures = $run->failures->keyBy('id');
+        /** @var Collection<string, array<string, mixed>> $failures */
+        $failures = collect(FailureSnapshots::forRun($run))
+            ->filter(static fn (array $failure): bool => is_string($failure['id'] ?? null))
+            ->keyBy('id');
 
         return $run->historyEvents
             ->sortBy('sequence')
@@ -77,7 +78,7 @@ final class HistoryTimeline
         $activity = $activityId === null ? null : $activities->get($activityId);
         /** @var WorkflowTimer|null $timer */
         $timer = $timerId === null ? null : $timers->get($timerId);
-        /** @var WorkflowFailure|null $failure */
+        /** @var array<string, mixed>|null $failure */
         $failure = $failureId === null ? null : $failures->get($failureId);
         $commandMetadata = self::commandMetadata($event, $command, $payload, $commandId);
         $taskMetadata = self::taskMetadata($event, $task, $payload, $taskId);
@@ -561,7 +562,7 @@ final class HistoryTimeline
         ?ActivityExecution $activity,
         array $payload,
         ?string $activityId,
-        ?WorkflowFailure $failure,
+        ?array $failure,
     ): ?array {
         $snapshot = ActivitySnapshot::fromEvent($event);
 
@@ -578,8 +579,8 @@ final class HistoryTimeline
         $resolvedActivityId = $activity?->id
             ?? $activityId
             ?? (
-                $failure?->source_kind === 'activity_execution'
-                    ? self::stringValue($failure->source_id)
+                self::stringValue($failure['source_kind'] ?? null) === 'activity_execution'
+                    ? self::stringValue($failure['source_id'] ?? null)
                     : null
             );
 
@@ -685,7 +686,7 @@ final class HistoryTimeline
      */
     private static function failureMetadata(
         WorkflowHistoryEvent $event,
-        ?WorkflowFailure $failure,
+        ?array $failure,
         array $payload,
         ?string $failureId,
     ): ?array {
@@ -701,25 +702,33 @@ final class HistoryTimeline
         }
 
         return [
-            'id' => $failure?->id ?? $failureId,
-            'source_kind' => self::stringValue($payload['source_kind'] ?? null) ?? $failure?->source_kind,
-            'source_id' => self::stringValue($payload['source_id'] ?? null) ?? $failure?->source_id,
+            'id' => self::stringValue($failure['id'] ?? null) ?? $failureId,
+            'source_kind' => self::stringValue($payload['source_kind'] ?? null)
+                ?? self::stringValue($failure['source_kind'] ?? null),
+            'source_id' => self::stringValue($payload['source_id'] ?? null)
+                ?? self::stringValue($failure['source_id'] ?? null),
             'propagation_kind' => match ($event->event_type) {
                 HistoryEventType::ActivityFailed => 'activity',
                 HistoryEventType::WorkflowFailed => 'terminal',
-                HistoryEventType::UpdateCompleted => ($failure?->id ?? $failureId) === null ? null : 'update',
-                default => $failure?->propagation_kind,
+                HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
+                    ? null
+                    : 'update',
+                default => self::stringValue($failure['propagation_kind'] ?? null),
             },
             'handled' => match ($event->event_type) {
                 HistoryEventType::ActivityFailed,
                 HistoryEventType::WorkflowFailed => false,
-                HistoryEventType::UpdateCompleted => ($failure?->id ?? $failureId) === null ? null : false,
-                default => $failure?->handled,
+                HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
+                    ? null
+                    : false,
+                default => is_bool($failure['handled'] ?? null) ? $failure['handled'] : null,
             },
-            'exception_class' => self::stringValue($payload['exception_class'] ?? null) ?? $failure?->exception_class,
-            'message' => self::stringValue($payload['message'] ?? null) ?? $failure?->message,
-            'file' => $failure?->file,
-            'line' => $failure?->line,
+            'exception_class' => self::stringValue($payload['exception_class'] ?? null)
+                ?? self::stringValue($failure['exception_class'] ?? null),
+            'message' => self::stringValue($payload['message'] ?? null)
+                ?? self::stringValue($failure['message'] ?? null),
+            'file' => self::stringValue($failure['file'] ?? null),
+            'line' => self::intValue($failure['line'] ?? null),
         ];
     }
 
