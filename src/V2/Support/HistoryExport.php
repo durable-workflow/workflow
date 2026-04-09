@@ -771,12 +771,14 @@ final class HistoryExport
     {
         return [
             'id' => $activity->id,
+            'idempotency_key' => $activity->id,
             'sequence' => $activity->sequence,
             'activity_type' => $activity->activity_type,
             'activity_class' => $activity->activity_class,
             'status' => $activity->status->value,
             'connection' => $activity->connection,
             'queue' => $activity->queue,
+            'retry_policy' => $activity->retry_policy,
             'attempt_count' => $activity->attempt_count,
             'current_attempt_id' => $activity->current_attempt_id,
             'arguments' => $activity->arguments,

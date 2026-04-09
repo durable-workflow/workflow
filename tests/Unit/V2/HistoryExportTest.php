@@ -175,6 +175,11 @@ final class HistoryExportTest extends TestCase
             'result' => Serializer::serialize('ok'),
             'connection' => 'redis',
             'queue' => 'activities',
+            'retry_policy' => [
+                'snapshot_version' => 1,
+                'max_attempts' => 3,
+                'backoff_seconds' => [1, 5],
+            ],
             'attempt_count' => 1,
             'started_at' => now()->subMinutes(4),
             'closed_at' => now()->subMinutes(3),
@@ -266,6 +271,8 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('applied', $bundle['signals'][0]['status']);
         $this->assertSame($task->id, $bundle['tasks'][0]['id']);
         $this->assertSame($activity->id, $bundle['activities'][0]['id']);
+        $this->assertSame($activity->id, $bundle['activities'][0]['idempotency_key']);
+        $this->assertSame($activity->retry_policy, $bundle['activities'][0]['retry_policy']);
         $this->assertSame($attempt->id, $bundle['activities'][0]['attempts'][0]['id']);
         $this->assertSame($childCallId, $bundle['links']['children'][0]['child_call_id']);
 

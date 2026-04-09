@@ -15,7 +15,6 @@ use ReflectionMethod;
 use Throwable;
 use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\Serializers\Serializer;
-use Workflow\V2\Activity;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -29,6 +28,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityLease;
+use Workflow\V2\Support\ActivityRetryPolicy;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -97,8 +97,8 @@ final class RunActivityTask implements ShouldQueue
             $throwable = $error;
         }
 
-        $maxAttempts = self::maxAttempts($activity);
-        $backoffSeconds = self::backoffSeconds($activity, $attemptCount);
+        $maxAttempts = ActivityRetryPolicy::maxAttempts($execution, $activity);
+        $backoffSeconds = ActivityRetryPolicy::backoffSeconds($execution, $activity, $attemptCount);
 
         $nextTask = DB::transaction(function () use (
             $execution,
@@ -233,6 +233,8 @@ final class RunActivityTask implements ShouldQueue
                         'retry_after_attempt_id' => $attemptId,
                         'retry_after_attempt' => $attemptCount,
                         'retry_backoff_seconds' => $backoffSeconds,
+                        'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
+                        'retry_policy' => $lockedExecution->retry_policy,
                     ],
                     'connection' => $lockedExecution->connection,
                     'queue' => $lockedExecution->queue,
@@ -251,6 +253,7 @@ final class RunActivityTask implements ShouldQueue
                     'retry_after_attempt_id' => $attemptId,
                     'retry_after_attempt' => $attemptCount,
                     'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
+                    'retry_policy' => $lockedExecution->retry_policy,
                     'exception_class' => $exceptionPayload['class'] ?? get_class($throwable),
                     'message' => $exceptionPayload['message'] ?? $throwable->getMessage(),
                     'code' => $throwable->getCode(),
@@ -475,39 +478,9 @@ final class RunActivityTask implements ShouldQueue
         self::closeAttempt($attemptId, $status);
     }
 
-    private static function maxAttempts(Activity $activity): int
-    {
-        $tries = $activity->tries;
-
-        return $tries <= 0 ? PHP_INT_MAX : $tries;
-    }
-
     private static function shouldRetry(Throwable $throwable, int $attemptCount, int $maxAttempts): bool
     {
         return ! $throwable instanceof NonRetryableExceptionContract
             && $attemptCount < $maxAttempts;
-    }
-
-    private static function backoffSeconds(Activity $activity, int $attemptCount): int
-    {
-        $backoff = $activity->backoff();
-
-        if (is_int($backoff)) {
-            return max(0, $backoff);
-        }
-
-        $values = array_values(array_filter(
-            $backoff,
-            static fn (mixed $value): bool => is_int($value) || (is_string($value) && is_numeric($value)),
-        ));
-
-        if ($values === []) {
-            return 0;
-        }
-
-        $index = max(0, $attemptCount - 1);
-        $value = $values[min($index, count($values) - 1)];
-
-        return max(0, (int) $value);
     }
 }

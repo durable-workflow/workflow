@@ -141,6 +141,8 @@ final class HistoryTimeline
             'retry_task_id' => self::stringValue($payload['retry_task_id'] ?? null),
             'retry_available_at' => self::timestamp($payload['retry_available_at'] ?? null),
             'retry_backoff_seconds' => self::intValue($payload['retry_backoff_seconds'] ?? null),
+            'retry_max_attempts' => self::intValue($payload['max_attempts'] ?? null),
+            'retry_policy' => is_array($payload['retry_policy'] ?? null) ? $payload['retry_policy'] : null,
             'retry_after_attempt_id' => self::stringValue($payload['retry_after_attempt_id'] ?? null),
             'retry_after_attempt' => self::intValue($payload['retry_after_attempt'] ?? null),
             'timer_id' => $timerMetadata['id'] ?? null,
@@ -584,6 +586,8 @@ final class HistoryTimeline
         return [
             'id' => self::stringValue($snapshot['id'] ?? null)
                 ?? $resolvedActivityId,
+            'idempotency_key' => self::stringValue($snapshot['idempotency_key'] ?? null)
+                ?? $resolvedActivityId,
             'sequence' => self::intValue($snapshot['sequence'] ?? null)
                 ?? $activity?->sequence
                 ?? self::intValue($payload['sequence'] ?? null),
@@ -614,6 +618,9 @@ final class HistoryTimeline
                         ? 0
                         : ($activity?->attempt_count ?? 1))
                     : $activity?->attempt_count),
+            'retry_policy' => is_array($snapshot['retry_policy'] ?? null)
+                ? $snapshot['retry_policy']
+                : ($activity?->retry_policy ?? null),
             'connection' => self::stringValue($snapshot['connection'] ?? null)
                 ?? $activity?->connection,
             'queue' => self::stringValue($snapshot['queue'] ?? null)

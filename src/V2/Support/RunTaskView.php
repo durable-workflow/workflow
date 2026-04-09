@@ -100,6 +100,8 @@ final class RunTaskView
                         'retry_after_attempt_id' => self::stringValue($task->payload['retry_after_attempt_id'] ?? null),
                         'retry_after_attempt' => self::intValue($task->payload['retry_after_attempt'] ?? null),
                         'retry_backoff_seconds' => self::intValue($task->payload['retry_backoff_seconds'] ?? null),
+                        'retry_max_attempts' => self::intValue($task->payload['max_attempts'] ?? null),
+                        'retry_policy' => is_array($task->payload['retry_policy'] ?? null) ? $task->payload['retry_policy'] : null,
                         'timer_id' => $timerId,
                         'timer_sequence' => $timer?->sequence,
                         'timer_fire_at' => $timer?->fire_at,

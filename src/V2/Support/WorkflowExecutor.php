@@ -763,6 +763,12 @@ final class WorkflowExecutor
             'connection' => RoutingResolver::activityConnection($activityCall->activity, $run),
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run),
         ]);
+        $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
+        $activity = new $activityClass($execution, $run, $task->id);
+
+        $execution->forceFill([
+            'retry_policy' => ActivityRetryPolicy::snapshot($activity),
+        ])->save();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, array_merge([
             'activity_execution_id' => $execution->id,

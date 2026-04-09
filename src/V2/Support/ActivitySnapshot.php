@@ -19,12 +19,14 @@ final class ActivitySnapshot
     {
         return array_filter([
             'id' => $execution->id,
+            'idempotency_key' => $execution->id,
             'sequence' => $execution->sequence,
             'type' => $execution->activity_type,
             'class' => $execution->activity_class,
             'attempt_id' => self::stringValue($execution->current_attempt_id),
             'status' => $execution->status?->value,
             'attempt_count' => self::executionAttemptCount($execution),
+            'retry_policy' => self::arrayValue($execution->retry_policy),
             'connection' => $execution->connection,
             'queue' => $execution->queue,
             'last_heartbeat_at' => self::timestamp($execution->last_heartbeat_at),
@@ -60,6 +62,7 @@ final class ActivitySnapshot
 
         $merged = self::merge([
             'id' => $activityId,
+            'idempotency_key' => self::stringValue($payload['idempotency_key'] ?? null),
             'sequence' => self::intValue($payload['sequence'] ?? null),
             'type' => self::stringValue($payload['activity_type'] ?? null),
             'class' => self::stringValue($payload['activity_class'] ?? null),
@@ -69,6 +72,7 @@ final class ActivitySnapshot
             'parallel_group_size' => self::intValue($payload['parallel_group_size'] ?? null),
             'parallel_group_index' => self::intValue($payload['parallel_group_index'] ?? null),
             'parallel_group_path' => self::parallelGroupPath($payload),
+            'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
             'result' => self::stringValue($payload['result'] ?? null),
             'created_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? self::timestamp($event->recorded_at)
@@ -117,6 +121,7 @@ final class ActivitySnapshot
     {
         return array_filter([
             'id' => self::stringValue($snapshot['id'] ?? null),
+            'idempotency_key' => self::stringValue($snapshot['idempotency_key'] ?? null),
             'sequence' => self::intValue($snapshot['sequence'] ?? null),
             'type' => self::stringValue($snapshot['type'] ?? null),
             'class' => self::stringValue($snapshot['class'] ?? null),
@@ -129,6 +134,7 @@ final class ActivitySnapshot
             'attempt_id' => self::stringValue($snapshot['attempt_id'] ?? null),
             'status' => self::stringValue($snapshot['status'] ?? null),
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
+            'retry_policy' => self::arrayValue($snapshot['retry_policy'] ?? null),
             'connection' => self::stringValue($snapshot['connection'] ?? null),
             'queue' => self::stringValue($snapshot['queue'] ?? null),
             'last_heartbeat_at' => self::stringValue($snapshot['last_heartbeat_at'] ?? null),
@@ -224,6 +230,14 @@ final class ActivitySnapshot
         return is_int($value)
             ? $value
             : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function arrayValue(mixed $value): ?array
+    {
+        return is_array($value) ? $value : null;
     }
 
     /**

@@ -267,13 +267,28 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame(ActivityStatus::Pending, $execution->refresh()->status);
             $this->assertSame('failed', $firstAttempt->status->value);
             $this->assertSame(1, $execution->attempt_count);
+            $this->assertSame([
+                'snapshot_version' => 1,
+                'max_attempts' => 2,
+                'backoff_seconds' => [5],
+            ], $execution->retry_policy);
             $this->assertSame(1, $retryTask->attempt_count);
             $this->assertSame($execution->id, $retryTask->payload['activity_execution_id'] ?? null);
             $this->assertSame($firstAttempt->workflow_task_id, $retryTask->payload['retry_of_task_id'] ?? null);
             $this->assertSame($firstAttempt->id, $retryTask->payload['retry_after_attempt_id'] ?? null);
             $this->assertSame(1, $retryTask->payload['retry_after_attempt'] ?? null);
             $this->assertSame(5, $retryTask->payload['retry_backoff_seconds'] ?? null);
+            $this->assertSame(2, $retryTask->payload['max_attempts'] ?? null);
+            $this->assertSame($execution->retry_policy, $retryTask->payload['retry_policy'] ?? null);
             $this->assertSame(Carbon::parse('2026-04-09 12:00:05')->toJSON(), $retryTask->available_at?->toJSON());
+
+            /** @var WorkflowHistoryEvent $scheduled */
+            $scheduled = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ActivityScheduled->value)
+                ->sole();
+
+            $this->assertSame($execution->retry_policy, $scheduled->payload['activity']['retry_policy'] ?? null);
 
             /** @var WorkflowHistoryEvent $retryScheduled */
             $retryScheduled = WorkflowHistoryEvent::query()
@@ -286,19 +301,26 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame($firstAttempt->id, $retryScheduled->payload['retry_after_attempt_id'] ?? null);
             $this->assertSame(1, $retryScheduled->payload['retry_after_attempt'] ?? null);
             $this->assertSame(5, $retryScheduled->payload['retry_backoff_seconds'] ?? null);
+            $this->assertSame(2, $retryScheduled->payload['max_attempts'] ?? null);
+            $this->assertSame($execution->retry_policy, $retryScheduled->payload['retry_policy'] ?? null);
             $this->assertSame('retry me', $retryScheduled->payload['message'] ?? null);
             $this->assertSame('pending', $retryScheduled->payload['activity']['status'] ?? null);
+            $this->assertSame($execution->retry_policy, $retryScheduled->payload['activity']['retry_policy'] ?? null);
 
             $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
 
             $this->assertSame('pending', $detail['activities'][0]['status']);
             $this->assertSame(1, $detail['activities'][0]['attempt_count']);
+            $this->assertSame($execution->retry_policy, $detail['activities'][0]['retry_policy']);
             $this->assertSame('failed', $detail['activities'][0]['attempts'][0]['status']);
             $this->assertSame('ActivityRetryScheduled', $detail['timeline'][4]['type']);
             $this->assertSame('Scheduled retry 2 for TestRetryActivity.', $detail['timeline'][4]['summary']);
             $this->assertSame($retryTask->id, $detail['timeline'][4]['retry_task_id']);
+            $this->assertSame($execution->retry_policy, $detail['timeline'][4]['activity']['retry_policy']);
             $this->assertSame('scheduled', $detail['tasks'][0]['transport_state']);
             $this->assertSame(1, $detail['tasks'][0]['retry_after_attempt']);
+            $this->assertSame(2, $detail['tasks'][0]['retry_max_attempts']);
+            $this->assertSame($execution->retry_policy, $detail['tasks'][0]['retry_policy']);
 
             Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:05'));
 
@@ -349,6 +371,55 @@ final class V2WorkflowTest extends TestCase
                 ->pluck('event_type')
                 ->map(static fn ($eventType) => $eventType->value)
                 ->all());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testActivityRetrySchedulingUsesDurablePolicySnapshot(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'activity-retry-policy-snapshot');
+            $workflow->start('Taylor');
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            /** @var ActivityExecution $execution */
+            $execution = ActivityExecution::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+
+            $execution->forceFill([
+                'retry_policy' => [
+                    'snapshot_version' => 1,
+                    'max_attempts' => 2,
+                    'backoff_seconds' => [17],
+                ],
+            ])->save();
+
+            $this->runReadyTaskForRun($runId, TaskType::Activity);
+
+            /** @var WorkflowTask $retryTask */
+            $retryTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->firstOrFail();
+            /** @var WorkflowHistoryEvent $retryScheduled */
+            $retryScheduled = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
+                ->sole();
+
+            $this->assertSame(17, $retryTask->payload['retry_backoff_seconds'] ?? null);
+            $this->assertSame(17, $retryScheduled->payload['retry_backoff_seconds'] ?? null);
+            $this->assertSame($execution->refresh()->retry_policy, $retryScheduled->payload['retry_policy'] ?? null);
         } finally {
             Carbon::setTestNow();
         }

@@ -175,6 +175,7 @@ final class RunActivityView
 
         return [
             'id' => $state['id'] ?? null,
+            'idempotency_key' => $state['idempotency_key'] ?? $state['id'] ?? null,
             'sequence' => $state['sequence'] ?? null,
             'type' => $state['type'] ?? null,
             'class' => $state['class'] ?? null,
@@ -187,6 +188,7 @@ final class RunActivityView
             'attempt_id' => $state['attempt_id'] ?? ($latestAttempt['id'] ?? null),
             'status' => $state['status'] ?? 'pending',
             'attempt_count' => $attemptCount,
+            'retry_policy' => $state['retry_policy'] ?? ($execution?->retry_policy ?? null),
             'connection' => $state['connection'] ?? null,
             'queue' => $state['queue'] ?? null,
             'last_heartbeat_at' => $state['last_heartbeat_at'] ?? ($latestAttempt['last_heartbeat_at'] ?? null),
