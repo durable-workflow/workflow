@@ -64,9 +64,6 @@ final class V2AwaitWorkflowTest extends TestCase
 
         $this->assertTrue($update->accepted());
         $this->assertTrue($update->completed());
-
-        $this->runReadyWorkflowTask($workflow->runId());
-
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame([
             'approved' => true,
@@ -170,8 +167,6 @@ final class V2AwaitWorkflowTest extends TestCase
             static fn (RunWorkflowTask $job): bool => $job->taskId === $initialTask->id,
         );
 
-        $this->runReadyWorkflowTask($workflow->runId());
-
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame([
             'approved' => true,
@@ -261,7 +256,6 @@ final class V2AwaitWorkflowTest extends TestCase
             ->firstOrFail();
 
         $workflow->attemptUpdate('approve', true);
-        $this->runReadyWorkflowTask($workflow->runId());
 
         $this->assertTrue($workflow->refresh()->completed());
 

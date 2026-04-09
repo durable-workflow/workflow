@@ -6,6 +6,8 @@ namespace Workflow\V2;
 
 use BadMethodCallException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Testing\Fakes\QueueFake;
 use LogicException;
 use ReflectionMethod;
 use Throwable;
@@ -25,6 +27,7 @@ use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -36,11 +39,8 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
-use Workflow\V2\Support\AwaitCall;
-use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\CurrentRunResolver;
-use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
@@ -603,6 +603,14 @@ final class WorkflowStub
             ));
         }
 
+        if (! $result->completed()) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] update [%s] was accepted but did not finish applying yet.',
+                $this->instance->id,
+                $method,
+            ));
+        }
+
         return $result->result();
     }
 
@@ -621,12 +629,70 @@ final class WorkflowStub
      */
     public function submitUpdateWithArguments(string $method, array $arguments): UpdateResult
     {
+        [$command, $update, $resumeTask] = $this->recordAcceptedUpdateWithArguments($method, $arguments);
+
+        $this->refresh();
+
+        if ($resumeTask instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($resumeTask);
+        }
+
+        if (! $command instanceof WorkflowCommand) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] failed to record an update command.',
+                $this->instance->id,
+            ));
+        }
+
+        return UpdateResult::fromCommand($command, null, null, $update);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    public function attemptUpdateWithArguments(string $method, array $arguments): UpdateResult
+    {
+        [$command, $update, $resumeTask] = $this->recordAcceptedUpdateWithArguments($method, $arguments);
+
+        $this->refresh();
+
+        if ($resumeTask instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($resumeTask);
+        }
+
+        if (! $command instanceof WorkflowCommand) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] failed to record an update command.',
+                $this->instance->id,
+            ));
+        }
+
+        if (! $update instanceof WorkflowUpdate || $command->status === CommandStatus::Rejected) {
+            return UpdateResult::fromCommand($command, null, null, $update);
+        }
+
+        if ($this->shouldInlineAcceptedUpdateCompletion()) {
+            $this->processAcceptedUpdateInline($command->workflow_run_id, $update->id);
+        }
+
+        $this->waitForAcceptedUpdateToClose($update->id);
+
+        return $this->freshUpdateResult($command->id, $update->id);
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     * @return array{0: WorkflowCommand|null, 1: WorkflowUpdate|null, 2: WorkflowTask|null}
+     */
+    private function recordAcceptedUpdateWithArguments(string $method, array $arguments): array
+    {
         $this->refresh();
 
         /** @var WorkflowCommand|null $command */
         $command = null;
         /** @var WorkflowUpdate|null $update */
         $update = null;
+        /** @var WorkflowTask|null $resumeTask */
         $resumeTask = null;
 
         DB::transaction(function () use (
@@ -830,348 +896,85 @@ final class WorkflowStub
             );
         });
 
-        $this->refresh();
-
-        if ($resumeTask instanceof WorkflowTask) {
-            TaskDispatcher::dispatch($resumeTask);
-        }
-
-        if (! $command instanceof WorkflowCommand) {
-            throw new LogicException(sprintf(
-                'Workflow instance [%s] failed to record an update command.',
-                $this->instance->id,
-            ));
-        }
-
-        return UpdateResult::fromCommand($command, null, null, $update);
+        return [$command, $update, $resumeTask];
     }
 
-    /**
-     * @param array<int|string, mixed> $arguments
-     */
-    public function attemptUpdateWithArguments(string $method, array $arguments): UpdateResult
+    private function shouldInlineAcceptedUpdateCompletion(): bool
     {
-        $this->refresh();
+        return Queue::getFacadeRoot() instanceof QueueFake;
+    }
 
-        /** @var WorkflowCommand|null $command */
-        $command = null;
+    private function processAcceptedUpdateInline(?string $runId, string $updateId): void
+    {
+        if (! is_string($runId) || $runId === '') {
+            return;
+        }
+
+        $attempts = 0;
+
+        while ($attempts < 25) {
+            /** @var WorkflowUpdate|null $update */
+            $update = WorkflowUpdate::query()->find($updateId);
+
+            if (! $update instanceof WorkflowUpdate || $update->status !== UpdateStatus::Accepted) {
+                return;
+            }
+
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('available_at')
+                ->orderBy('created_at')
+                ->first();
+
+            if (! $task instanceof WorkflowTask) {
+                return;
+            }
+
+            app()->call([new RunWorkflowTask($task->id), 'handle']);
+
+            $attempts++;
+        }
+    }
+
+    private function waitForAcceptedUpdateToClose(string $updateId): void
+    {
+        while (true) {
+            /** @var WorkflowUpdate|null $update */
+            $update = WorkflowUpdate::query()->find($updateId);
+
+            if (! $update instanceof WorkflowUpdate || $update->status !== UpdateStatus::Accepted) {
+                return;
+            }
+
+            usleep(50000);
+        }
+    }
+
+    private function freshUpdateResult(string $commandId, string $updateId): UpdateResult
+    {
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($commandId);
         /** @var WorkflowUpdate|null $update */
-        $update = null;
+        $update = WorkflowUpdate::query()->find($updateId);
+
+        if (! $update instanceof WorkflowUpdate) {
+            return UpdateResult::fromCommand($command);
+        }
+
         /** @var WorkflowFailure|null $failure */
-        $failure = null;
-        $result = null;
-        $resumeTask = null;
+        $failure = is_string($update->failure_id)
+            ? WorkflowFailure::query()->find($update->failure_id)
+            : null;
 
-        DB::transaction(function () use (
-            $method,
-            $arguments,
-            &$command,
-            &$update,
-            &$failure,
-            &$result,
-            &$resumeTask,
-        ): void {
-            /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
-                ->lockForUpdate()
-                ->findOrFail($this->instance->id);
-
-            $currentRun = $this->currentRunForInstance($instance, true);
-
-            if (! $currentRun instanceof WorkflowRun) {
-                $command = $this->rejectCommand(
-                    $instance,
-                    null,
-                    CommandType::Update,
-                    'instance_not_started',
-                    $this->commandTargetScope(),
-                    $this->updateCommandPayloadAttributes($method, $arguments),
-                );
-
-                $update = $this->recordRejectedUpdate($command, $method, $arguments);
-
-                return;
-            }
-
-            if ($this->runTargeted) {
-                /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
-                    ->lockForUpdate()
-                    ->findOrFail($this->selectedRunId);
-                $updateName = $method;
-                $updateCommandAttributes = $this->updateCommandPayloadAttributes($updateName, $arguments);
-
-                if ($run->id !== $currentRun->id) {
-                    [$command, $update] = $this->rejectUpdateCommand(
-                        $instance,
-                        $run,
-                        $updateName,
-                        $arguments,
-                        'selected_run_not_current',
-                        $this->commandTargetScope(),
-                        array_merge($updateCommandAttributes, [
-                            'resolved_workflow_run_id' => $currentRun->id,
-                        ]),
-                    );
-
-                    return;
-                }
-            } else {
-                $run = $currentRun;
-                $updateName = $method;
-                $updateCommandAttributes = $this->updateCommandPayloadAttributes($updateName, $arguments);
-            }
-
-            if (in_array($run->status, [
-                RunStatus::Completed,
-                RunStatus::Failed,
-                RunStatus::Cancelled,
-                RunStatus::Terminated,
-            ], true)) {
-                [$command, $update] = $this->rejectUpdateCommand(
-                    $instance,
-                    $run,
-                    $updateName,
-                    $arguments,
-                    'run_not_active',
-                    $this->commandTargetScope(),
-                    $updateCommandAttributes,
-                );
-
-                return;
-            }
-
-            $this->loadLockedRunRelations($run, $instance);
-
-            if (! RunCommandContract::hasUpdateMethod($run, $updateName)) {
-                [$command, $update] = $this->rejectUpdateCommand(
-                    $instance,
-                    $run,
-                    $updateName,
-                    $arguments,
-                    'unknown_update',
-                    $this->commandTargetScope(),
-                    $updateCommandAttributes,
-                );
-
-                return;
-            }
-
-            $validatedArguments = $this->validatedUpdateArgumentsForRun($run, $updateName, $arguments);
-
-            if ($validatedArguments['validation_errors'] !== []) {
-                $updateCommandAttributes = $this->updateCommandPayloadAttributes(
-                    $updateName,
-                    $arguments,
-                    $validatedArguments['validation_errors'],
-                );
-
-                [$command, $update] = $this->rejectUpdateCommand(
-                    $instance,
-                    $run,
-                    $updateName,
-                    $arguments,
-                    'invalid_update_arguments',
-                    $this->commandTargetScope(),
-                    $updateCommandAttributes,
-                    $validatedArguments['validation_errors'],
-                );
-
-                return;
-            }
-
-            if (UpdateCommandGate::blockedReason($run) !== null) {
-                [$command, $update] = $this->rejectUpdateCommand(
-                    $instance,
-                    $run,
-                    $updateName,
-                    $arguments,
-                    UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL,
-                    $this->commandTargetScope(),
-                    $updateCommandAttributes,
-                );
-
-                return;
-            }
-
-            $arguments = $validatedArguments['arguments'];
-            $workflowExecutionBlockedReason = WorkflowExecutionGate::blockedReason($run);
-
-            if ($workflowExecutionBlockedReason !== null) {
-                [$command, $update] = $this->rejectUpdateCommand(
-                    $instance,
-                    $run,
-                    $updateName,
-                    $arguments,
-                    $workflowExecutionBlockedReason,
-                    $this->commandTargetScope(),
-                    $updateCommandAttributes,
-                );
-
-                return;
-            }
-
-            $updateMethod = $this->resolveUpdateTargetForRun($run, $updateName)['method'];
-            $replayState = (new QueryStateReplayer())->replayState($run);
-
-            /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
-                'command_type' => CommandType::Update->value,
-                'target_scope' => $this->commandTargetScope(),
-                'status' => CommandStatus::Accepted->value,
-                'accepted_at' => now(),
-            ], $updateCommandAttributes)));
-
-            /** @var WorkflowUpdate $update */
-            $update = WorkflowUpdate::query()->create([
-                'workflow_command_id' => $command->id,
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
-                'target_scope' => $command->target_scope,
-                'requested_workflow_run_id' => $command->requestedRunId(),
-                'resolved_workflow_run_id' => $command->resolvedRunId(),
-                'update_name' => $updateName,
-                'status' => UpdateStatus::Accepted->value,
-                'command_sequence' => $command->command_sequence,
-                'workflow_sequence' => $replayState->sequence,
-                'payload_codec' => config('workflows.serializer'),
-                'arguments' => Serializer::serialize($arguments),
-                'accepted_at' => $command->accepted_at,
-            ]);
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
-                'workflow_command_id' => $command->id,
-                'update_id' => $update->id,
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
-                'update_name' => $updateName,
-                'arguments' => Serializer::serialize($arguments),
-                'sequence' => $replayState->sequence,
-            ], null, $command);
-
-            try {
-                $replayState->workflow->setCommandDispatchEnabled(true);
-                $parameters = $replayState->workflow->resolveMethodDependencies(
-                    $arguments,
-                    new ReflectionMethod($replayState->workflow, $updateMethod),
-                );
-                $result = $replayState->workflow->{$updateMethod}(...$parameters);
-
-                WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
-                    'workflow_command_id' => $command->id,
-                    'update_id' => $update->id,
-                    'workflow_instance_id' => $instance->id,
-                    'workflow_run_id' => $run->id,
-                    'update_name' => $updateName,
-                    'arguments' => Serializer::serialize($arguments),
-                    'sequence' => $replayState->sequence,
-                ], null, $command);
-
-                WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
-                    'workflow_command_id' => $command->id,
-                    'update_id' => $update->id,
-                    'workflow_instance_id' => $instance->id,
-                    'workflow_run_id' => $run->id,
-                    'update_name' => $updateName,
-                    'sequence' => $replayState->sequence,
-                    'result' => Serializer::serialize($result),
-                ], null, $command);
-
-                $update->forceFill([
-                    'status' => UpdateStatus::Completed->value,
-                    'outcome' => CommandOutcome::UpdateCompleted->value,
-                    'result' => Serializer::serialize($result),
-                    'applied_at' => now(),
-                    'closed_at' => now(),
-                ])->save();
-
-                $command->forceFill([
-                    'outcome' => CommandOutcome::UpdateCompleted->value,
-                    'applied_at' => $update->applied_at,
-                ])->save();
-            } catch (Throwable $throwable) {
-                /** @var WorkflowFailure $failure */
-                $failure = WorkflowFailure::query()->create(array_merge(
-                    FailureFactory::make($throwable),
-                    [
-                        'workflow_run_id' => $run->id,
-                        'source_kind' => 'workflow_command',
-                        'source_id' => $command->id,
-                        'propagation_kind' => 'update',
-                        'handled' => false,
-                    ],
-                ));
-
-                WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
-                    'workflow_command_id' => $command->id,
-                    'update_id' => $update->id,
-                    'workflow_instance_id' => $instance->id,
-                    'workflow_run_id' => $run->id,
-                    'update_name' => $updateName,
-                    'sequence' => $replayState->sequence,
-                    'failure_id' => $failure->id,
-                    'exception_class' => $failure->exception_class,
-                    'message' => $failure->message,
-                    'code' => $throwable->getCode(),
-                    'exception' => FailureFactory::payload($throwable),
-                ], null, $command);
-
-                $update->forceFill([
-                    'status' => UpdateStatus::Failed->value,
-                    'outcome' => CommandOutcome::UpdateFailed->value,
-                    'failure_id' => $failure->id,
-                    'failure_message' => $failure->message,
-                    'applied_at' => now(),
-                    'closed_at' => now(),
-                ])->save();
-
-                $command->forceFill([
-                    'outcome' => CommandOutcome::UpdateFailed->value,
-                    'applied_at' => $update->applied_at,
-                ])->save();
-            }
-
-            $run->forceFill([
-                'last_progress_at' => now(),
-            ])->save();
-
-            if ($replayState->current instanceof AwaitCall || $replayState->current instanceof AwaitWithTimeoutCall) {
-                $resumeTask = $this->readyWorkflowTaskForDispatch($run->id);
-
-                if (! $resumeTask instanceof WorkflowTask && ! $this->hasOpenWorkflowTask($run->id)) {
-                    /** @var WorkflowTask $resumeTask */
-                    $resumeTask = WorkflowTask::query()->create([
-                        'workflow_run_id' => $run->id,
-                        'task_type' => TaskType::Workflow->value,
-                        'status' => TaskStatus::Ready->value,
-                        'available_at' => now(),
-                        'payload' => [],
-                        'connection' => $run->connection,
-                        'queue' => $run->queue,
-                        'compatibility' => $run->compatibility,
-                    ]);
-                }
-            }
-
-            RunSummaryProjector::project(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-            );
-        });
-
-        $this->refresh();
-
-        if ($resumeTask instanceof WorkflowTask) {
-            TaskDispatcher::dispatch($resumeTask);
-        }
-
-        if (! $command instanceof WorkflowCommand) {
-            throw new LogicException(sprintf(
-                'Workflow instance [%s] failed to record an update command.',
-                $this->instance->id,
-            ));
-        }
-
-        return UpdateResult::fromCommand($command, $result, $failure, $update);
+        return UpdateResult::fromCommand(
+            $command,
+            $update->status === UpdateStatus::Completed ? $update->updateResult() : null,
+            $failure,
+            $update,
+        );
     }
 
     public function repair(): CommandResult
