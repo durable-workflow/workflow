@@ -52,6 +52,10 @@ return [
             'signing_key' => env('WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY'),
             'signing_key_id' => env('WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID'),
         ],
+        'update_wait' => [
+            'completion_timeout_seconds' => (int) env('WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS', 10),
+            'poll_interval_milliseconds' => (int) env('WORKFLOW_V2_UPDATE_WAIT_POLL_INTERVAL_MS', 50),
+        ],
         'task_repair' => [
             'redispatch_after_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 3),
             'loop_throttle_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS', 5),

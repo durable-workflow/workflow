@@ -51,6 +51,7 @@ use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\UpdateCommandGate;
 use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowDefinition;
@@ -67,6 +68,8 @@ final class WorkflowStub
     private ?string $selectedRunId = null;
 
     private ?CommandContext $commandContext = null;
+
+    private ?int $updateWaitTimeoutSeconds = null;
 
     private function __construct(
         private WorkflowInstance $instance,
@@ -359,6 +362,18 @@ final class WorkflowStub
         return $clone;
     }
 
+    public function withUpdateWaitTimeout(?int $seconds): self
+    {
+        if ($seconds !== null && $seconds < 1) {
+            throw new LogicException('Workflow v2 update wait timeout must be a positive integer.');
+        }
+
+        $clone = clone $this;
+        $clone->updateWaitTimeoutSeconds = $seconds;
+
+        return $clone;
+    }
+
     public function start(...$arguments): StartResult
     {
         $result = $this->attemptStart(...$arguments);
@@ -604,10 +619,19 @@ final class WorkflowStub
         }
 
         if (! $result->completed()) {
+            $timedOutSuffix = $result->waitTimedOut()
+                ? sprintf(
+                    ' after waiting %d second%s',
+                    $result->waitTimeoutSeconds(),
+                    $result->waitTimeoutSeconds() === 1 ? '' : 's',
+                )
+                : '';
+
             throw new LogicException(sprintf(
-                'Workflow instance [%s] update [%s] was accepted but did not finish applying yet.',
+                'Workflow instance [%s] update [%s] was accepted but did not finish applying%s. Use attemptUpdate() to inspect the durable update lifecycle or submitUpdate() to return immediately after acceptance.',
                 $this->instance->id,
                 $method,
+                $timedOutSuffix,
             ));
         }
 
@@ -644,7 +668,7 @@ final class WorkflowStub
             ));
         }
 
-        return UpdateResult::fromCommand($command, null, null, $update);
+        return UpdateResult::fromCommand($command, null, null, $update, 'accepted');
     }
 
     /**
@@ -668,16 +692,30 @@ final class WorkflowStub
         }
 
         if (! $update instanceof WorkflowUpdate || $command->status === CommandStatus::Rejected) {
-            return UpdateResult::fromCommand($command, null, null, $update);
+            return UpdateResult::fromCommand(
+                $command,
+                null,
+                null,
+                $update,
+                'completed',
+                false,
+                $this->updateWaitTimeoutSeconds(),
+            );
         }
 
         if ($this->shouldInlineAcceptedUpdateCompletion()) {
             $this->processAcceptedUpdateInline($command->workflow_run_id, $update->id);
         }
 
-        $this->waitForAcceptedUpdateToClose($update->id);
+        $waitTimedOut = $this->waitForAcceptedUpdateToClose($update->id, $this->updateWaitTimeoutSeconds());
 
-        return $this->freshUpdateResult($command->id, $update->id);
+        return $this->freshUpdateResult(
+            $command->id,
+            $update->id,
+            'completed',
+            $waitTimedOut,
+            $this->updateWaitTimeoutSeconds(),
+        );
     }
 
     /**
@@ -939,21 +977,36 @@ final class WorkflowStub
         }
     }
 
-    private function waitForAcceptedUpdateToClose(string $updateId): void
+    private function waitForAcceptedUpdateToClose(string $updateId, int $timeoutSeconds): bool
     {
+        $deadline = microtime(true) + $timeoutSeconds;
+        $pollIntervalSeconds = UpdateWaitPolicy::pollIntervalMilliseconds() / 1000;
+
         while (true) {
             /** @var WorkflowUpdate|null $update */
             $update = WorkflowUpdate::query()->find($updateId);
 
             if (! $update instanceof WorkflowUpdate || $update->status !== UpdateStatus::Accepted) {
-                return;
+                return false;
             }
 
-            usleep(50000);
+            $remainingSeconds = $deadline - microtime(true);
+
+            if ($remainingSeconds <= 0) {
+                return true;
+            }
+
+            usleep((int) (min($pollIntervalSeconds, $remainingSeconds) * 1000000));
         }
     }
 
-    private function freshUpdateResult(string $commandId, string $updateId): UpdateResult
+    private function freshUpdateResult(
+        string $commandId,
+        string $updateId,
+        string $waitFor = 'completed',
+        bool $waitTimedOut = false,
+        ?int $waitTimeoutSeconds = null,
+    ): UpdateResult
     {
         /** @var WorkflowCommand $command */
         $command = WorkflowCommand::query()->findOrFail($commandId);
@@ -961,7 +1014,7 @@ final class WorkflowStub
         $update = WorkflowUpdate::query()->find($updateId);
 
         if (! $update instanceof WorkflowUpdate) {
-            return UpdateResult::fromCommand($command);
+            return UpdateResult::fromCommand($command, null, null, null, $waitFor, $waitTimedOut, $waitTimeoutSeconds);
         }
 
         /** @var WorkflowFailure|null $failure */
@@ -974,7 +1027,15 @@ final class WorkflowStub
             $update->status === UpdateStatus::Completed ? $update->updateResult() : null,
             $failure,
             $update,
+            $waitFor,
+            $waitTimedOut,
+            $waitTimeoutSeconds,
         );
+    }
+
+    private function updateWaitTimeoutSeconds(): int
+    {
+        return $this->updateWaitTimeoutSeconds ?? UpdateWaitPolicy::completionTimeoutSeconds();
     }
 
     public function repair(): CommandResult

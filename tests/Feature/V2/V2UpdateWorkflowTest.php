@@ -230,6 +230,65 @@ final class V2UpdateWorkflowTest extends TestCase
         ], $workflow->output());
     }
 
+    public function testAttemptUpdateReturnsAcceptedLifecycleWhenCompletionWaitTimesOut(): void
+    {
+        config()->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
+        config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-timeout');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([
+            'compatibility' => 'build-timeout-test',
+        ])->save();
+
+        $startedAt = microtime(true);
+        $result = $workflow->attemptUpdate('approve', true, 'timeout-test');
+        $elapsedSeconds = microtime(true) - $startedAt;
+
+        $this->assertTrue($result->accepted());
+        $this->assertFalse($result->completed());
+        $this->assertFalse($result->failed());
+        $this->assertSame('accepted', $result->updateStatus());
+        $this->assertSame('completed', $result->waitFor());
+        $this->assertTrue($result->waitTimedOut());
+        $this->assertSame(1, $result->waitTimeoutSeconds());
+        $this->assertNull($result->outcome());
+        $this->assertNull($result->result());
+        $this->assertGreaterThanOrEqual(0.9, $elapsedSeconds);
+        $this->assertLessThan(2.5, $elapsedSeconds);
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $result->updateId(),
+            'workflow_instance_id' => 'order-update-timeout',
+            'status' => 'accepted',
+            'outcome' => null,
+            'workflow_sequence' => null,
+        ]);
+    }
+
+    public function testUpdateThrowsHelpfulMessageWhenCompletionWaitTimesOut(): void
+    {
+        config()->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
+        config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-timeout-throws');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([
+            'compatibility' => 'build-timeout-test',
+        ])->save();
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('accepted but did not finish applying after waiting 1 second');
+
+        $workflow->update('approve', true, 'timeout-test');
+    }
+
     public function testAttemptUpdateCanSignalAWaitingChildThroughTheCurrentHandle(): void
     {
         Queue::fake();

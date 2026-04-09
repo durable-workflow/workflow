@@ -40,6 +40,7 @@ final class OperatorMetrics
             'projections' => self::projectionMetrics(),
             'workers' => self::workerMetrics(),
             'backend' => BackendCapabilities::snapshot($now),
+            'update_wait' => UpdateWaitPolicy::snapshot(),
             'repair_policy' => TaskRepairPolicy::snapshot(),
         ];
     }

@@ -108,6 +108,42 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testUpdateWebhookReturnsAcceptedLifecycleWhenCompletionWaitTimesOut(): void
+    {
+        config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-timeout');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([
+            'compatibility' => 'build-webhook-timeout',
+        ])->save();
+
+        $response = $this->postJson('/webhooks/instances/order-update-webhook-timeout/updates/approve', [
+            'wait_timeout_seconds' => 1,
+            'arguments' => [
+                'approved' => true,
+                'source' => 'webhook-timeout',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', null)
+            ->assertJsonPath('workflow_id', 'order-update-webhook-timeout')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('command_source', 'webhook')
+            ->assertJsonPath('update_status', 'accepted')
+            ->assertJsonPath('wait_for', 'completed')
+            ->assertJsonPath('wait_timed_out', true)
+            ->assertJsonPath('wait_timeout_seconds', 1)
+            ->assertJsonPath('result', null);
+    }
+
     public function testStartWebhookAcceptsVisibilityMetadata(): void
     {
         Queue::fake();

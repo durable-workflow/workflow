@@ -36,6 +36,9 @@ final class CommandResponse
             $payload['result'] = $result->result();
             $payload['failure_id'] = $result->failureId();
             $payload['failure_message'] = $result->failureMessage();
+            $payload['wait_for'] = $result->waitFor();
+            $payload['wait_timed_out'] = $result->waitTimedOut();
+            $payload['wait_timeout_seconds'] = $result->waitTimeoutSeconds();
         }
 
         return $payload;

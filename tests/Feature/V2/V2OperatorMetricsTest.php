@@ -41,6 +41,10 @@ final class V2OperatorMetricsTest extends TestCase
         config()
             ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 5000);
         config()
+            ->set('workflows.v2.update_wait.completion_timeout_seconds', 9);
+        config()
+            ->set('workflows.v2.update_wait.poll_interval_milliseconds', 25);
+        config()
             ->set('workflows.v2.task_repair.redispatch_after_seconds', 7);
         config()
             ->set('workflows.v2.task_repair.loop_throttle_seconds', 11);
@@ -181,6 +185,8 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame('redis', $snapshot['backend']['queue']['driver']);
         $this->assertSame('array', $snapshot['backend']['cache']['store']);
         $this->assertSame([], $snapshot['backend']['issues']);
+        $this->assertSame(9, $snapshot['update_wait']['completion_timeout_seconds']);
+        $this->assertSame(25, $snapshot['update_wait']['poll_interval_milliseconds']);
         $this->assertSame(7, $snapshot['repair_policy']['redispatch_after_seconds']);
         $this->assertSame(11, $snapshot['repair_policy']['loop_throttle_seconds']);
         $this->assertSame(13, $snapshot['repair_policy']['scan_limit']);

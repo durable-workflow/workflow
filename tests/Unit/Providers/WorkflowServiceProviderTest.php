@@ -70,6 +70,8 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertSame(\Workflow\V2\Models\WorkflowInstance::class, config('workflows.v2.instance_model'));
         $this->assertSame(\Workflow\V2\Models\WorkflowCommand::class, config('workflows.v2.command_model'));
         $this->assertSame(30, config('workflows.v2.compatibility.heartbeat_ttl_seconds'));
+        $this->assertSame(10, config('workflows.v2.update_wait.completion_timeout_seconds'));
+        $this->assertSame(50, config('workflows.v2.update_wait.poll_interval_milliseconds'));
         $this->assertSame(3, config('workflows.v2.task_repair.redispatch_after_seconds'));
         $this->assertSame(5, config('workflows.v2.task_repair.loop_throttle_seconds'));
         $this->assertSame(25, config('workflows.v2.task_repair.scan_limit'));

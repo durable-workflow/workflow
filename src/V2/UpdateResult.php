@@ -16,6 +16,9 @@ final class UpdateResult extends CommandResult
         private readonly mixed $result = null,
         private readonly ?WorkflowFailure $failure = null,
         private readonly ?WorkflowUpdate $update = null,
+        private readonly string $waitFor = 'completed',
+        private readonly bool $waitTimedOut = false,
+        private readonly ?int $waitTimeoutSeconds = null,
     ) {
         parent::__construct($command);
     }
@@ -25,8 +28,11 @@ final class UpdateResult extends CommandResult
         mixed $result = null,
         ?WorkflowFailure $failure = null,
         ?WorkflowUpdate $update = null,
+        string $waitFor = 'completed',
+        bool $waitTimedOut = false,
+        ?int $waitTimeoutSeconds = null,
     ): self {
-        return new self($command, $result, $failure, $update);
+        return new self($command, $result, $failure, $update, $waitFor, $waitTimedOut, $waitTimeoutSeconds);
     }
 
     public function result(): mixed
@@ -62,5 +68,20 @@ final class UpdateResult extends CommandResult
     public function updateStatus(): ?string
     {
         return $this->update?->status?->value;
+    }
+
+    public function waitFor(): string
+    {
+        return $this->waitFor;
+    }
+
+    public function waitTimedOut(): bool
+    {
+        return $this->waitTimedOut;
+    }
+
+    public function waitTimeoutSeconds(): ?int
+    {
+        return $this->waitTimeoutSeconds;
     }
 }

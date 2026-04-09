@@ -20,6 +20,7 @@ use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Support\CommandResponse;
 use Workflow\V2\Support\QueryResponse;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\WorkflowInstanceId;
 
 final class Webhooks
@@ -131,7 +132,11 @@ final class Webhooks
 
             $stub = self::selectionStub($workflowId, $runId)
                 ->withCommandContext(self::commandContext($request));
-            $result = self::shouldSubmitUpdate($request->all())
+            $submitAcceptedOnly = self::shouldSubmitUpdate($request->all());
+            $stub = $submitAcceptedOnly
+                ? $stub
+                : $stub->withUpdateWaitTimeout(self::resolveUpdateWaitTimeout($request->all()));
+            $result = $submitAcceptedOnly
                 ? $stub->submitUpdateWithArguments($update, self::resolveUpdateArguments($request->all()))
                 : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
 
@@ -154,7 +159,11 @@ final class Webhooks
 
             $stub = self::selectionStub($workflowId)
                 ->withCommandContext(self::commandContext($request));
-            $result = self::shouldSubmitUpdate($request->all())
+            $submitAcceptedOnly = self::shouldSubmitUpdate($request->all());
+            $stub = $submitAcceptedOnly
+                ? $stub
+                : $stub->withUpdateWaitTimeout(self::resolveUpdateWaitTimeout($request->all()));
+            $result = $submitAcceptedOnly
                 ? $stub->submitUpdateWithArguments($update, self::resolveUpdateArguments($request->all()))
                 : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
 
@@ -462,6 +471,11 @@ final class Webhooks
     private static function shouldSubmitUpdate(array $payload): bool
     {
         return ($payload['wait_for'] ?? null) === 'accepted';
+    }
+
+    private static function resolveUpdateWaitTimeout(array $payload): ?int
+    {
+        return UpdateWaitPolicy::requestedTimeoutSeconds($payload['wait_timeout_seconds'] ?? null);
     }
 
     /**
