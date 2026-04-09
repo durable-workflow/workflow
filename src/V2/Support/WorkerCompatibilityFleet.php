@@ -355,7 +355,11 @@ final class WorkerCompatibilityFleet
             static function (array $snapshot) use ($requiredNamespace, $requiredConnection, $requiredQueue): bool {
                 $snapshotNamespace = self::normalizeValue($snapshot['namespace'] ?? null);
 
-                if ($requiredNamespace !== null && $snapshotNamespace !== $requiredNamespace) {
+                if (
+                    $requiredNamespace !== null
+                    && $snapshotNamespace !== $requiredNamespace
+                    && ! self::isLegacyUnscopedSnapshot($snapshot, $snapshotNamespace)
+                ) {
                     return false;
                 }
 
@@ -374,6 +378,12 @@ final class WorkerCompatibilityFleet
                 return true;
             }
         ));
+    }
+
+    private static function isLegacyUnscopedSnapshot(array $snapshot, ?string $snapshotNamespace): bool
+    {
+        return ($snapshot['source'] ?? null) === self::SOURCE_CACHE
+            && $snapshotNamespace === null;
     }
 
     /**

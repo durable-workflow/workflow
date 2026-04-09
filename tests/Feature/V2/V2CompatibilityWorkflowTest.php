@@ -689,6 +689,92 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('Workflow task ready to resume the selected run.', $detail['tasks'][0]['summary']);
     }
 
+    public function testConfiguredCompatibilityNamespaceStillCountsLegacyCacheHeartbeatDuringMixedUpgrade(): void
+    {
+        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        config()->set('workflows.v2.compatibility.namespace', 'sample-app');
+
+        $this->seedLegacyFleetHeartbeat('worker-legacy-build-a', ['build-a'], 'redis', ['default']);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'compat-legacy-namespaced-fleet',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'reserved_at' => now()
+                ->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'compatibility' => 'build-a',
+            'payload_codec' => config('workflows.serializer'),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinutes(2),
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinute(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh([
+            'summary',
+            'commands',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+            'parentLinks.parentRun.summary',
+            'childLinks.childRun.summary',
+            'instance.currentRun.summary',
+        ]));
+
+        $this->assertSame('workflow_task_ready', $summary->liveness_state);
+        $this->assertSame('sample-app', $detail['compatibility_namespace']);
+        $this->assertFalse($detail['compatibility_supported']);
+        $this->assertTrue($detail['compatibility_supported_in_fleet']);
+        $this->assertNull($detail['compatibility_fleet_reason']);
+        $this->assertCount(1, $detail['compatibility_fleet']);
+        $this->assertSame('worker-legacy-build-a', $detail['compatibility_fleet'][0]['worker_id']);
+        $this->assertNull($detail['compatibility_fleet'][0]['namespace']);
+        $this->assertSame('redis', $detail['compatibility_fleet'][0]['connection']);
+        $this->assertSame('default', $detail['compatibility_fleet'][0]['queue']);
+        $this->assertSame(['build-a'], $detail['compatibility_fleet'][0]['supported']);
+        $this->assertTrue($detail['compatibility_fleet'][0]['supports_required']);
+        $this->assertSame('cache', $detail['compatibility_fleet'][0]['source']);
+        $this->assertTrue($detail['tasks'][0]['compatibility_supported_in_fleet']);
+        $this->assertNull($detail['tasks'][0]['compatibility_fleet_reason']);
+        $this->assertSame('Workflow task ready to resume the selected run.', $detail['tasks'][0]['summary']);
+    }
+
     public function testDurableDatabaseHeartbeatWinsOverLegacyCacheSnapshotForSameWorkerScope(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
