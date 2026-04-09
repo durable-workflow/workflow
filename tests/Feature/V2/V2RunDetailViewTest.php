@@ -40,6 +40,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\WorkflowStub;
 
 final class V2RunDetailViewTest extends TestCase
@@ -63,11 +64,15 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(20),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(20),
         ]);
 
-        $instance->update(['current_run_id' => $run->id]);
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
@@ -92,6 +97,66 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertContains('Str::uuid', $symbols);
         $this->assertNotNull($detail['workflow_determinism_findings'][0]['file']);
         $this->assertIsInt($detail['workflow_determinism_findings'][0]['line']);
+    }
+
+    public function testRunDetailViewFlagsDefinitionDriftBeforeLiveDeterminismFindings(): void
+    {
+        $instance = WorkflowInstance::create([
+            'id' => 'detail-determinism-drift',
+            'workflow_class' => TestUnsafeDeterminismWorkflow::class,
+            'workflow_type' => 'workflow.test-unsafe-determinism',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::create([
+            'id' => '01JTESTFLOWRUNDETERMINISM02',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestUnsafeDeterminismWorkflow::class,
+            'workflow_type' => 'workflow.test-unsafe-determinism',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(20),
+        ]);
+
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
+
+        WorkflowHistoryEvent::create([
+            'id' => '01JTESTHISTORYDETERMINISM0002',
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'event_type' => HistoryEventType::WorkflowStarted->value,
+            'payload' => [
+                'workflow_class' => TestUnsafeDeterminismWorkflow::class,
+                'workflow_type' => 'workflow.test-unsafe-determinism',
+                'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint(TestGreetingWorkflow::class),
+            ],
+            'recorded_at' => now()
+                ->subMinute(),
+        ]);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary', 'historyEvents']));
+
+        $this->assertFalse($detail['workflow_definition_matches_current']);
+        $this->assertSame('warning', $detail['workflow_determinism_status']);
+        $this->assertSame('definition_drift', $detail['workflow_determinism_source']);
+        $this->assertSame([
+            [
+                'rule' => 'workflow_definition_drift',
+                'severity' => 'warning',
+                'symbol' => 'workflow.test-unsafe-determinism',
+                'message' => 'Selected run started on a different workflow definition fingerprint than the current build. Live-definition replay-safety diagnostics are not authoritative for this run.',
+                'file' => null,
+                'line' => null,
+            ],
+        ], $detail['workflow_determinism_findings']);
     }
 
     public function testRunDetailViewIncludesResumeSourceForReadyWorkflowTask(): void
@@ -275,11 +340,15 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(20),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(20),
         ]);
 
-        $instance->update(['current_run_id' => $run->id]);
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 

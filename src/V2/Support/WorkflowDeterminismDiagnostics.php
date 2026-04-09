@@ -11,6 +11,8 @@ use Workflow\V2\Workflow;
 
 final class WorkflowDeterminismDiagnostics
 {
+    public const SOURCE_DEFINITION_DRIFT = 'definition_drift';
+
     public const SOURCE_LIVE_DEFINITION = 'live_definition';
 
     public const SOURCE_UNAVAILABLE = 'unavailable';
@@ -37,6 +39,10 @@ final class WorkflowDeterminismDiagnostics
      */
     public static function forRun(WorkflowRun $run): array
     {
+        if (WorkflowDefinitionFingerprint::matchesCurrent($run) === false) {
+            return self::definitionDrift($run);
+        }
+
         try {
             $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         } catch (LogicException) {
@@ -92,6 +98,30 @@ final class WorkflowDeterminismDiagnostics
     }
 
     /**
+     * @return array{status: string, source: string, findings: list<array<string, mixed>>}
+     */
+    private static function definitionDrift(WorkflowRun $run): array
+    {
+        $symbol = is_string($run->workflow_type) && $run->workflow_type !== ''
+            ? $run->workflow_type
+            : $run->workflow_class;
+
+        return [
+            'status' => self::STATUS_WARNING,
+            'source' => self::SOURCE_DEFINITION_DRIFT,
+            'findings' => [
+                self::finding(
+                    'workflow_definition_drift',
+                    $symbol,
+                    'Selected run started on a different workflow definition fingerprint than the current build. Live-definition replay-safety diagnostics are not authoritative for this run.',
+                    null,
+                    null,
+                ),
+            ],
+        ];
+    }
+
+    /**
      * @param class-string $workflowClass
      * @return list<array{
      *     rule: string,
@@ -112,10 +142,7 @@ final class WorkflowDeterminismDiagnostics
         $findings = [];
 
         foreach ($reflections as $reflection) {
-            $findings = [
-                ...$findings,
-                ...self::findingsForReflection($reflection),
-            ];
+            $findings = [...$findings, ...self::findingsForReflection($reflection)];
         }
 
         usort($findings, static function (array $left, array $right): int {
@@ -124,12 +151,7 @@ final class WorkflowDeterminismDiagnostics
                 $left['line'] ?? 0,
                 $left['rule'],
                 $left['symbol'],
-            ] <=> [
-                $right['file'] ?? '',
-                $right['line'] ?? 0,
-                $right['rule'],
-                $right['symbol'],
-            ];
+            ] <=> [$right['file'] ?? '', $right['line'] ?? 0, $right['rule'], $right['symbol']];
         });
 
         return array_values($findings);
@@ -266,14 +288,7 @@ final class WorkflowDeterminismDiagnostics
 
         $baseName = self::baseName($name);
 
-        $wallClockFunctions = [
-            'date',
-            'gmdate',
-            'hrtime',
-            'microtime',
-            'now',
-            'time',
-        ];
+        $wallClockFunctions = ['date', 'gmdate', 'hrtime', 'microtime', 'now', 'time'];
 
         if (in_array($baseName, $wallClockFunctions, true)) {
             return [
@@ -282,13 +297,7 @@ final class WorkflowDeterminismDiagnostics
             ];
         }
 
-        $randomFunctions = [
-            'random_bytes',
-            'random_int',
-            'rand',
-            'mt_rand',
-            'uniqid',
-        ];
+        $randomFunctions = ['random_bytes', 'random_int', 'rand', 'mt_rand', 'uniqid'];
 
         if (in_array($baseName, $randomFunctions, true)) {
             return [
@@ -297,10 +306,7 @@ final class WorkflowDeterminismDiagnostics
             ];
         }
 
-        $ambientFunctions = [
-            'auth',
-            'request',
-        ];
+        $ambientFunctions = ['auth', 'request'];
 
         if (in_array($baseName, $ambientFunctions, true)) {
             return [
@@ -474,11 +480,7 @@ final class WorkflowDeterminismDiagnostics
             return false;
         }
 
-        $nameTokenIds = [
-            T_STRING,
-            T_NAME_FULLY_QUALIFIED,
-            T_NAME_QUALIFIED,
-        ];
+        $nameTokenIds = [T_STRING, T_NAME_FULLY_QUALIFIED, T_NAME_QUALIFIED];
 
         if (defined('T_NAME_RELATIVE')) {
             $nameTokenIds[] = T_NAME_RELATIVE;
