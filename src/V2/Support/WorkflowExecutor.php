@@ -527,8 +527,17 @@ final class WorkflowExecutor
                                 ChildRunHistory::outputForResolution($resolutionEvent, $childRun)
                             );
                         } else {
+                            $failureId = $resolutionEvent->payload['failure_id'] ?? null;
                             $current = $result->throw(
                                 ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun)
+                            );
+
+                            $this->recordFailureHandled(
+                                $run,
+                                $task,
+                                is_string($failureId) ? $failureId : null,
+                                $sequence,
+                                $this->childFailureHandledPayload($resolutionEvent),
                             );
                         }
                     } catch (Throwable $throwable) {
@@ -566,7 +575,16 @@ final class WorkflowExecutor
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                         $current = $result->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
                     } else {
+                        $failureId = $resolutionEvent->payload['failure_id'] ?? null;
                         $current = $result->throw(ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun));
+
+                        $this->recordFailureHandled(
+                            $run,
+                            $task,
+                            is_string($failureId) ? $failureId : null,
+                            $sequence,
+                            $this->childFailureHandledPayload($resolutionEvent),
+                        );
                     }
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -719,6 +737,10 @@ final class WorkflowExecutor
                             $resolutionEvent->recorded_at?->getTimestampMs()
                                 ?? $resolutionEvent->created_at?->getTimestampMs()
                                 ?? PHP_INT_MAX,
+                            is_string($resolutionEvent->payload['failure_id'] ?? null)
+                                ? $resolutionEvent->payload['failure_id']
+                                : null,
+                            $this->childFailureHandledPayload($resolutionEvent),
                         );
 
                         continue;
@@ -1853,6 +1875,24 @@ final class WorkflowExecutor
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function childFailureHandledPayload(WorkflowHistoryEvent $event): array
+    {
+        $payload = is_array($event->payload)
+            ? $event->payload
+            : [];
+
+        $payload['source_kind'] = 'child_workflow_run';
+        $payload['source_id'] = is_string($payload['child_workflow_run_id'] ?? null)
+            ? $payload['child_workflow_run_id']
+            : null;
+        $payload['propagation_kind'] = 'child';
+
+        return array_filter($payload, static fn (mixed $value): bool => $value !== null);
     }
 
     /**

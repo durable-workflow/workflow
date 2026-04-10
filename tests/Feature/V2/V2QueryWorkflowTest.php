@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestBroadChildFailureCatchWorkflow;
 use Tests\Fixtures\V2\TestBroadFailureCatchWorkflow;
 use Tests\Fixtures\V2\TestChildHandleParentWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
@@ -50,8 +51,10 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
 final class V2QueryWorkflowTest extends TestCase
@@ -588,6 +591,107 @@ final class V2QueryWorkflowTest extends TestCase
         ], $workflow->output());
     }
 
+    public function testUnmappedHistoricalChildFailureClassBlocksReplayInsteadOfFallingThroughBroadRuntimeCatch(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestBroadChildFailureCatchWorkflow::class, 'query-child-failure-unmapped');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame([
+            'stage' => 'waiting-for-resume',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+            ],
+        ], $workflow->currentState());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ChildRunFailed->value)
+            ->firstOrFail();
+
+        $payload = $event->payload;
+        unset($payload['exception_type'], $payload['exception']['type']);
+        $payload['exception_class'] = 'App\\Legacy\\OrderRejected';
+        $payload['exception']['class'] = 'App\\Legacy\\OrderRejected';
+
+        foreach ($payload['exception']['properties'] as &$property) {
+            $property['declaring_class'] = 'App\\Legacy\\OrderRejected';
+        }
+
+        unset($property);
+
+        DB::transaction(static function () use ($event, $payload): void {
+            $event->forceFill([
+                'payload' => $payload,
+            ])->save();
+
+            WorkflowFailure::query()
+                ->where('id', $payload['failure_id'])
+                ->update([
+                    'exception_class' => 'App\\Legacy\\OrderRejected',
+                    'message' => 'legacy child row drift',
+                ]);
+        });
+
+        try {
+            $workflow->refresh()->currentState();
+            $this->fail('Expected unresolved child failure replay to block the query.');
+        } catch (UnresolvedWorkflowFailureException $exception) {
+            $this->assertSame('App\\Legacy\\OrderRejected', $exception->originalExceptionClass());
+            $this->assertSame('unresolved', $exception->resolutionSource());
+            $this->assertNull($exception->exceptionType());
+        }
+
+        $workflow->signal('resume', 'go');
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::WorkflowFailed->value,
+        ]);
+        $this->assertDatabaseHas('workflow_tasks', [
+            'workflow_run_id' => $workflow->runId(),
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Failed->value,
+        ]);
+
+        config()->set('workflows.v2.types.exception_class_aliases', [
+            'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
+        ]);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-resume',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+            ],
+        ], WorkflowStub::loadRun($workflow->runId())->currentState());
+
+        $repair = WorkflowStub::loadRun($workflow->runId())->attemptRepair();
+
+        $this->assertTrue($repair->accepted());
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'completed',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+            ],
+            'resume' => 'go',
+        ], $workflow->output());
+    }
+
     public function testQueriesAndResumeUseTimerHistoryWhenTimerRowsDrift(): void
     {
         Queue::fake();
@@ -748,6 +852,85 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame($expectedState, $workflow->refresh()->currentState());
     }
 
+    public function testParentChildFailuresProjectFromTypedChildRunFailedHistoryWhenChildFailureRowsDrift(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryReplayedChildFailureWorkflow::class, 'query-child-failure-projection');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $workflow->runId())
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        /** @var WorkflowHistoryEvent $childFailedEvent */
+        $childFailedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ChildRunFailed->value)
+            ->firstOrFail();
+
+        $childFailureId = $childFailedEvent->payload['failure_id'] ?? null;
+        $this->assertIsString($childFailureId);
+
+        DB::transaction(static function () use ($childRun): void {
+            WorkflowFailure::query()
+                ->where('workflow_run_id', $childRun->id)
+                ->delete();
+
+            $childRun->forceFill([
+                'status' => RunStatus::Completed,
+                'closed_reason' => 'completed',
+                'output' => Serializer::serialize('corrupted-child-output'),
+            ])->save();
+        });
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        RunSummaryProjector::project($parentRun->fresh([
+            'instance',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+            'updates',
+        ]));
+
+        $detail = RunDetailView::forRun($parentRun->fresh());
+        $exception = unserialize($detail['exceptions'][0]['exception']);
+        $export = HistoryExport::forRun($parentRun->fresh());
+
+        $this->assertSame(1, $detail['exception_count']);
+        $this->assertSame(1, $detail['exceptions_count']);
+        $this->assertSame(TestReplayedDomainException::class, $detail['exceptions'][0]['exception_class']);
+        $this->assertSame(TestReplayedDomainException::class, $detail['exceptions'][0]['exception_resolved_class']);
+        $this->assertSame('recorded_class', $detail['exceptions'][0]['exception_resolution_source']);
+        $this->assertSame(TestReplayedDomainException::class, $exception['__constructor']);
+        $this->assertSame('Order order-123 rejected via api', $exception['message']);
+        $this->assertSame(422, $exception['code']);
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::FailureHandled->value,
+        ]);
+        $this->assertSame(1, $parentRun->fresh('summary')->summary?->exception_count);
+        $this->assertSame($childFailureId, $export['failures'][0]['id']);
+        $this->assertSame('child_workflow_run', $export['failures'][0]['source_kind']);
+        $this->assertSame($childRun->id, $export['failures'][0]['source_id']);
+        $this->assertSame('child', $export['failures'][0]['propagation_kind']);
+        $this->assertTrue($export['failures'][0]['handled']);
+        $this->assertSame(TestReplayedDomainException::class, $export['failures'][0]['exception_class']);
+        $this->assertSame('Order order-123 rejected via api', $export['failures'][0]['message']);
+    }
+
     public function testQueriesKeepWaitingForChildUntilParentCommitsChildResolutionHistory(): void
     {
         $parentInstance = WorkflowInstance::create([
@@ -765,7 +948,6 @@ final class V2QueryWorkflowTest extends TestCase
         ]);
 
         $parentRun = WorkflowRun::create([
-            'id' => '01JTESTQUERYCHILDAUTHORITY01',
             'workflow_instance_id' => $parentInstance->id,
             'run_number' => 1,
             'workflow_class' => TestQueryChildResolutionAuthorityWorkflow::class,
@@ -779,7 +961,6 @@ final class V2QueryWorkflowTest extends TestCase
         ]);
 
         $childRun = WorkflowRun::create([
-            'id' => '01JTESTQUERYCHILDAUTHORITY02',
             'workflow_instance_id' => $childInstance->id,
             'run_number' => 1,
             'workflow_class' => TestHistoryReplayedChildWorkflow::class,
@@ -801,7 +982,6 @@ final class V2QueryWorkflowTest extends TestCase
         $childInstance->update(['current_run_id' => $childRun->id]);
 
         $link = WorkflowLink::create([
-            'id' => '01JTESTQUERYCHILDAUTHLINK01',
             'link_type' => 'child_workflow',
             'sequence' => 1,
             'parent_workflow_instance_id' => $parentInstance->id,
@@ -814,7 +994,6 @@ final class V2QueryWorkflowTest extends TestCase
         ]);
 
         WorkflowHistoryEvent::create([
-            'id' => '01JTESTQUERYCHILDAUTHEVENT1',
             'workflow_run_id' => $parentRun->id,
             'sequence' => 1,
             'event_type' => HistoryEventType::ChildWorkflowScheduled->value,
@@ -1025,7 +1204,7 @@ final class V2QueryWorkflowTest extends TestCase
         ]], $workflow->query('child-handles'));
     }
 
-    public function testQueriesReplayParallelChildFailureBeforeParentWorkflowTaskRuns(): void
+    public function testQueriesReplayParallelChildFailureAfterParentCommitsChildResolutionHistory(): void
     {
         Queue::fake();
 
@@ -1052,6 +1231,13 @@ final class V2QueryWorkflowTest extends TestCase
         $this->runReadyTaskForRun($failingChildRunId, TaskType::Workflow);
         $this->runReadyTaskForRun($failingChildRunId, TaskType::Activity);
         $this->runReadyTaskForRun($failingChildRunId, TaskType::Workflow);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-children',
+            'message' => '',
+        ], $workflow->currentState());
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
 
         $this->assertSame([
             'stage' => 'caught-child-failure',

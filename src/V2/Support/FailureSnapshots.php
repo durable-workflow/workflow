@@ -121,6 +121,7 @@ final class FailureSnapshots
     {
         return in_array($event->event_type, [
             HistoryEventType::ActivityFailed,
+            HistoryEventType::ChildRunFailed,
             HistoryEventType::WorkflowFailed,
             HistoryEventType::UpdateCompleted,
         ], true);
@@ -299,6 +300,7 @@ final class FailureSnapshots
     {
         return match ($event->event_type) {
             HistoryEventType::ActivityFailed => 'activity_execution',
+            HistoryEventType::ChildRunFailed => 'child_workflow_run',
             HistoryEventType::WorkflowFailed => 'workflow_run',
             HistoryEventType::UpdateCompleted => 'workflow_command',
             default => null,
@@ -309,6 +311,7 @@ final class FailureSnapshots
     {
         return match ($event->event_type) {
             HistoryEventType::ActivityFailed => self::stringValue($event->payload['activity_execution_id'] ?? null),
+            HistoryEventType::ChildRunFailed => self::stringValue($event->payload['child_workflow_run_id'] ?? null),
             HistoryEventType::WorkflowFailed => $event->workflow_run_id,
             HistoryEventType::UpdateCompleted => self::stringValue($event->workflow_command_id)
                 ?? self::stringValue($event->payload['update_id'] ?? null),
@@ -320,6 +323,7 @@ final class FailureSnapshots
     {
         return match ($event->event_type) {
             HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::ChildRunFailed => 'child',
             HistoryEventType::WorkflowFailed => 'terminal',
             HistoryEventType::UpdateCompleted => self::stringValue($event->payload['failure_id'] ?? null) === null
                 ? null
