@@ -643,6 +643,18 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('accepted', $signalWait['command_status']);
         $this->assertSame('signal_received', $signalWait['command_outcome']);
         $this->assertNull($this->findOpenTaskOrNull($detail['tasks'], 'workflow'));
+
+        $missingTask = $this->findTask($detail['tasks'], 'workflow');
+        $this->assertTrue($missingTask['task_missing']);
+        $this->assertTrue($missingTask['synthetic']);
+        $this->assertSame('missing', $missingTask['transport_state']);
+        $this->assertSame('missing', $missingTask['status']);
+        $this->assertSame('signal', $missingTask['workflow_wait_kind']);
+        $this->assertSame('signal-application:' . $signalRecord->id, $missingTask['workflow_open_wait_id']);
+        $this->assertSame('workflow_signal', $missingTask['workflow_resume_source_kind']);
+        $this->assertSame($signalRecord->id, $missingTask['workflow_resume_source_id']);
+        $this->assertSame($signalRecord->id, $missingTask['workflow_signal_id']);
+        $this->assertSame($signal->commandId(), $missingTask['workflow_command_id']);
     }
 
     public function testRunDetailViewKeepsTypedFailureCodeAndPropertiesWhenFailureRowsDrift(): void
@@ -1891,7 +1903,14 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertNull($timerWait['task_id']);
         $this->assertNull($timerWait['task_type']);
         $this->assertNull($timerWait['task_status']);
-        $this->assertNull($this->findTaskOrNull($detail['tasks'], 'timer'));
+
+        $missingTask = $this->findTask($detail['tasks'], 'timer');
+        $this->assertTrue($missingTask['task_missing']);
+        $this->assertTrue($missingTask['synthetic']);
+        $this->assertSame('missing', $missingTask['transport_state']);
+        $this->assertSame('missing', $missingTask['status']);
+        $this->assertSame($timerWait['resume_source_id'], $missingTask['timer_id']);
+        $this->assertSame($timerWait['sequence'], $missingTask['timer_sequence']);
     }
 
     public function testRunDetailViewMarksRunningActivityWithoutTaskAsNonRepairable(): void

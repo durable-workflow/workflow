@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Collection;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -28,7 +31,7 @@ final class RunTaskView
             ->filter(static fn (array $timer): bool => is_string($timer['id'] ?? null))
             ->keyBy(static fn (array $timer): string => $timer['id']);
 
-        return $run->tasks
+        $taskRows = $run->tasks
             ->sort(static function (WorkflowTask $left, WorkflowTask $right): int {
                 $leftOpen = in_array($left->status, [TaskStatus::Ready, TaskStatus::Leased], true) ? 0 : 1;
                 $rightOpen = in_array($right->status, [TaskStatus::Ready, TaskStatus::Leased], true) ? 0 : 1;
@@ -74,6 +77,9 @@ final class RunTaskView
                         'type' => $task->task_type->value,
                         'status' => $task->status->value,
                         'transport_state' => self::transportState($task),
+                        'task_missing' => false,
+                        'synthetic' => false,
+                        'expected_task_id' => null,
                         'summary' => self::summaryFor($task, $activity, $timer, $compatibility),
                         'compatibility' => $compatibility,
                         'compatibility_supported' => WorkerCompatibility::supports($compatibility),
@@ -129,6 +135,326 @@ final class RunTaskView
             )
             ->values()
             ->all();
+
+        $taskRows = array_merge($taskRows, self::missingTransportRows($run, $activities, $timers));
+
+        usort($taskRows, [self::class, 'sortTaskRows']);
+
+        return array_values($taskRows);
+    }
+
+    /**
+     * @param Collection<string, array<string, mixed>> $activities
+     * @param Collection<string, array<string, mixed>> $timers
+     * @return list<array<string, mixed>>
+     */
+    private static function missingTransportRows(WorkflowRun $run, Collection $activities, Collection $timers): array
+    {
+        $rows = [];
+
+        foreach (RunWaitView::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open' || ($wait['task_backed'] ?? false) === true) {
+                continue;
+            }
+
+            $kind = self::stringValue($wait['kind'] ?? null);
+
+            if (
+                $kind === 'activity'
+                && self::stringValue($wait['source_status'] ?? null) === ActivityStatus::Pending->value
+            ) {
+                $activityId = self::stringValue($wait['resume_source_id'] ?? null);
+
+                if ($activityId === null) {
+                    continue;
+                }
+
+                /** @var array<string, mixed>|null $activity */
+                $activity = $activities->get($activityId);
+                $rows[] = self::missingActivityTaskRow($run, $activity ?? ['id' => $activityId], $wait);
+
+                continue;
+            }
+
+            if ($kind === 'timer' && self::stringValue($wait['source_status'] ?? null) === 'pending') {
+                $timerId = self::stringValue($wait['resume_source_id'] ?? null);
+
+                if ($timerId === null) {
+                    continue;
+                }
+
+                /** @var array<string, mixed>|null $timer */
+                $timer = $timers->get($timerId);
+                $rows[] = self::missingTimerTaskRow($run, $timer ?? ['id' => $timerId], $wait, false);
+
+                continue;
+            }
+
+            if (
+                $kind === 'condition'
+                && self::stringValue($wait['resume_source_kind'] ?? null) === 'timer'
+                && self::stringValue($wait['resume_source_id'] ?? null) !== null
+            ) {
+                $timerId = self::stringValue($wait['resume_source_id'] ?? null);
+
+                /** @var array<string, mixed>|null $timer */
+                $timer = $timerId === null ? null : $timers->get($timerId);
+                $rows[] = self::missingTimerTaskRow($run, $timer ?? ['id' => $timerId], $wait, true);
+
+                continue;
+            }
+
+            if ($kind === 'update') {
+                $rows[] = self::missingWorkflowTaskRow(
+                    $run,
+                    'update',
+                    self::stringValue($wait['id'] ?? null) ?? 'update',
+                    self::stringValue($wait['target_name'] ?? null) ?? 'update',
+                    self::timestamp($wait['opened_at'] ?? null),
+                    self::stringValue($wait['resume_source_kind'] ?? null) ?? 'workflow_update',
+                    self::stringValue($wait['resume_source_id'] ?? null),
+                    self::stringValue($wait['update_id'] ?? null),
+                    null,
+                    self::stringValue($wait['command_id'] ?? null),
+                );
+            }
+        }
+
+        if (! self::hasOpenWorkflowTask($run)) {
+            foreach (RunSignalView::forRun($run) as $signal) {
+                if (self::stringValue($signal['status'] ?? null) !== 'received') {
+                    continue;
+                }
+
+                $signalId = self::stringValue($signal['id'] ?? null);
+                $commandId = self::stringValue($signal['command_id'] ?? null);
+                $identity = $signalId ?? $commandId;
+
+                if ($identity === null) {
+                    continue;
+                }
+
+                $rows[] = self::missingWorkflowTaskRow(
+                    $run,
+                    'signal',
+                    sprintf('signal-application:%s', $identity),
+                    self::stringValue($signal['name'] ?? null) ?? 'signal',
+                    self::timestamp($signal['received_at'] ?? null),
+                    $signalId === null ? 'workflow_command' : 'workflow_signal',
+                    $signalId ?? $commandId,
+                    null,
+                    $signalId,
+                    $commandId,
+                );
+            }
+        }
+
+        $deduped = [];
+
+        foreach ($rows as $row) {
+            $id = self::stringValue($row['id'] ?? null);
+
+            if ($id === null) {
+                continue;
+            }
+
+            $deduped[$id] = $row;
+        }
+
+        return array_values($deduped);
+    }
+
+    /**
+     * @param array<string, mixed> $activity
+     * @param array<string, mixed> $wait
+     * @return array<string, mixed>
+     */
+    private static function missingActivityTaskRow(WorkflowRun $run, array $activity, array $wait): array
+    {
+        $activityId = self::stringValue($activity['id'] ?? null)
+            ?? self::stringValue($wait['resume_source_id'] ?? null)
+            ?? 'activity';
+        $activityType = self::stringValue($activity['type'] ?? null)
+            ?? self::stringValue($activity['class'] ?? null)
+            ?? 'activity';
+        $retryPayload = self::latestActivityRetryPayload($run, $activityId);
+        $retryAfterAttempt = self::intValue($retryPayload['retry_after_attempt'] ?? null);
+        $availableAt = self::timestamp($retryPayload['retry_available_at'] ?? null)
+            ?? self::timestamp($wait['opened_at'] ?? null);
+
+        $row = self::missingTaskBase(
+            $run,
+            sprintf('missing:activity:%s', $activityId),
+            TaskType::Activity->value,
+            self::stringValue($activity['connection'] ?? null) ?? $run->connection,
+            self::stringValue($activity['queue'] ?? null) ?? $run->queue,
+            $availableAt,
+        );
+
+        $row['summary'] = $retryAfterAttempt === null
+            ? sprintf('Activity task missing for %s.', $activityType)
+            : sprintf('Activity retry %d task missing for %s.', $retryAfterAttempt + 1, $activityType);
+        $row['expected_task_id'] = self::stringValue($retryPayload['retry_task_id'] ?? null);
+        $row['activity_execution_id'] = $activityId;
+        $row['activity_type'] = self::stringValue($activity['type'] ?? null);
+        $row['activity_class'] = self::stringValue($activity['class'] ?? null);
+        $row['retry_of_task_id'] = self::stringValue($retryPayload['retry_of_task_id'] ?? null);
+        $row['retry_after_attempt_id'] = self::stringValue($retryPayload['retry_after_attempt_id'] ?? null);
+        $row['retry_after_attempt'] = $retryAfterAttempt;
+        $row['retry_backoff_seconds'] = self::intValue($retryPayload['retry_backoff_seconds'] ?? null);
+        $row['retry_max_attempts'] = self::intValue($retryPayload['max_attempts'] ?? null);
+        $row['retry_policy'] = is_array($retryPayload['retry_policy'] ?? null)
+            ? $retryPayload['retry_policy']
+            : (is_array($activity['retry_policy'] ?? null) ? $activity['retry_policy'] : null);
+        $row['attempt_count'] = $retryAfterAttempt ?? self::intValue($activity['attempt_count'] ?? null) ?? 0;
+
+        return $row;
+    }
+
+    /**
+     * @param array<string, mixed> $timer
+     * @param array<string, mixed> $wait
+     * @return array<string, mixed>
+     */
+    private static function missingTimerTaskRow(WorkflowRun $run, array $timer, array $wait, bool $conditionTimeout): array
+    {
+        $timerId = self::stringValue($timer['id'] ?? null)
+            ?? self::stringValue($wait['resume_source_id'] ?? null)
+            ?? 'timer';
+        $availableAt = self::timestamp($wait['deadline_at'] ?? null)
+            ?? self::timestamp($timer['fire_at'] ?? null);
+        $conditionKey = self::stringValue($wait['condition_key'] ?? null)
+            ?? self::stringValue($timer['condition_key'] ?? null);
+        $conditionWaitId = self::stringValue($wait['condition_wait_id'] ?? null)
+            ?? self::stringValue($timer['condition_wait_id'] ?? null);
+
+        $row = self::missingTaskBase(
+            $run,
+            sprintf('missing:timer:%s', $timerId),
+            TaskType::Timer->value,
+            $run->connection,
+            $run->queue,
+            $availableAt,
+        );
+
+        $row['summary'] = $conditionTimeout
+            ? sprintf(
+                'Condition timeout task missing%s.',
+                $conditionKey === null ? '' : sprintf(' for %s', $conditionKey),
+            )
+            : 'Timer task missing.';
+        $row['timer_id'] = $timerId;
+        $row['timer_sequence'] = self::intValue($timer['sequence'] ?? null)
+            ?? self::intValue($wait['sequence'] ?? null);
+        $row['timer_fire_at'] = $availableAt;
+        $row['condition_wait_id'] = $conditionWaitId;
+        $row['condition_key'] = $conditionKey;
+
+        return $row;
+    }
+
+    private static function missingWorkflowTaskRow(
+        WorkflowRun $run,
+        string $waitKind,
+        string $openWaitId,
+        string $targetName,
+        ?\Carbon\CarbonInterface $openedAt,
+        string $resumeSourceKind,
+        ?string $resumeSourceId,
+        ?string $updateId,
+        ?string $signalId,
+        ?string $commandId,
+    ): array {
+        $row = self::missingTaskBase(
+            $run,
+            sprintf('missing:workflow:%s', $openWaitId),
+            TaskType::Workflow->value,
+            $run->connection,
+            $run->queue,
+            $openedAt,
+        );
+
+        $row['summary'] = sprintf('Workflow task missing for accepted %s %s.', $waitKind, $targetName);
+        $row['workflow_wait_kind'] = $waitKind;
+        $row['workflow_open_wait_id'] = $openWaitId;
+        $row['workflow_resume_source_kind'] = $resumeSourceKind;
+        $row['workflow_resume_source_id'] = $resumeSourceId;
+        $row['workflow_update_id'] = $updateId;
+        $row['workflow_signal_id'] = $signalId;
+        $row['workflow_command_id'] = $commandId;
+
+        return $row;
+    }
+
+    private static function missingTaskBase(
+        WorkflowRun $run,
+        string $id,
+        string $type,
+        ?string $connection,
+        ?string $queue,
+        ?\Carbon\CarbonInterface $availableAt,
+    ): array {
+        $compatibility = self::stringValue($run->compatibility);
+
+        return [
+            'id' => $id,
+            'type' => $type,
+            'status' => 'missing',
+            'transport_state' => 'missing',
+            'task_missing' => true,
+            'synthetic' => true,
+            'expected_task_id' => null,
+            'summary' => 'Durable task transport is missing.',
+            'compatibility' => $compatibility,
+            'compatibility_supported' => WorkerCompatibility::supports($compatibility),
+            'compatibility_reason' => WorkerCompatibility::mismatchReason($compatibility),
+            'compatibility_supported_in_fleet' => WorkerCompatibilityFleet::supports($compatibility, $connection, $queue),
+            'compatibility_fleet_reason' => WorkerCompatibilityFleet::mismatchReason($compatibility, $connection, $queue),
+            'dispatch_failed' => false,
+            'dispatch_overdue' => false,
+            'claim_failed' => false,
+            'is_open' => false,
+            'available_at' => $availableAt,
+            'last_dispatch_attempt_at' => null,
+            'leased_at' => null,
+            'last_dispatched_at' => null,
+            'last_dispatch_error' => null,
+            'last_claim_failed_at' => null,
+            'last_claim_error' => null,
+            'repair_available_at' => null,
+            'repair_backoff_seconds' => 0,
+            'lease_expired' => false,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'attempt_count' => 0,
+            'repair_count' => 0,
+            'last_error' => null,
+            'connection' => $connection,
+            'queue' => $queue,
+            'activity_execution_id' => null,
+            'activity_type' => null,
+            'activity_class' => null,
+            'retry_of_task_id' => null,
+            'retry_after_attempt_id' => null,
+            'retry_after_attempt' => null,
+            'retry_backoff_seconds' => null,
+            'retry_max_attempts' => null,
+            'retry_policy' => null,
+            'timer_id' => null,
+            'timer_sequence' => null,
+            'timer_fire_at' => null,
+            'condition_wait_id' => null,
+            'condition_key' => null,
+            'workflow_wait_kind' => null,
+            'workflow_open_wait_id' => null,
+            'workflow_resume_source_kind' => null,
+            'workflow_resume_source_id' => null,
+            'workflow_update_id' => null,
+            'workflow_signal_id' => null,
+            'workflow_command_id' => null,
+            'created_at' => null,
+            'updated_at' => null,
+        ];
     }
 
     private static function summaryFor(
@@ -416,6 +742,105 @@ final class RunTaskView
         return $delaySeconds === null
             ? 'timer'
             : sprintf('timer for %s second%s', $delaySeconds, $delaySeconds === 1 ? '' : 's');
+    }
+
+    /**
+     * @param array<string, mixed> $left
+     * @param array<string, mixed> $right
+     */
+    private static function sortTaskRows(array $left, array $right): int
+    {
+        $leftPriority = self::taskRowPriority($left);
+        $rightPriority = self::taskRowPriority($right);
+
+        if ($leftPriority !== $rightPriority) {
+            return $leftPriority <=> $rightPriority;
+        }
+
+        $leftAvailableAt = self::timestampToMilliseconds($left['available_at'] ?? null);
+        $rightAvailableAt = self::timestampToMilliseconds($right['available_at'] ?? null);
+
+        if ($leftAvailableAt !== $rightAvailableAt) {
+            return $leftAvailableAt <=> $rightAvailableAt;
+        }
+
+        $leftCreatedAt = self::timestampToMilliseconds($left['created_at'] ?? null);
+        $rightCreatedAt = self::timestampToMilliseconds($right['created_at'] ?? null);
+
+        if ($leftCreatedAt !== $rightCreatedAt) {
+            return $leftCreatedAt <=> $rightCreatedAt;
+        }
+
+        return (string) ($left['id'] ?? '') <=> (string) ($right['id'] ?? '');
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private static function taskRowPriority(array $row): int
+    {
+        if (($row['is_open'] ?? false) === true) {
+            return 0;
+        }
+
+        if (($row['task_missing'] ?? false) === true) {
+            return 1;
+        }
+
+        return 2;
+    }
+
+    private static function timestampToMilliseconds(mixed $timestamp): int
+    {
+        if ($timestamp instanceof \Carbon\CarbonInterface) {
+            return $timestamp->getTimestampMs();
+        }
+
+        if (is_string($timestamp) && $timestamp !== '') {
+            return \Illuminate\Support\Carbon::parse($timestamp)->getTimestampMs();
+        }
+
+        return PHP_INT_MAX;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function latestActivityRetryPayload(WorkflowRun $run, string $activityExecutionId): array
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents
+            ->filter(static function (WorkflowHistoryEvent $event) use ($activityExecutionId): bool {
+                if ($event->event_type !== HistoryEventType::ActivityRetryScheduled) {
+                    return false;
+                }
+
+                return ($event->payload['activity_execution_id'] ?? null) === $activityExecutionId;
+            })
+            ->sortByDesc('sequence')
+            ->first();
+
+        return $event instanceof WorkflowHistoryEvent && is_array($event->payload)
+            ? $event->payload
+            : [];
+    }
+
+    private static function hasOpenWorkflowTask(WorkflowRun $run): bool
+    {
+        return $run->tasks
+            ->contains(static fn (WorkflowTask $task): bool => $task->task_type === TaskType::Workflow
+                && in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true));
+    }
+
+    private static function timestamp(mixed $value): ?\Carbon\CarbonInterface
+    {
+        if ($value instanceof \Carbon\CarbonInterface) {
+            return $value;
+        }
+
+        return is_string($value) && $value !== ''
+            ? \Illuminate\Support\Carbon::parse($value)
+            : null;
     }
 
     private static function stringValue(mixed $value): ?string
