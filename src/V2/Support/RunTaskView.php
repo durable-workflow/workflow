@@ -58,6 +58,9 @@ final class RunTaskView
                     $activityExecutionId = self::stringValue($task->payload['activity_execution_id'] ?? null);
                     $timerId = self::stringValue($task->payload['timer_id'] ?? null);
                     $conditionWaitId = self::stringValue($task->payload['condition_wait_id'] ?? null);
+                    $workflowWaitKind = self::stringValue($task->payload['workflow_wait_kind'] ?? null);
+                    $workflowResumeSourceKind = self::stringValue($task->payload['resume_source_kind'] ?? null);
+                    $workflowResumeSourceId = self::stringValue($task->payload['resume_source_id'] ?? null);
                     $compatibility = TaskCompatibility::resolve($task, $run);
 
                     /** @var array<string, mixed>|null $activity */
@@ -108,6 +111,11 @@ final class RunTaskView
                         'timer_sequence' => self::intValue($timer['sequence'] ?? null),
                         'timer_fire_at' => $timer['fire_at'] ?? null,
                         'condition_wait_id' => $conditionWaitId,
+                        'workflow_wait_kind' => $workflowWaitKind,
+                        'workflow_open_wait_id' => self::stringValue($task->payload['open_wait_id'] ?? null),
+                        'workflow_resume_source_kind' => $workflowResumeSourceKind,
+                        'workflow_resume_source_id' => $workflowResumeSourceId,
+                        'workflow_update_id' => self::stringValue($task->payload['workflow_update_id'] ?? null),
                         'created_at' => $task->created_at,
                         'updated_at' => $task->updated_at,
                     ];
@@ -218,8 +226,12 @@ final class RunTaskView
 
         return match ($task->task_type) {
             TaskType::Workflow => match ($task->status) {
-                TaskStatus::Ready => 'Workflow task ready to resume the selected run.',
-                TaskStatus::Leased => 'Workflow task leased to a worker.',
+                TaskStatus::Ready => self::stringValue($task->payload['workflow_wait_kind'] ?? null) === 'update'
+                    ? 'Workflow task ready to apply accepted update.'
+                    : 'Workflow task ready to resume the selected run.',
+                TaskStatus::Leased => self::stringValue($task->payload['workflow_wait_kind'] ?? null) === 'update'
+                    ? 'Workflow task leased to apply accepted update.'
+                    : 'Workflow task leased to a worker.',
                 TaskStatus::Completed => 'Workflow task completed.',
                 TaskStatus::Cancelled => 'Workflow task cancelled.',
                 TaskStatus::Failed => 'Workflow task failed.',

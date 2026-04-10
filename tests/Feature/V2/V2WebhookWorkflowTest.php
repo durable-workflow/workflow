@@ -22,7 +22,10 @@ use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Webhooks;
 use Workflow\V2\WorkflowStub;
 use Workflow\V2\Support\WorkflowInstanceId;
@@ -1298,8 +1301,13 @@ final class V2WebhookWorkflowTest extends TestCase
 
     public function testRepairWebhookReturnsNoOpOutcomeForHealthySignalWait(): void
     {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-repair-signal');
         $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
@@ -1313,6 +1321,110 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('workflow_type', 'test-signal-workflow')
             ->assertJsonPath('command_status', 'accepted')
             ->assertJsonPath('rejection_reason', null);
+    }
+
+    public function testRepairWebhookRecreatesMissingWorkflowTaskForAcceptedUpdateWebhook(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-repair-update-webhook');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $accepted = $this->postJson('/webhooks/instances/order-repair-update-webhook/updates/approve', [
+            'wait_for' => 'accepted',
+            'arguments' => [true, 'webhook-repair'],
+        ]);
+
+        $accepted
+            ->assertStatus(202)
+            ->assertJsonPath('update_status', 'accepted')
+            ->assertJsonPath('command_source', 'webhook');
+
+        $runId = $workflow->runId();
+        $updateId = $accepted->json('update_id');
+
+        $this->assertIsString($runId);
+        $this->assertIsString($updateId);
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('update', $summary->wait_kind);
+        $this->assertSame('update:' . $updateId, $summary->open_wait_id);
+        $this->assertSame('workflow_update', $summary->resume_source_kind);
+        $this->assertSame($updateId, $summary->resume_source_id);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame('Accepted update approve is open without an open workflow task.', $summary->liveness_reason);
+
+        $repair = $this->postJson('/webhooks/instances/order-repair-update-webhook/repair');
+
+        $repair
+            ->assertOk()
+            ->assertJsonPath('outcome', 'repair_dispatched')
+            ->assertJsonPath('workflow_id', 'order-repair-update-webhook')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('command_source', 'webhook')
+            ->assertJsonPath('rejection_reason', null);
+
+        /** @var WorkflowTask $repairedTask */
+        $repairedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame(1, $repairedTask->repair_count);
+        $this->assertSame([
+            'workflow_wait_kind' => 'update',
+            'open_wait_id' => 'update:' . $updateId,
+            'resume_source_kind' => 'workflow_update',
+            'resume_source_id' => $updateId,
+            'workflow_update_id' => $updateId,
+        ], $repairedTask->payload);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $repairedTask->id
+        );
+
+        /** @var WorkflowRunSummary $updatedSummary */
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($runId);
+
+        $this->assertSame('update', $updatedSummary->wait_kind);
+        $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($repairedTask->id, $updatedSummary->next_task_id);
+
+        /** @var WorkflowRun $detailRun */
+        $detailRun = WorkflowRun::query()->findOrFail($runId);
+        $detail = RunDetailView::forRun($detailRun);
+        $taskDetail = collect($detail['tasks'])->firstWhere('id', $repairedTask->id);
+
+        $this->assertIsArray($taskDetail);
+        $this->assertSame('Workflow task ready to apply accepted update.', $taskDetail['summary']);
+        $this->assertSame('update', $taskDetail['workflow_wait_kind']);
+        $this->assertSame($updateId, $taskDetail['workflow_update_id']);
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $updateId,
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+            'workflow_sequence' => 1,
+        ]);
     }
 
     public function testCancelWebhookReturnsTypedAcceptedResponse(): void
