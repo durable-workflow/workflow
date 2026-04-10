@@ -6,11 +6,13 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Closure;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use LogicException;
 use Throwable;
 use Workflow\V2\Contracts\HistoryExportRedactor;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -20,7 +22,6 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 
 final class HistoryExport
@@ -123,12 +124,12 @@ final class HistoryExport
                 ->map(static fn (WorkflowTask $task): array => self::task($task))
                 ->values()
                 ->all(),
-            'activities' => $run->activityExecutions
-                ->map(static fn (ActivityExecution $activity): array => self::activity($activity))
+            'activities' => collect(self::activitySnapshots($run))
+                ->map(static fn (array $activity): array => self::activity($activity))
                 ->values()
                 ->all(),
-            'timers' => $run->timers
-                ->map(static fn (WorkflowTimer $timer): array => self::timer($timer))
+            'timers' => collect(RunTimerView::timersForRun($run))
+                ->map(static fn (array $timer): array => self::timer($timer))
                 ->values()
                 ->all(),
             'failures' => collect(FailureSnapshots::forRun($run))
@@ -764,31 +765,216 @@ final class HistoryExport
     }
 
     /**
+     * @return list<array<string, mixed>>
+     */
+    private static function activitySnapshots(WorkflowRun $run): array
+    {
+        $run->loadMissing(['activityExecutions.attempts', 'historyEvents']);
+
+        $states = [];
+        $executions = $run->activityExecutions->keyBy('id');
+
+        foreach (self::activityEvents($run) as $event) {
+            $snapshot = ActivitySnapshot::fromEvent($event);
+            $activityId = is_array($snapshot) && is_string($snapshot['id'] ?? null)
+                ? $snapshot['id']
+                : null;
+
+            if ($activityId === null) {
+                continue;
+            }
+
+            /** @var ActivityExecution|null $execution */
+            $execution = $executions->get($activityId);
+            $state = $states[$activityId]
+                ?? ($execution instanceof ActivityExecution ? ActivitySnapshot::fromExecution($execution) : ['id' => $activityId]);
+
+            $states[$activityId] = ActivitySnapshot::merge($state, $snapshot);
+        }
+
+        foreach ($run->activityExecutions as $execution) {
+            if (! $execution instanceof ActivityExecution || array_key_exists($execution->id, $states)) {
+                continue;
+            }
+
+            $states[$execution->id] = ActivitySnapshot::fromExecution($execution);
+        }
+
+        $activities = [];
+
+        foreach ($states as $activityId => $state) {
+            /** @var ActivityExecution|null $execution */
+            $execution = $executions->get($activityId);
+            $activities[] = self::activityState($state, $execution);
+        }
+
+        usort($activities, static function (array $left, array $right): int {
+            $leftSequence = is_int($left['sequence'] ?? null) ? $left['sequence'] : PHP_INT_MAX;
+            $rightSequence = is_int($right['sequence'] ?? null) ? $right['sequence'] : PHP_INT_MAX;
+
+            if ($leftSequence !== $rightSequence) {
+                return $leftSequence <=> $rightSequence;
+            }
+
+            $leftCreatedAt = self::timestampToMilliseconds($left['created_at'] ?? null);
+            $rightCreatedAt = self::timestampToMilliseconds($right['created_at'] ?? null);
+
+            if ($leftCreatedAt !== $rightCreatedAt) {
+                return $leftCreatedAt <=> $rightCreatedAt;
+            }
+
+            return ($left['id'] ?? '') <=> ($right['id'] ?? '');
+        });
+
+        return array_values($activities);
+    }
+
+    /**
+     * @return iterable<WorkflowHistoryEvent>
+     */
+    private static function activityEvents(WorkflowRun $run): iterable
+    {
+        return $run->historyEvents
+            ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
+                HistoryEventType::ActivityScheduled,
+                HistoryEventType::ActivityStarted,
+                HistoryEventType::ActivityHeartbeatRecorded,
+                HistoryEventType::ActivityRetryScheduled,
+                HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityFailed,
+            ], true))
+            ->sortBy('sequence');
+    }
+
+    /**
+     * @param array<string, mixed> $state
      * @return array<string, mixed>
      */
-    private static function activity(ActivityExecution $activity): array
+    private static function activityState(array $state, ?ActivityExecution $execution = null): array
     {
         return [
-            'id' => $activity->id,
-            'idempotency_key' => $activity->id,
-            'sequence' => $activity->sequence,
-            'activity_type' => $activity->activity_type,
-            'activity_class' => $activity->activity_class,
-            'status' => $activity->status->value,
-            'connection' => $activity->connection,
-            'queue' => $activity->queue,
-            'retry_policy' => $activity->retry_policy,
-            'attempt_count' => $activity->attempt_count,
-            'current_attempt_id' => $activity->current_attempt_id,
-            'arguments' => $activity->arguments,
-            'result' => $activity->result,
-            'started_at' => self::timestamp($activity->started_at),
-            'last_heartbeat_at' => self::timestamp($activity->last_heartbeat_at),
-            'closed_at' => self::timestamp($activity->closed_at),
-            'attempts' => $activity->attempts
-                ->map(static fn (ActivityAttempt $attempt): array => self::attempt($attempt))
-                ->values()
-                ->all(),
+            'id' => $state['id'] ?? null,
+            'idempotency_key' => $state['idempotency_key'] ?? $state['id'] ?? null,
+            'sequence' => $state['sequence'] ?? null,
+            'activity_type' => $state['type'] ?? null,
+            'activity_class' => $state['class'] ?? null,
+            'status' => $state['status'] ?? 'pending',
+            'connection' => $state['connection'] ?? null,
+            'queue' => $state['queue'] ?? null,
+            'retry_policy' => $state['retry_policy'] ?? ($execution?->retry_policy ?? null),
+            'attempt_count' => $state['attempt_count'] ?? 0,
+            'current_attempt_id' => $state['attempt_id'] ?? $execution?->current_attempt_id,
+            'arguments' => $state['arguments'] ?? null,
+            'result' => $state['result'] ?? null,
+            'created_at' => self::timestamp($state['created_at'] ?? null),
+            'started_at' => self::timestamp($state['started_at'] ?? null),
+            'last_heartbeat_at' => self::timestamp($state['last_heartbeat_at'] ?? null),
+            'closed_at' => self::timestamp($state['closed_at'] ?? null),
+            'attempts' => self::activityAttempts($state, $execution),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     * @return list<array<string, mixed>>
+     */
+    private static function activityAttempts(array $state, ?ActivityExecution $execution): array
+    {
+        $attempts = [];
+
+        if ($execution instanceof ActivityExecution) {
+            foreach ($execution->attempts as $attempt) {
+                if (! $attempt instanceof ActivityAttempt) {
+                    continue;
+                }
+
+                $attempts[] = self::attempt($attempt);
+            }
+        }
+
+        $syntheticAttempt = self::syntheticActivityAttempt($state, $execution);
+
+        if (
+            $syntheticAttempt !== null
+            && ! collect($attempts)->contains(static fn (array $attempt): bool => ($attempt['id'] ?? null) === $syntheticAttempt['id'])
+        ) {
+            $attempts[] = $syntheticAttempt;
+        }
+
+        usort($attempts, static function (array $left, array $right): int {
+            $leftAttemptNumber = is_int($left['attempt_number'] ?? null) ? $left['attempt_number'] : PHP_INT_MAX;
+            $rightAttemptNumber = is_int($right['attempt_number'] ?? null) ? $right['attempt_number'] : PHP_INT_MAX;
+
+            if ($leftAttemptNumber !== $rightAttemptNumber) {
+                return $leftAttemptNumber <=> $rightAttemptNumber;
+            }
+
+            $leftStartedAt = self::timestampToMilliseconds($left['started_at'] ?? null);
+            $rightStartedAt = self::timestampToMilliseconds($right['started_at'] ?? null);
+
+            if ($leftStartedAt !== $rightStartedAt) {
+                return $leftStartedAt <=> $rightStartedAt;
+            }
+
+            return ($left['id'] ?? '') <=> ($right['id'] ?? '');
+        });
+
+        return array_values($attempts);
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     * @return array<string, mixed>|null
+     */
+    private static function syntheticActivityAttempt(array $state, ?ActivityExecution $execution): ?array
+    {
+        $attemptId = self::stringValue($state['attempt_id'] ?? null)
+            ?? self::stringValue($execution?->current_attempt_id);
+        $attemptNumber = self::intValue($state['attempt_count'] ?? null)
+            ?? self::executionAttemptCount($execution);
+
+        if ($attemptId === null || $attemptNumber === null || $attemptNumber <= 0) {
+            return null;
+        }
+
+        return [
+            'id' => $attemptId,
+            'activity_execution_id' => $state['id'] ?? $execution?->id,
+            'workflow_task_id' => null,
+            'attempt_number' => $attemptNumber,
+            'status' => $state['status'] ?? $execution?->status?->value ?? null,
+            'lease_owner' => null,
+            'started_at' => self::timestamp($state['started_at'] ?? $execution?->started_at),
+            'last_heartbeat_at' => self::timestamp($state['last_heartbeat_at'] ?? $execution?->last_heartbeat_at),
+            'lease_expires_at' => null,
+            'closed_at' => self::timestamp($state['closed_at'] ?? $execution?->closed_at),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function activity(array $activity): array
+    {
+        return [
+            'id' => $activity['id'] ?? null,
+            'idempotency_key' => $activity['idempotency_key'] ?? null,
+            'sequence' => $activity['sequence'] ?? null,
+            'activity_type' => $activity['activity_type'] ?? null,
+            'activity_class' => $activity['activity_class'] ?? null,
+            'status' => $activity['status'] ?? null,
+            'connection' => $activity['connection'] ?? null,
+            'queue' => $activity['queue'] ?? null,
+            'retry_policy' => $activity['retry_policy'] ?? null,
+            'attempt_count' => $activity['attempt_count'] ?? 0,
+            'current_attempt_id' => $activity['current_attempt_id'] ?? null,
+            'arguments' => $activity['arguments'] ?? null,
+            'result' => $activity['result'] ?? null,
+            'created_at' => self::timestamp($activity['created_at'] ?? null),
+            'started_at' => self::timestamp($activity['started_at'] ?? null),
+            'last_heartbeat_at' => self::timestamp($activity['last_heartbeat_at'] ?? null),
+            'closed_at' => self::timestamp($activity['closed_at'] ?? null),
+            'attempts' => is_array($activity['attempts'] ?? null) ? $activity['attempts'] : [],
         ];
     }
 
@@ -814,15 +1000,18 @@ final class HistoryExport
     /**
      * @return array<string, mixed>
      */
-    private static function timer(WorkflowTimer $timer): array
+    private static function timer(array $timer): array
     {
         return [
-            'id' => $timer->id,
-            'sequence' => $timer->sequence,
-            'status' => $timer->status->value,
-            'delay_seconds' => $timer->delay_seconds,
-            'fire_at' => self::timestamp($timer->fire_at),
-            'fired_at' => self::timestamp($timer->fired_at),
+            'id' => $timer['id'] ?? null,
+            'sequence' => $timer['sequence'] ?? null,
+            'status' => $timer['status'] ?? null,
+            'delay_seconds' => $timer['delay_seconds'] ?? null,
+            'fire_at' => self::timestamp($timer['fire_at'] ?? null),
+            'fired_at' => self::timestamp($timer['fired_at'] ?? null),
+            'created_at' => self::timestamp($timer['created_at'] ?? null),
+            'timer_kind' => $timer['timer_kind'] ?? null,
+            'condition_wait_id' => $timer['condition_wait_id'] ?? null,
         ];
     }
 
@@ -900,5 +1089,43 @@ final class HistoryExport
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    private static function timestampToMilliseconds(mixed $value): int
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value->getTimestampMs();
+        }
+
+        if (is_string($value) && $value !== '') {
+            return Carbon::parse($value)->getTimestampMs();
+        }
+
+        return PHP_INT_MAX;
+    }
+
+    private static function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        return is_string($value) && is_numeric($value)
+            ? (int) $value
+            : null;
+    }
+
+    private static function executionAttemptCount(?ActivityExecution $execution): ?int
+    {
+        $attemptCount = is_int($execution?->attempt_count) ? $execution->attempt_count : 0;
+
+        return $attemptCount > 0 ? $attemptCount : null;
     }
 }

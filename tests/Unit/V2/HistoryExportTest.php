@@ -17,6 +17,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -28,6 +29,8 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\WorkflowStub;
 
@@ -379,6 +382,189 @@ final class HistoryExportTest extends TestCase
         $this->assertSame(__FILE__, $bundle['failures'][0]['file']);
         $this->assertSame(222, $bundle['failures'][0]['line']);
         $this->assertNotSame('', $bundle['failures'][0]['trace_preview']);
+    }
+
+    public function testItExportsActivitySnapshotsFromTypedHistoryWhenExecutionRowIsMissing(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createMinimalCompletedRun('history-export-activity-history');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Leased->value,
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'available_at' => now()->subSeconds(40),
+            'leased_at' => now()->subSeconds(35),
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5),
+            'attempt_count' => 1,
+        ]);
+
+        /** @var ActivityExecution $activity */
+        $activity = ActivityExecution::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 3,
+            'activity_class' => 'App\\Activities\\HistoryOnlyActivity',
+            'activity_type' => 'history.only.activity',
+            'status' => 'pending',
+            'arguments' => Serializer::serialize(['order-123']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'retry_policy' => [
+                'snapshot_version' => 1,
+                'max_attempts' => 2,
+                'backoff_seconds' => [5],
+            ],
+            'attempt_count' => 0,
+        ]);
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $activity->id,
+            'activity_class' => $activity->activity_class,
+            'activity_type' => $activity->activity_type,
+            'sequence' => $activity->sequence,
+            'activity' => ActivitySnapshot::fromExecution($activity),
+        ], $task);
+
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'activity_execution_id' => $activity->id,
+            'workflow_task_id' => $task->id,
+            'attempt_number' => 1,
+            'status' => 'running',
+            'lease_owner' => 'worker-a',
+            'started_at' => now()->subSeconds(30),
+            'lease_expires_at' => now()->addMinutes(5),
+        ]);
+
+        $activity->forceFill([
+            'status' => 'running',
+            'attempt_count' => 1,
+            'current_attempt_id' => $attempt->id,
+            'started_at' => now()->subSeconds(30),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityStarted, [
+            'activity_execution_id' => $activity->id,
+            'activity_attempt_id' => $attempt->id,
+            'activity_class' => $activity->activity_class,
+            'activity_type' => $activity->activity_type,
+            'sequence' => $activity->sequence,
+            'attempt_number' => 1,
+            'activity' => ActivitySnapshot::fromExecution($activity),
+        ], $task);
+
+        $activity->forceFill([
+            'status' => 'completed',
+            'result' => Serializer::serialize('ok'),
+            'closed_at' => now()->subSeconds(10),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityCompleted, [
+            'activity_execution_id' => $activity->id,
+            'activity_attempt_id' => $attempt->id,
+            'activity_class' => $activity->activity_class,
+            'activity_type' => $activity->activity_type,
+            'sequence' => $activity->sequence,
+            'attempt_number' => 1,
+            'result' => $activity->result,
+            'activity' => ActivitySnapshot::fromExecution($activity),
+        ], $task);
+
+        $activityId = $activity->id;
+        $attemptId = $attempt->id;
+        $arguments = $activity->arguments;
+        $result = $activity->result;
+
+        $attempt->delete();
+        $activity->delete();
+
+        $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'activityExecutions.attempts']));
+
+        $this->assertCount(1, $bundle['activities']);
+        $this->assertSame($activityId, $bundle['activities'][0]['id']);
+        $this->assertSame($activityId, $bundle['activities'][0]['idempotency_key']);
+        $this->assertSame(3, $bundle['activities'][0]['sequence']);
+        $this->assertSame('history.only.activity', $bundle['activities'][0]['activity_type']);
+        $this->assertSame('App\\Activities\\HistoryOnlyActivity', $bundle['activities'][0]['activity_class']);
+        $this->assertSame('completed', $bundle['activities'][0]['status']);
+        $this->assertSame($arguments, $bundle['activities'][0]['arguments']);
+        $this->assertSame($result, $bundle['activities'][0]['result']);
+        $this->assertSame(1, $bundle['activities'][0]['attempt_count']);
+        $this->assertSame($attemptId, $bundle['activities'][0]['current_attempt_id']);
+        $this->assertSame($attemptId, $bundle['activities'][0]['attempts'][0]['id']);
+        $this->assertSame($activityId, $bundle['activities'][0]['attempts'][0]['activity_execution_id']);
+        $this->assertSame(1, $bundle['activities'][0]['attempts'][0]['attempt_number']);
+        $this->assertSame('completed', $bundle['activities'][0]['attempts'][0]['status']);
+        $this->assertNull($bundle['activities'][0]['attempts'][0]['workflow_task_id']);
+    }
+
+    public function testItExportsTimerSnapshotsFromTypedHistoryWhenTimerRowIsMissing(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createMinimalCompletedRun('history-export-timer-history');
+        $fireAt = now()->addMinute();
+        $firedAt = now()->addMinute()->addSecond();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 3,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => 60,
+            'fire_at' => $fireAt,
+            'created_at' => now(),
+        ]);
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $timer->sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $fireAt->toJSON(),
+        ]);
+
+        $timer->forceFill([
+            'status' => TimerStatus::Fired,
+            'fired_at' => $firedAt,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::TimerFired, [
+            'timer_id' => $timer->id,
+            'sequence' => $timer->sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $fireAt->toJSON(),
+            'fired_at' => $firedAt->toJSON(),
+        ]);
+
+        $timerId = $timer->id;
+        $timer->delete();
+
+        $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'timers']));
+
+        $this->assertCount(1, $bundle['timers']);
+        $this->assertSame($timerId, $bundle['timers'][0]['id']);
+        $this->assertSame(3, $bundle['timers'][0]['sequence']);
+        $this->assertSame('fired', $bundle['timers'][0]['status']);
+        $this->assertSame(60, $bundle['timers'][0]['delay_seconds']);
+        $this->assertSame($fireAt->toJSON(), $bundle['timers'][0]['fire_at']);
+        $this->assertSame($firedAt->toJSON(), $bundle['timers'][0]['fired_at']);
     }
 
     public function testItAppliesConfiguredRedactionPolicyToPayloadAndDiagnosticSlots(): void
