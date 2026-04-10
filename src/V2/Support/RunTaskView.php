@@ -221,6 +221,12 @@ final class RunTaskView
                 && self::stringValue($wait['resume_source_kind'] ?? null) === 'timer'
                 && self::stringValue($wait['resume_source_id'] ?? null) !== null
             ) {
+                if (self::timestamp($wait['timeout_fired_at'] ?? null) !== null) {
+                    $rows[] = self::missingConditionTimeoutWorkflowTaskRow($run, $wait);
+
+                    continue;
+                }
+
                 $timerId = self::stringValue($wait['resume_source_id'] ?? null);
 
                 /** @var array<string, mixed>|null $timer */
@@ -364,6 +370,48 @@ final class RunTaskView
             ? $retryPayload['retry_policy']
             : (is_array($activity['retry_policy'] ?? null) ? $activity['retry_policy'] : null);
         $row['attempt_count'] = $retryAfterAttempt ?? self::intValue($activity['attempt_count'] ?? null) ?? 0;
+
+        return $row;
+    }
+
+    /**
+     * @param array<string, mixed> $wait
+     * @return array<string, mixed>
+     */
+    private static function missingConditionTimeoutWorkflowTaskRow(WorkflowRun $run, array $wait): array
+    {
+        $conditionWaitId = self::stringValue($wait['condition_wait_id'] ?? null)
+            ?? self::stringValue($wait['id'] ?? null)
+            ?? 'condition';
+        $timerId = self::stringValue($wait['resume_source_id'] ?? null);
+        $conditionKey = self::stringValue($wait['condition_key'] ?? null);
+        $openWaitId = self::stringValue($wait['id'] ?? null) ?? $conditionWaitId;
+
+        $row = self::missingTaskBase(
+            $run,
+            sprintf('missing:workflow:condition-timeout:%s', $conditionWaitId),
+            TaskType::Workflow->value,
+            $run->connection,
+            $run->queue,
+            self::timestamp($wait['timeout_fired_at'] ?? null)
+                ?? self::timestamp($wait['deadline_at'] ?? null)
+                ?? self::timestamp($wait['opened_at'] ?? null),
+        );
+
+        $row['summary'] = sprintf(
+            'Workflow task missing to apply condition timeout%s.',
+            $conditionKey === null ? '' : sprintf(' for %s', $conditionKey),
+        );
+        $row['timer_id'] = $timerId;
+        $row['timer_sequence'] = self::intValue($wait['sequence'] ?? null);
+        $row['timer_fire_at'] = self::timestamp($wait['deadline_at'] ?? null);
+        $row['condition_wait_id'] = $conditionWaitId;
+        $row['condition_key'] = $conditionKey;
+        $row['workflow_wait_kind'] = 'condition';
+        $row['workflow_open_wait_id'] = $openWaitId;
+        $row['workflow_resume_source_kind'] = 'timer';
+        $row['workflow_resume_source_id'] = $timerId;
+        $row['workflow_sequence'] = self::intValue($wait['sequence'] ?? null);
 
         return $row;
     }
@@ -728,11 +776,13 @@ final class RunTaskView
                 TaskStatus::Ready => match (self::stringValue($task->payload['workflow_wait_kind'] ?? null)) {
                     'update' => 'Workflow task ready to apply accepted update.',
                     'signal' => 'Workflow task ready to apply accepted signal.',
+                    'condition' => 'Workflow task ready to apply condition timeout.',
                     default => 'Workflow task ready to resume the selected run.',
                 },
                 TaskStatus::Leased => match (self::stringValue($task->payload['workflow_wait_kind'] ?? null)) {
                     'update' => 'Workflow task leased to apply accepted update.',
                     'signal' => 'Workflow task leased to apply accepted signal.',
+                    'condition' => 'Workflow task leased to apply condition timeout.',
                     default => 'Workflow task leased to a worker.',
                 },
                 TaskStatus::Completed => 'Workflow task completed.',

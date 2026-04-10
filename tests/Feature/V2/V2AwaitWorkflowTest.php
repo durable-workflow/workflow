@@ -201,6 +201,28 @@ final class V2AwaitWorkflowTest extends TestCase
         $workflow->refresh()->currentState();
     }
 
+    public function testQueryReplayRejectsPreviouslyUnkeyedConditionWaitWhenCurrentYieldHasKey(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestKeyedAwaitWorkflow::class, 'await-unkeyed-query-drift');
+        $workflow->start();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitOpened, [
+            'condition_wait_id' => 'condition:1',
+            'sequence' => 1,
+        ]);
+
+        $this->expectException(ConditionWaitDefinitionMismatchException::class);
+        $this->expectExceptionMessage('recorded with condition key [none]');
+        $this->expectExceptionMessage('current workflow yielded [approval.ready]');
+
+        $workflow->refresh()->currentState();
+    }
+
     public function testWorkflowWorkerBlocksReplayWhenRecordedConditionKeyDoesNotMatchCurrentYield(): void
     {
         Queue::fake();
@@ -264,6 +286,48 @@ final class V2AwaitWorkflowTest extends TestCase
         $this->assertFalse($task->payload['replay_blocked'] ?? false);
         $this->assertNull($task->last_error);
         $this->assertSame(1, $task->repair_count);
+    }
+
+    public function testWorkflowWorkerBlocksReplayWhenPreviouslyUnkeyedConditionWaitGainsCurrentKey(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestKeyedAwaitWorkflow::class, 'await-unkeyed-worker-drift');
+        $workflow->start();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitOpened, [
+            'condition_wait_id' => 'condition:1',
+            'sequence' => 1,
+        ]);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertTrue($task->payload['replay_blocked'] ?? false);
+        $this->assertSame('condition_wait_definition_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+        $this->assertNull($task->payload['replay_blocked_recorded_condition_key'] ?? null);
+        $this->assertSame('approval.ready', $task->payload['replay_blocked_current_condition_key'] ?? null);
+        $this->assertStringContainsString('recorded with condition key [none]', (string) $task->last_error);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertStringContainsString(
+            'recorded condition key [none] does not match the current yielded key [approval.ready]',
+            $detail['liveness_reason'],
+        );
+        $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
+        $this->assertNull($detail['tasks'][0]['replay_blocked_recorded_condition_key']);
+        $this->assertSame('approval.ready', $detail['tasks'][0]['replay_blocked_current_condition_key']);
     }
 
     public function testAwaitWorkflowCanApplySubmittedUpdateOnWorkflowWorker(): void
@@ -626,6 +690,114 @@ final class V2AwaitWorkflowTest extends TestCase
                 ->pluck('event_type')
                 ->map(static fn ($eventType) => $eventType->value)
                 ->all());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testAwaitWithTimeoutAppliesFiredTimeoutHistoryWhenTimerRowAndResumeTaskDrift(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-08 15:30:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'await-timeout-fired-history');
+            $workflow->start();
+
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyWorkflowTask($runId);
+
+            Carbon::setTestNow(now()->addSeconds(5));
+
+            $this->runReadyTimerTask($runId);
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+            $timerId = $timer->id;
+
+            /** @var WorkflowTask $resumeTask */
+            $resumeTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->sole();
+
+            $resumeTask->delete();
+            $timer->delete();
+
+            RunSummaryProjector::project(WorkflowRun::query()->findOrFail($runId));
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+            $conditionWait = $this->findConditionWait($detail['waits']);
+            $missingWorkflowTask = collect($detail['tasks'])
+                ->first(
+                    static fn (array $task): bool => ($task['type'] ?? null) === 'workflow'
+                        && ($task['transport_state'] ?? null) === 'missing'
+                );
+
+            $this->assertSame('condition', $detail['wait_kind']);
+            $this->assertSame('Waiting to apply condition timeout', $detail['wait_reason']);
+            $this->assertSame('repair_needed', $detail['liveness_state']);
+            $this->assertSame('timeout_fired', $conditionWait['source_status']);
+            $this->assertNotNull($conditionWait['timeout_fired_at']);
+            $this->assertIsArray($missingWorkflowTask);
+            $this->assertSame('missing', $missingWorkflowTask['status']);
+            $this->assertSame('condition', $missingWorkflowTask['workflow_wait_kind']);
+            $this->assertSame($timerId, $missingWorkflowTask['timer_id']);
+            $this->assertStringContainsString('condition timeout', $missingWorkflowTask['summary']);
+
+            $result = WorkflowStub::loadRun($runId)->attemptRepair();
+
+            $this->assertTrue($result->accepted());
+            $this->assertSame('repair_dispatched', $result->outcome());
+
+            /** @var WorkflowTask $repairedTask */
+            $repairedTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->sole();
+
+            $this->assertSame('condition', $repairedTask->payload['workflow_wait_kind'] ?? null);
+            $this->assertSame('timer', $repairedTask->payload['resume_source_kind'] ?? null);
+            $this->assertSame($timerId, $repairedTask->payload['resume_source_id'] ?? null);
+            $this->assertSame($timerId, $repairedTask->payload['timer_id'] ?? null);
+            $this->assertSame(1, $repairedTask->repair_count);
+
+            Queue::assertPushed(
+                RunWorkflowTask::class,
+                static fn (RunWorkflowTask $job): bool => $job->taskId === $repairedTask->id,
+            );
+
+            $this->runReadyWorkflowTask($runId);
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame([
+                'approved' => false,
+                'timed_out' => true,
+                'stage' => 'timed-out',
+                'workflow_id' => 'await-timeout-fired-history',
+                'run_id' => $runId,
+            ], $workflow->output());
+            $this->assertSame(1, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::TimerScheduled->value)
+                ->count());
+            $this->assertSame(1, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::TimerFired->value)
+                ->count());
+            $this->assertDatabaseHas('workflow_history_events', [
+                'workflow_run_id' => $runId,
+                'event_type' => HistoryEventType::ConditionWaitTimedOut->value,
+            ]);
         } finally {
             Carbon::setTestNow();
         }

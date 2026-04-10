@@ -233,11 +233,14 @@ final class WorkflowExecutor
                 $timeoutTimer = $current instanceof AwaitWithTimeoutCall
                     ? $run->timers->firstWhere('sequence', $sequence)
                     : null;
+                $timeoutFiredEvent = $current instanceof AwaitWithTimeoutCall
+                    ? $this->conditionTimeoutFiredEvent($run, $sequence)
+                    : null;
 
                 if (
                     $current instanceof AwaitWithTimeoutCall
                     && (
-                        $this->timerFiredEvent($run, $sequence) !== null
+                        $timeoutFiredEvent !== null
                         || $timeoutTimer?->status === TimerStatus::Fired
                     )
                 ) {
@@ -247,8 +250,9 @@ final class WorkflowExecutor
                         $sequence,
                         $waitId,
                         $timeoutTimer,
-                        $current->seconds,
+                        self::intValue($timeoutFiredEvent?->payload['delay_seconds'] ?? null) ?? $current->seconds,
                         $current->conditionKey,
+                        $this->stringValue($timeoutFiredEvent?->payload['timer_id'] ?? null),
                     );
 
                     try {
@@ -2279,6 +2283,18 @@ final class WorkflowExecutor
         return $event;
     }
 
+    private function conditionTimeoutFiredEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
+                && ($event->payload['timer_kind'] ?? null) === 'condition_timeout'
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
     private function activityException(
         ?WorkflowHistoryEvent $event = null,
         ?ActivityExecution $execution = null,
@@ -2653,6 +2669,7 @@ final class WorkflowExecutor
         ?WorkflowTimer $timer,
         ?int $timeoutSeconds,
         ?string $conditionKey,
+        ?string $timerId = null,
     ): WorkflowHistoryEvent {
         $existingEvent = $this->conditionWaitResolutionEvent($run, $sequence);
 
@@ -2664,7 +2681,7 @@ final class WorkflowExecutor
             'condition_wait_id' => $waitId,
             'condition_key' => $conditionKey,
             'sequence' => $sequence,
-            'timer_id' => $timer?->id,
+            'timer_id' => $timer?->id ?? $timerId,
             'timeout_seconds' => $timeoutSeconds,
         ], static fn (mixed $value): bool => $value !== null), $task);
     }

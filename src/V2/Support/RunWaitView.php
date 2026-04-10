@@ -268,13 +268,16 @@ final class RunWaitView
                 $conditionKey = self::stringValue($wait['condition_key'] ?? null);
                 $resumeSourceKind = self::stringValue($wait['resume_source_kind'] ?? null) ?? 'external_input';
                 $resumeSourceId = self::stringValue($wait['resume_source_id'] ?? null);
+                $timeoutFiredAt = self::timestamp($wait['timeout_fired_at'] ?? null);
                 $summary = match ($wait['status']) {
-                    'open' => $timeoutSeconds === null
-                        ? 'Waiting for condition.'
-                        : sprintf(
+                    'open' => match (true) {
+                        $timeoutFiredAt !== null => 'Waiting to apply condition timeout.',
+                        $timeoutSeconds === null => 'Waiting for condition.',
+                        default => sprintf(
                             'Waiting for condition or timeout after %s.',
                             self::durationLabel($timeoutSeconds),
                         ),
+                    },
                     'cancelled' => match ($wait['source_status']) {
                         'cancelled' => 'Condition wait ended when the run was cancelled.',
                         'terminated' => 'Condition wait ended when the run was terminated.',
@@ -298,6 +301,7 @@ final class RunWaitView
                     'summary' => $summary,
                     'opened_at' => $wait['opened_at'],
                     'deadline_at' => self::timestamp($wait['deadline_at'] ?? null),
+                    'timeout_fired_at' => $timeoutFiredAt,
                     'resolved_at' => $wait['resolved_at'],
                     'target_name' => $conditionKey,
                     'target_type' => 'condition',

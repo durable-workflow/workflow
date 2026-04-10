@@ -24,6 +24,7 @@ final class ConditionWaits
      *     timer_id: string|null,
      *     opened_at: \Carbon\CarbonInterface|null,
      *     deadline_at: \Carbon\CarbonInterface|null,
+     *     timeout_fired_at: \Carbon\CarbonInterface|null,
      *     resolved_at: \Carbon\CarbonInterface|null,
      *     resume_source_kind: string,
      *     resume_source_id: string|null
@@ -80,6 +81,46 @@ final class ConditionWaits
                 $waits[$waitId]['timer_id'] = $timerId ?? $waits[$waitId]['timer_id'];
                 $waits[$waitId]['deadline_at'] = self::timestamp($event->payload['fire_at'] ?? null)
                     ?? $waits[$waitId]['deadline_at'];
+
+                if ($waits[$waitId]['timer_id'] !== null) {
+                    $waits[$waitId]['resume_source_kind'] = 'timer';
+                    $waits[$waitId]['resume_source_id'] = $waits[$waitId]['timer_id'];
+                }
+
+                continue;
+            }
+
+            if (
+                $event->event_type === HistoryEventType::TimerFired
+                && self::stringValue($event->payload['timer_kind'] ?? null) === 'condition_timeout'
+            ) {
+                $waitId = self::waitIdForEvent($event);
+
+                if ($waitId === null) {
+                    continue;
+                }
+
+                if (! isset($waits[$waitId])) {
+                    $waits[$waitId] = self::wait($waitId, $event);
+                    self::rememberOpenWait($openWaitIds, $waitId);
+                }
+
+                $timerId = self::stringValue($event->payload['timer_id'] ?? null);
+
+                $waits[$waitId]['source_status'] = 'timeout_fired';
+                $waits[$waitId]['sequence'] = self::intValue($waits[$waitId]['sequence'] ?? null)
+                    ?? self::intValue($event->payload['sequence'] ?? null);
+                $waits[$waitId]['condition_key'] = self::stringValue($waits[$waitId]['condition_key'] ?? null)
+                    ?? self::stringValue($event->payload['condition_key'] ?? null);
+                $waits[$waitId]['timeout_seconds'] = self::intValue($waits[$waitId]['timeout_seconds'] ?? null)
+                    ?? self::intValue($event->payload['delay_seconds'] ?? null);
+                $waits[$waitId]['timer_id'] = $timerId ?? $waits[$waitId]['timer_id'];
+                $waits[$waitId]['deadline_at'] = self::timestamp($event->payload['fire_at'] ?? null)
+                    ?? $waits[$waitId]['deadline_at'];
+                $waits[$waitId]['timeout_fired_at'] = self::timestamp($event->payload['fired_at'] ?? null)
+                    ?? $event->recorded_at
+                    ?? $event->created_at
+                    ?? $waits[$waitId]['timeout_fired_at'];
 
                 if ($waits[$waitId]['timer_id'] !== null) {
                     $waits[$waitId]['resume_source_kind'] = 'timer';
@@ -158,6 +199,7 @@ final class ConditionWaits
      *     timer_id: string|null,
      *     opened_at: \Carbon\CarbonInterface|null,
      *     deadline_at: \Carbon\CarbonInterface|null,
+     *     timeout_fired_at: \Carbon\CarbonInterface|null,
      *     resolved_at: \Carbon\CarbonInterface|null,
      *     resume_source_kind: string,
      *     resume_source_id: string|null
@@ -188,6 +230,7 @@ final class ConditionWaits
      *     timer_id: string|null,
      *     opened_at: \Carbon\CarbonInterface|null,
      *     deadline_at: \Carbon\CarbonInterface|null,
+     *     timeout_fired_at: \Carbon\CarbonInterface|null,
      *     resolved_at: \Carbon\CarbonInterface|null,
      *     resume_source_kind: string,
      *     resume_source_id: string|null
@@ -209,6 +252,7 @@ final class ConditionWaits
             'timer_id' => $timerId,
             'opened_at' => null,
             'deadline_at' => self::timestamp($event->payload['fire_at'] ?? null),
+            'timeout_fired_at' => null,
             'resolved_at' => null,
             'resume_source_kind' => $timerId === null ? 'external_input' : 'timer',
             'resume_source_id' => $timerId,
@@ -231,18 +275,27 @@ final class ConditionWaits
         int $sequence,
         AwaitCall|AwaitWithTimeoutCall $call,
     ): void {
-        $recordedKey = self::conditionKeyForSequence($run, $sequence);
+        $definition = self::conditionDefinitionForSequence($run, $sequence);
 
-        if ($recordedKey === null || $recordedKey === $call->conditionKey) {
+        if (! $definition['recorded'] || $definition['condition_key'] === $call->conditionKey) {
             return;
         }
 
-        throw new ConditionWaitDefinitionMismatchException($sequence, $recordedKey, $call->conditionKey);
+        throw new ConditionWaitDefinitionMismatchException($sequence, $definition['condition_key'], $call->conditionKey);
     }
 
     public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
     {
+        return self::conditionDefinitionForSequence($run, $sequence)['condition_key'];
+    }
+
+    /**
+     * @return array{recorded: bool, condition_key: string|null}
+     */
+    private static function conditionDefinitionForSequence(WorkflowRun $run, int $sequence): array
+    {
         $run->loadMissing('historyEvents');
+        $recorded = false;
 
         foreach ($run->historyEvents->sortBy('sequence') as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
@@ -263,14 +316,15 @@ final class ConditionWaits
                 continue;
             }
 
+            $recorded = true;
             $key = self::stringValue($event->payload['condition_key'] ?? null);
 
             if ($key !== null) {
-                return $key;
+                return ['recorded' => true, 'condition_key' => $key];
             }
         }
 
-        return null;
+        return ['recorded' => $recorded, 'condition_key' => null];
     }
 
     /**

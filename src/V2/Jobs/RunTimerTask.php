@@ -116,6 +116,12 @@ final class RunTimerTask implements ShouldQueue
                 'status' => TimerStatus::Fired,
                 'fired_at' => now(),
             ])->save();
+            $conditionWaitId = is_string($task->payload['condition_wait_id'] ?? null)
+                ? $task->payload['condition_wait_id']
+                : null;
+            $conditionKey = is_string($task->payload['condition_key'] ?? null)
+                ? $task->payload['condition_key']
+                : null;
 
             WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, array_filter([
                 'timer_id' => $timer->id,
@@ -123,13 +129,9 @@ final class RunTimerTask implements ShouldQueue
                 'delay_seconds' => $timer->delay_seconds,
                 'fire_at' => $timer->fire_at?->toJSON(),
                 'fired_at' => $timer->fired_at?->toJSON(),
-                'timer_kind' => is_string($task->payload['condition_wait_id'] ?? null) ? 'condition_timeout' : null,
-                'condition_wait_id' => is_string($task->payload['condition_wait_id'] ?? null)
-                    ? $task->payload['condition_wait_id']
-                    : null,
-                'condition_key' => is_string($task->payload['condition_key'] ?? null)
-                    ? $task->payload['condition_key']
-                    : null,
+                'timer_kind' => $conditionWaitId === null ? null : 'condition_timeout',
+                'condition_wait_id' => $conditionWaitId,
+                'condition_key' => $conditionKey,
             ], static fn (mixed $value): bool => $value !== null), $task);
 
             $task->forceFill([
@@ -143,7 +145,16 @@ final class RunTimerTask implements ShouldQueue
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
-                'payload' => [],
+                'payload' => array_filter([
+                    'workflow_wait_kind' => $conditionWaitId === null ? null : 'condition',
+                    'open_wait_id' => $conditionWaitId,
+                    'resume_source_kind' => $conditionWaitId === null ? null : 'timer',
+                    'resume_source_id' => $conditionWaitId === null ? null : $timer->id,
+                    'timer_id' => $conditionWaitId === null ? null : $timer->id,
+                    'condition_wait_id' => $conditionWaitId,
+                    'condition_key' => $conditionKey,
+                    'workflow_sequence' => $conditionWaitId === null ? null : $timer->sequence,
+                ], static fn (mixed $value): bool => $value !== null),
                 'connection' => $run->connection,
                 'queue' => $run->queue,
                 'compatibility' => $run->compatibility,

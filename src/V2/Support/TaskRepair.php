@@ -212,6 +212,35 @@ final class TaskRepair
             $availableAt = self::timestamp($conditionWait['deadline_at'] ?? null)
                 ?? $timer?->fire_at
                 ?? now();
+            $timeoutFiredAt = self::timestamp($conditionWait['timeout_fired_at'] ?? null)
+                ?? $timer?->fired_at;
+
+            if ($timerId !== null && ($timeoutFiredAt !== null || $timer?->status === TimerStatus::Fired)) {
+                /** @var WorkflowTask $task */
+                $task = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $timeoutFiredAt ?? now(),
+                    'payload' => array_filter([
+                        'workflow_wait_kind' => 'condition',
+                        'open_wait_id' => self::nonEmptyString($conditionWait['condition_wait_id'] ?? null)
+                            ?? self::nonEmptyString($summary->open_wait_id),
+                        'resume_source_kind' => 'timer',
+                        'resume_source_id' => $timerId,
+                        'timer_id' => $timerId,
+                        'condition_wait_id' => self::nonEmptyString($conditionWait['condition_wait_id'] ?? null),
+                        'condition_key' => self::nonEmptyString($conditionWait['condition_key'] ?? null),
+                        'workflow_sequence' => self::intValue($conditionWait['sequence'] ?? null),
+                    ], static fn (mixed $value): bool => $value !== null),
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
+                    'repair_count' => 1,
+                ]);
+
+                return $task;
+            }
 
             if ($timer instanceof WorkflowTimer && $timerId !== null) {
                 /** @var WorkflowTask $task */
@@ -409,6 +438,17 @@ final class TaskRepair
     {
         return is_string($value) && $value !== ''
             ? $value
+            : null;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        return is_string($value) && is_numeric($value)
+            ? (int) $value
             : null;
     }
 

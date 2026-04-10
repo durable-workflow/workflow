@@ -156,9 +156,14 @@ final class RunSummaryProjector
         } elseif ($openConditionWait !== null) {
             $waitKind = 'condition';
             $conditionLabel = self::conditionLabel($openConditionWait);
-            $waitReason = $openConditionWait['timer_id'] === null
-                ? sprintf('Waiting for condition%s', $conditionLabel)
-                : sprintf('Waiting for condition%s or timeout', $conditionLabel);
+            $waitReason = match (true) {
+                self::timestamp($openConditionWait['timeout_fired_at'] ?? null) !== null => sprintf(
+                    'Waiting to apply condition%s timeout',
+                    $conditionLabel,
+                ),
+                $openConditionWait['timer_id'] === null => sprintf('Waiting for condition%s', $conditionLabel),
+                default => sprintf('Waiting for condition%s or timeout', $conditionLabel),
+            };
             $waitStartedAt = $openConditionWait['opened_at'];
             $waitDeadlineAt = $openConditionWait['deadline_at'];
             $openWaitId = $openConditionWait['id'];
@@ -413,6 +418,17 @@ final class RunSummaryProjector
 
         if ($openConditionWait !== null) {
             if ($openConditionWait['timer_id'] !== null) {
+                if (self::timestamp($openConditionWait['timeout_fired_at'] ?? null) !== null) {
+                    if ($nextTask !== null) {
+                        return self::taskLiveness($nextTask, $run, 'Condition timeout');
+                    }
+
+                    return [
+                        'repair_needed',
+                        sprintf('Condition wait %s has a fired timeout without an open workflow task.', $openConditionWait['id']),
+                    ];
+                }
+
                 if ($nextTask !== null) {
                     if (
                         TaskRepairPolicy::leaseExpired($nextTask)
@@ -588,6 +604,7 @@ final class RunSummaryProjector
      *     opened_at: \Carbon\CarbonInterface|null,
      *     deadline_at: \Carbon\CarbonInterface|null,
      *     timer_id: string|null,
+     *     timeout_fired_at: \Carbon\CarbonInterface|null,
      *     timeout_seconds: int|null,
      *     condition_key: string|null,
      *     resume_source_kind: string,
@@ -623,7 +640,7 @@ final class RunSummaryProjector
             return $left['condition_wait_id'] <=> $right['condition_wait_id'];
         });
 
-        /** @var array{id: string, condition_wait_id: string, sequence: int|null, opened_at: \Carbon\CarbonInterface|null, deadline_at: \Carbon\CarbonInterface|null, timer_id: string|null, timeout_seconds: int|null, condition_key: string|null, resume_source_kind: string, resume_source_id: string|null} $condition */
+        /** @var array{id: string, condition_wait_id: string, sequence: int|null, opened_at: \Carbon\CarbonInterface|null, deadline_at: \Carbon\CarbonInterface|null, timeout_fired_at: \Carbon\CarbonInterface|null, timer_id: string|null, timeout_seconds: int|null, condition_key: string|null, resume_source_kind: string, resume_source_id: string|null} $condition */
         $condition = end($openConditions);
 
         return [
@@ -631,6 +648,7 @@ final class RunSummaryProjector
             'opened_at' => $condition['opened_at'],
             'deadline_at' => $condition['deadline_at'],
             'timer_id' => $condition['timer_id'],
+            'timeout_fired_at' => self::timestamp($condition['timeout_fired_at'] ?? null),
             'timeout_seconds' => $condition['timeout_seconds'],
             'condition_key' => $condition['condition_key'] ?? null,
             'resume_source_kind' => $condition['resume_source_kind'],
