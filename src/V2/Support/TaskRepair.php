@@ -143,9 +143,7 @@ final class TaskRepair
         }
 
         if ($summary->wait_kind === 'timer') {
-            /** @var WorkflowTimer|null $timer */
-            $timer = $run->timers
-                ->first(static fn (WorkflowTimer $timer): bool => $timer->status === TimerStatus::Pending);
+            $timer = self::restorePendingTimerFromSummary($run, $summary);
 
             if ($timer instanceof WorkflowTimer) {
                 /** @var WorkflowTask $task */
@@ -159,6 +157,36 @@ final class TaskRepair
                     'payload' => [
                         'timer_id' => $timer->id,
                     ],
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
+                    'repair_count' => 1,
+                ]);
+
+                return $task;
+            }
+        }
+
+        if ($summary->wait_kind === 'condition' && $summary->resume_source_kind === 'timer') {
+            $conditionWait = self::openConditionWait($run, $summary);
+            $timerId = self::nonEmptyString($conditionWait['timer_id'] ?? null)
+                ?? self::nonEmptyString($summary->resume_source_id);
+            $timer = $timerId === null ? null : TimerRecovery::restore($run, $timerId);
+            $availableAt = self::timestamp($conditionWait['deadline_at'] ?? null)
+                ?? $timer?->fire_at
+                ?? now();
+
+            if ($timer instanceof WorkflowTimer && $timerId !== null) {
+                /** @var WorkflowTask $task */
+                $task = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Timer->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $availableAt->isFuture() ? $availableAt : now(),
+                    'payload' => array_filter([
+                        'timer_id' => $timerId,
+                        'condition_wait_id' => self::nonEmptyString($conditionWait['condition_wait_id'] ?? null),
+                    ], static fn (mixed $value): bool => $value !== null),
                     'connection' => $run->connection,
                     'queue' => $run->queue,
                     'compatibility' => $run->compatibility,
@@ -228,6 +256,79 @@ final class TaskRepair
         ];
     }
 
+    private static function restorePendingTimerFromSummary(
+        WorkflowRun $run,
+        WorkflowRunSummary $summary,
+    ): ?WorkflowTimer {
+        $timerId = self::nonEmptyString($summary->resume_source_id);
+
+        if ($timerId !== null) {
+            $timer = TimerRecovery::restore($run, $timerId);
+
+            if ($timer instanceof WorkflowTimer && $timer->status === TimerStatus::Pending) {
+                return $timer;
+            }
+        }
+
+        foreach (RunTimerView::timersForRun($run) as $snapshot) {
+            if (($snapshot['timer_kind'] ?? null) === 'condition_timeout') {
+                continue;
+            }
+
+            if (($snapshot['status'] ?? null) !== TimerStatus::Pending->value) {
+                continue;
+            }
+
+            $snapshotTimerId = self::nonEmptyString($snapshot['id'] ?? null);
+
+            if ($snapshotTimerId === null) {
+                continue;
+            }
+
+            $timer = TimerRecovery::restore($run, $snapshotTimerId);
+
+            if ($timer instanceof WorkflowTimer && $timer->status === TimerStatus::Pending) {
+                return $timer;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function openConditionWait(WorkflowRun $run, WorkflowRunSummary $summary): ?array
+    {
+        foreach (ConditionWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            if (($wait['condition_wait_id'] ?? null) === $summary->open_wait_id) {
+                return $wait;
+            }
+        }
+
+        $timerId = self::nonEmptyString($summary->resume_source_id);
+
+        if ($timerId === null) {
+            return null;
+        }
+
+        foreach (ConditionWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            if (($wait['timer_id'] ?? null) === $timerId) {
+                return $wait;
+            }
+        }
+
+        return null;
+    }
+
     private static function latestRetryScheduledEvent(
         WorkflowRun $run,
         ActivityExecution $execution,
@@ -264,6 +365,13 @@ final class TaskRepair
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    private static function nonEmptyString(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 
     private static function settleTerminalTask(WorkflowTask $task, WorkflowRun $run): void

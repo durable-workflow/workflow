@@ -24,6 +24,13 @@ use Workflow\V2\WorkflowStub;
 
 final class V2AwaitWorkflowTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config()->set('queue.default', 'redis');
+    }
+
     public function testAwaitWorkflowRecordsConditionWaitAndResumesAfterUpdate(): void
     {
         Queue::fake();
@@ -341,6 +348,167 @@ final class V2AwaitWorkflowTest extends TestCase
         }
     }
 
+    public function testAwaitWithTimeoutStillTimesOutWhenTimerRowIsRecoveredFromHistory(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-08 15:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'await-timeout-history-fire');
+            $workflow->start();
+
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()
+                ->where('workflow_run_id', $workflow->runId())
+                ->firstOrFail();
+
+            $timerId = $timer->id;
+
+            $timer->delete();
+
+            RunSummaryProjector::project(WorkflowRun::query()->findOrFail($workflow->runId()));
+
+            Carbon::setTestNow(now()->addSeconds(5));
+
+            $this->runReadyTimerTask($workflow->runId());
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            /** @var WorkflowTimer $restoredTimer */
+            $restoredTimer = WorkflowTimer::query()->findOrFail($timerId);
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame('fired', $restoredTimer->status->value);
+            $this->assertNotNull($restoredTimer->fired_at);
+            $this->assertSame([
+                'approved' => false,
+                'timed_out' => true,
+                'stage' => 'timed-out',
+                'workflow_id' => 'await-timeout-history-fire',
+                'run_id' => $workflow->runId(),
+            ], $workflow->output());
+
+            $this->assertSame([
+                'StartAccepted',
+                'WorkflowStarted',
+                'ConditionWaitOpened',
+                'TimerScheduled',
+                'TimerFired',
+                'ConditionWaitTimedOut',
+                'WorkflowCompleted',
+            ], WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $workflow->runId())
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($eventType) => $eventType->value)
+                ->all());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testAwaitWithTimeoutRepairRestoresMissingTimeoutTimerTransportFromHistory(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-08 16:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'await-timeout-history-repair');
+            $workflow->start();
+
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyWorkflowTask($runId);
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+            $conditionWait = $this->findConditionWait($detail['waits']);
+            $timerTask = $this->findTask($detail['tasks'], 'timer');
+            $timerId = $timerTask['timer_id'] ?? null;
+            $timerTaskId = $timerTask['id'] ?? null;
+            $conditionWaitId = $conditionWait['condition_wait_id'] ?? null;
+            $deadlineAt = $conditionWait['deadline_at']?->toJSON();
+
+            $this->assertIsString($timerId);
+            $this->assertIsString($timerTaskId);
+            $this->assertIsString($conditionWaitId);
+            $this->assertNotNull($deadlineAt);
+
+            WorkflowTask::query()->whereKey($timerTaskId)->delete();
+            WorkflowTimer::query()->whereKey($timerId)->delete();
+
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $summary = RunSummaryProjector::project(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+            );
+
+            $this->assertSame('condition', $summary->wait_kind);
+            $this->assertSame('timer', $summary->resume_source_kind);
+            $this->assertSame($timerId, $summary->resume_source_id);
+            $this->assertSame('repair_needed', $summary->liveness_state);
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+            $conditionWait = $this->findConditionWait($detail['waits']);
+
+            $this->assertTrue($detail['can_repair']);
+            $this->assertFalse($conditionWait['task_backed']);
+            $this->assertSame($timerId, $conditionWait['resume_source_id']);
+            $this->assertSame($deadlineAt, $conditionWait['deadline_at']?->toJSON());
+            $this->assertNull($this->findTaskOrNull($detail['tasks'], 'timer'));
+
+            $result = WorkflowStub::loadRun($runId)->attemptRepair();
+
+            $this->assertTrue($result->accepted());
+            $this->assertSame('repair_dispatched', $result->outcome());
+
+            /** @var WorkflowTimer $restoredTimer */
+            $restoredTimer = WorkflowTimer::query()->findOrFail($timerId);
+            /** @var WorkflowTask $repairedTask */
+            $repairedTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Timer->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->sole();
+
+            $this->assertSame('pending', $restoredTimer->status->value);
+            $this->assertSame($deadlineAt, $restoredTimer->fire_at?->toJSON());
+            $this->assertSame([
+                'timer_id' => $timerId,
+                'condition_wait_id' => $conditionWaitId,
+            ], $repairedTask->payload);
+            $this->assertSame($deadlineAt, $repairedTask->available_at?->toJSON());
+            $this->assertSame(1, $repairedTask->repair_count);
+
+            Queue::assertPushed(
+                RunTimerTask::class,
+                static fn (RunTimerTask $job): bool => $job->taskId === $repairedTask->id,
+            );
+
+            Carbon::setTestNow(now()->addSeconds(5));
+
+            $this->runReadyTimerTask($runId);
+            $this->runReadyWorkflowTask($runId);
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame([
+                'approved' => false,
+                'timed_out' => true,
+                'stage' => 'timed-out',
+                'workflow_id' => 'await-timeout-history-repair',
+                'run_id' => $runId,
+            ], $workflow->output());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     private function runReadyWorkflowTask(string $runId): void
     {
         /** @var WorkflowTask $task */
@@ -395,5 +563,20 @@ final class V2AwaitWorkflowTest extends TestCase
         }
 
         $this->fail(sprintf('Task of type [%s] was not found.', $type));
+    }
+
+    /**
+     * @param list<array<string, mixed>> $tasks
+     * @return array<string, mixed>|null
+     */
+    private function findTaskOrNull(array $tasks, string $type): ?array
+    {
+        foreach ($tasks as $task) {
+            if (($task['type'] ?? null) === $type) {
+                return $task;
+            }
+        }
+
+        return null;
     }
 }

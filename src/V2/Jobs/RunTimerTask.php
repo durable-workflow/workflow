@@ -23,6 +23,7 @@ use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TimerRecovery;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class RunTimerTask implements ShouldQueue
@@ -65,15 +66,29 @@ final class RunTimerTask implements ShouldQueue
                 ->lockForUpdate()
                 ->findOrFail($this->taskId);
 
-            /** @var WorkflowTimer $timer */
-            $timer = WorkflowTimer::query()
-                ->lockForUpdate()
-                ->findOrFail($timerId);
-
             /** @var WorkflowRun $run */
             $run = WorkflowRun::query()
                 ->lockForUpdate()
-                ->findOrFail($timer->workflow_run_id);
+                ->findOrFail($task->workflow_run_id);
+            $timer = TimerRecovery::restore($run, $timerId);
+
+            if (! $timer instanceof WorkflowTimer) {
+                $task->forceFill([
+                    'status' => TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                    'last_error' => sprintf(
+                        'Timer %s could not be restored from durable history for timer task %s.',
+                        $timerId,
+                        $task->id,
+                    ),
+                ])->save();
+
+                RunSummaryProjector::project(
+                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                );
+
+                return null;
+            }
 
             if (
                 in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)
@@ -165,10 +180,25 @@ final class RunTimerTask implements ShouldQueue
                 return [null, null];
             }
 
-            /** @var WorkflowTimer $timer */
-            $timer = WorkflowTimer::query()->findOrFail($timerId);
             /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()->findOrFail($timer->workflow_run_id);
+            $run = WorkflowRun::query()->findOrFail($task->workflow_run_id);
+            $timer = TimerRecovery::restore($run, $timerId);
+
+            if (! $timer instanceof WorkflowTimer) {
+                $task->forceFill([
+                    'last_claim_failed_at' => now(),
+                    'last_claim_error' => sprintf(
+                        'Timer %s could not be restored from durable history.',
+                        $timerId,
+                    ),
+                ])->save();
+
+                RunSummaryProjector::project(
+                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                );
+
+                return [null, null];
+            }
 
             TaskCompatibility::sync($task, $run);
 

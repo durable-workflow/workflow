@@ -3987,6 +3987,84 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('timer', $updatedSummary->next_task_type);
     }
 
+    public function testTaskWatchdogRecreatesMissingTimerTaskFromTypedHistoryWhenTimerRowDrifts(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-09 18:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'repair-watchdog-timer-history');
+            $workflow->start(30);
+
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+
+            $timerId = $timer->id;
+            $fireAt = $timer->fire_at?->toJSON();
+
+            WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Timer->value)
+                ->delete();
+
+            $timer->delete();
+
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $summary = RunSummaryProjector::project(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+            );
+
+            $this->assertSame('repair_needed', $summary->liveness_state);
+            $this->assertSame('timer', $summary->wait_kind);
+            $this->assertSame($timerId, $summary->resume_source_id);
+            $this->assertNull($summary->next_task_id);
+
+            $this->wakeTaskWatchdog();
+
+            /** @var WorkflowTimer $restoredTimer */
+            $restoredTimer = WorkflowTimer::query()->findOrFail($timerId);
+            /** @var WorkflowTask $task */
+            $task = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Timer->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->sole();
+
+            $this->assertSame(TimerStatus::Pending, $restoredTimer->status);
+            $this->assertSame($fireAt, $restoredTimer->fire_at?->toJSON());
+            $this->assertSame([
+                'timer_id' => $timerId,
+            ], $task->payload);
+            $this->assertSame($fireAt, $task->available_at?->toJSON());
+            $this->assertSame(1, $task->repair_count);
+
+            Queue::assertPushed(
+                RunTimerTask::class,
+                static fn (RunTimerTask $job): bool => $job->taskId === $task->id
+            );
+
+            $updatedSummary = WorkflowRunSummary::query()->findOrFail($runId);
+
+            $this->assertSame('timer', $updatedSummary->wait_kind);
+            $this->assertSame('timer_scheduled', $updatedSummary->liveness_state);
+            $this->assertSame($task->id, $updatedSummary->next_task_id);
+            $this->assertSame('timer', $updatedSummary->next_task_type);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testTaskWatchdogDoesNotRecreateMissingTaskForRunningActivityExecution(): void
     {
         Queue::fake();

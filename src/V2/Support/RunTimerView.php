@@ -125,6 +125,30 @@ final class RunTimerView
     }
 
     /**
+     * @return array{
+     *     id: string,
+     *     sequence: int|null,
+     *     status: string,
+     *     delay_seconds: int|null,
+     *     fire_at: \Carbon\CarbonInterface|null,
+     *     fired_at: \Carbon\CarbonInterface|null,
+     *     created_at: \Carbon\CarbonInterface|null,
+     *     timer_kind: string|null,
+     *     condition_wait_id: string|null
+     * }|null
+     */
+    public static function timerById(WorkflowRun $run, string $timerId): ?array
+    {
+        foreach (self::timersForRun($run) as $timer) {
+            if (($timer['id'] ?? null) === $timerId) {
+                return $timer;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @return iterable<WorkflowHistoryEvent>
      */
     private static function timerEvents(WorkflowRun $run): iterable
