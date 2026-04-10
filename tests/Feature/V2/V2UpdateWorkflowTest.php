@@ -1132,6 +1132,92 @@ final class V2UpdateWorkflowTest extends TestCase
             ->all());
     }
 
+    public function testUpdateFailureDetailPrefersTypedHistoryWhenUpdateRowsDrift(): void
+    {
+        config()->set('queue.default', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-failure-history');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->submitUpdate('explode', 'boom');
+
+        $this->assertTrue($result->accepted());
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateCompleted')
+            ->firstOrFail();
+
+        $payload = $event->payload;
+        $failureId = $payload['failure_id'] ?? null;
+
+        $this->assertIsString($failureId);
+
+        unset($payload['exception_type'], $payload['exception']['type']);
+        $payload['exception_class'] = 'App\\Legacy\\UpdateBoom';
+        $payload['exception']['class'] = 'App\\Legacy\\UpdateBoom';
+
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        WorkflowUpdate::query()
+            ->where('workflow_command_id', $result->commandId())
+            ->update([
+                'status' => 'completed',
+                'outcome' => 'update_completed',
+                'failure_id' => null,
+                'failure_message' => 'corrupted update row',
+                'result' => Serializer::serialize(['wrong' => true]),
+                'closed_at' => now(),
+            ]);
+
+        WorkflowFailure::query()
+            ->where('id', $failureId)
+            ->update([
+                'exception_class' => \RuntimeException::class,
+                'message' => 'corrupted failure row',
+            ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $update = $detail['updates'][0];
+        $command = collect($detail['commands'])->firstWhere('id', $result->commandId());
+
+        $this->assertSame('failed', $update['status']);
+        $this->assertSame('update_failed', $update['outcome']);
+        $this->assertSame($failureId, $update['failure_id']);
+        $this->assertSame('boom', $update['failure_message']);
+        $this->assertFalse($update['result_available']);
+        $this->assertNull($update['result']);
+        $this->assertSame('App\\Legacy\\UpdateBoom', $update['exception_class']);
+        $this->assertSame('unresolved', $update['exception_resolution_source']);
+        $this->assertTrue($update['exception_replay_blocked']);
+
+        $this->assertIsArray($command);
+        $this->assertSame('failed', $command['update_status']);
+        $this->assertSame($failureId, $command['failure_id']);
+        $this->assertSame('boom', $command['failure_message']);
+        $this->assertFalse($command['result_available']);
+
+        $this->assertSame('App\\Legacy\\UpdateBoom', $detail['exceptions'][0]['exception_class']);
+        $this->assertTrue($detail['exceptions'][0]['exception_replay_blocked']);
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->refresh()->currentState());
+    }
+
     public function testAttemptUpdateRejectsUnknownUpdateTarget(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-unknown');

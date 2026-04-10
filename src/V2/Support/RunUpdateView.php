@@ -29,7 +29,7 @@ final class RunUpdateView
         ]);
 
         $rows = [];
-        $eventsByCommandId = $run->historyEvents
+        $updateEvents = $run->historyEvents
             ->filter(
                 static fn (WorkflowHistoryEvent $event): bool => $event->workflow_command_id !== null
                     && in_array($event->event_type, [
@@ -39,7 +39,14 @@ final class RunUpdateView
                         HistoryEventType::UpdateCompleted,
                     ], true)
             )
+            ->sortBy('sequence')
+            ->values();
+        $eventsByCommandId = $updateEvents
             ->groupBy('workflow_command_id');
+        $eventsByUpdateId = $updateEvents
+            ->filter(static fn (WorkflowHistoryEvent $event): bool => self::stringValue($event->payload['update_id'] ?? null) !== null)
+            ->groupBy(static fn (WorkflowHistoryEvent $event): string => self::stringValue($event->payload['update_id'] ?? null) ?? '');
+        $failureSnapshots = FailureSnapshots::keyedForRun($run);
         $updatesByCommandId = $run->updates
             ->filter(static fn (WorkflowUpdate $update): bool => $update->workflow_command_id !== null)
             ->keyBy('workflow_command_id');
@@ -49,7 +56,14 @@ final class RunUpdateView
                 continue;
             }
 
-            $rows[] = self::rowFromUpdate($update);
+            $rows[] = self::rowFromUpdate(
+                $update,
+                self::mergeEvents(
+                    $eventsByUpdateId->get($update->id),
+                    $update->workflow_command_id === null ? null : $eventsByCommandId->get($update->workflow_command_id),
+                ),
+                $failureSnapshots,
+            );
         }
 
         foreach ($run->commands as $command) {
@@ -64,6 +78,7 @@ final class RunUpdateView
             $rows[] = self::rowFromCommandFallback(
                 $command,
                 $eventsByCommandId->get($command->id),
+                $failureSnapshots,
             );
         }
 
@@ -89,60 +104,86 @@ final class RunUpdateView
     }
 
     /**
+     * @param list<WorkflowHistoryEvent> $events
+     * @param array<string, array<string, mixed>> $failureSnapshots
      * @return array<string, mixed>
      */
-    private static function rowFromUpdate(WorkflowUpdate $update): array
+    private static function rowFromUpdate(
+        WorkflowUpdate $update,
+        array $events,
+        array $failureSnapshots,
+    ): array
     {
         $command = $update->command;
         $failure = $update->failure;
+        $accepted = self::findEvent($events, HistoryEventType::UpdateAccepted);
+        $rejected = self::findEvent($events, HistoryEventType::UpdateRejected);
+        $applied = self::findEvent($events, HistoryEventType::UpdateApplied);
+        $completed = self::findEvent($events, HistoryEventType::UpdateCompleted);
+        $failureId = self::failureId($completed) ?? $update->failure_id;
+        $failureSnapshot = is_string($failureId) ? ($failureSnapshots[$failureId] ?? null) : null;
+        $result = self::resultPayload($completed, $update);
+        $arguments = self::argumentsPayload($update, $accepted, $rejected, $applied, $completed);
 
         return [
             'id' => $update->id,
             'command_id' => $update->workflow_command_id,
-            'command_sequence' => $update->command_sequence,
-            'workflow_sequence' => $update->workflow_sequence,
-            'name' => $update->update_name,
+            'command_sequence' => self::intValue($accepted?->payload['command_sequence'] ?? null)
+                ?? $update->command_sequence,
+            'workflow_sequence' => self::workflowSequence($accepted, $rejected, $applied, $completed)
+                ?? $update->workflow_sequence,
+            'name' => self::updateName($command, $accepted, $rejected, $completed) ?? $update->update_name,
             'target_scope' => $update->target_scope,
             'requested_run_id' => $update->requested_workflow_run_id,
             'resolved_run_id' => $update->resolved_workflow_run_id,
-            'status' => $update->status?->value ?? $update->status,
-            'outcome' => $update->outcome?->value ?? $update->outcome,
+            'status' => self::eventBackedStatus($update, $command, $rejected, $completed),
+            'outcome' => self::eventBackedOutcome($update, $command, $rejected, $completed),
             'source' => $command?->source,
-            'rejection_reason' => $update->rejection_reason,
-            'validation_errors' => $update->normalizedValidationErrors(),
+            'rejection_reason' => self::stringValue($rejected?->payload['rejection_reason'] ?? null)
+                ?? $update->rejection_reason,
+            'validation_errors' => self::validationErrors($rejected) ?: $update->normalizedValidationErrors(),
             'payload_codec' => $update->payload_codec,
-            'arguments_available' => is_string($update->arguments),
-            'arguments' => self::normalizeSerializedValue($update->arguments),
-            'result_available' => is_string($update->result),
-            'result' => self::normalizeSerializedValue($update->result),
-            'failure_id' => $update->failure_id,
-            'failure_message' => $update->failure_message
+            'arguments_available' => is_string($arguments),
+            'arguments' => self::normalizeSerializedValue($arguments),
+            'result_available' => is_string($result) && $failureId === null,
+            'result' => $failureId === null ? self::normalizeSerializedValue($result) : null,
+            'failure_id' => $failureId,
+            'failure_message' => self::failureMessage($completed, $failureSnapshot)
+                ?? $update->failure_message
                 ?? ($failure instanceof WorkflowFailure ? $failure->message : null),
-            'accepted_at' => self::timestamp($update->accepted_at),
-            'applied_at' => self::timestamp($update->applied_at),
-            'rejected_at' => self::timestamp($update->rejected_at),
-            'closed_at' => self::timestamp($update->closed_at),
+            'exception_type' => $failureSnapshot['exception_type'] ?? null,
+            'exception_class' => $failureSnapshot['exception_class'] ?? null,
+            'exception_resolved_class' => $failureSnapshot['exception_resolved_class'] ?? null,
+            'exception_resolution_source' => $failureSnapshot['exception_resolution_source'] ?? null,
+            'exception_resolution_error' => $failureSnapshot['exception_resolution_error'] ?? null,
+            'exception_replay_blocked' => (bool) ($failureSnapshot['exception_replay_blocked'] ?? false),
+            'accepted_at' => self::timestamp($accepted?->recorded_at ?? $update->accepted_at),
+            'applied_at' => self::timestamp($applied?->recorded_at ?? $completed?->recorded_at ?? $update->applied_at),
+            'rejected_at' => self::timestamp($rejected?->recorded_at ?? $update->rejected_at),
+            'closed_at' => self::timestamp($completed?->recorded_at ?? $rejected?->recorded_at ?? $update->closed_at),
         ];
     }
 
     /**
      * @param iterable<int, WorkflowHistoryEvent>|null $events
+     * @param array<string, array<string, mixed>> $failureSnapshots
      * @return array<string, mixed>
      */
-    private static function rowFromCommandFallback(WorkflowCommand $command, iterable|null $events): array
+    private static function rowFromCommandFallback(
+        WorkflowCommand $command,
+        iterable|null $events,
+        array $failureSnapshots,
+    ): array
     {
-        $eventList = [];
-
-        foreach ($events ?? [] as $event) {
-            if ($event instanceof WorkflowHistoryEvent) {
-                $eventList[] = $event;
-            }
-        }
+        $eventList = self::mergeEvents($events);
 
         $accepted = self::findEvent($eventList, HistoryEventType::UpdateAccepted);
         $rejected = self::findEvent($eventList, HistoryEventType::UpdateRejected);
         $completed = self::findEvent($eventList, HistoryEventType::UpdateCompleted);
         $workflowSequence = self::workflowSequence($accepted, $rejected, $completed);
+        $failureId = self::failureId($completed);
+        $failureSnapshot = is_string($failureId) ? ($failureSnapshots[$failureId] ?? null) : null;
+        $result = self::resultPayload($completed, null);
 
         return [
             'id' => null,
@@ -153,22 +194,28 @@ final class RunUpdateView
             'target_scope' => $command->target_scope,
             'requested_run_id' => $command->requestedRunId(),
             'resolved_run_id' => $command->resolvedRunId(),
-            'status' => self::fallbackStatus($command),
-            'outcome' => $command->outcome?->value,
+            'status' => $completed instanceof WorkflowHistoryEvent
+                ? ($failureId === null ? UpdateStatus::Completed->value : UpdateStatus::Failed->value)
+                : ($rejected instanceof WorkflowHistoryEvent ? UpdateStatus::Rejected->value : self::fallbackStatus($command)),
+            'outcome' => $completed instanceof WorkflowHistoryEvent
+                ? ($failureId === null ? CommandOutcome::UpdateCompleted->value : CommandOutcome::UpdateFailed->value)
+                : $command->outcome?->value,
             'source' => $command->source,
             'rejection_reason' => $command->rejection_reason,
             'validation_errors' => $command->validationErrors(),
             'payload_codec' => $command->payload_codec,
             'arguments_available' => true,
             'arguments' => serialize($command->payloadArguments()),
-            'result_available' => array_key_exists('result', (array) ($completed?->payload ?? [])),
-            'result' => self::normalizeSerializedValue($completed?->payload['result'] ?? null),
-            'failure_id' => is_string($completed?->payload['failure_id'] ?? null)
-                ? $completed->payload['failure_id']
-                : null,
-            'failure_message' => is_string($completed?->payload['message'] ?? null)
-                ? $completed->payload['message']
-                : null,
+            'result_available' => is_string($result) && $failureId === null,
+            'result' => $failureId === null ? self::normalizeSerializedValue($result) : null,
+            'failure_id' => $failureId,
+            'failure_message' => self::failureMessage($completed, $failureSnapshot),
+            'exception_type' => $failureSnapshot['exception_type'] ?? null,
+            'exception_class' => $failureSnapshot['exception_class'] ?? null,
+            'exception_resolved_class' => $failureSnapshot['exception_resolved_class'] ?? null,
+            'exception_resolution_source' => $failureSnapshot['exception_resolution_source'] ?? null,
+            'exception_resolution_error' => $failureSnapshot['exception_resolution_error'] ?? null,
+            'exception_replay_blocked' => (bool) ($failureSnapshot['exception_replay_blocked'] ?? false),
             'accepted_at' => self::timestamp($command->accepted_at),
             'applied_at' => self::timestamp($command->applied_at),
             'rejected_at' => self::timestamp($command->rejected_at),
@@ -234,6 +281,180 @@ final class RunUpdateView
             CommandOutcome::UpdateFailed => UpdateStatus::Failed->value,
             default => UpdateStatus::Accepted->value,
         };
+    }
+
+    /**
+     * @param iterable<int, WorkflowHistoryEvent>|null ...$groups
+     * @return list<WorkflowHistoryEvent>
+     */
+    private static function mergeEvents(iterable|null ...$groups): array
+    {
+        $events = [];
+
+        foreach ($groups as $group) {
+            foreach ($group ?? [] as $event) {
+                if (! $event instanceof WorkflowHistoryEvent) {
+                    continue;
+                }
+
+                $events[$event->id] = $event;
+            }
+        }
+
+        $events = array_values($events);
+
+        usort($events, static function (WorkflowHistoryEvent $left, WorkflowHistoryEvent $right): int {
+            if ($left->sequence !== $right->sequence) {
+                return $left->sequence <=> $right->sequence;
+            }
+
+            return (string) $left->id <=> (string) $right->id;
+        });
+
+        return $events;
+    }
+
+    private static function eventBackedStatus(
+        WorkflowUpdate $update,
+        ?WorkflowCommand $command,
+        ?WorkflowHistoryEvent $rejected,
+        ?WorkflowHistoryEvent $completed,
+    ): string {
+        if ($completed instanceof WorkflowHistoryEvent) {
+            return self::failureId($completed) === null
+                ? UpdateStatus::Completed->value
+                : UpdateStatus::Failed->value;
+        }
+
+        if ($rejected instanceof WorkflowHistoryEvent) {
+            return UpdateStatus::Rejected->value;
+        }
+
+        if ($update->status instanceof UpdateStatus) {
+            return $update->status->value;
+        }
+
+        if (is_string($update->status) && $update->status !== '') {
+            return $update->status;
+        }
+
+        return $command instanceof WorkflowCommand
+            ? self::fallbackStatus($command)
+            : UpdateStatus::Accepted->value;
+    }
+
+    private static function eventBackedOutcome(
+        WorkflowUpdate $update,
+        ?WorkflowCommand $command,
+        ?WorkflowHistoryEvent $rejected,
+        ?WorkflowHistoryEvent $completed,
+    ): ?string {
+        if ($completed instanceof WorkflowHistoryEvent) {
+            return self::failureId($completed) === null
+                ? CommandOutcome::UpdateCompleted->value
+                : CommandOutcome::UpdateFailed->value;
+        }
+
+        if ($rejected instanceof WorkflowHistoryEvent) {
+            return $command?->outcome?->value
+                ?? ($update->outcome instanceof CommandOutcome ? $update->outcome->value : null)
+                ?? (is_string($update->outcome) ? $update->outcome : null);
+        }
+
+        if ($update->outcome instanceof CommandOutcome) {
+            return $update->outcome->value;
+        }
+
+        if (is_string($update->outcome) && $update->outcome !== '') {
+            return $update->outcome;
+        }
+
+        return $command?->outcome?->value;
+    }
+
+    private static function failureId(?WorkflowHistoryEvent $completed): ?string
+    {
+        return self::stringValue($completed?->payload['failure_id'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed>|null $failureSnapshot
+     */
+    private static function failureMessage(?WorkflowHistoryEvent $completed, ?array $failureSnapshot): ?string
+    {
+        return self::stringValue($failureSnapshot['message'] ?? null)
+            ?? self::stringValue($completed?->payload['message'] ?? null);
+    }
+
+    private static function resultPayload(?WorkflowHistoryEvent $completed, ?WorkflowUpdate $update): mixed
+    {
+        if (array_key_exists('result', (array) ($completed?->payload ?? []))) {
+            return $completed?->payload['result'] ?? null;
+        }
+
+        return $update?->result;
+    }
+
+    private static function argumentsPayload(
+        WorkflowUpdate $update,
+        ?WorkflowHistoryEvent ...$events,
+    ): mixed {
+        foreach ($events as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+
+            if (array_key_exists('arguments', $event->payload)) {
+                return $event->payload['arguments'];
+            }
+        }
+
+        return $update->arguments;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private static function validationErrors(?WorkflowHistoryEvent $event): array
+    {
+        $validationErrors = $event?->payload['validation_errors'] ?? null;
+
+        if (! is_array($validationErrors)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($validationErrors as $field => $messages) {
+            if (! is_string($field) || ! is_array($messages)) {
+                continue;
+            }
+
+            $fieldMessages = array_values(array_filter(
+                $messages,
+                static fn (mixed $message): bool => is_string($message) && $message !== '',
+            ));
+
+            if ($fieldMessages !== []) {
+                $normalized[$field] = $fieldMessages;
+            }
+        }
+
+        return $normalized;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        return is_int($value)
+            ? $value
+            : null;
+    }
+
+    private static function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 
     private static function normalizeSerializedValue(mixed $value): mixed
