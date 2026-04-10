@@ -7,7 +7,6 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
-use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -291,11 +290,7 @@ final class ConditionWaits
         int $sequence,
         AwaitCall|AwaitWithTimeoutCall $call,
     ): void {
-        $conflictingEventTypes = self::conflictingStepEventTypesForSequence($run, $sequence);
-
-        if ($conflictingEventTypes !== []) {
-            throw new HistoryEventShapeMismatchException($sequence, 'condition wait', $conflictingEventTypes);
-        }
+        WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CONDITION_WAIT);
 
         $definition = self::conditionDefinitionForSequence($run, $sequence);
 
@@ -393,83 +388,6 @@ final class ConditionWaits
             'condition_key' => $conditionKey,
             'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
         ];
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function conflictingStepEventTypesForSequence(WorkflowRun $run, int $sequence): array
-    {
-        $run->loadMissing('historyEvents');
-        $eventTypes = [];
-
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
-            }
-
-            if (! self::isWorkflowStepEvent($event)) {
-                continue;
-            }
-
-            if (self::intValue($event->payload['sequence'] ?? null) !== $sequence) {
-                continue;
-            }
-
-            if (self::isConditionWaitStepEvent($event)) {
-                continue;
-            }
-
-            $eventTypes[] = $event->event_type->value;
-        }
-
-        return array_values(array_unique($eventTypes));
-    }
-
-    private static function isWorkflowStepEvent(WorkflowHistoryEvent $event): bool
-    {
-        return in_array($event->event_type, [
-            HistoryEventType::ActivityScheduled,
-            HistoryEventType::ActivityStarted,
-            HistoryEventType::ActivityHeartbeatRecorded,
-            HistoryEventType::ActivityRetryScheduled,
-            HistoryEventType::ActivityCompleted,
-            HistoryEventType::ActivityFailed,
-            HistoryEventType::ChildWorkflowScheduled,
-            HistoryEventType::ChildRunStarted,
-            HistoryEventType::ChildRunCompleted,
-            HistoryEventType::ChildRunFailed,
-            HistoryEventType::ChildRunCancelled,
-            HistoryEventType::ChildRunTerminated,
-            HistoryEventType::ConditionWaitOpened,
-            HistoryEventType::ConditionWaitSatisfied,
-            HistoryEventType::ConditionWaitTimedOut,
-            HistoryEventType::SignalWaitOpened,
-            HistoryEventType::SignalApplied,
-            HistoryEventType::SideEffectRecorded,
-            HistoryEventType::VersionMarkerRecorded,
-            HistoryEventType::TimerScheduled,
-            HistoryEventType::TimerFired,
-            HistoryEventType::TimerCancelled,
-        ], true);
-    }
-
-    private static function isConditionWaitStepEvent(WorkflowHistoryEvent $event): bool
-    {
-        if (in_array($event->event_type, [
-            HistoryEventType::ConditionWaitOpened,
-            HistoryEventType::ConditionWaitSatisfied,
-            HistoryEventType::ConditionWaitTimedOut,
-        ], true)) {
-            return true;
-        }
-
-        return in_array($event->event_type, [
-            HistoryEventType::TimerScheduled,
-            HistoryEventType::TimerFired,
-            HistoryEventType::TimerCancelled,
-        ], true)
-            && self::stringValue($event->payload['timer_kind'] ?? null) === 'condition_timeout';
     }
 
     /**

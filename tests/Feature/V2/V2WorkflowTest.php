@@ -50,6 +50,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\ActivityTaskBridge;
+use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -78,6 +79,82 @@ use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowTest extends TestCase
 {
+    public function testQueryReplayRejectsActivityHistoryShapeDrift(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelActivityWorkflow::class, 'activity-query-history-shape-drift');
+        $workflow->start('Ada', 'Grace');
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => 'timer-from-older-definition',
+            'sequence' => 1,
+            'delay_seconds' => 60,
+            'fire_at' => now()->addMinute()->toJSON(),
+        ]);
+
+        $this->expectException(HistoryEventShapeMismatchException::class);
+        $this->expectExceptionMessage('recorded [TimerScheduled]');
+        $this->expectExceptionMessage('current workflow yielded activity');
+
+        $workflow->refresh()->currentState();
+    }
+
+    public function testWorkflowWorkerBlocksReplayWhenActivityHistoryShapeDrifts(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-worker-history-shape-drift');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, [
+            'sequence' => 1,
+            'child_call_id' => 'child-from-older-definition',
+            'child_workflow_class' => TestTimerWorkflow::class,
+            'child_workflow_type' => 'test-timer-workflow',
+            'child_workflow_instance_id' => 'child-from-older-definition',
+            'child_workflow_run_id' => 'child-run-from-older-definition',
+        ]);
+
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+
+        $this->assertFalse($workflow->refresh()->failed());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::WorkflowFailed->value,
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertTrue($task->payload['replay_blocked'] ?? false);
+        $this->assertSame('history_shape_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+        $this->assertSame(1, $task->payload['replay_blocked_workflow_sequence'] ?? null);
+        $this->assertSame('activity', $task->payload['replay_blocked_expected_history_shape'] ?? null);
+        $this->assertSame(['ChildWorkflowScheduled'], $task->payload['replay_blocked_recorded_event_types'] ?? null);
+        $this->assertStringContainsString('recorded [ChildWorkflowScheduled]', (string) $task->last_error);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertStringContainsString('history recorded [ChildWorkflowScheduled]', $detail['liveness_reason']);
+        $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
+        $this->assertSame('activity', $detail['tasks'][0]['replay_blocked_expected_history_shape']);
+        $this->assertSame(['ChildWorkflowScheduled'], $detail['tasks'][0]['replay_blocked_recorded_event_types']);
+    }
+
     public function testWorkflowCompletesWithDistinctInstanceAndRunIds(): void
     {
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class);

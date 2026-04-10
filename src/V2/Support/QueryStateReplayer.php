@@ -77,6 +77,8 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof ActivityCall) {
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::ACTIVITY);
+
                 $activityCompletion = $this->activityCompletionEvent($run, $sequence);
 
                 if ($activityCompletion !== null) {
@@ -147,6 +149,8 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof TimerCall) {
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::TIMER);
+
                 if ($this->timerFiredEvent($run, $sequence) !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     $current = $result->send(true);
@@ -182,6 +186,7 @@ final class QueryStateReplayer
 
             if ($current instanceof SideEffectCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SIDE_EFFECT);
 
                 $sideEffectEvent = $this->sideEffectEvent($run, $sequence);
 
@@ -200,6 +205,7 @@ final class QueryStateReplayer
 
             if ($current instanceof VersionCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::VERSION_MARKER);
 
                 $resolution = VersionResolver::resolve(
                     $run,
@@ -220,6 +226,7 @@ final class QueryStateReplayer
 
             if ($current instanceof SignalCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SIGNAL_WAIT);
 
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
 
@@ -238,6 +245,7 @@ final class QueryStateReplayer
 
             if ($current instanceof ChildWorkflowCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
 
                 $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
                 $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
@@ -309,6 +317,13 @@ final class QueryStateReplayer
                     $call = $descriptor['call'];
                     $offset = $descriptor['offset'];
                     $itemSequence = $sequence + $offset;
+                    WorkflowStepHistory::assertCompatible(
+                        $run,
+                        $itemSequence,
+                        $call instanceof ActivityCall
+                            ? WorkflowStepHistory::ACTIVITY
+                            : WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
 
                     if ($call instanceof ActivityCall) {
                         $activityCompletion = $this->activityCompletionEvent($run, $itemSequence);
@@ -454,6 +469,8 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof ContinueAsNewCall) {
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CONTINUE_AS_NEW);
+
                 $this->syncWorkflowCursor($workflow, $sequence);
                 return new ReplayState($workflow, $sequence, $current);
             }
