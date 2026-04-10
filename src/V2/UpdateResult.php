@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use Carbon\CarbonInterface;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -68,6 +69,36 @@ final class UpdateResult extends CommandResult
     public function updateStatus(): ?string
     {
         return $this->update?->status?->value;
+    }
+
+    public function updateName(): ?string
+    {
+        return $this->update?->update_name;
+    }
+
+    public function workflowSequence(): ?int
+    {
+        return $this->update?->workflow_sequence;
+    }
+
+    public function acceptedAt(): ?CarbonInterface
+    {
+        return $this->update?->accepted_at;
+    }
+
+    public function appliedAt(): ?CarbonInterface
+    {
+        return $this->update?->applied_at;
+    }
+
+    public function rejectedAt(): ?CarbonInterface
+    {
+        return $this->update?->rejected_at;
+    }
+
+    public function closedAt(): ?CarbonInterface
+    {
+        return $this->update?->closed_at;
     }
 
     public function waitFor(): string

@@ -232,12 +232,15 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testAttemptUpdateReturnsAcceptedLifecycleWhenCompletionWaitTimesOut(): void
     {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
         config()->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
         config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-timeout');
         $workflow->start();
 
+        $this->runReadyWorkflowTask($workflow->runId());
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
 
         WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([
@@ -269,14 +272,65 @@ final class V2UpdateWorkflowTest extends TestCase
         ]);
     }
 
+    public function testInspectUpdateCanFollowTimedOutLifecycleUntilItCloses(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
+        config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-inspect-timeout');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([
+            'compatibility' => 'build-inspect-timeout',
+        ])->save();
+
+        $timedOut = $workflow->attemptUpdate('approve', true, 'inspect-timeout');
+        $accepted = $workflow->inspectUpdate($timedOut->updateId());
+
+        $this->assertTrue($accepted->accepted());
+        $this->assertSame('accepted', $accepted->updateStatus());
+        $this->assertSame('approve', $accepted->updateName());
+        $this->assertNull($accepted->workflowSequence());
+        $this->assertNull($accepted->result());
+        $this->assertSame('status', $accepted->waitFor());
+        $this->assertFalse($accepted->waitTimedOut());
+        $this->assertNotNull($accepted->acceptedAt());
+        $this->assertNull($accepted->closedAt());
+
+        config()->set('workflows.v2.compatibility.supported', ['build-inspect-timeout']);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $completed = $workflow->inspectUpdate($timedOut->updateId());
+
+        $this->assertTrue($completed->completed());
+        $this->assertSame('completed', $completed->updateStatus());
+        $this->assertSame('update_completed', $completed->outcome());
+        $this->assertSame('approve', $completed->updateName());
+        $this->assertSame(1, $completed->workflowSequence());
+        $this->assertSame([
+            'approved' => true,
+            'events' => ['started', 'approved:yes:inspect-timeout'],
+        ], $completed->result());
+        $this->assertNotNull($completed->closedAt());
+    }
+
     public function testUpdateThrowsHelpfulMessageWhenCompletionWaitTimesOut(): void
     {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
         config()->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
         config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-timeout-throws');
         $workflow->start();
 
+        $this->runReadyWorkflowTask($workflow->runId());
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
 
         WorkflowRun::query()->findOrFail($workflow->runId())->forceFill([

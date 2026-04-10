@@ -761,6 +761,60 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testUpdateWebhookCanInspectAcceptedLifecycleByUpdateId(): void
+    {
+        config()->set('queue.default', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-inspect');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $accepted = $this->postJson('/webhooks/instances/order-update-webhook-inspect/updates/approve', [
+            'wait_for' => 'accepted',
+            'arguments' => [true, 'webhook-inspect'],
+        ]);
+
+        $accepted
+            ->assertStatus(202)
+            ->assertJsonPath('update_status', 'accepted');
+
+        $updateId = $accepted->json('update_id');
+
+        $this->assertIsString($updateId);
+
+        $this->getJson('/webhooks/instances/order-update-webhook-inspect/updates/' . $updateId)
+            ->assertStatus(202)
+            ->assertJsonPath('workflow_id', 'order-update-webhook-inspect')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('command_id', $accepted->json('command_id'))
+            ->assertJsonPath('update_id', $updateId)
+            ->assertJsonPath('update_name', 'approve')
+            ->assertJsonPath('update_status', 'accepted')
+            ->assertJsonPath('workflow_sequence', null)
+            ->assertJsonPath('wait_for', 'status')
+            ->assertJsonPath('wait_timed_out', false)
+            ->assertJsonPath('wait_timeout_seconds', null)
+            ->assertJsonPath('result', null);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->getJson('/webhooks/instances/order-update-webhook-inspect/runs/' . $workflow->runId() . '/updates/' . $updateId)
+            ->assertStatus(200)
+            ->assertJsonPath('outcome', 'update_completed')
+            ->assertJsonPath('update_id', $updateId)
+            ->assertJsonPath('update_name', 'approve')
+            ->assertJsonPath('update_status', 'completed')
+            ->assertJsonPath('workflow_sequence', 1)
+            ->assertJsonPath('wait_for', 'status')
+            ->assertJsonPath('wait_timed_out', false)
+            ->assertJsonPath('result.approved', true)
+            ->assertJsonPath('result.events.0', 'started')
+            ->assertJsonPath('result.events.1', 'approved:yes:webhook-inspect');
+    }
+
     public function testUpdateWebhookRejectsLaterUpdateWhileAnEarlierSignalIsStillPending(): void
     {
         $workflow = WorkflowStub::make(TestSignalThenUpdateWorkflow::class, 'order-update-webhook-linearized');

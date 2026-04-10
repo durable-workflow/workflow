@@ -628,10 +628,11 @@ final class WorkflowStub
                 : '';
 
             throw new LogicException(sprintf(
-                'Workflow instance [%s] update [%s] was accepted but did not finish applying%s. Use attemptUpdate() to inspect the durable update lifecycle or submitUpdate() to return immediately after acceptance.',
+                'Workflow instance [%s] update [%s] was accepted but did not finish applying%s. Use inspectUpdate(%s) to read the durable update lifecycle or submitUpdate() to return immediately after acceptance.',
                 $this->instance->id,
                 $method,
                 $timedOutSuffix,
+                var_export($result->updateId(), true),
             ));
         }
 
@@ -646,6 +647,32 @@ final class WorkflowStub
     public function submitUpdate(string $method, ...$arguments): UpdateResult
     {
         return $this->submitUpdateWithArguments($method, $arguments);
+    }
+
+    public function inspectUpdate(string $updateId): UpdateResult
+    {
+        $this->refresh();
+
+        if ($updateId === '') {
+            throw new LogicException('Update id cannot be empty.');
+        }
+
+        /** @var WorkflowUpdate|null $update */
+        $update = $this->scopedUpdateQuery($updateId)->first();
+
+        if (! $update instanceof WorkflowUpdate) {
+            $scopeLabel = $this->runTargeted && $this->selectedRunId !== null
+                ? sprintf('run [%s]', $this->selectedRunId)
+                : sprintf('workflow instance [%s]', $this->instance->id);
+
+            throw new LogicException(sprintf(
+                'Update [%s] was not found for %s.',
+                $updateId,
+                $scopeLabel,
+            ));
+        }
+
+        return $this->updateResultFor($update, 'status');
     }
 
     /**
@@ -1008,15 +1035,27 @@ final class WorkflowStub
         ?int $waitTimeoutSeconds = null,
     ): UpdateResult
     {
-        /** @var WorkflowCommand $command */
-        $command = WorkflowCommand::query()->findOrFail($commandId);
         /** @var WorkflowUpdate|null $update */
         $update = WorkflowUpdate::query()->find($updateId);
 
         if (! $update instanceof WorkflowUpdate) {
+            /** @var WorkflowCommand $command */
+            $command = WorkflowCommand::query()->findOrFail($commandId);
+
             return UpdateResult::fromCommand($command, null, null, null, $waitFor, $waitTimedOut, $waitTimeoutSeconds);
         }
 
+        return $this->updateResultFor($update, $waitFor, $waitTimedOut, $waitTimeoutSeconds);
+    }
+
+    private function updateResultFor(
+        WorkflowUpdate $update,
+        string $waitFor = 'completed',
+        bool $waitTimedOut = false,
+        ?int $waitTimeoutSeconds = null,
+    ): UpdateResult {
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($update->workflow_command_id);
         /** @var WorkflowFailure|null $failure */
         $failure = is_string($update->failure_id)
             ? WorkflowFailure::query()->find($update->failure_id)
@@ -1031,6 +1070,19 @@ final class WorkflowStub
             $waitTimedOut,
             $waitTimeoutSeconds,
         );
+    }
+
+    private function scopedUpdateQuery(string $updateId)
+    {
+        $query = WorkflowUpdate::query()
+            ->whereKey($updateId)
+            ->where('workflow_instance_id', $this->instance->id);
+
+        if ($this->runTargeted && $this->selectedRunId !== null) {
+            $query->where('workflow_run_id', $this->selectedRunId);
+        }
+
+        return $query;
     }
 
     private function updateWaitTimeoutSeconds(): int

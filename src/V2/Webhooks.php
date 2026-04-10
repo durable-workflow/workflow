@@ -177,6 +177,43 @@ final class Webhooks
             });
         })->name('workflows.v2.update');
 
+        Route::get("{$basePath}/instances/{workflowId}/runs/{runId}/updates/{updateId}", static function (
+            Request $request,
+            string $workflowId,
+            string $runId,
+            string $updateId,
+        ) {
+            $request = self::validateAuth($request);
+
+            try {
+                $result = self::selectionStub($workflowId, $runId)->inspectUpdate($updateId);
+            } catch (LogicException $exception) {
+                return response()->json([
+                    'message' => $exception->getMessage(),
+                ], 404);
+            }
+
+            return self::updateLookupResponse($result);
+        })->name('workflows.v2.runs.update-status');
+
+        Route::get("{$basePath}/instances/{workflowId}/updates/{updateId}", static function (
+            Request $request,
+            string $workflowId,
+            string $updateId,
+        ) {
+            $request = self::validateAuth($request);
+
+            try {
+                $result = self::selectionStub($workflowId)->inspectUpdate($updateId);
+            } catch (LogicException $exception) {
+                return response()->json([
+                    'message' => $exception->getMessage(),
+                ], 404);
+            }
+
+            return self::updateLookupResponse($result);
+        })->name('workflows.v2.update-status');
+
         Route::post(
             "{$basePath}/instances/{workflowId}/runs/{runId}/repair",
             static function (Request $request, string $workflowId, string $runId) {
@@ -538,5 +575,13 @@ final class Webhooks
     private static function commandResponse(CommandResult $result, int $status, ?string $workflowType = null)
     {
         return response()->json(CommandResponse::payload($result, $workflowType), $status);
+    }
+
+    private static function updateLookupResponse(UpdateResult $result)
+    {
+        return response()->json(
+            CommandResponse::payload($result),
+            $result->updateStatus() === 'accepted' ? 202 : 200,
+        );
     }
 }

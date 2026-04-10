@@ -33,9 +33,15 @@ final class CommandResponse
         if ($result instanceof UpdateResult) {
             $payload['update_id'] = $result->updateId();
             $payload['update_status'] = $result->updateStatus();
+            $payload['update_name'] = $result->updateName();
+            $payload['workflow_sequence'] = $result->workflowSequence();
             $payload['result'] = $result->result();
             $payload['failure_id'] = $result->failureId();
             $payload['failure_message'] = $result->failureMessage();
+            $payload['accepted_at'] = $result->acceptedAt()?->toJSON();
+            $payload['applied_at'] = $result->appliedAt()?->toJSON();
+            $payload['rejected_at'] = $result->rejectedAt()?->toJSON();
+            $payload['closed_at'] = $result->closedAt()?->toJSON();
             $payload['wait_for'] = $result->waitFor();
             $payload['wait_timed_out'] = $result->waitTimedOut();
             $payload['wait_timeout_seconds'] = $result->waitTimeoutSeconds();
