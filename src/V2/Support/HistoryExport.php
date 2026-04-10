@@ -954,19 +954,6 @@ final class HistoryExport
             }
         }
 
-        if (
-            in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)
-            && ParallelChildGroup::metadataPathFromPayload($state) === []
-        ) {
-            $path = ParallelChildGroup::metadataPathFromPayload([
-                'parallel_group_path' => $execution->parallel_group_path,
-            ]);
-
-            if ($path !== []) {
-                $state = ActivitySnapshot::merge($state, ParallelChildGroup::payloadForPath($path));
-            }
-        }
-
         return $state;
     }
 

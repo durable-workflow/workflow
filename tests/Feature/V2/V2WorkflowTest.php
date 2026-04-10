@@ -2717,8 +2717,9 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($secondChildRunId, $workflow->output()['children'][1]['run_id'] ?? null);
     }
 
-    public function testParallelChildLinkSnapshotBackfillsGroupMetadataForChildResolutionHistory(): void
+    public function testParallelGroupMetadataBackfillStampsChildHistoryBeforeResolution(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelChildWorkflow::class, 'parallel-child-link-group-snapshot');
@@ -2753,6 +2754,25 @@ final class V2WorkflowTest extends TestCase
 
         $this->removeChildHistoryParallelMetadata($parentRunId, 1);
         $this->removeChildHistoryParallelMetadata($parentRunId, 2);
+
+        $this->artisan('workflow:v2:backfill-parallel-group-metadata', [
+            '--run-id' => [$parentRunId],
+            '--dry-run' => true,
+        ])->assertSuccessful();
+
+        $this->artisan('workflow:v2:backfill-parallel-group-metadata', [
+            '--run-id' => [$parentRunId],
+        ])->assertSuccessful();
+
+        $this->assertSame(4, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->whereIn('event_type', [
+                HistoryEventType::ChildWorkflowScheduled->value,
+                HistoryEventType::ChildRunStarted->value,
+            ])
+            ->get()
+            ->filter(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['parallel_group_path'] ?? null) !== null)
+            ->count());
 
         $firstChildRunId = $links[0]->child_workflow_run_id;
         $secondChildRunId = $links[1]->child_workflow_run_id;
@@ -2923,8 +2943,9 @@ final class V2WorkflowTest extends TestCase
         ], $workflow->output()['results'] ?? null);
     }
 
-    public function testParallelActivityExecutionSnapshotBackfillsGroupMetadataForLaterActivityHistory(): void
+    public function testParallelGroupMetadataBackfillStampsActivityHistoryBeforeLaterEvents(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelActivityWorkflow::class, 'parallel-activity-execution-group-snapshot');
@@ -2950,6 +2971,10 @@ final class V2WorkflowTest extends TestCase
         ]], $firstExecution->parallel_group_path);
 
         $this->removeActivityHistoryParallelMetadata($parentRunId, 1);
+
+        $this->artisan('workflow:v2:backfill-parallel-group-metadata', [
+            '--run-id' => [$parentRunId],
+        ])->assertSuccessful();
 
         RunSummaryProjector::project(
             WorkflowRun::query()->findOrFail($parentRunId)

@@ -107,11 +107,6 @@ final class ActivityTaskClaimer
             ]);
 
             $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($run, (int) $execution->sequence);
-            if ($parallelMetadataPath === []) {
-                $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload([
-                    'parallel_group_path' => $execution->parallel_group_path,
-                ]);
-            }
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
             WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([

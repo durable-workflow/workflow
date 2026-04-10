@@ -154,21 +154,7 @@ final class ChildRunHistory
      */
     public static function parallelGroupPathForSequence(WorkflowRun $run, int $sequence): array
     {
-        $historyPath = ParallelChildGroup::metadataPathForSequence($run, $sequence);
-
-        if ($historyPath !== []) {
-            return $historyPath;
-        }
-
-        $link = self::latestLinkForSequence($run, $sequence);
-
-        if (! $link instanceof WorkflowLink) {
-            return [];
-        }
-
-        return ParallelChildGroup::metadataPathFromPayload([
-            'parallel_group_path' => $link->parallel_group_path,
-        ]);
+        return ParallelChildGroup::metadataPathForSequence($run, $sequence);
     }
 
     public static function childRunForSequence(WorkflowRun $run, int $sequence): ?WorkflowRun
