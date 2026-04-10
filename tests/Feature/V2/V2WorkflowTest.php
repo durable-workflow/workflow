@@ -72,6 +72,7 @@ use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
+use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\SelectedRunLocator;
@@ -597,6 +598,8 @@ final class V2WorkflowTest extends TestCase
 
     public function testRowOnlyCancelledActivityWithoutTypedHistoryIsMarkedUnsupported(): void
     {
+        $attemptId = (string) Str::ulid();
+
         $instance = WorkflowInstance::query()->create([
             'id' => 'row-only-activity-cancelled',
             'workflow_class' => TestGreetingWorkflow::class,
@@ -639,6 +642,7 @@ final class V2WorkflowTest extends TestCase
             'connection' => 'redis',
             'queue' => 'default',
             'attempt_count' => 1,
+            'current_attempt_id' => $attemptId,
             'started_at' => now()
                 ->subMinutes(2),
             'closed_at' => now()
@@ -646,6 +650,7 @@ final class V2WorkflowTest extends TestCase
         ]);
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $export = HistoryExport::forRun($run->fresh(['historyEvents', 'activityExecutions.attempts']));
 
         $this->assertSame('unsupported', $detail['activities'][0]['status']);
         $this->assertSame('unsupported_terminal_without_history', $detail['activities'][0]['history_authority']);
@@ -654,6 +659,10 @@ final class V2WorkflowTest extends TestCase
             $detail['activities'][0]['history_unsupported_reason'],
         );
         $this->assertSame('cancelled', $detail['activities'][0]['row_status']);
+        $this->assertSame($attemptId, $detail['activities'][0]['attempt_id']);
+        $this->assertCount(1, $detail['activities'][0]['attempts']);
+        $this->assertSame($attemptId, $detail['activities'][0]['attempts'][0]['id']);
+        $this->assertSame('cancelled', $detail['activities'][0]['attempts'][0]['status']);
         $this->assertNull($detail['activities'][0]['closed_at']);
         $this->assertNull(unserialize($detail['activities'][0]['result']));
         $this->assertSame('unsupported', $detail['waits'][0]['status']);
@@ -663,6 +672,20 @@ final class V2WorkflowTest extends TestCase
             $detail['waits'][0]['history_unsupported_reason'],
         );
         $this->assertCount(0, $detail['tasks']);
+
+        $this->assertSame('unsupported', $export['activities'][0]['status']);
+        $this->assertSame('unsupported_terminal_without_history', $export['activities'][0]['history_authority']);
+        $this->assertSame(
+            'terminal_activity_row_without_typed_history',
+            $export['activities'][0]['history_unsupported_reason'],
+        );
+        $this->assertSame('cancelled', $export['activities'][0]['row_status']);
+        $this->assertSame($detail['activities'][0]['attempt_id'], $export['activities'][0]['current_attempt_id']);
+        $this->assertCount(1, $export['activities'][0]['attempts']);
+        $this->assertSame($detail['activities'][0]['attempts'][0]['id'], $export['activities'][0]['attempts'][0]['id']);
+        $this->assertSame($detail['activities'][0]['attempts'][0]['status'], $export['activities'][0]['attempts'][0]['status']);
+        $this->assertSame($run->activityExecutions()->firstOrFail()->id, $export['activities'][0]['attempts'][0]['activity_execution_id']);
+        $this->assertNull($export['activities'][0]['closed_at']);
     }
 
     public function testReplayBlocksFiredTimerProjectionWithoutTypedStepHistory(): void

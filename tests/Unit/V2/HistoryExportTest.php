@@ -825,6 +825,8 @@ final class HistoryExportTest extends TestCase
         });
 
         $run = $this->createMinimalCompletedRun('history-export-row-only-activity');
+        $completedAttemptId = (string) Str::ulid();
+        $cancelledAttemptId = (string) Str::ulid();
 
         /** @var ActivityExecution $activity */
         $activity = ActivityExecution::query()->create([
@@ -839,6 +841,7 @@ final class HistoryExportTest extends TestCase
             'connection' => 'redis',
             'queue' => 'activities',
             'attempt_count' => 1,
+            'current_attempt_id' => $completedAttemptId,
             'started_at' => now()->subMinutes(2),
             'closed_at' => now()->subMinute(),
         ]);
@@ -855,6 +858,7 @@ final class HistoryExportTest extends TestCase
             'connection' => 'redis',
             'queue' => 'activities',
             'attempt_count' => 1,
+            'current_attempt_id' => $cancelledAttemptId,
             'started_at' => now()->subMinutes(2),
             'closed_at' => now()->subMinute(),
         ]);
@@ -875,6 +879,11 @@ final class HistoryExportTest extends TestCase
         );
         $this->assertSame([], $bundle['activities'][0]['history_event_types']);
         $this->assertSame($activity->arguments, $bundle['activities'][0]['arguments']);
+        $this->assertSame($completedAttemptId, $bundle['activities'][0]['current_attempt_id']);
+        $this->assertCount(1, $bundle['activities'][0]['attempts']);
+        $this->assertSame($completedAttemptId, $bundle['activities'][0]['attempts'][0]['id']);
+        $this->assertSame($activity->id, $bundle['activities'][0]['attempts'][0]['activity_execution_id']);
+        $this->assertSame('completed', $bundle['activities'][0]['attempts'][0]['status']);
         $this->assertNull($bundle['activities'][0]['result']);
         $this->assertNull($bundle['activities'][0]['closed_at']);
 
@@ -891,6 +900,11 @@ final class HistoryExportTest extends TestCase
         );
         $this->assertSame([], $bundle['activities'][1]['history_event_types']);
         $this->assertSame($cancelledActivity->arguments, $bundle['activities'][1]['arguments']);
+        $this->assertSame($cancelledAttemptId, $bundle['activities'][1]['current_attempt_id']);
+        $this->assertCount(1, $bundle['activities'][1]['attempts']);
+        $this->assertSame($cancelledAttemptId, $bundle['activities'][1]['attempts'][0]['id']);
+        $this->assertSame($cancelledActivity->id, $bundle['activities'][1]['attempts'][0]['activity_execution_id']);
+        $this->assertSame('cancelled', $bundle['activities'][1]['attempts'][0]['status']);
         $this->assertNull($bundle['activities'][1]['result']);
         $this->assertNull($bundle['activities'][1]['closed_at']);
     }
