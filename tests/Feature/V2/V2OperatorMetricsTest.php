@@ -131,6 +131,7 @@ final class V2OperatorMetricsTest extends TestCase
         $claimFailedTask = $this->createTask($claimFailedRun, '01JMETRICSTASK000000000007', TaskStatus::Ready->value, [
             'available_at' => now()
                 ->subSecond(),
+            'connection' => 'sync',
             'last_dispatched_at' => now()
                 ->subSeconds(10),
             'last_claim_failed_at' => now()
@@ -178,6 +179,19 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame('2026-04-09T11:50:00.000000Z', $snapshot['repair']['oldest_missing_run_started_at']);
         $this->assertSame(120000, $snapshot['repair']['max_task_candidate_age_ms']);
         $this->assertSame(600000, $snapshot['repair']['max_missing_run_age_ms']);
+        $repairScopes = collect($snapshot['repair']['scopes'])->keyBy('scope_key');
+        $this->assertGreaterThanOrEqual(2, $repairScopes->count());
+        $this->assertSame(5, $repairScopes->sum('total_candidates'));
+        $this->assertSame(4, $repairScopes->sum('existing_task_candidates'));
+        $this->assertSame(1, $repairScopes->sum('missing_task_candidates'));
+        $this->assertSame(3, $repairScopes->get('redis:default:any')['existing_task_candidates']);
+        $this->assertSame(120000, $repairScopes->get('redis:default:any')['max_task_candidate_age_ms']);
+        $this->assertSame(1, $repairScopes->get('sync:default:any')['existing_task_candidates']);
+        $this->assertTrue($repairScopes->contains(
+            static fn (array $scope): bool => $scope['missing_task_candidates'] === 1
+                && $scope['max_missing_run_age_ms'] === 600000
+        ));
+        $this->assertFalse($repairScopes->get('redis:default:any')['scan_limited_by_global_policy']);
         $this->assertSame(1, $snapshot['starts']['pending_runs']);
         $this->assertSame(1, $snapshot['starts']['pending_commands']);
         $this->assertSame(3, $snapshot['starts']['ready_tasks']);
