@@ -162,6 +162,10 @@ final class WorkflowExecutor
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
+                if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::ACTIVITY)) {
+                    return null;
+                }
+
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($execution->status === ActivityStatus::Completed) {
@@ -482,6 +486,10 @@ final class WorkflowExecutor
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
+                if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::TIMER)) {
+                    return null;
+                }
+
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     $current = $result->send(true);
@@ -758,6 +766,15 @@ final class WorkflowExecutor
                             $pending = true;
 
                             continue;
+                        }
+
+                        if (! $this->ensureTypedStepHistoryRecorded(
+                            $run,
+                            $task,
+                            $itemSequence,
+                            WorkflowStepHistory::ACTIVITY,
+                        )) {
+                            return null;
                         }
 
                         if ($execution->status === ActivityStatus::Completed) {
@@ -2000,6 +2017,23 @@ final class WorkflowExecutor
         }
     }
 
+    private function ensureTypedStepHistoryRecorded(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $expectedShape,
+    ): bool {
+        try {
+            WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, $expectedShape);
+
+            return true;
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+            return false;
+        }
+    }
+
     private function blockReplayUntilFailureCanBeRestored(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -2930,7 +2964,6 @@ final class WorkflowExecutor
         return match (true) {
             $current instanceof ActivityCall => (
                 $this->activityHistoryEvent($run, $sequence) !== null
-                || $run->activityExecutions->firstWhere('sequence', $sequence) instanceof ActivityExecution
             ) ? $sequence + 1 : $sequence,
             $current instanceof AwaitCall => (
                 $this->conditionWaitOpenedEvent($run, $sequence) !== null
@@ -2942,8 +2975,8 @@ final class WorkflowExecutor
                 || $run->timers->firstWhere('sequence', $sequence) instanceof WorkflowTimer
             ) ? $sequence + 1 : $sequence,
             $current instanceof TimerCall => (
-                $this->timerFiredEvent($run, $sequence) !== null
-                || $run->timers->firstWhere('sequence', $sequence) instanceof WorkflowTimer
+                $this->timerScheduledEvent($run, $sequence) !== null
+                || $this->timerFiredEvent($run, $sequence) !== null
             ) ? $sequence + 1 : $sequence,
             $current instanceof SignalCall => (
                 $this->appliedSignalEvent($run, $sequence, $current) !== null
@@ -2976,7 +3009,6 @@ final class WorkflowExecutor
             if ($call instanceof ActivityCall) {
                 if (
                     $this->activityHistoryEvent($run, $itemSequence) !== null
-                    || $run->activityExecutions->firstWhere('sequence', $itemSequence) instanceof ActivityExecution
                 ) {
                     return $sequence + $groupSize;
                 }

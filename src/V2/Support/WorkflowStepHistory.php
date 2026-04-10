@@ -15,6 +15,7 @@ final class WorkflowStepHistory
     public const CHILD_WORKFLOW = 'child workflow';
     public const CONDITION_WAIT = 'condition wait';
     public const CONTINUE_AS_NEW = 'continue as new';
+    public const NO_TYPED_HISTORY = 'no typed history';
     public const PARALLEL_GROUP = 'parallel all barrier matching current topology';
     public const SIGNAL_WAIT = 'signal wait';
     public const SIDE_EFFECT = 'side effect';
@@ -27,6 +28,22 @@ final class WorkflowStepHistory
 
         if ($conflictingEventTypes !== []) {
             throw new HistoryEventShapeMismatchException($sequence, $expectedShape, $conflictingEventTypes);
+        }
+    }
+
+    public static function assertTypedHistoryRecorded(
+        WorkflowRun $run,
+        int $sequence,
+        string $expectedShape,
+    ): void {
+        $eventTypes = self::workflowStepEventTypesForSequence($run, $sequence);
+
+        if ($eventTypes === []) {
+            throw new HistoryEventShapeMismatchException(
+                $sequence,
+                $expectedShape,
+                [self::NO_TYPED_HISTORY],
+            );
         }
     }
 

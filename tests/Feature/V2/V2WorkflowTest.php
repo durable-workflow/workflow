@@ -445,6 +445,165 @@ final class V2WorkflowTest extends TestCase
             ->all());
     }
 
+    public function testReplayBlocksTerminalActivityProjectionWithoutTypedStepHistory(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-row-only-terminal-history');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+        $this->runReadyTaskForRun($runId, TaskType::Activity);
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', [
+                HistoryEventType::ActivityScheduled->value,
+                HistoryEventType::ActivityStarted->value,
+                HistoryEventType::ActivityCompleted->value,
+            ])
+            ->delete();
+
+        $execution->forceFill([
+            'status' => ActivityStatus::Completed->value,
+            'result' => Serializer::serialize('MUTATED'),
+            'closed_at' => now(),
+        ])->save();
+
+        try {
+            (new QueryStateReplayer())->replayState(WorkflowRun::query()->findOrFail($runId));
+            $this->fail('Expected row-only terminal activity replay to be blocked.');
+        } catch (HistoryEventShapeMismatchException $exception) {
+            $this->assertSame(1, $exception->workflowSequence);
+            $this->assertSame('activity', $exception->expectedHistoryShape);
+            $this->assertSame(['no typed history'], $exception->recordedEventTypes);
+        }
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Failed->value)
+            ->firstOrFail();
+
+        $this->assertFalse($workflow->refresh()->completed());
+        $this->assertTrue($task->payload['replay_blocked'] ?? false);
+        $this->assertSame('history_shape_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+        $this->assertSame('activity', $task->payload['replay_blocked_expected_history_shape'] ?? null);
+        $this->assertSame(['no typed history'], $task->payload['replay_blocked_recorded_event_types'] ?? null);
+        $this->assertStringContainsString('recorded [no typed history]', (string) $task->last_error);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertStringContainsString('history recorded [no typed history]', $detail['liveness_reason']);
+        $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
+        $this->assertSame(['no typed history'], $detail['tasks'][0]['replay_blocked_recorded_event_types']);
+    }
+
+    public function testReplayBlocksFiredTimerProjectionWithoutTypedStepHistory(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-09 15:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'timer-row-only-terminal-history');
+            $workflow->start(5);
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->whereIn('event_type', [
+                    HistoryEventType::TimerScheduled->value,
+                    HistoryEventType::TimerFired->value,
+                ])
+                ->delete();
+
+            $timer->forceFill([
+                'status' => TimerStatus::Fired->value,
+                'fired_at' => now()->addSeconds(5),
+            ])->save();
+
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($runId);
+
+            WorkflowTask::query()->create([
+                'workflow_run_id' => $runId,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now()->addSeconds(5),
+                'payload' => [],
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            try {
+                (new QueryStateReplayer())->replayState(WorkflowRun::query()->findOrFail($runId));
+                $this->fail('Expected row-only fired timer replay to be blocked.');
+            } catch (HistoryEventShapeMismatchException $exception) {
+                $this->assertSame(1, $exception->workflowSequence);
+                $this->assertSame('timer', $exception->expectedHistoryShape);
+                $this->assertSame(['no typed history'], $exception->recordedEventTypes);
+            }
+
+            Carbon::setTestNow(now()->addSeconds(5));
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            /** @var WorkflowTask $task */
+            $task = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Failed->value)
+                ->firstOrFail();
+
+            $this->assertFalse($workflow->refresh()->completed());
+            $this->assertTrue($task->payload['replay_blocked'] ?? false);
+            $this->assertSame('history_shape_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+            $this->assertSame('timer', $task->payload['replay_blocked_expected_history_shape'] ?? null);
+            $this->assertSame(['no typed history'], $task->payload['replay_blocked_recorded_event_types'] ?? null);
+            $this->assertStringContainsString('recorded [no typed history]', (string) $task->last_error);
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+            $replayBlockedTask = collect($detail['tasks'])
+                ->first(static fn (array $task): bool => ($task['transport_state'] ?? null) === 'replay_blocked');
+
+            $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+            $this->assertStringContainsString('history recorded [no typed history]', $detail['liveness_reason']);
+            $this->assertIsArray($replayBlockedTask);
+            $this->assertSame(['no typed history'], $replayBlockedTask['replay_blocked_recorded_event_types']);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testActivityRetriesBeforeResumingWorkflow(): void
     {
         Queue::fake();
