@@ -21,6 +21,7 @@ final class RunTimerView
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
+     *     cancelled_at: \Carbon\CarbonInterface|null,
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null
@@ -102,6 +103,7 @@ final class RunTimerView
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
+     *     cancelled_at: \Carbon\CarbonInterface|null,
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null
@@ -132,6 +134,7 @@ final class RunTimerView
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
+     *     cancelled_at: \Carbon\CarbonInterface|null,
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null
@@ -157,6 +160,7 @@ final class RunTimerView
             ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
                 HistoryEventType::TimerScheduled,
                 HistoryEventType::TimerFired,
+                HistoryEventType::TimerCancelled,
             ], true))
             ->sortBy('sequence');
     }
@@ -169,6 +173,7 @@ final class RunTimerView
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
+     *     cancelled_at: \Carbon\CarbonInterface|null,
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null
@@ -185,15 +190,25 @@ final class RunTimerView
         return [
             'id' => $timerId,
             'sequence' => self::intValue($event->payload['sequence'] ?? null),
-            'status' => $event->event_type === HistoryEventType::TimerFired
-                ? TimerStatus::Fired->value
-                : TimerStatus::Pending->value,
+            'status' => match ($event->event_type) {
+                HistoryEventType::TimerFired => TimerStatus::Fired->value,
+                HistoryEventType::TimerCancelled => TimerStatus::Cancelled->value,
+                default => TimerStatus::Pending->value,
+            },
             'delay_seconds' => self::intValue($event->payload['delay_seconds'] ?? null),
-            'fire_at' => $event->event_type === HistoryEventType::TimerScheduled
+            'fire_at' => in_array($event->event_type, [
+                HistoryEventType::TimerScheduled,
+                HistoryEventType::TimerCancelled,
+            ], true)
                 ? self::timestamp($event->payload['fire_at'] ?? null)
                 : null,
             'fired_at' => $event->event_type === HistoryEventType::TimerFired
                 ? self::timestamp($event->payload['fired_at'] ?? null)
+                : null,
+            'cancelled_at' => $event->event_type === HistoryEventType::TimerCancelled
+                ? self::timestamp($event->payload['cancelled_at'] ?? null)
+                    ?? $event->recorded_at
+                    ?? $event->created_at
                 : null,
             'created_at' => $event->event_type === HistoryEventType::TimerScheduled
                 ? ($event->recorded_at ?? $event->created_at)
@@ -211,6 +226,7 @@ final class RunTimerView
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
+     *     cancelled_at: \Carbon\CarbonInterface|null,
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null
@@ -225,6 +241,7 @@ final class RunTimerView
             'delay_seconds' => $timer->delay_seconds,
             'fire_at' => $timer->fire_at,
             'fired_at' => $timer->fired_at,
+            'cancelled_at' => null,
             'created_at' => $timer->created_at,
             'timer_kind' => null,
             'condition_wait_id' => null,
@@ -239,6 +256,7 @@ final class RunTimerView
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
+     *     cancelled_at: \Carbon\CarbonInterface|null,
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null
@@ -253,6 +271,7 @@ final class RunTimerView
             'delay_seconds' => null,
             'fire_at' => null,
             'fired_at' => null,
+            'cancelled_at' => null,
             'created_at' => null,
             'timer_kind' => null,
             'condition_wait_id' => null,
@@ -287,6 +306,7 @@ final class RunTimerView
         $state['delay_seconds'] ??= $timer->delay_seconds;
         $state['fire_at'] ??= $timer->fire_at;
         $state['fired_at'] ??= $timer->fired_at;
+        $state['cancelled_at'] ??= null;
         $state['created_at'] ??= $timer->created_at;
 
         if ($timer->status === TimerStatus::Cancelled) {

@@ -280,6 +280,25 @@ final class V2AwaitWorkflowTest extends TestCase
             'workflow_run_id' => $workflow->runId(),
             'event_type' => HistoryEventType::ConditionWaitTimedOut->value,
         ]);
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::TimerCancelled->value,
+        ]);
+
+        /** @var WorkflowHistoryEvent $timerCancelled */
+        $timerCancelled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::TimerCancelled->value)
+            ->firstOrFail();
+
+        $this->assertSame($timer->id, $timerCancelled->payload['timer_id'] ?? null);
+        $this->assertSame($timer->sequence, $timerCancelled->payload['sequence'] ?? null);
+        $this->assertSame('condition_timeout', $timerCancelled->payload['timer_kind'] ?? null);
+        $this->assertNotNull($timerCancelled->payload['condition_wait_id'] ?? null);
+        $this->assertNotNull($timerCancelled->payload['cancelled_at'] ?? null);
+
+        $timerId = $timer->id;
+        $deadlineAt = $timer->fire_at?->toJSON();
 
         $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
         $conditionWait = $this->findConditionWait($detail['waits']);
@@ -289,6 +308,41 @@ final class V2AwaitWorkflowTest extends TestCase
         $this->assertSame('external_input', $conditionWait['resume_source_kind']);
         $this->assertNull($conditionWait['resume_source_id']);
         $this->assertNotNull($conditionWait['deadline_at']);
+
+        $this->assertSame($timerId, $detail['timers'][0]['id']);
+        $this->assertSame('cancelled', $detail['timers'][0]['status']);
+        $this->assertSame($deadlineAt, $detail['timers'][0]['fire_at']?->toJSON());
+        $this->assertNotNull($detail['timers'][0]['cancelled_at']);
+
+        $timerTask->delete();
+        $timer->delete();
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+
+        $this->assertSame($timerId, $detail['timers'][0]['id']);
+        $this->assertSame('cancelled', $detail['timers'][0]['status']);
+        $this->assertSame('condition_timeout', $detail['timers'][0]['timer_kind']);
+        $this->assertSame($timerCancelled->payload['condition_wait_id'], $detail['timers'][0]['condition_wait_id']);
+        $this->assertSame($deadlineAt, $detail['timers'][0]['fire_at']?->toJSON());
+        $this->assertNotNull($detail['timers'][0]['cancelled_at']);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ConditionWaitOpened',
+            'TimerScheduled',
+            'UpdateAccepted',
+            'UpdateApplied',
+            'UpdateCompleted',
+            'TimerCancelled',
+            'ConditionWaitSatisfied',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
 
         $this->assertSame([
             'approved' => true,

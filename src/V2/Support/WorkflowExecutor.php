@@ -263,7 +263,7 @@ final class WorkflowExecutor
 
                 if ($conditionSatisfied) {
                     if ($timeoutTimer !== null) {
-                        $this->cancelConditionTimeout($run, $timeoutTimer);
+                        $this->cancelConditionTimeout($run, $task, $timeoutTimer);
                     }
 
                     $this->recordConditionWaitSatisfied($run, $task, $sequence, $waitId, $timeoutTimer, $current);
@@ -2604,7 +2604,7 @@ final class WorkflowExecutor
         ], static fn (mixed $value): bool => $value !== null), $task);
     }
 
-    private function cancelConditionTimeout(WorkflowRun $run, WorkflowTimer $timer): void
+    private function cancelConditionTimeout(WorkflowRun $run, WorkflowTask $task, WorkflowTimer $timer): void
     {
         if ($timer->status !== TimerStatus::Pending) {
             return;
@@ -2613,6 +2613,8 @@ final class WorkflowExecutor
         $timer->forceFill([
             'status' => TimerStatus::Cancelled,
         ])->save();
+
+        TimerCancellation::record($run, $timer, $task);
 
         foreach ($run->tasks as $runTask) {
             if (

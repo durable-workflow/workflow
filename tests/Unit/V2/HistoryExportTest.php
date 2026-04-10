@@ -693,6 +693,68 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($firedAt->toJSON(), $bundle['timers'][0]['fired_at']);
     }
 
+    public function testItExportsCancelledTimerSnapshotsFromTypedHistoryWhenTimerRowIsMissing(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:10:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createMinimalCompletedRun('history-export-cancelled-timer-history');
+        $fireAt = now()->addMinute();
+        $cancelledAt = now()->addSeconds(10);
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 4,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => 60,
+            'fire_at' => $fireAt,
+            'created_at' => now(),
+        ]);
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $timer->sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $fireAt->toJSON(),
+            'timer_kind' => 'condition_timeout',
+            'condition_wait_id' => 'condition:4',
+        ]);
+
+        $timer->forceFill([
+            'status' => TimerStatus::Cancelled,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::TimerCancelled, [
+            'timer_id' => $timer->id,
+            'sequence' => $timer->sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $fireAt->toJSON(),
+            'cancelled_at' => $cancelledAt->toJSON(),
+            'timer_kind' => 'condition_timeout',
+            'condition_wait_id' => 'condition:4',
+        ]);
+
+        $timerId = $timer->id;
+        $timer->delete();
+
+        $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'timers']));
+
+        $this->assertCount(1, $bundle['timers']);
+        $this->assertSame($timerId, $bundle['timers'][0]['id']);
+        $this->assertSame(4, $bundle['timers'][0]['sequence']);
+        $this->assertSame('cancelled', $bundle['timers'][0]['status']);
+        $this->assertSame(60, $bundle['timers'][0]['delay_seconds']);
+        $this->assertSame($fireAt->toJSON(), $bundle['timers'][0]['fire_at']);
+        $this->assertNull($bundle['timers'][0]['fired_at']);
+        $this->assertSame($cancelledAt->toJSON(), $bundle['timers'][0]['cancelled_at']);
+        $this->assertSame('condition_timeout', $bundle['timers'][0]['timer_kind']);
+        $this->assertSame('condition:4', $bundle['timers'][0]['condition_wait_id']);
+    }
+
     public function testItAppliesConfiguredRedactionPolicyToPayloadAndDiagnosticSlots(): void
     {
         config()->set('workflows.v2.history_export.redactor', new class() implements HistoryExportRedactor {

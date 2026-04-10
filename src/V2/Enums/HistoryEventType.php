@@ -44,6 +44,7 @@ enum HistoryEventType: string
     case VersionMarkerRecorded = 'VersionMarkerRecorded';
     case TimerScheduled = 'TimerScheduled';
     case TimerFired = 'TimerFired';
+    case TimerCancelled = 'TimerCancelled';
     case WorkflowCompleted = 'WorkflowCompleted';
     case WorkflowFailed = 'WorkflowFailed';
 }

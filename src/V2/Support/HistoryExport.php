@@ -1012,6 +1012,7 @@ final class HistoryExport
             'delay_seconds' => $timer['delay_seconds'] ?? null,
             'fire_at' => self::timestamp($timer['fire_at'] ?? null),
             'fired_at' => self::timestamp($timer['fired_at'] ?? null),
+            'cancelled_at' => self::timestamp($timer['cancelled_at'] ?? null),
             'created_at' => self::timestamp($timer['created_at'] ?? null),
             'timer_kind' => $timer['timer_kind'] ?? null,
             'condition_wait_id' => $timer['condition_wait_id'] ?? null,

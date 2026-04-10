@@ -50,6 +50,7 @@ use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\UpdateCommandGate;
@@ -1800,6 +1801,8 @@ final class WorkflowStub
                 $timer->forceFill([
                     'status' => TimerStatus::Cancelled,
                 ])->save();
+
+                TimerCancellation::record($run, $timer, null, $command);
             }
 
             $run->forceFill([

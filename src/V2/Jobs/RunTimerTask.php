@@ -117,12 +117,17 @@ final class RunTimerTask implements ShouldQueue
                 'fired_at' => now(),
             ])->save();
 
-            WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
+            WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, array_filter([
                 'timer_id' => $timer->id,
                 'sequence' => $timer->sequence,
                 'delay_seconds' => $timer->delay_seconds,
+                'fire_at' => $timer->fire_at?->toJSON(),
                 'fired_at' => $timer->fired_at?->toJSON(),
-            ], $task);
+                'timer_kind' => is_string($task->payload['condition_wait_id'] ?? null) ? 'condition_timeout' : null,
+                'condition_wait_id' => is_string($task->payload['condition_wait_id'] ?? null)
+                    ? $task->payload['condition_wait_id']
+                    : null,
+            ], static fn (mixed $value): bool => $value !== null), $task);
 
             $task->forceFill([
                 'status' => TaskStatus::Completed,

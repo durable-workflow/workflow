@@ -214,7 +214,8 @@ final class HistoryTimeline
             HistoryEventType::SideEffectRecorded => 'side_effect',
             HistoryEventType::VersionMarkerRecorded => 'version',
             HistoryEventType::TimerScheduled,
-            HistoryEventType::TimerFired => 'timer',
+            HistoryEventType::TimerFired,
+            HistoryEventType::TimerCancelled => 'timer',
             default => 'workflow',
         };
     }
@@ -360,6 +361,9 @@ final class HistoryTimeline
                 : ($delaySeconds === null
                     ? 'Timer fired.'
                     : sprintf('Timer fired after %s.', self::durationLabel($delaySeconds))),
+            HistoryEventType::TimerCancelled => $timerKind === 'condition_timeout'
+                ? 'Condition timeout cancelled.'
+                : 'Timer cancelled.',
             HistoryEventType::WorkflowCompleted => 'Workflow completed.',
             HistoryEventType::WorkflowFailed => $message === null
                 ? 'Workflow failed.'
@@ -668,6 +672,7 @@ final class HistoryTimeline
             && ! array_key_exists('delay_seconds', $payload)
             && ! array_key_exists('fire_at', $payload)
             && ! array_key_exists('fired_at', $payload)
+            && ! array_key_exists('cancelled_at', $payload)
         ) {
             return null;
         }
@@ -678,6 +683,7 @@ final class HistoryTimeline
             'status' => match ($event->event_type) {
                 HistoryEventType::TimerScheduled => 'pending',
                 HistoryEventType::TimerFired => 'fired',
+                HistoryEventType::TimerCancelled => 'cancelled',
                 default => $timer?->status?->value,
             },
             'delay_seconds' => $timer?->delay_seconds ?? self::intValue($payload['delay_seconds'] ?? null),
@@ -685,6 +691,9 @@ final class HistoryTimeline
             'fired_at' => $event->event_type === HistoryEventType::TimerScheduled
                 ? null
                 : self::timestamp($timer?->fired_at ?? self::stringValue($payload['fired_at'] ?? null)),
+            'cancelled_at' => $event->event_type === HistoryEventType::TimerCancelled
+                ? self::timestamp(self::stringValue($payload['cancelled_at'] ?? null))
+                : null,
         ];
     }
 
@@ -783,7 +792,8 @@ final class HistoryTimeline
             HistoryEventType::FailureHandled => 'workflow_failure',
             HistoryEventType::VersionMarkerRecorded => 'version_marker',
             HistoryEventType::TimerScheduled,
-            HistoryEventType::TimerFired => 'timer',
+            HistoryEventType::TimerFired,
+            HistoryEventType::TimerCancelled => 'timer',
             default => 'workflow_run',
         };
     }

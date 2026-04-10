@@ -4711,6 +4711,7 @@ final class V2WorkflowTest extends TestCase
             'WorkflowStarted',
             'TimerScheduled',
             'CancelRequested',
+            'TimerCancelled',
             'WorkflowCancelled',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
@@ -4805,6 +4806,7 @@ final class V2WorkflowTest extends TestCase
             'WorkflowStarted',
             'TimerScheduled',
             'TerminateRequested',
+            'TimerCancelled',
             'WorkflowTerminated',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
