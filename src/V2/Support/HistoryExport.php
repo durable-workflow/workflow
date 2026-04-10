@@ -807,8 +807,6 @@ final class HistoryExport
 
             if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
                 $snapshot['history_authority'] = RunActivityView::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK;
-            } elseif ($execution->status === ActivityStatus::Cancelled) {
-                $snapshot['history_authority'] = RunActivityView::HISTORY_AUTHORITY_MUTABLE_CANCEL_FALLBACK;
             } else {
                 $snapshot['history_authority'] = RunActivityView::HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL;
                 $snapshot['history_unsupported_reason'] = RunActivityView::UNSUPPORTED_TERMINAL_REASON;

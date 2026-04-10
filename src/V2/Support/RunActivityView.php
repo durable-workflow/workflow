@@ -22,8 +22,6 @@ final class RunActivityView
 
     public const HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL = 'unsupported_terminal_without_history';
 
-    public const HISTORY_AUTHORITY_MUTABLE_CANCEL_FALLBACK = 'mutable_cancel_fallback';
-
     public const UNSUPPORTED_TERMINAL_REASON = 'terminal_activity_row_without_typed_history';
 
     /**
@@ -145,8 +143,6 @@ final class RunActivityView
 
             if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
                 $snapshot['history_authority'] = self::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK;
-            } elseif ($execution->status === ActivityStatus::Cancelled) {
-                $snapshot['history_authority'] = self::HISTORY_AUTHORITY_MUTABLE_CANCEL_FALLBACK;
             } else {
                 $snapshot['history_authority'] = self::HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL;
                 $snapshot['history_unsupported_reason'] = self::UNSUPPORTED_TERMINAL_REASON;

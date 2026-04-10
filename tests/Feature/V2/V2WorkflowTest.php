@@ -589,7 +589,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame(['no typed history'], $detail['tasks'][0]['replay_blocked_recorded_event_types']);
     }
 
-    public function testRowOnlyCancelledActivityWithoutTypedHistoryIsMarkedDiagnosticFallback(): void
+    public function testRowOnlyCancelledActivityWithoutTypedHistoryIsMarkedUnsupported(): void
     {
         $instance = WorkflowInstance::query()->create([
             'id' => 'row-only-activity-cancelled',
@@ -641,11 +641,21 @@ final class V2WorkflowTest extends TestCase
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
-        $this->assertSame('cancelled', $detail['activities'][0]['status']);
-        $this->assertSame('mutable_cancel_fallback', $detail['activities'][0]['history_authority']);
-        $this->assertNull($detail['activities'][0]['history_unsupported_reason']);
+        $this->assertSame('unsupported', $detail['activities'][0]['status']);
+        $this->assertSame('unsupported_terminal_without_history', $detail['activities'][0]['history_authority']);
+        $this->assertSame(
+            'terminal_activity_row_without_typed_history',
+            $detail['activities'][0]['history_unsupported_reason'],
+        );
         $this->assertSame('cancelled', $detail['activities'][0]['row_status']);
-        $this->assertNotNull($detail['activities'][0]['closed_at']);
+        $this->assertNull($detail['activities'][0]['closed_at']);
+        $this->assertNull(unserialize($detail['activities'][0]['result']));
+        $this->assertSame('unsupported', $detail['waits'][0]['status']);
+        $this->assertSame('cancelled', $detail['waits'][0]['source_status']);
+        $this->assertSame(
+            'terminal_activity_row_without_typed_history',
+            $detail['waits'][0]['history_unsupported_reason'],
+        );
     }
 
     public function testReplayBlocksFiredTimerProjectionWithoutTypedStepHistory(): void

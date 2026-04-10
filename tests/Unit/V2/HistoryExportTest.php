@@ -820,9 +820,25 @@ final class HistoryExportTest extends TestCase
             'closed_at' => now()->subMinute(),
         ]);
 
+        /** @var ActivityExecution $cancelledActivity */
+        $cancelledActivity = ActivityExecution::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 3,
+            'activity_class' => 'App\\Activities\\RowOnlyCancelledActivity',
+            'activity_type' => 'row.only.cancelled-activity',
+            'status' => ActivityStatus::Cancelled->value,
+            'arguments' => Serializer::serialize(['order-456']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'attempt_count' => 1,
+            'started_at' => now()->subMinutes(2),
+            'closed_at' => now()->subMinute(),
+        ]);
+
         $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'activityExecutions.attempts']));
 
-        $this->assertCount(1, $bundle['activities']);
+        $this->assertCount(2, $bundle['activities']);
         $this->assertSame($activity->id, $bundle['activities'][0]['id']);
         $this->assertSame(2, $bundle['activities'][0]['sequence']);
         $this->assertSame('row.only.activity', $bundle['activities'][0]['activity_type']);
@@ -838,6 +854,22 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($activity->arguments, $bundle['activities'][0]['arguments']);
         $this->assertNull($bundle['activities'][0]['result']);
         $this->assertNull($bundle['activities'][0]['closed_at']);
+
+        $this->assertSame($cancelledActivity->id, $bundle['activities'][1]['id']);
+        $this->assertSame(3, $bundle['activities'][1]['sequence']);
+        $this->assertSame('row.only.cancelled-activity', $bundle['activities'][1]['activity_type']);
+        $this->assertSame('unsupported', $bundle['activities'][1]['status']);
+        $this->assertSame('cancelled', $bundle['activities'][1]['source_status']);
+        $this->assertSame('cancelled', $bundle['activities'][1]['row_status']);
+        $this->assertSame('unsupported_terminal_without_history', $bundle['activities'][1]['history_authority']);
+        $this->assertSame(
+            'terminal_activity_row_without_typed_history',
+            $bundle['activities'][1]['history_unsupported_reason'],
+        );
+        $this->assertSame([], $bundle['activities'][1]['history_event_types']);
+        $this->assertSame($cancelledActivity->arguments, $bundle['activities'][1]['arguments']);
+        $this->assertNull($bundle['activities'][1]['result']);
+        $this->assertNull($bundle['activities'][1]['closed_at']);
     }
 
     public function testItAppliesConfiguredRedactionPolicyToPayloadAndDiagnosticSlots(): void
