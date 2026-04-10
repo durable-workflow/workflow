@@ -1562,6 +1562,13 @@ final class V2RunDetailViewTest extends TestCase
         /** @var WorkflowRun $currentRun */
         $currentRun = $runs[1];
 
+        RunSummaryProjector::project(
+            $historicalRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+        RunSummaryProjector::project(
+            $currentRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
         $historicalDetail = RunDetailView::forRun(
             $historicalRun->fresh(['summary', 'instance.currentRun.summary'])
         );
@@ -1571,6 +1578,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('continued', $historicalDetail['closed_reason']);
         $this->assertFalse($historicalDetail['is_current_run']);
         $this->assertSame($currentRun->id, $historicalDetail['current_run_id']);
+        $this->assertSame('workflow_run_lineage_entries', $historicalDetail['lineage_projection_source']);
         $this->assertCount(0, $historicalDetail['parents']);
         $this->assertCount(1, $historicalDetail['continuedWorkflows']);
         $this->assertSame('continue_as_new', $historicalDetail['continuedWorkflows'][0]['link_type']);
@@ -1581,6 +1589,7 @@ final class V2RunDetailViewTest extends TestCase
 
         $this->assertTrue($currentDetail['is_current_run']);
         $this->assertSame($currentRun->id, $currentDetail['current_run_id']);
+        $this->assertSame('workflow_run_lineage_entries', $currentDetail['lineage_projection_source']);
         $this->assertCount(1, $currentDetail['parents']);
         $this->assertCount(0, $currentDetail['continuedWorkflows']);
         $this->assertCount(1, $currentDetail['commands']);

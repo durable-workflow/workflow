@@ -59,6 +59,7 @@ final class HistoryExport
             ? null
             : CurrentRunResolver::forInstance($run->instance, ['summary']);
         $summary = $run->summary;
+        $lineageSnapshot = RunLineageProjector::snapshotForRun($run);
 
         $bundle = [
             'schema' => self::SCHEMA,
@@ -135,8 +136,9 @@ final class HistoryExport
                 ->values()
                 ->all(),
             'links' => [
-                'parents' => self::parentLinks($run),
-                'children' => self::childLinks($run),
+                'projection_source' => $lineageSnapshot['source'],
+                'parents' => self::parentLinks($run, $lineageSnapshot['parents']),
+                'children' => self::childLinks($run, $lineageSnapshot['continued_workflows']),
             ],
         ];
 
@@ -1154,9 +1156,9 @@ final class HistoryExport
     /**
      * @return list<array<string, mixed>>
      */
-    private static function parentLinks(WorkflowRun $run): array
+    private static function parentLinks(WorkflowRun $run, array $entries): array
     {
-        return collect(RunLineageView::parentsForRun($run))
+        return collect($entries)
             ->map(static fn (array $entry): array => [
                 'id' => $entry['id'] ?? null,
                 'type' => $entry['link_type'] ?? null,
@@ -1171,7 +1173,8 @@ final class HistoryExport
                 'child_call_id' => $entry['child_call_id'] ?? null,
                 'sequence' => $entry['sequence'] ?? null,
                 'is_primary_parent' => (bool) ($entry['is_primary_parent'] ?? false),
-                'created_at' => self::lineageLinkCreatedAt($run, $entry, 'parent'),
+                'created_at' => self::timestamp($entry['created_at'] ?? null)
+                    ?? self::lineageLinkCreatedAt($run, $entry, 'parent'),
             ])
             ->values()
             ->all();
@@ -1180,9 +1183,9 @@ final class HistoryExport
     /**
      * @return list<array<string, mixed>>
      */
-    private static function childLinks(WorkflowRun $run): array
+    private static function childLinks(WorkflowRun $run, array $entries): array
     {
-        return collect(RunLineageView::continuedWorkflowsForRun($run))
+        return collect($entries)
             ->map(static fn (array $entry): array => [
                 'id' => $entry['id'] ?? null,
                 'type' => $entry['link_type'] ?? null,
@@ -1197,7 +1200,8 @@ final class HistoryExport
                 'child_call_id' => $entry['child_call_id'] ?? null,
                 'sequence' => $entry['sequence'] ?? null,
                 'is_primary_parent' => (bool) ($entry['is_primary_parent'] ?? false),
-                'created_at' => self::lineageLinkCreatedAt($run, $entry, 'child'),
+                'created_at' => self::timestamp($entry['created_at'] ?? null)
+                    ?? self::lineageLinkCreatedAt($run, $entry, 'child'),
             ])
             ->values()
             ->all();

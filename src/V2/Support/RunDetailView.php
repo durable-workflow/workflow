@@ -29,6 +29,7 @@ final class RunDetailView
             'historyEvents',
             'waits',
             'timelineEntries',
+            'lineageEntries',
             'parentLinks.parentRun.summary',
             'childLinks.childRun.summary',
             'childLinks.childRun.historyEvents',
@@ -106,6 +107,7 @@ final class RunDetailView
                 'continue_as_new_recommended' => (bool) $summary->continue_as_new_recommended,
             ];
         $timelineSnapshot = RunTimelineProjector::snapshotForRun($run);
+        $lineageSnapshot = RunLineageProjector::snapshotForRun($run);
 
         return [
             'id' => $run->id,
@@ -305,6 +307,7 @@ final class RunDetailView
                 })
                 ->values(),
             'lineage_scope' => 'selected_run',
+            'lineage_projection_source' => $lineageSnapshot['source'],
             'timers' => collect(RunTimerView::timersForRun($run))
                 ->map(static fn (array $timer): array => [
                     'id' => $timer['id'],
@@ -325,8 +328,8 @@ final class RunDetailView
                     'row_status' => $timer['row_status'] ?? null,
                 ])
                 ->values(),
-            'parents' => RunLineageView::parentsForRun($run),
-            'continuedWorkflows' => RunLineageView::continuedWorkflowsForRun($run),
+            'parents' => $lineageSnapshot['parents'],
+            'continuedWorkflows' => $lineageSnapshot['continued_workflows'],
             'chartData' => self::chartData($run, $activities),
         ];
     }

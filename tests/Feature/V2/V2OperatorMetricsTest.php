@@ -15,6 +15,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -355,6 +356,48 @@ final class V2OperatorMetricsTest extends TestCase
             'summary' => 'Orphaned timeline row.',
             'recorded_at' => now(),
         ]);
+        WorkflowHistoryEvent::record(
+            $missingWaitRun,
+            HistoryEventType::WorkflowContinuedAsNew,
+            [
+                'sequence' => 3,
+                'workflow_link_id' => 'projection-lineage-missing',
+                'continued_to_run_id' => 'projection-lineage-current',
+            ],
+        );
+        WorkflowHistoryEvent::record(
+            $projectedWaitRun,
+            HistoryEventType::WorkflowContinuedAsNew,
+            [
+                'sequence' => 4,
+                'workflow_link_id' => 'projection-lineage-valid',
+                'continued_to_run_id' => 'projection-lineage-valid-current',
+            ],
+        );
+        WorkflowRunLineageEntry::query()->create([
+            'id' => 'projection-lineage-valid-row',
+            'workflow_run_id' => $projectedWaitRun->id,
+            'workflow_instance_id' => $projectedWaitRun->workflow_instance_id,
+            'direction' => 'child',
+            'lineage_id' => 'projection-lineage-valid',
+            'position' => 0,
+            'link_type' => 'continue_as_new',
+            'related_workflow_instance_id' => $projectedWaitRun->workflow_instance_id,
+            'related_workflow_run_id' => 'projection-lineage-valid-current',
+            'payload' => [],
+        ]);
+        WorkflowRunLineageEntry::query()->create([
+            'id' => 'projection-lineage-orphan-row',
+            'workflow_run_id' => '01JMETRICSPROJLINEAGE001',
+            'workflow_instance_id' => 'metrics-lineage-orphan-instance',
+            'direction' => 'child',
+            'lineage_id' => 'projection-lineage-orphan',
+            'position' => 0,
+            'link_type' => 'continue_as_new',
+            'related_workflow_instance_id' => 'metrics-lineage-orphan-instance',
+            'related_workflow_run_id' => 'projection-lineage-orphan-current',
+            'payload' => [],
+        ]);
 
         $snapshot = OperatorMetrics::snapshot();
 
@@ -368,12 +411,20 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(2, $snapshot['projections']['run_waits']['needs_rebuild']);
 
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['runs']);
-        $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['history_events']);
+        $this->assertSame(4, $snapshot['projections']['run_timeline_entries']['history_events']);
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['rows']);
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['projected_runs']);
-        $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['missing_history_events']);
+        $this->assertSame(3, $snapshot['projections']['run_timeline_entries']['missing_history_events']);
         $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['orphaned']);
-        $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['needs_rebuild']);
+        $this->assertSame(4, $snapshot['projections']['run_timeline_entries']['needs_rebuild']);
+
+        $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['runs']);
+        $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['rows']);
+        $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['runs_with_lineage']);
+        $this->assertSame(1, $snapshot['projections']['run_lineage_entries']['projected_runs_with_lineage']);
+        $this->assertSame(1, $snapshot['projections']['run_lineage_entries']['missing_runs_with_lineage']);
+        $this->assertSame(1, $snapshot['projections']['run_lineage_entries']['orphaned']);
+        $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['needs_rebuild']);
     }
 
     public function testRepairCandidatesRespectDurableFailureBackoff(): void

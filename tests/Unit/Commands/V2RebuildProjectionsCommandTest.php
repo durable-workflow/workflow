@@ -13,6 +13,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -78,6 +79,18 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'summary' => 'Deleted run timeline row.',
             'recorded_at' => now(),
         ]);
+        WorkflowRunLineageEntry::query()->create([
+            'id' => 'projection-command-stale-lineage',
+            'workflow_run_id' => $staleRunId,
+            'workflow_instance_id' => $instance->id,
+            'direction' => 'child',
+            'lineage_id' => 'continue_as_new:deleted-run',
+            'position' => 0,
+            'link_type' => 'continue_as_new',
+            'related_workflow_instance_id' => $instance->id,
+            'related_workflow_run_id' => 'deleted-run',
+            'payload' => [],
+        ]);
 
         $this->artisan('workflow:v2:rebuild-projections', [
             '--prune-stale' => true,
@@ -86,6 +99,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             ->expectsOutput('Pruned 1 stale run-summary projection row(s).')
             ->expectsOutput('Pruned 1 stale wait projection row(s).')
             ->expectsOutput('Pruned 1 stale timeline projection row(s).')
+            ->expectsOutput('Pruned 1 stale lineage projection row(s).')
             ->assertSuccessful();
 
         $this->assertDatabaseHas('workflow_run_summaries', [
@@ -120,6 +134,9 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         $this->assertDatabaseMissing('workflow_run_timeline_entries', [
             'id' => 'projection-command-stale-timeline',
         ]);
+        $this->assertDatabaseMissing('workflow_run_lineage_entries', [
+            'id' => 'projection-command-stale-lineage',
+        ]);
     }
 
     public function testDryRunReportsMatchedRowsWithoutMutatingProjectionTables(): void
@@ -137,6 +154,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'run_waits_would_prune' => 0,
             'run_timeline_entries_pruned' => 0,
             'run_timeline_entries_would_prune' => 0,
+            'run_lineage_entries_pruned' => 0,
+            'run_lineage_entries_would_prune' => 0,
             'failures' => [],
         ];
 
@@ -259,6 +278,39 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'id' => $waitDriftRun->id,
             'workflow_instance_id' => $waitDriftRun->workflow_instance_id,
             'status' => RunStatus::Waiting->value,
+        ]);
+    }
+
+    public function testNeedsRebuildOptionIncludesRunsMissingLineageProjectionRows(): void
+    {
+        [, $run] = $this->createWaitingRun('projection-command-lineage-drift');
+
+        WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::ChildWorkflowScheduled,
+            [
+                'sequence' => 1,
+                'workflow_link_id' => 'projection-lineage-link',
+                'child_call_id' => 'projection-lineage-link',
+                'child_workflow_instance_id' => 'projection-child-instance',
+                'child_workflow_run_id' => 'projection-child-run',
+                'child_workflow_type' => 'projection.child',
+                'child_workflow_class' => 'App\\Workflows\\ProjectionChildWorkflow',
+                'child_run_number' => 1,
+            ],
+        );
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--needs-rebuild' => true,
+        ])
+            ->expectsOutput('Rebuilt 1 run-summary projection row(s).')
+            ->assertSuccessful();
+
+        $this->assertDatabaseHas('workflow_run_lineage_entries', [
+            'workflow_run_id' => $run->id,
+            'direction' => 'child',
+            'lineage_id' => 'projection-lineage-link',
+            'link_type' => 'child_workflow',
         ]);
     }
 

@@ -97,16 +97,20 @@ final class HealthCheck
         $timeline = is_array($projections['run_timeline_entries'] ?? null)
             ? $projections['run_timeline_entries']
             : [];
+        $lineage = is_array($projections['run_lineage_entries'] ?? null)
+            ? $projections['run_lineage_entries']
+            : [];
         $waitNeedsRebuild = self::integer($waits['needs_rebuild'] ?? 0);
         $timelineNeedsRebuild = self::integer($timeline['needs_rebuild'] ?? 0);
-        $needsRebuild = $waitNeedsRebuild + $timelineNeedsRebuild;
+        $lineageNeedsRebuild = self::integer($lineage['needs_rebuild'] ?? 0);
+        $needsRebuild = $waitNeedsRebuild + $timelineNeedsRebuild + $lineageNeedsRebuild;
 
         return self::check(
             'selected_run_projections',
             $needsRebuild === 0 ? 'ok' : 'warning',
             $needsRebuild === 0
-                ? 'Selected-run wait and timeline projections are aligned with durable v2 detail.'
-                : 'Selected-run wait or timeline projections need rebuild before trusting Waterline detail.',
+                ? 'Selected-run wait, timeline, and lineage projections are aligned with durable v2 detail.'
+                : 'Selected-run wait, timeline, or lineage projections need rebuild before trusting Waterline detail.',
             [
                 'needs_rebuild' => $needsRebuild,
                 'run_waits_needs_rebuild' => $waitNeedsRebuild,
@@ -117,6 +121,9 @@ final class HealthCheck
                 'timeline_needs_rebuild' => $timelineNeedsRebuild,
                 'timeline_missing_history_events' => self::integer($timeline['missing_history_events'] ?? 0),
                 'timeline_orphaned' => self::integer($timeline['orphaned'] ?? 0),
+                'lineage_needs_rebuild' => $lineageNeedsRebuild,
+                'lineage_missing_runs_with_lineage' => self::integer($lineage['missing_runs_with_lineage'] ?? 0),
+                'lineage_orphaned' => self::integer($lineage['orphaned'] ?? 0),
             ],
         );
     }

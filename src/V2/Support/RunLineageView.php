@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -38,6 +39,8 @@ final class RunLineageView
                 relatedRun: self::resolveRun($run, $continuedFromRunId),
                 instanceId: $run->workflow_instance_id,
                 runId: $continuedFromRunId,
+                createdAt: self::workflowStartedEvent($run)?->recorded_at
+                    ?? self::workflowStartedEvent($run)?->created_at,
             );
 
             $seen[self::key('continue_as_new', $continuedFromRunId)] = true;
@@ -57,6 +60,8 @@ final class RunLineageView
                 runId: $parentReference['parent_workflow_run_id'],
                 relationPrefix: 'parent',
                 childCallId: $parentReference['child_call_id'],
+                createdAt: self::workflowStartedEvent($run)?->recorded_at
+                    ?? self::workflowStartedEvent($run)?->created_at,
             );
 
             $seen[self::key('child_workflow', $parentReference['parent_workflow_run_id'])] = true;
@@ -87,6 +92,7 @@ final class RunLineageView
                 childCallId: $link->link_type === 'child_workflow'
                     ? ChildRunHistory::childCallIdForRun($run)
                     : null,
+                createdAt: $link->created_at,
             );
 
             $seen[$key] = true;
@@ -128,6 +134,7 @@ final class RunLineageView
                     instanceId: $run->workflow_instance_id,
                     runId: $continuedRunId,
                     relationPrefix: 'child',
+                    createdAt: $continuedEvent->recorded_at ?? $continuedEvent->created_at,
                 );
 
                 $seen[self::key('continue_as_new', $continuedRunId)] = true;
@@ -182,6 +189,11 @@ final class RunLineageView
                 runId: $childRunId,
                 relationPrefix: 'child',
                 childCallId: $childCallId,
+                createdAt: $scheduledEvent?->recorded_at
+                    ?? $scheduledEvent?->created_at
+                    ?? $startedEvent?->recorded_at
+                    ?? $startedEvent?->created_at
+                    ?? $link?->created_at,
             );
 
             $seen[$key] = true;
@@ -223,6 +235,7 @@ final class RunLineageView
                 runId: $link->child_workflow_run_id,
                 relationPrefix: 'child',
                 childCallId: $childCallId,
+                createdAt: $link->created_at,
             );
 
             $seen[$key] = true;
@@ -318,6 +331,7 @@ final class RunLineageView
         string $runId,
         string $relationPrefix = 'parent',
         ?string $childCallId = null,
+        mixed $createdAt = null,
     ): array {
         $summary = $relatedRun?->summary;
         $status = $relatedRun?->status?->value;
@@ -338,6 +352,7 @@ final class RunLineageView
             'status' => $status,
             'status_bucket' => $summary?->status_bucket ?? self::statusBucket($relatedRun?->status),
             'closed_reason' => $summary?->closed_reason ?? $relatedRun?->closed_reason,
+            'created_at' => self::timestamp($createdAt),
         ];
     }
 
@@ -386,6 +401,17 @@ final class RunLineageView
     private static function intValue(mixed $value): ?int
     {
         return is_int($value)
+            ? $value
+            : null;
+    }
+
+    private static function timestamp(mixed $value): ?string
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value->toJSON();
+        }
+
+        return is_string($value) && $value !== ''
             ? $value
             : null;
     }

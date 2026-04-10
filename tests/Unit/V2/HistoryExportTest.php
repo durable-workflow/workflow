@@ -28,6 +28,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -483,9 +484,13 @@ final class HistoryExportTest extends TestCase
 
         $link->delete();
 
+        RunSummaryProjector::project($parentRun->fresh());
+        RunSummaryProjector::project($childRun->fresh());
+
         $parentBundle = HistoryExport::forRun($parentRun->fresh(['historyEvents', 'childLinks']));
         $childBundle = HistoryExport::forRun($childRun->fresh(['historyEvents', 'parentLinks']));
 
+        $this->assertSame('workflow_run_lineage_entries', $parentBundle['links']['projection_source']);
         $this->assertCount(1, $parentBundle['links']['children']);
         $this->assertSame($childCallId, $parentBundle['links']['children'][0]['id']);
         $this->assertSame('child_workflow', $parentBundle['links']['children'][0]['type']);
@@ -497,6 +502,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame(1, $parentBundle['links']['children'][0]['sequence']);
         $this->assertTrue($parentBundle['links']['children'][0]['is_primary_parent']);
 
+        $this->assertSame('workflow_run_lineage_entries', $childBundle['links']['projection_source']);
         $this->assertCount(1, $childBundle['links']['parents']);
         $this->assertSame($childCallId, $childBundle['links']['parents'][0]['id']);
         $this->assertSame('child_workflow', $childBundle['links']['parents'][0]['type']);

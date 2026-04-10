@@ -9,6 +9,7 @@ use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -215,19 +216,39 @@ final class HealthCheckTest extends TestCase
             'summary' => 'Orphaned timeline row.',
             'recorded_at' => now(),
         ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
+            'sequence' => 2,
+            'workflow_link_id' => 'health-lineage-missing',
+            'continued_to_run_id' => 'health-lineage-current',
+        ]);
+        WorkflowRunLineageEntry::query()->create([
+            'id' => 'health-selected-lineage-orphan',
+            'workflow_run_id' => '01JHEALTHSELECTMISS001',
+            'workflow_instance_id' => 'health-selected-missing-instance',
+            'direction' => 'child',
+            'lineage_id' => 'health-lineage-orphan',
+            'position' => 0,
+            'link_type' => 'continue_as_new',
+            'related_workflow_instance_id' => 'health-selected-missing-instance',
+            'related_workflow_run_id' => 'health-lineage-current',
+            'payload' => [],
+        ]);
 
         $snapshot = HealthCheck::snapshot();
         $projection = collect($snapshot['checks'])->firstWhere('name', 'selected_run_projections');
 
         $this->assertSame('warning', $snapshot['status']);
         $this->assertSame('warning', $projection['status']);
-        $this->assertSame(4, $projection['data']['needs_rebuild']);
+        $this->assertSame(7, $projection['data']['needs_rebuild']);
         $this->assertSame(2, $projection['data']['run_waits_needs_rebuild']);
         $this->assertSame(1, $projection['data']['run_waits_missing_current_open_waits']);
         $this->assertSame(1, $projection['data']['run_waits_orphaned']);
-        $this->assertSame(2, $projection['data']['timeline_needs_rebuild']);
-        $this->assertSame(1, $projection['data']['timeline_missing_history_events']);
+        $this->assertSame(3, $projection['data']['timeline_needs_rebuild']);
+        $this->assertSame(2, $projection['data']['timeline_missing_history_events']);
         $this->assertSame(1, $projection['data']['timeline_orphaned']);
+        $this->assertSame(2, $projection['data']['lineage_needs_rebuild']);
+        $this->assertSame(1, $projection['data']['lineage_missing_runs_with_lineage']);
+        $this->assertSame(1, $projection['data']['lineage_orphaned']);
     }
 
     public function testSnapshotWarnsWhenOpenRunHasNoDurableResumePath(): void

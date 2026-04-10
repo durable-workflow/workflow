@@ -9,6 +9,7 @@ use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -23,7 +24,7 @@ class V2RebuildProjectionsCommand extends Command
         {--run-id=* : Rebuild one or more selected workflow run ids}
         {--instance-id= : Rebuild every run for one workflow instance id}
         {--missing : Only rebuild runs that do not have a run-summary row}
-        {--needs-rebuild : Only rebuild runs whose summary, wait, or timeline projections need rebuild}
+        {--needs-rebuild : Only rebuild runs whose summary, wait, timeline, or lineage projections need rebuild}
         {--prune-stale : Delete projection rows whose durable workflow run or history row no longer exists}
         {--dry-run : Report the affected rows without changing projection tables}
         {--json : Output the rebuild report as JSON}';
@@ -53,6 +54,8 @@ class V2RebuildProjectionsCommand extends Command
             'run_waits_would_prune' => 0,
             'run_timeline_entries_pruned' => 0,
             'run_timeline_entries_would_prune' => 0,
+            'run_lineage_entries_pruned' => 0,
+            'run_lineage_entries_would_prune' => 0,
             'failures' => [],
         ];
 
@@ -81,11 +84,15 @@ class V2RebuildProjectionsCommand extends Command
             $staleTimelineQuery = $this->staleTimelineQuery($runIds, $instanceId);
             $timelineTable = $this->tableFor($this->runTimelineEntryModel());
             $staleTimelineCount = (clone $staleTimelineQuery)->count(sprintf('%s.id', $timelineTable));
+            $staleLineageQuery = $this->staleLineageQuery($runIds, $instanceId);
+            $lineageTable = $this->tableFor($this->runLineageEntryModel());
+            $staleLineageCount = (clone $staleLineageQuery)->count(sprintf('%s.id', $lineageTable));
 
             if ($dryRun) {
                 $report['run_summaries_would_prune'] = $staleCount;
                 $report['run_waits_would_prune'] = $staleWaitCount;
                 $report['run_timeline_entries_would_prune'] = $staleTimelineCount;
+                $report['run_lineage_entries_would_prune'] = $staleLineageCount;
             } else {
                 $report['run_summaries_pruned'] = $staleQuery->delete();
                 $report['run_waits_pruned'] = $this->deleteProjectionRows(
@@ -97,6 +104,11 @@ class V2RebuildProjectionsCommand extends Command
                     $staleTimelineQuery,
                     $this->runTimelineEntryModel(),
                     $timelineTable,
+                );
+                $report['run_lineage_entries_pruned'] = $this->deleteProjectionRows(
+                    $staleLineageQuery,
+                    $this->runLineageEntryModel(),
+                    $lineageTable,
                 );
             }
         }
@@ -143,8 +155,10 @@ class V2RebuildProjectionsCommand extends Command
                 ->select(sprintf('%s.id', $summaryTable));
             $missingWaitRunIds = $this->missingCurrentOpenWaitRunIdQuery($runIds, $instanceId);
             $missingTimelineRunIds = $this->missingTimelineEventRunIdQuery($runIds, $instanceId);
+            $missingLineageRunIds = $this->missingLineageRunIdQuery($runIds, $instanceId);
 
             $query->where(static function ($query) use (
+                $missingLineageRunIds,
                 $missingTimelineRunIds,
                 $missingWaitRunIds,
                 $summaryModel,
@@ -154,7 +168,8 @@ class V2RebuildProjectionsCommand extends Command
                 $query->whereNotIn(sprintf('%s.id', $runTable), $summaryModel::query()->select('id'))
                     ->orWhereIn(sprintf('%s.id', $runTable), $staleSummaryIds)
                     ->orWhereIn(sprintf('%s.id', $runTable), $missingWaitRunIds)
-                    ->orWhereIn(sprintf('%s.id', $runTable), $missingTimelineRunIds);
+                    ->orWhereIn(sprintf('%s.id', $runTable), $missingTimelineRunIds)
+                    ->orWhereIn(sprintf('%s.id', $runTable), $missingLineageRunIds);
             });
         } elseif ($missingOnly) {
             $query->whereNotIn('id', $summaryModel::query()->select('id'));
@@ -224,6 +239,64 @@ class V2RebuildProjectionsCommand extends Command
         if ($instanceId !== null) {
             $query->join($runTable, sprintf('%s.id', $runTable), '=', sprintf('%s.workflow_run_id', $historyTable))
                 ->where(sprintf('%s.workflow_instance_id', $runTable), $instanceId);
+        }
+
+        return $query;
+    }
+
+    /**
+     * @param list<string> $runIds
+     */
+    private function missingLineageRunIdQuery(array $runIds, ?string $instanceId)
+    {
+        $runModel = $this->runModel();
+        $historyModel = $this->historyEventModel();
+        $linkModel = $this->linkModel();
+        $lineageModel = $this->runLineageEntryModel();
+        $runTable = $this->tableFor($runModel);
+        $historyTable = $this->tableFor($historyModel);
+        $linkTable = $this->tableFor($linkModel);
+        $lineageTable = $this->tableFor($lineageModel);
+
+        $query = $runModel::query()
+            ->select(sprintf('%s.id', $runTable))
+            ->where(static function ($query) use ($historyTable, $linkTable, $runTable): void {
+                $query->whereExists(static function ($history) use ($historyTable, $runTable): void {
+                    $history->selectRaw('1')
+                        ->from($historyTable)
+                        ->whereColumn(sprintf('%s.workflow_run_id', $historyTable), sprintf('%s.id', $runTable))
+                        ->whereIn(sprintf('%s.event_type', $historyTable), [
+                            'WorkflowContinuedAsNew',
+                            'ChildWorkflowScheduled',
+                            'ChildRunStarted',
+                            'ChildRunCompleted',
+                            'ChildRunFailed',
+                            'ChildRunCancelled',
+                            'ChildRunTerminated',
+                        ]);
+                })->orWhereExists(static function ($links) use ($linkTable, $runTable): void {
+                    $links->selectRaw('1')
+                        ->from($linkTable)
+                        ->where(static function ($link) use ($linkTable, $runTable): void {
+                            $link->whereColumn(
+                                sprintf('%s.parent_workflow_run_id', $linkTable),
+                                sprintf('%s.id', $runTable),
+                            )->orWhereColumn(
+                                sprintf('%s.child_workflow_run_id', $linkTable),
+                                sprintf('%s.id', $runTable),
+                            );
+                        });
+                });
+            })
+            ->leftJoin($lineageTable, sprintf('%s.workflow_run_id', $lineageTable), '=', sprintf('%s.id', $runTable))
+            ->whereNull(sprintf('%s.id', $lineageTable));
+
+        if ($runIds !== []) {
+            $query->whereIn(sprintf('%s.id', $runTable), $runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->where(sprintf('%s.workflow_instance_id', $runTable), $instanceId);
         }
 
         return $query;
@@ -314,6 +387,31 @@ class V2RebuildProjectionsCommand extends Command
     }
 
     /**
+     * @param list<string> $runIds
+     */
+    private function staleLineageQuery(array $runIds, ?string $instanceId)
+    {
+        $runModel = $this->runModel();
+        $lineageModel = $this->runLineageEntryModel();
+        $runTable = $this->tableFor($runModel);
+        $lineageTable = $this->tableFor($lineageModel);
+
+        $query = $lineageModel::query()
+            ->leftJoin($runTable, sprintf('%s.workflow_run_id', $lineageTable), '=', sprintf('%s.id', $runTable))
+            ->whereNull(sprintf('%s.id', $runTable));
+
+        if ($runIds !== []) {
+            $query->whereIn(sprintf('%s.workflow_run_id', $lineageTable), $runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->where(sprintf('%s.workflow_instance_id', $lineageTable), $instanceId);
+        }
+
+        return $query;
+    }
+
+    /**
      * @param class-string<\Illuminate\Database\Eloquent\Model> $model
      */
     private function deleteProjectionRows($query, string $model, string $table): int
@@ -390,6 +488,28 @@ class V2RebuildProjectionsCommand extends Command
     }
 
     /**
+     * @return class-string<WorkflowRunLineageEntry>
+     */
+    private function runLineageEntryModel(): string
+    {
+        /** @var class-string<WorkflowRunLineageEntry> $model */
+        $model = config('workflows.v2.run_lineage_entry_model', WorkflowRunLineageEntry::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<\Workflow\V2\Models\WorkflowLink>
+     */
+    private function linkModel(): string
+    {
+        /** @var class-string<\Workflow\V2\Models\WorkflowLink> $model */
+        $model = config('workflows.v2.link_model', \Workflow\V2\Models\WorkflowLink::class);
+
+        return $model;
+    }
+
+    /**
      * @param class-string<\Illuminate\Database\Eloquent\Model> $model
      */
     private function tableFor(string $model): string
@@ -433,6 +553,8 @@ class V2RebuildProjectionsCommand extends Command
      *     run_waits_would_prune: int,
      *     run_timeline_entries_pruned: int,
      *     run_timeline_entries_would_prune: int,
+     *     run_lineage_entries_pruned: int,
+     *     run_lineage_entries_would_prune: int,
      *     failures: list<array{run_id: string, message: string}>
      * } $report
      */
@@ -474,6 +596,13 @@ class V2RebuildProjectionsCommand extends Command
                     $report['run_timeline_entries_would_prune'],
                 ));
             }
+
+            if ($report['run_lineage_entries_would_prune'] > 0) {
+                $this->info(sprintf(
+                    'Would prune %d stale lineage projection row(s).',
+                    $report['run_lineage_entries_would_prune'],
+                ));
+            }
         } else {
             $this->info(sprintf('Rebuilt %d run-summary projection row(s).', $report['run_summaries_rebuilt']));
 
@@ -495,6 +624,13 @@ class V2RebuildProjectionsCommand extends Command
                 $this->info(sprintf(
                     'Pruned %d stale timeline projection row(s).',
                     $report['run_timeline_entries_pruned'],
+                ));
+            }
+
+            if ($report['run_lineage_entries_pruned'] > 0) {
+                $this->info(sprintf(
+                    'Pruned %d stale lineage projection row(s).',
+                    $report['run_lineage_entries_pruned'],
                 ));
             }
         }

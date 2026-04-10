@@ -124,6 +124,14 @@ class WorkflowRun extends Model
             ->orderBy('history_event_id');
     }
 
+    public function lineageEntries(): HasMany
+    {
+        return $this->hasMany(WorkflowRunLineageEntry::class, 'workflow_run_id')
+            ->orderBy('direction')
+            ->orderBy('position')
+            ->orderBy('lineage_id');
+    }
+
     public function parentLinks(): HasMany
     {
         return $this->hasMany(WorkflowLink::class, 'child_workflow_run_id')

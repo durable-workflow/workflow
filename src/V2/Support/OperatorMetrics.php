@@ -10,6 +10,7 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -18,6 +19,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -226,6 +228,7 @@ final class OperatorMetrics
             ],
             'run_waits' => self::runWaitProjectionMetrics(),
             'run_timeline_entries' => self::runTimelineProjectionMetrics(),
+            'run_lineage_entries' => self::runLineageProjectionMetrics(),
         ];
     }
 
@@ -273,6 +276,30 @@ final class OperatorMetrics
             'needs_rebuild' => $missingHistoryEvents + $orphaned,
             'oldest_updated_at' => self::jsonTimestamp($timelineModel::query()->min('updated_at')),
             'newest_updated_at' => self::jsonTimestamp($timelineModel::query()->max('updated_at')),
+        ];
+    }
+
+    /**
+     * @return array<string, int|string|null>
+     */
+    private static function runLineageProjectionMetrics(): array
+    {
+        $lineageModel = self::runLineageEntryModel();
+        $runsWithLineage = self::runsWithLineage();
+        $missingRunsWithLineage = self::missingLineageRunProjections();
+        $orphaned = self::projectionRowsMissingRun($lineageModel);
+
+        return [
+            'runs' => self::runModel()::query()->count(),
+            'rows' => $lineageModel::query()->count(),
+            'projected_runs' => $lineageModel::query()->distinct()->count('workflow_run_id'),
+            'runs_with_lineage' => $runsWithLineage,
+            'projected_runs_with_lineage' => max(0, $runsWithLineage - $missingRunsWithLineage),
+            'missing_runs_with_lineage' => $missingRunsWithLineage,
+            'orphaned' => $orphaned,
+            'needs_rebuild' => $missingRunsWithLineage + $orphaned,
+            'oldest_updated_at' => self::jsonTimestamp($lineageModel::query()->min('updated_at')),
+            'newest_updated_at' => self::jsonTimestamp($lineageModel::query()->max('updated_at')),
         ];
     }
 
@@ -331,6 +358,23 @@ final class OperatorMetrics
             ->count($historyTable . '.id');
     }
 
+    private static function runsWithLineage(): int
+    {
+        return self::lineageEvidenceRunQuery()
+            ->count();
+    }
+
+    private static function missingLineageRunProjections(): int
+    {
+        $lineageModel = self::runLineageEntryModel();
+        $lineageTable = self::tableFor($lineageModel);
+
+        return self::lineageEvidenceRunQuery()
+            ->leftJoin($lineageTable, $lineageTable . '.workflow_run_id', '=', self::tableFor(self::runModel()) . '.id')
+            ->whereNull($lineageTable . '.id')
+            ->count(self::tableFor(self::runModel()) . '.id');
+    }
+
     private static function orphanedTimelineRows(): int
     {
         $runModel = self::runModel();
@@ -351,6 +395,41 @@ final class OperatorMetrics
                     ->orWhereNull($historyTable . '.id');
             })
             ->count($timelineTable . '.id');
+    }
+
+    private static function lineageEvidenceRunQuery()
+    {
+        $runModel = self::runModel();
+        $historyModel = self::historyEventModel();
+        $linkModel = self::linkModel();
+        $runTable = self::tableFor($runModel);
+        $historyTable = self::tableFor($historyModel);
+        $linkTable = self::tableFor($linkModel);
+
+        return $runModel::query()
+            ->where(static function ($query) use ($historyTable, $linkTable, $runTable): void {
+                $query->whereExists(static function ($history) use ($historyTable, $runTable): void {
+                    $history->selectRaw('1')
+                        ->from($historyTable)
+                        ->whereColumn($historyTable . '.workflow_run_id', $runTable . '.id')
+                        ->whereIn($historyTable . '.event_type', [
+                            HistoryEventType::WorkflowContinuedAsNew->value,
+                            HistoryEventType::ChildWorkflowScheduled->value,
+                            HistoryEventType::ChildRunStarted->value,
+                            HistoryEventType::ChildRunCompleted->value,
+                            HistoryEventType::ChildRunFailed->value,
+                            HistoryEventType::ChildRunCancelled->value,
+                            HistoryEventType::ChildRunTerminated->value,
+                        ]);
+                })->orWhereExists(static function ($links) use ($linkTable, $runTable): void {
+                    $links->selectRaw('1')
+                        ->from($linkTable)
+                        ->where(static function ($link) use ($linkTable, $runTable): void {
+                            $link->whereColumn($linkTable . '.parent_workflow_run_id', $runTable . '.id')
+                                ->orWhereColumn($linkTable . '.child_workflow_run_id', $runTable . '.id');
+                        });
+                });
+            });
     }
 
     private static function compatibilityBlockedRuns(): int
@@ -650,6 +729,28 @@ final class OperatorMetrics
     {
         /** @var class-string<WorkflowTimelineEntry> $model */
         $model = config('workflows.v2.run_timeline_entry_model', WorkflowTimelineEntry::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<WorkflowRunLineageEntry>
+     */
+    private static function runLineageEntryModel(): string
+    {
+        /** @var class-string<WorkflowRunLineageEntry> $model */
+        $model = config('workflows.v2.run_lineage_entry_model', WorkflowRunLineageEntry::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<\Workflow\V2\Models\WorkflowLink>
+     */
+    private static function linkModel(): string
+    {
+        /** @var class-string<\Workflow\V2\Models\WorkflowLink> $model */
+        $model = config('workflows.v2.link_model', \Workflow\V2\Models\WorkflowLink::class);
 
         return $model;
     }
