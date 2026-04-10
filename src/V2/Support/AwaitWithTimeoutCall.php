@@ -12,6 +12,7 @@ final class AwaitWithTimeoutCall
         public readonly int $seconds,
         public readonly Closure $condition,
         public readonly ?string $conditionKey = null,
+        public readonly ?string $conditionDefinitionFingerprint = null,
     ) {
     }
 }

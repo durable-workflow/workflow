@@ -42,6 +42,9 @@ final class TimerCancellation
             'timer_kind' => self::stringValue($scheduledPayload['timer_kind'] ?? null),
             'condition_wait_id' => self::stringValue($scheduledPayload['condition_wait_id'] ?? null),
             'condition_key' => self::stringValue($scheduledPayload['condition_key'] ?? null),
+            'condition_definition_fingerprint' => self::stringValue(
+                $scheduledPayload['condition_definition_fingerprint'] ?? null
+            ),
             'cancelled_at' => $cancelledAt->toJSON(),
         ], static fn (mixed $value): bool => $value !== null), $task, $command);
 

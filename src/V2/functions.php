@@ -27,7 +27,13 @@ if (! function_exists(__NAMESPACE__ . '\\activity')) {
 if (! function_exists(__NAMESPACE__ . '\\await')) {
     function await(callable $condition, ?string $conditionKey = null): AwaitCall
     {
-        return new AwaitCall(\Closure::fromCallable($condition), Support\ConditionWaitKey::normalize($conditionKey));
+        $condition = \Closure::fromCallable($condition);
+
+        return new AwaitCall(
+            $condition,
+            Support\ConditionWaitKey::normalize($conditionKey),
+            Support\ConditionWaitDefinition::fingerprint($condition),
+        );
     }
 }
 
@@ -44,10 +50,13 @@ if (! function_exists(__NAMESPACE__ . '\\awaitWithTimeout')) {
             $duration = (int) ceil(CarbonInterval::fromString($duration)->totalSeconds);
         }
 
+        $condition = \Closure::fromCallable($condition);
+
         return new AwaitWithTimeoutCall(
             max(0, $duration),
-            \Closure::fromCallable($condition),
+            $condition,
             Support\ConditionWaitKey::normalize($conditionKey),
+            Support\ConditionWaitDefinition::fingerprint($condition),
         );
     }
 }

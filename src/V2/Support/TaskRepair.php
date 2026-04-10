@@ -231,6 +231,9 @@ final class TaskRepair
                         'timer_id' => $timerId,
                         'condition_wait_id' => self::nonEmptyString($conditionWait['condition_wait_id'] ?? null),
                         'condition_key' => self::nonEmptyString($conditionWait['condition_key'] ?? null),
+                        'condition_definition_fingerprint' => self::nonEmptyString(
+                            $conditionWait['condition_definition_fingerprint'] ?? null
+                        ),
                         'workflow_sequence' => self::intValue($conditionWait['sequence'] ?? null),
                     ], static fn (mixed $value): bool => $value !== null),
                     'connection' => $run->connection,
@@ -253,6 +256,9 @@ final class TaskRepair
                         'timer_id' => $timerId,
                         'condition_wait_id' => self::nonEmptyString($conditionWait['condition_wait_id'] ?? null),
                         'condition_key' => self::nonEmptyString($conditionWait['condition_key'] ?? null),
+                        'condition_definition_fingerprint' => self::nonEmptyString(
+                            $conditionWait['condition_definition_fingerprint'] ?? null
+                        ),
                     ], static fn (mixed $value): bool => $value !== null),
                     'connection' => $run->connection,
                     'queue' => $run->queue,

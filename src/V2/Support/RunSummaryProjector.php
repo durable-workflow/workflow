@@ -517,7 +517,25 @@ final class RunSummaryProjector
                 ?? 'none';
             $current = self::nonEmptyString($task->payload['replay_blocked_current_condition_key'] ?? null)
                 ?? 'none';
+            $recordedFingerprint = self::nonEmptyString(
+                $task->payload['replay_blocked_recorded_condition_definition_fingerprint'] ?? null
+            );
+            $currentFingerprint = self::nonEmptyString(
+                $task->payload['replay_blocked_current_condition_definition_fingerprint'] ?? null
+            );
             $step = $sequence === null ? 'a keyed condition wait' : sprintf('workflow sequence %d', $sequence);
+
+            if ($recorded === $current && $recordedFingerprint !== null && $currentFingerprint !== null) {
+                return [
+                    'workflow_replay_blocked',
+                    sprintf(
+                        'Workflow replay is blocked at %s because recorded condition predicate fingerprint [%s] does not match the current yielded fingerprint [%s]. Run this workflow on a compatible build, then repair it.',
+                        $step,
+                        $recordedFingerprint,
+                        $currentFingerprint,
+                    ),
+                ];
+            }
 
             return [
                 'workflow_replay_blocked',

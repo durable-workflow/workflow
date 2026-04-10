@@ -180,9 +180,14 @@ final class V2AwaitWorkflowTest extends TestCase
             ->firstWhere('type', HistoryEventType::ConditionWaitOpened->value);
 
         $this->assertSame('approval.ready', $conditionWait['condition_key']);
+        $this->assertIsString($conditionWait['condition_definition_fingerprint']);
         $this->assertSame('approval.ready', $conditionWait['target_name']);
         $this->assertSame('condition', $conditionWait['target_type']);
         $this->assertSame('approval.ready', $conditionTimeline['condition_key'] ?? null);
+        $this->assertSame(
+            $conditionWait['condition_definition_fingerprint'],
+            $conditionTimeline['condition_definition_fingerprint'] ?? null,
+        );
         $this->assertSame('Waiting for condition approval.ready.', $conditionTimeline['summary'] ?? null);
 
         /** @var WorkflowHistoryEvent $opened */
@@ -192,6 +197,10 @@ final class V2AwaitWorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('approval.ready', $opened->payload['condition_key'] ?? null);
+        $this->assertSame(
+            $conditionWait['condition_definition_fingerprint'],
+            $opened->payload['condition_definition_fingerprint'] ?? null,
+        );
 
         $update = $workflow->attemptUpdate('approve', true);
 
@@ -206,6 +215,10 @@ final class V2AwaitWorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('approval.ready', $satisfied->payload['condition_key'] ?? null);
+        $this->assertSame(
+            $conditionWait['condition_definition_fingerprint'],
+            $satisfied->payload['condition_definition_fingerprint'] ?? null,
+        );
     }
 
     public function testKeyedAwaitWithTimeoutCarriesConditionKeyIntoTimeoutTransport(): void
@@ -223,9 +236,18 @@ final class V2AwaitWorkflowTest extends TestCase
 
         $this->assertSame('Waiting for condition approval.ready or timeout', $detail['wait_reason']);
         $this->assertSame('approval.ready', $conditionWait['condition_key']);
+        $this->assertIsString($conditionWait['condition_definition_fingerprint']);
         $this->assertSame('approval.ready', $conditionWait['target_name']);
         $this->assertSame('approval.ready', $timerTask['condition_key']);
+        $this->assertSame(
+            $conditionWait['condition_definition_fingerprint'],
+            $timerTask['condition_definition_fingerprint'],
+        );
         $this->assertSame('approval.ready', $detail['timers'][0]['condition_key']);
+        $this->assertSame(
+            $conditionWait['condition_definition_fingerprint'],
+            $detail['timers'][0]['condition_definition_fingerprint'],
+        );
 
         /** @var WorkflowHistoryEvent $timerScheduled */
         $timerScheduled = WorkflowHistoryEvent::query()
@@ -234,6 +256,36 @@ final class V2AwaitWorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('approval.ready', $timerScheduled->payload['condition_key'] ?? null);
+        $this->assertSame(
+            $conditionWait['condition_definition_fingerprint'],
+            $timerScheduled->payload['condition_definition_fingerprint'] ?? null,
+        );
+    }
+
+    public function testQueryReplayRejectsConditionPredicateFingerprintDrift(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestKeyedAwaitWorkflow::class, 'await-keyed-query-fingerprint-drift');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        /** @var WorkflowHistoryEvent $opened */
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->firstOrFail();
+
+        $payload = $opened->payload;
+        $payload['condition_definition_fingerprint'] = 'sha256:' . str_repeat('0', 64);
+        $opened->forceFill(['payload' => $payload])->save();
+
+        $this->expectException(ConditionWaitDefinitionMismatchException::class);
+        $this->expectExceptionMessage('predicate fingerprint');
+        $this->expectExceptionMessage('sha256:' . str_repeat('0', 64));
+
+        $workflow->refresh()->currentState();
     }
 
     public function testQueryReplayRejectsConditionWaitKeyDrift(): void
@@ -388,6 +440,62 @@ final class V2AwaitWorkflowTest extends TestCase
         $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
         $this->assertNull($detail['tasks'][0]['replay_blocked_recorded_condition_key']);
         $this->assertSame('approval.ready', $detail['tasks'][0]['replay_blocked_current_condition_key']);
+    }
+
+    public function testWorkflowWorkerBlocksReplayWhenConditionPredicateFingerprintDrifts(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestKeyedAwaitWorkflow::class, 'await-keyed-worker-fingerprint-drift');
+        $workflow->start();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $recordedFingerprint = 'sha256:' . str_repeat('1', 64);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitOpened, [
+            'condition_wait_id' => 'condition:1',
+            'condition_key' => 'approval.ready',
+            'condition_definition_fingerprint' => $recordedFingerprint,
+            'sequence' => 1,
+        ]);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertTrue($task->payload['replay_blocked'] ?? false);
+        $this->assertSame('condition_wait_definition_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+        $this->assertSame('approval.ready', $task->payload['replay_blocked_recorded_condition_key'] ?? null);
+        $this->assertSame('approval.ready', $task->payload['replay_blocked_current_condition_key'] ?? null);
+        $this->assertSame(
+            $recordedFingerprint,
+            $task->payload['replay_blocked_recorded_condition_definition_fingerprint'] ?? null,
+        );
+        $this->assertIsString($task->payload['replay_blocked_current_condition_definition_fingerprint'] ?? null);
+        $this->assertNotSame(
+            $recordedFingerprint,
+            $task->payload['replay_blocked_current_condition_definition_fingerprint'] ?? null,
+        );
+        $this->assertStringContainsString('predicate fingerprint', (string) $task->last_error);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertStringContainsString('predicate fingerprint', $detail['liveness_reason']);
+        $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
+        $this->assertSame(
+            $recordedFingerprint,
+            $detail['tasks'][0]['replay_blocked_recorded_condition_definition_fingerprint'],
+        );
+        $this->assertIsString(
+            $detail['tasks'][0]['replay_blocked_current_condition_definition_fingerprint']
+        );
     }
 
     public function testAwaitWorkflowCanApplySubmittedUpdateOnWorkflowWorker(): void
@@ -937,10 +1045,9 @@ final class V2AwaitWorkflowTest extends TestCase
 
             $this->assertSame('pending', $restoredTimer->status->value);
             $this->assertSame($deadlineAt, $restoredTimer->fire_at?->toJSON());
-            $this->assertSame([
-                'timer_id' => $timerId,
-                'condition_wait_id' => $conditionWaitId,
-            ], $repairedTask->payload);
+            $this->assertSame($timerId, $repairedTask->payload['timer_id'] ?? null);
+            $this->assertSame($conditionWaitId, $repairedTask->payload['condition_wait_id'] ?? null);
+            $this->assertIsString($repairedTask->payload['condition_definition_fingerprint'] ?? null);
             $this->assertSame($deadlineAt, $repairedTask->available_at?->toJSON());
             $this->assertSame(1, $repairedTask->repair_count);
 

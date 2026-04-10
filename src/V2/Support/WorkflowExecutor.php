@@ -232,6 +232,7 @@ final class WorkflowExecutor
                     $waitId,
                     $current instanceof AwaitWithTimeoutCall ? $current->seconds : null,
                     $current->conditionKey,
+                    $current->conditionDefinitionFingerprint,
                 );
 
                 /** @var WorkflowTimer|null $timeoutTimer */
@@ -257,6 +258,7 @@ final class WorkflowExecutor
                         $timeoutTimer,
                         self::intValue($timeoutFiredEvent?->payload['delay_seconds'] ?? null) ?? $current->seconds,
                         $current->conditionKey,
+                        $current->conditionDefinitionFingerprint,
                         $this->stringValue($timeoutFiredEvent?->payload['timer_id'] ?? null),
                     );
 
@@ -319,6 +321,7 @@ final class WorkflowExecutor
                             $timeoutTimer,
                             $current->seconds,
                             $current->conditionKey,
+                            $current->conditionDefinitionFingerprint,
                         );
 
                         try {
@@ -975,6 +978,7 @@ final class WorkflowExecutor
             'timer_kind' => 'condition_timeout',
             'condition_wait_id' => $waitId,
             'condition_key' => $awaitWithTimeout->conditionKey,
+            'condition_definition_fingerprint' => $awaitWithTimeout->conditionDefinitionFingerprint,
         ], $task);
 
         /** @var WorkflowTask $timerTask */
@@ -987,6 +991,7 @@ final class WorkflowExecutor
                 'timer_id' => $timer->id,
                 'condition_wait_id' => $waitId,
                 'condition_key' => $awaitWithTimeout->conditionKey,
+                'condition_definition_fingerprint' => $awaitWithTimeout->conditionDefinitionFingerprint,
             ], static fn (mixed $value): bool => $value !== null),
             'connection' => $run->connection,
             'queue' => $run->queue,
@@ -1252,6 +1257,7 @@ final class WorkflowExecutor
             'timer_kind' => 'condition_timeout',
             'condition_wait_id' => $waitId,
             'condition_key' => $awaitWithTimeout->conditionKey,
+            'condition_definition_fingerprint' => $awaitWithTimeout->conditionDefinitionFingerprint,
         ], $task);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
@@ -1262,6 +1268,7 @@ final class WorkflowExecutor
             'timer_kind' => 'condition_timeout',
             'condition_wait_id' => $waitId,
             'condition_key' => $awaitWithTimeout->conditionKey,
+            'condition_definition_fingerprint' => $awaitWithTimeout->conditionDefinitionFingerprint,
         ], $task);
 
         return $timer;
@@ -1938,6 +1945,8 @@ final class WorkflowExecutor
         );
         $payload['replay_blocked_recorded_condition_key'] = $throwable->recordedConditionKey;
         $payload['replay_blocked_current_condition_key'] = $throwable->currentConditionKey;
+        $payload['replay_blocked_recorded_condition_definition_fingerprint'] = $throwable->recordedConditionDefinitionFingerprint;
+        $payload['replay_blocked_current_condition_definition_fingerprint'] = $throwable->currentConditionDefinitionFingerprint;
 
         $task->forceFill([
             'status' => TaskStatus::Failed,
@@ -2668,6 +2677,7 @@ final class WorkflowExecutor
         string $waitId,
         ?int $timeoutSeconds,
         ?string $conditionKey,
+        ?string $conditionDefinitionFingerprint,
     ): WorkflowHistoryEvent {
         $existingEvent = $this->conditionWaitOpenedEvent($run, $sequence);
 
@@ -2678,6 +2688,7 @@ final class WorkflowExecutor
         return WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitOpened, array_filter([
             'condition_wait_id' => $waitId,
             'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
             'sequence' => $sequence,
             'timeout_seconds' => $timeoutSeconds,
         ], static fn (mixed $value): bool => $value !== null), $task);
@@ -2700,6 +2711,7 @@ final class WorkflowExecutor
         return WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitSatisfied, array_filter([
             'condition_wait_id' => $waitId,
             'condition_key' => $current->conditionKey,
+            'condition_definition_fingerprint' => $current->conditionDefinitionFingerprint,
             'sequence' => $sequence,
             'timer_id' => $timer?->id,
             'timeout_seconds' => $current instanceof AwaitWithTimeoutCall ? $current->seconds : null,
@@ -2714,6 +2726,7 @@ final class WorkflowExecutor
         ?WorkflowTimer $timer,
         ?int $timeoutSeconds,
         ?string $conditionKey,
+        ?string $conditionDefinitionFingerprint,
         ?string $timerId = null,
     ): WorkflowHistoryEvent {
         $existingEvent = $this->conditionWaitResolutionEvent($run, $sequence);
@@ -2725,6 +2738,7 @@ final class WorkflowExecutor
         return WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitTimedOut, array_filter([
             'condition_wait_id' => $waitId,
             'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
             'sequence' => $sequence,
             'timer_id' => $timer?->id ?? $timerId,
             'timeout_seconds' => $timeoutSeconds,

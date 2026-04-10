@@ -17,6 +17,7 @@ final class ConditionWaits
      *     id: string,
      *     condition_wait_id: string,
      *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null,
      *     sequence: int|null,
      *     status: string,
      *     source_status: string,
@@ -76,6 +77,9 @@ final class ConditionWaits
                     ?? self::intValue($event->payload['sequence'] ?? null);
                 $waits[$waitId]['condition_key'] = self::stringValue($waits[$waitId]['condition_key'] ?? null)
                     ?? self::stringValue($event->payload['condition_key'] ?? null);
+                $waits[$waitId]['condition_definition_fingerprint'] = self::stringValue(
+                    $waits[$waitId]['condition_definition_fingerprint'] ?? null
+                ) ?? self::stringValue($event->payload['condition_definition_fingerprint'] ?? null);
                 $waits[$waitId]['timeout_seconds'] = self::intValue($waits[$waitId]['timeout_seconds'] ?? null)
                     ?? self::intValue($event->payload['delay_seconds'] ?? null);
                 $waits[$waitId]['timer_id'] = $timerId ?? $waits[$waitId]['timer_id'];
@@ -112,6 +116,9 @@ final class ConditionWaits
                     ?? self::intValue($event->payload['sequence'] ?? null);
                 $waits[$waitId]['condition_key'] = self::stringValue($waits[$waitId]['condition_key'] ?? null)
                     ?? self::stringValue($event->payload['condition_key'] ?? null);
+                $waits[$waitId]['condition_definition_fingerprint'] = self::stringValue(
+                    $waits[$waitId]['condition_definition_fingerprint'] ?? null
+                ) ?? self::stringValue($event->payload['condition_definition_fingerprint'] ?? null);
                 $waits[$waitId]['timeout_seconds'] = self::intValue($waits[$waitId]['timeout_seconds'] ?? null)
                     ?? self::intValue($event->payload['delay_seconds'] ?? null);
                 $waits[$waitId]['timer_id'] = $timerId ?? $waits[$waitId]['timer_id'];
@@ -165,6 +172,9 @@ final class ConditionWaits
                 ?? self::intValue($event->payload['sequence'] ?? null);
             $waits[$waitId]['condition_key'] = self::stringValue($waits[$waitId]['condition_key'] ?? null)
                 ?? self::stringValue($event->payload['condition_key'] ?? null);
+            $waits[$waitId]['condition_definition_fingerprint'] = self::stringValue(
+                $waits[$waitId]['condition_definition_fingerprint'] ?? null
+            ) ?? self::stringValue($event->payload['condition_definition_fingerprint'] ?? null);
             $waits[$waitId]['timeout_seconds'] = self::intValue($event->payload['timeout_seconds'] ?? null)
                 ?? $waits[$waitId]['timeout_seconds'];
             $waits[$waitId]['timer_id'] = self::stringValue($event->payload['timer_id'] ?? null)
@@ -192,6 +202,7 @@ final class ConditionWaits
      *     id: string,
      *     condition_wait_id: string,
      *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null,
      *     sequence: int|null,
      *     status: string,
      *     source_status: string,
@@ -223,6 +234,7 @@ final class ConditionWaits
      *     id: string,
      *     condition_wait_id: string,
      *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null,
      *     sequence: int|null,
      *     status: string,
      *     source_status: string,
@@ -244,6 +256,9 @@ final class ConditionWaits
             'id' => $waitId,
             'condition_wait_id' => $waitId,
             'condition_key' => self::stringValue($event->payload['condition_key'] ?? null),
+            'condition_definition_fingerprint' => self::stringValue(
+                $event->payload['condition_definition_fingerprint'] ?? null
+            ),
             'sequence' => self::intValue($event->payload['sequence'] ?? null),
             'status' => 'open',
             'source_status' => 'waiting',
@@ -277,11 +292,33 @@ final class ConditionWaits
     ): void {
         $definition = self::conditionDefinitionForSequence($run, $sequence);
 
-        if (! $definition['recorded'] || $definition['condition_key'] === $call->conditionKey) {
+        if (! $definition['recorded']) {
             return;
         }
 
-        throw new ConditionWaitDefinitionMismatchException($sequence, $definition['condition_key'], $call->conditionKey);
+        if ($definition['condition_key'] !== $call->conditionKey) {
+            throw new ConditionWaitDefinitionMismatchException(
+                $sequence,
+                $definition['condition_key'],
+                $call->conditionKey,
+                $definition['condition_definition_fingerprint'],
+                $call->conditionDefinitionFingerprint,
+            );
+        }
+
+        if (
+            $definition['condition_definition_fingerprint'] !== null
+            && $call->conditionDefinitionFingerprint !== null
+            && $definition['condition_definition_fingerprint'] !== $call->conditionDefinitionFingerprint
+        ) {
+            throw new ConditionWaitDefinitionMismatchException(
+                $sequence,
+                $definition['condition_key'],
+                $call->conditionKey,
+                $definition['condition_definition_fingerprint'],
+                $call->conditionDefinitionFingerprint,
+            );
+        }
     }
 
     public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
@@ -290,12 +327,14 @@ final class ConditionWaits
     }
 
     /**
-     * @return array{recorded: bool, condition_key: string|null}
+     * @return array{recorded: bool, condition_key: string|null, condition_definition_fingerprint: string|null}
      */
     private static function conditionDefinitionForSequence(WorkflowRun $run, int $sequence): array
     {
         $run->loadMissing('historyEvents');
         $recorded = false;
+        $conditionKey = null;
+        $conditionDefinitionFingerprint = null;
 
         foreach ($run->historyEvents->sortBy('sequence') as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
@@ -320,11 +359,21 @@ final class ConditionWaits
             $key = self::stringValue($event->payload['condition_key'] ?? null);
 
             if ($key !== null) {
-                return ['recorded' => true, 'condition_key' => $key];
+                $conditionKey ??= $key;
+            }
+
+            $fingerprint = self::stringValue($event->payload['condition_definition_fingerprint'] ?? null);
+
+            if ($fingerprint !== null) {
+                $conditionDefinitionFingerprint ??= $fingerprint;
             }
         }
 
-        return ['recorded' => $recorded, 'condition_key' => null];
+        return [
+            'recorded' => $recorded,
+            'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+        ];
     }
 
     /**

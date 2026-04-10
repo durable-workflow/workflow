@@ -1017,6 +1017,7 @@ final class HistoryExport
             'timer_kind' => $timer['timer_kind'] ?? null,
             'condition_wait_id' => $timer['condition_wait_id'] ?? null,
             'condition_key' => $timer['condition_key'] ?? null,
+            'condition_definition_fingerprint' => $timer['condition_definition_fingerprint'] ?? null,
         ];
     }
 

@@ -25,7 +25,8 @@ final class RunTimerView
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
-     *     condition_key: string|null
+     *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null
      * }>
      */
     public static function timersForRun(WorkflowRun $run): array
@@ -108,7 +109,8 @@ final class RunTimerView
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
-     *     condition_key: string|null
+     *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null
      * }|null
      */
     public static function timerForSequence(WorkflowRun $run, int $sequence, bool $includeConditionTimeout = true): ?array
@@ -140,7 +142,8 @@ final class RunTimerView
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
-     *     condition_key: string|null
+     *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null
      * }|null
      */
     public static function timerById(WorkflowRun $run, string $timerId): ?array
@@ -180,7 +183,8 @@ final class RunTimerView
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
-     *     condition_key: string|null
+     *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null
      * }|null
      */
     private static function stateFromEvent(WorkflowHistoryEvent $event): ?array
@@ -220,6 +224,9 @@ final class RunTimerView
             'timer_kind' => self::stringValue($event->payload['timer_kind'] ?? null),
             'condition_wait_id' => self::stringValue($event->payload['condition_wait_id'] ?? null),
             'condition_key' => self::stringValue($event->payload['condition_key'] ?? null),
+            'condition_definition_fingerprint' => self::stringValue(
+                $event->payload['condition_definition_fingerprint'] ?? null
+            ),
         ];
     }
 
@@ -235,7 +242,8 @@ final class RunTimerView
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
-     *     condition_key: string|null
+     *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null
      * }
      */
     private static function stateFromTimer(WorkflowTimer $timer): array
@@ -252,6 +260,7 @@ final class RunTimerView
             'timer_kind' => null,
             'condition_wait_id' => null,
             'condition_key' => null,
+            'condition_definition_fingerprint' => null,
         ];
     }
 
@@ -267,7 +276,8 @@ final class RunTimerView
      *     created_at: \Carbon\CarbonInterface|null,
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
-     *     condition_key: string|null
+     *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null
      * }
      */
     private static function emptyState(string $timerId): array
@@ -284,6 +294,7 @@ final class RunTimerView
             'timer_kind' => null,
             'condition_wait_id' => null,
             'condition_key' => null,
+            'condition_definition_fingerprint' => null,
         ];
     }
 

@@ -266,6 +266,9 @@ final class RunWaitView
                 $task = $timerId === null ? null : ($taskByTimerId[$timerId] ?? null);
                 $timeoutSeconds = self::intValue($wait['timeout_seconds'] ?? null);
                 $conditionKey = self::stringValue($wait['condition_key'] ?? null);
+                $conditionDefinitionFingerprint = self::stringValue(
+                    $wait['condition_definition_fingerprint'] ?? null
+                );
                 $resumeSourceKind = self::stringValue($wait['resume_source_kind'] ?? null) ?? 'external_input';
                 $resumeSourceId = self::stringValue($wait['resume_source_id'] ?? null);
                 $timeoutFiredAt = self::timestamp($wait['timeout_fired_at'] ?? null);
@@ -294,6 +297,7 @@ final class RunWaitView
                     'id' => $wait['condition_wait_id'],
                     'condition_wait_id' => $wait['condition_wait_id'],
                     'condition_key' => $conditionKey,
+                    'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
                     'kind' => 'condition',
                     'sequence' => $sequence,
                     'status' => $wait['status'],

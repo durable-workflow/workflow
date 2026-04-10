@@ -130,6 +130,9 @@ final class HistoryTimeline
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
             'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
             'condition_key' => self::stringValue($payload['condition_key'] ?? null),
+            'condition_definition_fingerprint' => self::stringValue(
+                $payload['condition_definition_fingerprint'] ?? null
+            ),
             'signal_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['signal_name'] ?? null),
             'update_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['update_name'] ?? null),
             'version_change_id' => self::stringValue($payload['change_id'] ?? null),

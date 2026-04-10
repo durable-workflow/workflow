@@ -62,6 +62,9 @@ final class RunTaskView
                     $timerId = self::stringValue($task->payload['timer_id'] ?? null);
                     $conditionWaitId = self::stringValue($task->payload['condition_wait_id'] ?? null);
                     $conditionKey = self::stringValue($task->payload['condition_key'] ?? null);
+                    $conditionDefinitionFingerprint = self::stringValue(
+                        $task->payload['condition_definition_fingerprint'] ?? null
+                    );
                     $workflowWaitKind = self::stringValue($task->payload['workflow_wait_kind'] ?? null);
                     $workflowResumeSourceKind = self::stringValue($task->payload['resume_source_kind'] ?? null);
                     $workflowResumeSourceId = self::stringValue($task->payload['resume_source_id'] ?? null);
@@ -126,6 +129,7 @@ final class RunTaskView
                         'timer_fire_at' => $timer['fire_at'] ?? null,
                         'condition_wait_id' => $conditionWaitId,
                         'condition_key' => $conditionKey,
+                        'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
                         'workflow_wait_kind' => $workflowWaitKind,
                         'workflow_open_wait_id' => self::stringValue($task->payload['open_wait_id'] ?? null),
                         'workflow_resume_source_kind' => $workflowResumeSourceKind,
@@ -151,6 +155,16 @@ final class RunTaskView
                             : null,
                         'replay_blocked_current_condition_key' => $replayBlocked
                             ? self::stringValue($task->payload['replay_blocked_current_condition_key'] ?? null)
+                            : null,
+                        'replay_blocked_recorded_condition_definition_fingerprint' => $replayBlocked
+                            ? self::stringValue(
+                                $task->payload['replay_blocked_recorded_condition_definition_fingerprint'] ?? null
+                            )
+                            : null,
+                        'replay_blocked_current_condition_definition_fingerprint' => $replayBlocked
+                            ? self::stringValue(
+                                $task->payload['replay_blocked_current_condition_definition_fingerprint'] ?? null
+                            )
                             : null,
                         'created_at' => $task->created_at,
                         'updated_at' => $task->updated_at,
@@ -385,6 +399,9 @@ final class RunTaskView
             ?? 'condition';
         $timerId = self::stringValue($wait['resume_source_id'] ?? null);
         $conditionKey = self::stringValue($wait['condition_key'] ?? null);
+        $conditionDefinitionFingerprint = self::stringValue(
+            $wait['condition_definition_fingerprint'] ?? null
+        );
         $openWaitId = self::stringValue($wait['id'] ?? null) ?? $conditionWaitId;
 
         $row = self::missingTaskBase(
@@ -407,6 +424,7 @@ final class RunTaskView
         $row['timer_fire_at'] = self::timestamp($wait['deadline_at'] ?? null);
         $row['condition_wait_id'] = $conditionWaitId;
         $row['condition_key'] = $conditionKey;
+        $row['condition_definition_fingerprint'] = $conditionDefinitionFingerprint;
         $row['workflow_wait_kind'] = 'condition';
         $row['workflow_open_wait_id'] = $openWaitId;
         $row['workflow_resume_source_kind'] = 'timer';
@@ -430,6 +448,8 @@ final class RunTaskView
             ?? self::timestamp($timer['fire_at'] ?? null);
         $conditionKey = self::stringValue($wait['condition_key'] ?? null)
             ?? self::stringValue($timer['condition_key'] ?? null);
+        $conditionDefinitionFingerprint = self::stringValue($wait['condition_definition_fingerprint'] ?? null)
+            ?? self::stringValue($timer['condition_definition_fingerprint'] ?? null);
         $conditionWaitId = self::stringValue($wait['condition_wait_id'] ?? null)
             ?? self::stringValue($timer['condition_wait_id'] ?? null);
 
@@ -454,6 +474,7 @@ final class RunTaskView
         $row['timer_fire_at'] = $availableAt;
         $row['condition_wait_id'] = $conditionWaitId;
         $row['condition_key'] = $conditionKey;
+        $row['condition_definition_fingerprint'] = $conditionDefinitionFingerprint;
 
         return $row;
     }
@@ -605,6 +626,7 @@ final class RunTaskView
             'timer_fire_at' => null,
             'condition_wait_id' => null,
             'condition_key' => null,
+            'condition_definition_fingerprint' => null,
             'workflow_wait_kind' => null,
             'workflow_open_wait_id' => null,
             'workflow_resume_source_kind' => null,
@@ -621,6 +643,8 @@ final class RunTaskView
             'replay_blocked_condition_wait_id' => null,
             'replay_blocked_recorded_condition_key' => null,
             'replay_blocked_current_condition_key' => null,
+            'replay_blocked_recorded_condition_definition_fingerprint' => null,
+            'replay_blocked_current_condition_definition_fingerprint' => null,
             'created_at' => null,
             'updated_at' => null,
         ];

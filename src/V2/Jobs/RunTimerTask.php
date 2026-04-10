@@ -122,6 +122,9 @@ final class RunTimerTask implements ShouldQueue
             $conditionKey = is_string($task->payload['condition_key'] ?? null)
                 ? $task->payload['condition_key']
                 : null;
+            $conditionDefinitionFingerprint = is_string($task->payload['condition_definition_fingerprint'] ?? null)
+                ? $task->payload['condition_definition_fingerprint']
+                : null;
 
             WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, array_filter([
                 'timer_id' => $timer->id,
@@ -132,6 +135,7 @@ final class RunTimerTask implements ShouldQueue
                 'timer_kind' => $conditionWaitId === null ? null : 'condition_timeout',
                 'condition_wait_id' => $conditionWaitId,
                 'condition_key' => $conditionKey,
+                'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
             ], static fn (mixed $value): bool => $value !== null), $task);
 
             $task->forceFill([
@@ -153,6 +157,7 @@ final class RunTimerTask implements ShouldQueue
                     'timer_id' => $conditionWaitId === null ? null : $timer->id,
                     'condition_wait_id' => $conditionWaitId,
                     'condition_key' => $conditionKey,
+                    'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
                     'workflow_sequence' => $conditionWaitId === null ? null : $timer->sequence,
                 ], static fn (mixed $value): bool => $value !== null),
                 'connection' => $run->connection,
