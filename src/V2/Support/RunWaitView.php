@@ -174,12 +174,17 @@ final class RunWaitView
      */
     private static function timerWait(array $timer, ?WorkflowTask $task): array
     {
-        $sourceStatus = self::stringValue($timer['status'] ?? null) ?? 'pending';
-        $status = match ($sourceStatus) {
-            'pending' => 'open',
-            'cancelled' => 'cancelled',
-            default => 'resolved',
-        };
+        $unsupportedReason = self::stringValue($timer['history_unsupported_reason'] ?? null);
+        $sourceStatus = self::stringValue($timer['source_status'] ?? null)
+            ?? self::stringValue($timer['status'] ?? null)
+            ?? 'pending';
+        $status = $unsupportedReason === RunTimerView::UNSUPPORTED_TERMINAL_REASON
+            ? 'unsupported'
+            : match ($sourceStatus) {
+                'pending' => 'open',
+                'cancelled' => 'cancelled',
+                default => 'resolved',
+            };
         $timerId = self::stringValue($timer['id'] ?? null) ?? 'timer';
 
         return [
@@ -191,6 +196,7 @@ final class RunWaitView
             'summary' => match ($status) {
                 'open' => 'Waiting for timer.',
                 'cancelled' => 'Timer wait was cancelled.',
+                'unsupported' => 'Timer has a terminal mutable row without typed timer history.',
                 default => 'Timer fired.',
             },
             'opened_at' => $timer['created_at'] ?? null,
@@ -209,6 +215,9 @@ final class RunWaitView
             'command_sequence' => null,
             'command_status' => null,
             'command_outcome' => null,
+            'history_authority' => self::stringValue($timer['history_authority'] ?? null),
+            'history_unsupported_reason' => $unsupportedReason,
+            'row_status' => self::stringValue($timer['row_status'] ?? null),
         ];
     }
 

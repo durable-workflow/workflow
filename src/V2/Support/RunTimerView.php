@@ -13,11 +13,20 @@ use Workflow\V2\Models\WorkflowTimer;
 
 final class RunTimerView
 {
+    public const HISTORY_AUTHORITY_TYPED = 'typed_history';
+
+    public const HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK = 'mutable_open_fallback';
+
+    public const HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL = 'unsupported_terminal_without_history';
+
+    public const UNSUPPORTED_TERMINAL_REASON = 'terminal_timer_row_without_typed_history';
+
     /**
      * @return list<array{
      *     id: string,
      *     sequence: int|null,
      *     status: string,
+     *     source_status: string,
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
@@ -26,7 +35,11 @@ final class RunTimerView
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
      *     condition_key: string|null,
-     *     condition_definition_fingerprint: string|null
+     *     condition_definition_fingerprint: string|null,
+     *     history_authority: string,
+     *     history_event_types: list<string>,
+     *     history_unsupported_reason: string|null,
+     *     row_status: string|null
      * }>
      */
     public static function timersForRun(WorkflowRun $run): array
@@ -102,6 +115,7 @@ final class RunTimerView
      *     id: string,
      *     sequence: int|null,
      *     status: string,
+     *     source_status: string,
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
@@ -110,7 +124,11 @@ final class RunTimerView
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
      *     condition_key: string|null,
-     *     condition_definition_fingerprint: string|null
+     *     condition_definition_fingerprint: string|null,
+     *     history_authority: string,
+     *     history_event_types: list<string>,
+     *     history_unsupported_reason: string|null,
+     *     row_status: string|null
      * }|null
      */
     public static function timerForSequence(WorkflowRun $run, int $sequence, bool $includeConditionTimeout = true): ?array
@@ -135,6 +153,7 @@ final class RunTimerView
      *     id: string,
      *     sequence: int|null,
      *     status: string,
+     *     source_status: string,
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
@@ -143,7 +162,11 @@ final class RunTimerView
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
      *     condition_key: string|null,
-     *     condition_definition_fingerprint: string|null
+     *     condition_definition_fingerprint: string|null,
+     *     history_authority: string,
+     *     history_event_types: list<string>,
+     *     history_unsupported_reason: string|null,
+     *     row_status: string|null
      * }|null
      */
     public static function timerById(WorkflowRun $run, string $timerId): ?array
@@ -176,6 +199,7 @@ final class RunTimerView
      *     id: string,
      *     sequence: int|null,
      *     status: string,
+     *     source_status: string,
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
@@ -184,7 +208,11 @@ final class RunTimerView
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
      *     condition_key: string|null,
-     *     condition_definition_fingerprint: string|null
+     *     condition_definition_fingerprint: string|null,
+     *     history_authority: string,
+     *     history_event_types: list<string>,
+     *     history_unsupported_reason: string|null,
+     *     row_status: string|null
      * }|null
      */
     private static function stateFromEvent(WorkflowHistoryEvent $event): ?array
@@ -199,6 +227,11 @@ final class RunTimerView
             'id' => $timerId,
             'sequence' => self::intValue($event->payload['sequence'] ?? null),
             'status' => match ($event->event_type) {
+                HistoryEventType::TimerFired => TimerStatus::Fired->value,
+                HistoryEventType::TimerCancelled => TimerStatus::Cancelled->value,
+                default => TimerStatus::Pending->value,
+            },
+            'source_status' => match ($event->event_type) {
                 HistoryEventType::TimerFired => TimerStatus::Fired->value,
                 HistoryEventType::TimerCancelled => TimerStatus::Cancelled->value,
                 default => TimerStatus::Pending->value,
@@ -227,6 +260,10 @@ final class RunTimerView
             'condition_definition_fingerprint' => self::stringValue(
                 $event->payload['condition_definition_fingerprint'] ?? null
             ),
+            'history_authority' => self::HISTORY_AUTHORITY_TYPED,
+            'history_event_types' => [$event->event_type->value],
+            'history_unsupported_reason' => null,
+            'row_status' => null,
         ];
     }
 
@@ -235,6 +272,7 @@ final class RunTimerView
      *     id: string,
      *     sequence: int|null,
      *     status: string,
+     *     source_status: string,
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
@@ -243,24 +281,40 @@ final class RunTimerView
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
      *     condition_key: string|null,
-     *     condition_definition_fingerprint: string|null
+     *     condition_definition_fingerprint: string|null,
+     *     history_authority: string,
+     *     history_event_types: list<string>,
+     *     history_unsupported_reason: string|null,
+     *     row_status: string|null
      * }
      */
     private static function stateFromTimer(WorkflowTimer $timer): array
     {
+        $rowStatus = $timer->status->value;
+        $unsupportedTerminal = $timer->status !== TimerStatus::Pending;
+
         return [
             'id' => $timer->id,
             'sequence' => $timer->sequence,
-            'status' => $timer->status->value,
+            'status' => $unsupportedTerminal ? 'unsupported' : $rowStatus,
+            'source_status' => $rowStatus,
             'delay_seconds' => $timer->delay_seconds,
             'fire_at' => $timer->fire_at,
-            'fired_at' => $timer->fired_at,
+            'fired_at' => $unsupportedTerminal ? null : $timer->fired_at,
             'cancelled_at' => null,
             'created_at' => $timer->created_at,
             'timer_kind' => null,
             'condition_wait_id' => null,
             'condition_key' => null,
             'condition_definition_fingerprint' => null,
+            'history_authority' => $unsupportedTerminal
+                ? self::HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL
+                : self::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK,
+            'history_event_types' => [],
+            'history_unsupported_reason' => $unsupportedTerminal
+                ? self::UNSUPPORTED_TERMINAL_REASON
+                : null,
+            'row_status' => $rowStatus,
         ];
     }
 
@@ -269,6 +323,7 @@ final class RunTimerView
      *     id: string,
      *     sequence: int|null,
      *     status: string,
+     *     source_status: string,
      *     delay_seconds: int|null,
      *     fire_at: \Carbon\CarbonInterface|null,
      *     fired_at: \Carbon\CarbonInterface|null,
@@ -277,7 +332,11 @@ final class RunTimerView
      *     timer_kind: string|null,
      *     condition_wait_id: string|null,
      *     condition_key: string|null,
-     *     condition_definition_fingerprint: string|null
+     *     condition_definition_fingerprint: string|null,
+     *     history_authority: string,
+     *     history_event_types: list<string>,
+     *     history_unsupported_reason: string|null,
+     *     row_status: string|null
      * }
      */
     private static function emptyState(string $timerId): array
@@ -286,6 +345,7 @@ final class RunTimerView
             'id' => $timerId,
             'sequence' => null,
             'status' => TimerStatus::Pending->value,
+            'source_status' => TimerStatus::Pending->value,
             'delay_seconds' => null,
             'fire_at' => null,
             'fired_at' => null,
@@ -295,6 +355,10 @@ final class RunTimerView
             'condition_wait_id' => null,
             'condition_key' => null,
             'condition_definition_fingerprint' => null,
+            'history_authority' => self::HISTORY_AUTHORITY_TYPED,
+            'history_event_types' => [],
+            'history_unsupported_reason' => null,
+            'row_status' => null,
         ];
     }
 
@@ -306,6 +370,21 @@ final class RunTimerView
     private static function mergeState(array $state, array $snapshot): array
     {
         foreach ($snapshot as $key => $value) {
+            if ($key === 'history_event_types') {
+                $state[$key] = array_values(array_unique(array_merge(
+                    is_array($state[$key] ?? null) ? $state[$key] : [],
+                    is_array($value) ? $value : [],
+                )));
+
+                continue;
+            }
+
+            if ($key === 'history_unsupported_reason') {
+                $state[$key] = $value;
+
+                continue;
+            }
+
             if ($value !== null) {
                 $state[$key] = $value;
             } elseif (! array_key_exists($key, $state)) {
@@ -325,13 +404,26 @@ final class RunTimerView
         $state['sequence'] ??= $timer->sequence;
         $state['delay_seconds'] ??= $timer->delay_seconds;
         $state['fire_at'] ??= $timer->fire_at;
-        $state['fired_at'] ??= $timer->fired_at;
         $state['cancelled_at'] ??= null;
         $state['created_at'] ??= $timer->created_at;
+        $state['row_status'] = $timer->status->value;
 
-        if ($timer->status === TimerStatus::Cancelled) {
-            $state['status'] = TimerStatus::Cancelled->value;
+        if (($state['history_authority'] ?? null) !== self::HISTORY_AUTHORITY_TYPED) {
+            $unsupportedTerminal = $timer->status !== TimerStatus::Pending;
+            $state['status'] = $unsupportedTerminal ? 'unsupported' : $timer->status->value;
+            $state['source_status'] = $timer->status->value;
+            $state['history_authority'] = $unsupportedTerminal
+                ? self::HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL
+                : self::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK;
+            $state['history_unsupported_reason'] = $unsupportedTerminal
+                ? self::UNSUPPORTED_TERMINAL_REASON
+                : null;
+            $state['fired_at'] = $unsupportedTerminal ? null : ($state['fired_at'] ?? $timer->fired_at);
+
+            return $state;
         }
+
+        $state['source_status'] ??= $state['status'] ?? $timer->status->value;
 
         return $state;
     }

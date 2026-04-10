@@ -310,6 +310,7 @@ final class RunDetailView
                     'id' => $timer['id'],
                     'sequence' => $timer['sequence'],
                     'status' => $timer['status'],
+                    'source_status' => $timer['source_status'] ?? $timer['status'],
                     'delay_seconds' => $timer['delay_seconds'],
                     'fire_at' => $timer['fire_at'],
                     'fired_at' => $timer['fired_at'],
@@ -318,6 +319,10 @@ final class RunDetailView
                     'condition_wait_id' => $timer['condition_wait_id'] ?? null,
                     'condition_key' => $timer['condition_key'] ?? null,
                     'condition_definition_fingerprint' => $timer['condition_definition_fingerprint'] ?? null,
+                    'history_authority' => $timer['history_authority'] ?? null,
+                    'history_event_types' => $timer['history_event_types'] ?? [],
+                    'history_unsupported_reason' => $timer['history_unsupported_reason'] ?? null,
+                    'row_status' => $timer['row_status'] ?? null,
                 ])
                 ->values(),
             'parents' => RunLineageView::parentsForRun($run),

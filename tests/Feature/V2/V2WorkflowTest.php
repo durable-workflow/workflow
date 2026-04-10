@@ -611,6 +611,7 @@ final class V2WorkflowTest extends TestCase
             $timer = WorkflowTimer::query()
                 ->where('workflow_run_id', $runId)
                 ->firstOrFail();
+            $timerId = $timer->id;
 
             WorkflowHistoryEvent::query()
                 ->where('workflow_run_id', $runId)
@@ -669,9 +670,31 @@ final class V2WorkflowTest extends TestCase
             $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
             $replayBlockedTask = collect($detail['tasks'])
                 ->first(static fn (array $task): bool => ($task['transport_state'] ?? null) === 'replay_blocked');
+            $timerDetail = collect($detail['timers'])
+                ->first(static fn (array $timer): bool => ($timer['id'] ?? null) === $timerId);
+            $timerWait = collect($detail['waits'])
+                ->first(static fn (array $wait): bool => ($wait['kind'] ?? null) === 'timer');
 
             $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
             $this->assertStringContainsString('history recorded [no typed history]', $detail['liveness_reason']);
+            $this->assertIsArray($timerDetail);
+            $this->assertSame('unsupported', $timerDetail['status']);
+            $this->assertSame('fired', $timerDetail['source_status']);
+            $this->assertSame('fired', $timerDetail['row_status']);
+            $this->assertSame('unsupported_terminal_without_history', $timerDetail['history_authority']);
+            $this->assertSame(
+                'terminal_timer_row_without_typed_history',
+                $timerDetail['history_unsupported_reason'],
+            );
+            $this->assertSame([], $timerDetail['history_event_types']);
+            $this->assertNull($timerDetail['fired_at']);
+            $this->assertIsArray($timerWait);
+            $this->assertSame('unsupported', $timerWait['status']);
+            $this->assertSame('fired', $timerWait['source_status']);
+            $this->assertSame(
+                'terminal_timer_row_without_typed_history',
+                $timerWait['history_unsupported_reason'],
+            );
             $this->assertIsArray($replayBlockedTask);
             $this->assertSame(['no typed history'], $replayBlockedTask['replay_blocked_recorded_event_types']);
         } finally {

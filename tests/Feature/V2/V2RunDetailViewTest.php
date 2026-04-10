@@ -31,6 +31,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Jobs\RunActivityTask;
@@ -2165,6 +2166,61 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($timerId, $timerTask['timer_id']);
         $this->assertSame(1, $timerTask['timer_sequence']);
         $this->assertSame($deadlineAt, $timerTask['timer_fire_at']?->toJSON());
+    }
+
+    public function testRunDetailViewKeepsTypedTimerScheduledWhenMutableTimerRowFiresWithoutHistory(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-timer-row-fired-without-history');
+        $workflow->start(60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runNextReadyTask();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        $timerId = $timer->id;
+        $deadlineAt = $timer->fire_at?->toJSON();
+
+        $timer->forceFill([
+            'status' => TimerStatus::Fired->value,
+            'fired_at' => now(),
+        ])->save();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+        $timerWait = $this->findWait($detail['waits'], 'timer');
+
+        $this->assertSame('timer_scheduled', $detail['liveness_state']);
+        $this->assertSame('timer', $detail['wait_kind']);
+        $this->assertSame($timerId, $detail['resume_source_id']);
+        $this->assertCount(1, $detail['timers']);
+        $this->assertSame($timerId, $detail['timers'][0]['id']);
+        $this->assertSame('pending', $detail['timers'][0]['status']);
+        $this->assertSame('pending', $detail['timers'][0]['source_status']);
+        $this->assertSame('fired', $detail['timers'][0]['row_status']);
+        $this->assertSame('typed_history', $detail['timers'][0]['history_authority']);
+        $this->assertSame(['TimerScheduled'], $detail['timers'][0]['history_event_types']);
+        $this->assertNull($detail['timers'][0]['history_unsupported_reason']);
+        $this->assertNull($detail['timers'][0]['fired_at']);
+        $this->assertSame($deadlineAt, $detail['timers'][0]['fire_at']?->toJSON());
+        $this->assertSame('open', $timerWait['status']);
+        $this->assertSame('pending', $timerWait['source_status']);
+        $this->assertSame('typed_history', $timerWait['history_authority']);
+        $this->assertNull($timerWait['history_unsupported_reason']);
     }
 
     public function testRunDetailViewPrefersOpenTimerTaskOverHistoricalClosedTimerTask(): void

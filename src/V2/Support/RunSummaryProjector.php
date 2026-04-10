@@ -25,6 +25,7 @@ final class RunSummaryProjector
 
         $isTerminal = $run->status->isTerminal();
         $activities = RunActivityView::activitiesForRun($run);
+        $timers = RunTimerView::timersForRun($run);
 
         $openActivity = $isTerminal
             ? null
@@ -35,6 +36,7 @@ final class RunSummaryProjector
                     true,
                 ));
         $unsupportedActivity = $isTerminal ? null : self::unsupportedActivity($activities);
+        $unsupportedTimer = $isTerminal ? null : self::unsupportedTimer($timers);
 
         $nextTask = $isTerminal
             ? null
@@ -65,7 +67,7 @@ final class RunSummaryProjector
 
         $openTimer = $isTerminal || $openUpdateWait !== null
             ? null
-            : collect(RunTimerView::timersForRun($run))
+            : collect($timers)
                 ->first(
                     static fn (array $timer): bool => ($timer['status'] ?? null) === 'pending'
                         && ($timer['timer_kind'] ?? null) !== 'condition_timeout'
@@ -223,6 +225,7 @@ final class RunSummaryProjector
             $openSignalApplicationWait,
             $openConditionWait,
             $openTimer,
+            $unsupportedTimer,
             $nextTask,
             $replayBlockedTask,
             $openChildWait,
@@ -383,6 +386,7 @@ final class RunSummaryProjector
         ?array $openSignalApplicationWait,
         ?array $openConditionWait,
         ?array $openTimer,
+        ?array $unsupportedTimer,
         ?WorkflowTask $nextTask,
         ?WorkflowTask $replayBlockedTask,
         ?array $openChildWait,
@@ -522,6 +526,16 @@ final class RunSummaryProjector
                 sprintf(
                     'Activity %s has terminal mutable activity state without typed activity history. Run a compatible build or treat this older preview data as unsupported.',
                     self::activityType($unsupportedActivity),
+                ),
+            ];
+        }
+
+        if ($unsupportedTimer !== null) {
+            return [
+                'workflow_replay_blocked',
+                sprintf(
+                    'Timer %s has terminal mutable timer state without typed timer history. Run a compatible build or treat this older preview data as unsupported.',
+                    $unsupportedTimer['id'] ?? 'unknown',
                 ),
             ];
         }
@@ -815,6 +829,22 @@ final class RunSummaryProjector
         foreach ($activities as $activity) {
             if (($activity['history_unsupported_reason'] ?? null) === RunActivityView::UNSUPPORTED_TERMINAL_REASON) {
                 return $activity;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $timers
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function unsupportedTimer(array $timers): ?array
+    {
+        foreach ($timers as $timer) {
+            if (($timer['history_unsupported_reason'] ?? null) === RunTimerView::UNSUPPORTED_TERMINAL_REASON) {
+                return $timer;
             }
         }
 

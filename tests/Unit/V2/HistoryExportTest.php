@@ -755,6 +755,44 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('condition:4', $bundle['timers'][0]['condition_wait_id']);
     }
 
+    public function testItLabelsTerminalTimerRowsWithoutTypedHistoryAsUnsupportedInExports(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:20:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createMinimalCompletedRun('history-export-row-only-timer');
+        $fireAt = now()->subMinute();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 2,
+            'status' => TimerStatus::Fired->value,
+            'delay_seconds' => 60,
+            'fire_at' => $fireAt,
+            'fired_at' => now(),
+            'created_at' => now()->subMinutes(2),
+        ]);
+
+        $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'timers']));
+
+        $this->assertCount(1, $bundle['timers']);
+        $this->assertSame($timer->id, $bundle['timers'][0]['id']);
+        $this->assertSame('unsupported', $bundle['timers'][0]['status']);
+        $this->assertSame('fired', $bundle['timers'][0]['source_status']);
+        $this->assertSame('fired', $bundle['timers'][0]['row_status']);
+        $this->assertSame('unsupported_terminal_without_history', $bundle['timers'][0]['history_authority']);
+        $this->assertSame(
+            'terminal_timer_row_without_typed_history',
+            $bundle['timers'][0]['history_unsupported_reason'],
+        );
+        $this->assertSame([], $bundle['timers'][0]['history_event_types']);
+        $this->assertNull($bundle['timers'][0]['fired_at']);
+    }
+
     public function testItAppliesConfiguredRedactionPolicyToPayloadAndDiagnosticSlots(): void
     {
         config()->set('workflows.v2.history_export.redactor', new class() implements HistoryExportRedactor {

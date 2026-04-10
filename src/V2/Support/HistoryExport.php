@@ -1009,6 +1009,7 @@ final class HistoryExport
             'id' => $timer['id'] ?? null,
             'sequence' => $timer['sequence'] ?? null,
             'status' => $timer['status'] ?? null,
+            'source_status' => $timer['source_status'] ?? ($timer['status'] ?? null),
             'delay_seconds' => $timer['delay_seconds'] ?? null,
             'fire_at' => self::timestamp($timer['fire_at'] ?? null),
             'fired_at' => self::timestamp($timer['fired_at'] ?? null),
@@ -1018,6 +1019,12 @@ final class HistoryExport
             'condition_wait_id' => $timer['condition_wait_id'] ?? null,
             'condition_key' => $timer['condition_key'] ?? null,
             'condition_definition_fingerprint' => $timer['condition_definition_fingerprint'] ?? null,
+            'history_authority' => $timer['history_authority'] ?? null,
+            'history_event_types' => is_array($timer['history_event_types'] ?? null)
+                ? array_values($timer['history_event_types'])
+                : [],
+            'history_unsupported_reason' => $timer['history_unsupported_reason'] ?? null,
+            'row_status' => $timer['row_status'] ?? null,
         ];
     }
 
