@@ -33,6 +33,8 @@ final class RunWaitView
 
         $taskByActivityExecutionId = self::preferredTasksByPayloadKey($run, 'activity_execution_id');
         $taskByTimerId = self::preferredTasksByPayloadKey($run, 'timer_id');
+        $taskByChildCallId = self::preferredTasksByPayloadKey($run, 'child_call_id');
+        $taskByChildRunId = self::preferredTasksByPayloadKey($run, 'child_workflow_run_id');
         $conditionWaits = ConditionWaits::forRun($run);
         $conditionTimerIds = array_values(array_filter(
             array_map(
@@ -68,7 +70,7 @@ final class RunWaitView
             $waits[] = self::timerWait($timer, $timerId === null ? null : ($taskByTimerId[$timerId] ?? null));
         }
 
-        $waits = array_merge($waits, self::childWaits($run));
+        $waits = array_merge($waits, self::childWaits($run, $taskByChildCallId, $taskByChildRunId));
         $waits = array_merge($waits, self::signalWaits($run));
 
         usort($waits, static function (array $left, array $right): int {
@@ -320,9 +322,13 @@ final class RunWaitView
     /**
      * @return list<array<string, mixed>>
      */
-    private static function childWaits(WorkflowRun $run): array
+    private static function childWaits(
+        WorkflowRun $run,
+        array $taskByChildCallId,
+        array $taskByChildRunId,
+    ): array
     {
-        return array_values(array_filter(array_map(static function (int $sequence) use ($run): ?array {
+        return array_values(array_filter(array_map(static function (int $sequence) use ($run, $taskByChildCallId, $taskByChildRunId): ?array {
             $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
 
             if ($snapshot === null) {
@@ -335,6 +341,10 @@ final class RunWaitView
             $resolutionEvent = $snapshot['resolution_event'];
             $sourceStatus = $snapshot['source_status'];
             $label = $snapshot['label'];
+            $childCallId = self::stringValue($snapshot['child_call_id'] ?? null);
+            $resumeSourceId = self::stringValue($snapshot['resume_source_id'] ?? null);
+            $task = ($childCallId === null ? null : ($taskByChildCallId[$childCallId] ?? null))
+                ?? ($resumeSourceId === null ? null : ($taskByChildRunId[$resumeSourceId] ?? null));
 
             $summary = match ($sourceStatus) {
                 RunStatus::Completed->value => sprintf('Child workflow %s completed.', $label),
@@ -355,9 +365,9 @@ final class RunWaitView
             );
 
             return [
-                'id' => sprintf('child:%s', $snapshot['child_call_id'] ?? $sequence),
+                'id' => sprintf('child:%s', $childCallId ?? $sequence),
                 'kind' => 'child',
-                'child_call_id' => $snapshot['child_call_id'],
+                'child_call_id' => $childCallId,
                 'sequence' => $sequence,
                 'status' => $snapshot['status'],
                 'source_status' => $sourceStatus,
@@ -367,13 +377,13 @@ final class RunWaitView
                 'resolved_at' => $snapshot['resolved_at'],
                 'target_name' => $snapshot['target_name'],
                 'target_type' => $snapshot['label'],
-                'task_backed' => false,
+                'task_backed' => self::isOpenTask($task),
                 'external_only' => false,
                 'resume_source_kind' => 'child_workflow_run',
-                'resume_source_id' => $snapshot['resume_source_id'],
-                'task_id' => null,
-                'task_type' => null,
-                'task_status' => null,
+                'resume_source_id' => $resumeSourceId,
+                'task_id' => $task?->id,
+                'task_type' => $task?->task_type?->value,
+                'task_status' => $task?->status?->value,
                 'command_id' => null,
                 'command_sequence' => null,
                 'command_status' => null,

@@ -70,7 +70,20 @@ final class RunSummaryProjector
             ? null
             : self::openChildWait($run);
 
-        $openSignalWait = $isTerminal
+        $pendingChildResolutionWait = (
+            $isTerminal
+            || $openActivity !== null
+            || $openUpdateWait !== null
+            || $openSignalApplicationWait !== null
+            || $openConditionWait !== null
+            || $openTimer !== null
+            || $nextTask !== null
+        )
+            ? null
+            : self::pendingChildResolutionWait($run, $openChildWait !== null);
+
+        $openSignalWait = (
+            $isTerminal
             || $openActivity !== null
             || $openUpdateWait !== null
             || $openSignalApplicationWait !== null
@@ -78,6 +91,8 @@ final class RunSummaryProjector
             || $openTimer !== null
             || $nextTask !== null
             || $openChildWait !== null
+            || $pendingChildResolutionWait !== null
+        )
             ? null
             : self::openSignalWait($run);
 
@@ -149,6 +164,13 @@ final class RunSummaryProjector
             $openWaitId = $openConditionWait['id'];
             $resumeSourceKind = $openConditionWait['resume_source_kind'];
             $resumeSourceId = $openConditionWait['resume_source_id'];
+        } elseif ($pendingChildResolutionWait !== null) {
+            $waitKind = 'child';
+            $waitReason = sprintf('Waiting to apply child workflow %s result', $pendingChildResolutionWait['label']);
+            $waitStartedAt = $pendingChildResolutionWait['resolved_at'] ?? $pendingChildResolutionWait['opened_at'];
+            $openWaitId = $pendingChildResolutionWait['id'];
+            $resumeSourceKind = $pendingChildResolutionWait['resume_source_kind'];
+            $resumeSourceId = $pendingChildResolutionWait['resume_source_id'];
         } elseif ($openChildWait !== null) {
             $waitKind = 'child';
             $waitReason = sprintf('Waiting for child workflow %s', $openChildWait['label']);
@@ -176,6 +198,7 @@ final class RunSummaryProjector
             $nextTask,
             $replayBlockedTask,
             $openChildWait,
+            $pendingChildResolutionWait,
             $openSignalWait,
         );
 
@@ -328,6 +351,7 @@ final class RunSummaryProjector
         ?WorkflowTask $nextTask,
         ?WorkflowTask $replayBlockedTask,
         ?array $openChildWait,
+        ?array $pendingChildResolutionWait,
         ?array $openSignalWait,
     ): array {
         if ($isTerminal) {
@@ -443,6 +467,16 @@ final class RunSummaryProjector
 
         if ($nextTask !== null) {
             return self::taskLiveness($nextTask, $run, 'Workflow');
+        }
+
+        if ($pendingChildResolutionWait !== null) {
+            return [
+                'repair_needed',
+                sprintf(
+                    'Child workflow %s is resolved without an open workflow task.',
+                    $pendingChildResolutionWait['label'],
+                ),
+            ];
         }
 
         if ($openChildWait !== null) {
@@ -688,6 +722,42 @@ final class RunSummaryProjector
                 'id' => sprintf('child:%s', $snapshot['child_call_id'] ?? $sequence),
                 'label' => $snapshot['label'],
                 'opened_at' => $snapshot['opened_at'],
+                'resume_source_kind' => 'child_workflow_run',
+                'resume_source_id' => $snapshot['resume_source_id'],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{
+     *     id: string,
+     *     label: string,
+     *     opened_at: \Carbon\CarbonInterface|null,
+     *     resolved_at: \Carbon\CarbonInterface|null,
+     *     resume_source_kind: string,
+     *     resume_source_id: string|null
+     * }|null
+     */
+    private static function pendingChildResolutionWait(WorkflowRun $run, bool $hasOpenChildWait): ?array
+    {
+        foreach (ChildRunHistory::knownSequences($run) as $sequence) {
+            $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
+
+            if ($snapshot === null || $snapshot['status'] === 'open' || $snapshot['resolution_event'] === null) {
+                continue;
+            }
+
+            if ($hasOpenChildWait && ($snapshot['source_status'] ?? null) === RunStatus::Completed->value) {
+                continue;
+            }
+
+            return [
+                'id' => sprintf('child:%s', $snapshot['child_call_id'] ?? $sequence),
+                'label' => $snapshot['label'],
+                'opened_at' => $snapshot['opened_at'],
+                'resolved_at' => $snapshot['resolved_at'],
                 'resume_source_kind' => 'child_workflow_run',
                 'resume_source_id' => $snapshot['resume_source_id'],
             ];

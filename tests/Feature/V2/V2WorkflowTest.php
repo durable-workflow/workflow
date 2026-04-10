@@ -1779,6 +1779,113 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('repair_not_needed', $result->outcome());
     }
 
+    public function testRepairRecreatesMissingParentResumeTaskFromChildResolutionHistory(): void
+    {
+        Queue::fake();
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'parent-child-resolution-repair');
+        $workflow->start('Taylor');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $this->runReadyTaskForRun($link->child_workflow_run_id, TaskType::Workflow);
+        $this->runReadyTaskForRun($link->child_workflow_run_id, TaskType::Activity);
+        $this->runReadyTaskForRun($link->child_workflow_run_id, TaskType::Workflow);
+
+        /** @var WorkflowHistoryEvent $childCompleted */
+        $childCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->sole();
+
+        $this->assertSame($link->id, $childCompleted->payload['child_call_id'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $childCompleted->payload['child_workflow_run_id'] ?? null);
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->delete();
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->findOrFail($parentRunId);
+        $summary = RunSummaryProjector::project(
+            $parentRun->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+                'childLinks.childRun.historyEvents',
+            ])
+        );
+
+        $this->assertSame('child', $summary->wait_kind);
+        $this->assertSame('child:' . $link->id, $summary->open_wait_id);
+        $this->assertSame('child_workflow_run', $summary->resume_source_kind);
+        $this->assertSame($link->child_workflow_run_id, $summary->resume_source_id);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame(
+            'Child workflow test-child-greeting-workflow is resolved without an open workflow task.',
+            $summary->liveness_reason,
+        );
+
+        $detail = RunDetailView::forRun($parentRun->fresh(['summary']));
+        $childWait = collect($detail['waits'])->firstWhere('kind', 'child');
+        $missingTask = collect($detail['tasks'])->firstWhere('workflow_wait_kind', 'child');
+
+        $this->assertIsArray($childWait);
+        $this->assertSame('resolved', $childWait['status']);
+        $this->assertFalse($childWait['task_backed']);
+        $this->assertIsArray($missingTask);
+        $this->assertTrue($missingTask['task_missing']);
+        $this->assertSame('missing', $missingTask['transport_state']);
+        $this->assertSame('child', $missingTask['workflow_wait_kind']);
+        $this->assertSame('child:' . $link->id, $missingTask['workflow_open_wait_id']);
+        $this->assertSame('child_workflow_run', $missingTask['workflow_resume_source_kind']);
+        $this->assertSame($link->child_workflow_run_id, $missingTask['workflow_resume_source_id']);
+        $this->assertSame($link->id, $missingTask['child_call_id']);
+        $this->assertSame($link->child_workflow_run_id, $missingTask['child_workflow_run_id']);
+
+        $repair = WorkflowStub::loadRun($parentRunId)->attemptRepair();
+
+        $this->assertTrue($repair->accepted());
+        $this->assertSame('repair_dispatched', $repair->outcome());
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame('child', $task->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame('child:' . $link->id, $task->payload['open_wait_id'] ?? null);
+        $this->assertSame('child_workflow_run', $task->payload['resume_source_kind'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $task->payload['resume_source_id'] ?? null);
+        $this->assertSame($link->id, $task->payload['child_call_id'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $task->payload['child_workflow_run_id'] ?? null);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame($link->child_workflow_run_id, $workflow->output()['child']['run_id'] ?? null);
+    }
+
     public function testChildWorkflowFailurePropagatesToParentRun(): void
     {
         $workflow = WorkflowStub::make(TestParentFailingChildWorkflow::class, 'parent-child-failure');

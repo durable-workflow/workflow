@@ -1233,8 +1233,8 @@ final class V2QueryWorkflowTest extends TestCase
         $this->runReadyTaskForRun($failingChildRunId, TaskType::Workflow);
 
         $this->assertSame([
-            'stage' => 'waiting-for-children',
-            'message' => '',
+            'stage' => 'caught-child-failure',
+            'message' => 'boom',
         ], $workflow->currentState());
 
         $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);

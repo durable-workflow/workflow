@@ -1412,7 +1412,7 @@ final class WorkflowExecutor
 
     private function recordChildResolution(
         WorkflowRun $run,
-        WorkflowTask $task,
+        ?WorkflowTask $task,
         int $sequence,
         WorkflowRun $childRun,
     ): WorkflowHistoryEvent {
@@ -2011,6 +2011,10 @@ final class WorkflowExecutor
 
     private function dispatchParentResumeTasks(WorkflowRun $childRun): void
     {
+        $childRun->unsetRelation('historyEvents');
+        $childRun->unsetRelation('failures');
+        $childRun->load(['historyEvents', 'failures']);
+
         $parentLinks = WorkflowLink::query()
             ->where('child_workflow_run_id', $childRun->id)
             ->where('link_type', 'child_workflow')
@@ -2025,11 +2029,12 @@ final class WorkflowExecutor
                 continue;
             }
 
+            $parentSequence = self::intValue($parentLink->sequence);
+
             $parentReferences[$parentLink->parent_workflow_run_id] = [
                 'parent_workflow_run_id' => $parentLink->parent_workflow_run_id,
-                'parent_sequence' => is_int($parentLink->sequence)
-                    ? $parentLink->sequence
-                    : ($parentReferences[$parentLink->parent_workflow_run_id]['parent_sequence'] ?? null),
+                'parent_sequence' => $parentSequence
+                    ?? ($parentReferences[$parentLink->parent_workflow_run_id]['parent_sequence'] ?? null),
             ];
         }
 
@@ -2056,6 +2061,8 @@ final class WorkflowExecutor
                 continue;
             }
 
+            $parentTaskPayload = [];
+
             if (is_int($parentReference['parent_sequence'])) {
                 $parentRun->loadMissing([
                     'historyEvents',
@@ -2064,14 +2071,17 @@ final class WorkflowExecutor
                     'childLinks.childRun.historyEvents',
                 ]);
 
-                $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence(
+                $resolutionEvent = $this->recordChildResolution(
                     $parentRun,
-                    $parentReference['parent_sequence']
-                );
-                $childStatus = ChildRunHistory::resolvedStatus(
-                    ChildRunHistory::resolutionEventForSequence($parentRun, $parentReference['parent_sequence']),
+                    null,
+                    $parentReference['parent_sequence'],
                     $childRun,
                 );
+                $parentTaskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
+                $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload(
+                    is_array($resolutionEvent->payload) ? $resolutionEvent->payload : []
+                );
+                $childStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
 
                 if (
                     $parallelMetadataPath !== []
@@ -2116,7 +2126,7 @@ final class WorkflowExecutor
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
-                'payload' => [],
+                'payload' => $parentTaskPayload,
                 'connection' => $parentRun->connection,
                 'queue' => $parentRun->queue,
                 'compatibility' => $parentRun->compatibility,
@@ -2778,5 +2788,18 @@ final class WorkflowExecutor
         }
 
         return $sequence;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && preg_match('/^-?\d+$/', $value) === 1) {
+            return (int) $value;
+        }
+
+        return null;
     }
 }

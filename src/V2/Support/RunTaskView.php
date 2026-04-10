@@ -65,6 +65,10 @@ final class RunTaskView
                     $workflowWaitKind = self::stringValue($task->payload['workflow_wait_kind'] ?? null);
                     $workflowResumeSourceKind = self::stringValue($task->payload['resume_source_kind'] ?? null);
                     $workflowResumeSourceId = self::stringValue($task->payload['resume_source_id'] ?? null);
+                    $workflowSequence = self::intValue($task->payload['workflow_sequence'] ?? null);
+                    $childCallId = self::stringValue($task->payload['child_call_id'] ?? null);
+                    $childWorkflowRunId = self::stringValue($task->payload['child_workflow_run_id'] ?? null)
+                        ?? ($workflowResumeSourceKind === 'child_workflow_run' ? $workflowResumeSourceId : null);
                     $replayBlocked = ($task->payload['replay_blocked'] ?? false) === true;
                     $compatibility = TaskCompatibility::resolve($task, $run);
 
@@ -129,6 +133,9 @@ final class RunTaskView
                         'workflow_update_id' => self::stringValue($task->payload['workflow_update_id'] ?? null),
                         'workflow_signal_id' => self::stringValue($task->payload['workflow_signal_id'] ?? null),
                         'workflow_command_id' => self::stringValue($task->payload['workflow_command_id'] ?? null),
+                        'workflow_sequence' => $workflowSequence,
+                        'child_call_id' => $childCallId,
+                        'child_workflow_run_id' => $childWorkflowRunId,
                         'replay_blocked' => $replayBlocked,
                         'replay_blocked_reason' => $replayBlocked
                             ? self::stringValue($task->payload['replay_blocked_reason'] ?? null)
@@ -169,7 +176,9 @@ final class RunTaskView
     {
         $rows = [];
 
-        foreach (RunWaitView::forRun($run) as $wait) {
+        $waits = RunWaitView::forRun($run);
+
+        foreach ($waits as $wait) {
             if (($wait['status'] ?? null) !== 'open' || ($wait['task_backed'] ?? false) === true) {
                 continue;
             }
@@ -237,6 +246,28 @@ final class RunTaskView
             }
         }
 
+        if (! $run->status->isTerminal() && ! self::hasOpenWorkflowTask($run)) {
+            $hasOpenWait = self::hasOpenWait($waits);
+
+            foreach ($waits as $wait) {
+                if (self::stringValue($wait['kind'] ?? null) !== 'child') {
+                    continue;
+                }
+
+                if (self::stringValue($wait['status'] ?? null) === 'open') {
+                    continue;
+                }
+
+                if ($hasOpenWait && self::stringValue($wait['source_status'] ?? null) === 'completed') {
+                    continue;
+                }
+
+                $rows[] = self::missingChildWorkflowTaskRow($run, $wait);
+
+                break;
+            }
+        }
+
         if (! self::hasOpenWorkflowTask($run)) {
             foreach (RunSignalView::forRun($run) as $signal) {
                 if (self::stringValue($signal['status'] ?? null) !== 'received') {
@@ -264,6 +295,15 @@ final class RunTaskView
                     $commandId,
                 );
             }
+        }
+
+        if (
+            ! $run->status->isTerminal()
+            && ! self::hasOpenWorkflowTask($run)
+            && ! self::hasOpenWait($waits)
+            && ! self::hasMissingWorkflowTaskRow($rows)
+        ) {
+            $rows[] = self::missingGenericWorkflowTaskRow($run);
         }
 
         $deduped = [];
@@ -370,6 +410,61 @@ final class RunTaskView
         return $row;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private static function missingGenericWorkflowTaskRow(WorkflowRun $run): array
+    {
+        $row = self::missingTaskBase(
+            $run,
+            sprintf('missing:workflow:%s', $run->id),
+            TaskType::Workflow->value,
+            $run->connection,
+            $run->queue,
+            $run->last_progress_at ?? $run->started_at ?? $run->created_at,
+        );
+
+        $row['summary'] = 'Workflow task missing for selected run.';
+
+        return $row;
+    }
+
+    /**
+     * @param array<string, mixed> $wait
+     * @return array<string, mixed>
+     */
+    private static function missingChildWorkflowTaskRow(WorkflowRun $run, array $wait): array
+    {
+        $openWaitId = self::stringValue($wait['id'] ?? null)
+            ?? sprintf('child:%s', self::stringValue($wait['child_call_id'] ?? null) ?? 'resolved');
+        $childCallId = self::stringValue($wait['child_call_id'] ?? null);
+        $childRunId = self::stringValue($wait['resume_source_id'] ?? null);
+        $label = self::stringValue($wait['target_type'] ?? null)
+            ?? self::stringValue($wait['target_name'] ?? null)
+            ?? 'child workflow';
+
+        $row = self::missingTaskBase(
+            $run,
+            sprintf('missing:workflow:%s', $openWaitId),
+            TaskType::Workflow->value,
+            $run->connection,
+            $run->queue,
+            self::timestamp($wait['resolved_at'] ?? null)
+                ?? self::timestamp($wait['opened_at'] ?? null),
+        );
+
+        $row['summary'] = sprintf('Workflow task missing for child workflow %s result.', $label);
+        $row['workflow_wait_kind'] = 'child';
+        $row['workflow_open_wait_id'] = $openWaitId;
+        $row['workflow_resume_source_kind'] = 'child_workflow_run';
+        $row['workflow_resume_source_id'] = $childRunId;
+        $row['workflow_sequence'] = self::intValue($wait['sequence'] ?? null);
+        $row['child_call_id'] = $childCallId;
+        $row['child_workflow_run_id'] = $childRunId;
+
+        return $row;
+    }
+
     private static function missingWorkflowTaskRow(
         WorkflowRun $run,
         string $waitKind,
@@ -469,6 +564,9 @@ final class RunTaskView
             'workflow_update_id' => null,
             'workflow_signal_id' => null,
             'workflow_command_id' => null,
+            'workflow_sequence' => null,
+            'child_call_id' => null,
+            'child_workflow_run_id' => null,
             'replay_blocked' => false,
             'replay_blocked_reason' => null,
             'replay_blocked_workflow_sequence' => null,
@@ -823,6 +921,37 @@ final class RunTaskView
         }
 
         return 2;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $waits
+     */
+    private static function hasOpenWait(array $waits): bool
+    {
+        foreach ($waits as $wait) {
+            if (($wait['status'] ?? null) === 'open') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     */
+    private static function hasMissingWorkflowTaskRow(array $rows): bool
+    {
+        foreach ($rows as $row) {
+            if (
+                self::stringValue($row['type'] ?? null) === TaskType::Workflow->value
+                && ($row['task_missing'] ?? false) === true
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function timestampToMilliseconds(mixed $timestamp): int

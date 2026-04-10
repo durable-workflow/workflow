@@ -185,6 +185,63 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($workflowTask['id'], $detail['next_task_id']);
     }
 
+    public function testRunDetailViewIncludesSyntheticMissingWorkflowTaskWhenResumeSourceIsMissing(): void
+    {
+        $instance = WorkflowInstance::create([
+            'id' => 'detail-missing-workflow-task',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        $run = WorkflowRun::create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $missingTask = $this->findTask($detail['tasks'], 'workflow');
+
+        $this->assertNull($detail['wait_kind']);
+        $this->assertNull($detail['open_wait_id']);
+        $this->assertSame(0, $detail['open_wait_count']);
+        $this->assertSame('repair_needed', $detail['liveness_state']);
+        $this->assertSame('Run is non-terminal but has no durable next-resume source.', $detail['liveness_reason']);
+        $this->assertTrue($detail['can_repair']);
+        $this->assertSame('missing:workflow:' . $run->id, $missingTask['id']);
+        $this->assertSame('workflow', $missingTask['type']);
+        $this->assertSame('missing', $missingTask['status']);
+        $this->assertSame('missing', $missingTask['transport_state']);
+        $this->assertTrue($missingTask['task_missing']);
+        $this->assertTrue($missingTask['synthetic']);
+        $this->assertSame('Workflow task missing for selected run.', $missingTask['summary']);
+        $this->assertNull($missingTask['workflow_wait_kind']);
+        $this->assertNull($missingTask['workflow_open_wait_id']);
+        $this->assertSame($run->last_progress_at?->toJSON(), $missingTask['available_at']?->toJSON());
+    }
+
     public function testRunDetailViewIncludesWaitAndLivenessMetadataForSignalWaitingRun(): void
     {
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal');
