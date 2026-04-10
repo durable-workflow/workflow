@@ -15,6 +15,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
+use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -335,6 +336,30 @@ final class V2AwaitWorkflowTest extends TestCase
         $workflow->refresh()->currentState();
     }
 
+    public function testQueryReplayRejectsConditionWaitWhenHistoryRecordedDifferentStepShape(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestAwaitWorkflow::class, 'await-query-history-shape-drift');
+        $workflow->start();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => 'timer-from-older-definition',
+            'sequence' => 1,
+            'delay_seconds' => 60,
+            'fire_at' => now()->addMinute()->toJSON(),
+        ]);
+
+        $this->expectException(HistoryEventShapeMismatchException::class);
+        $this->expectExceptionMessage('recorded [TimerScheduled]');
+        $this->expectExceptionMessage('current workflow yielded condition wait');
+
+        $workflow->refresh()->currentState();
+    }
+
     public function testWorkflowWorkerBlocksReplayWhenRecordedConditionKeyDoesNotMatchCurrentYield(): void
     {
         Queue::fake();
@@ -440,6 +465,70 @@ final class V2AwaitWorkflowTest extends TestCase
         $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
         $this->assertNull($detail['tasks'][0]['replay_blocked_recorded_condition_key']);
         $this->assertSame('approval.ready', $detail['tasks'][0]['replay_blocked_current_condition_key']);
+    }
+
+    public function testWorkflowWorkerBlocksReplayWhenConditionWaitHistoryShapeDrifts(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestAwaitWorkflow::class, 'await-worker-history-shape-drift');
+        $workflow->start();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => 'timer-from-older-definition',
+            'sequence' => 1,
+            'delay_seconds' => 60,
+            'fire_at' => now()->addMinute()->toJSON(),
+        ]);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertFalse($workflow->refresh()->failed());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::WorkflowFailed->value,
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertTrue($task->payload['replay_blocked'] ?? false);
+        $this->assertSame('history_shape_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+        $this->assertSame(1, $task->payload['replay_blocked_workflow_sequence'] ?? null);
+        $this->assertSame('condition wait', $task->payload['replay_blocked_expected_history_shape'] ?? null);
+        $this->assertSame(['TimerScheduled'], $task->payload['replay_blocked_recorded_event_types'] ?? null);
+        $this->assertStringContainsString('recorded [TimerScheduled]', (string) $task->last_error);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertStringContainsString('history recorded [TimerScheduled]', $detail['liveness_reason']);
+        $this->assertTrue($detail['can_repair']);
+        $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
+        $this->assertTrue($detail['tasks'][0]['replay_blocked']);
+        $this->assertSame('history_shape_mismatch', $detail['tasks'][0]['replay_blocked_reason']);
+        $this->assertSame('condition wait', $detail['tasks'][0]['replay_blocked_expected_history_shape']);
+        $this->assertSame(['TimerScheduled'], $detail['tasks'][0]['replay_blocked_recorded_event_types']);
+        $this->assertStringContainsString('history shape drift', $detail['tasks'][0]['summary']);
+
+        $repair = $workflow->refresh()->attemptRepair();
+
+        $this->assertTrue($repair->accepted());
+        $this->assertSame('repair_dispatched', $repair->outcome());
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertFalse($task->payload['replay_blocked'] ?? false);
+        $this->assertNull($task->last_error);
+        $this->assertSame(1, $task->repair_count);
     }
 
     public function testWorkflowWorkerBlocksReplayWhenConditionPredicateFingerprintDrifts(): void

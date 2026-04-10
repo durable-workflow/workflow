@@ -548,6 +548,24 @@ final class RunSummaryProjector
             ];
         }
 
+        if (($task->payload['replay_blocked_reason'] ?? null) === 'history_shape_mismatch') {
+            $sequence = self::intValue($task->payload['replay_blocked_workflow_sequence'] ?? null);
+            $expected = self::nonEmptyString($task->payload['replay_blocked_expected_history_shape'] ?? null)
+                ?? 'the current yielded step';
+            $recorded = self::stringList($task->payload['replay_blocked_recorded_event_types'] ?? null);
+            $step = $sequence === null ? 'a workflow step' : sprintf('workflow sequence %d', $sequence);
+
+            return [
+                'workflow_replay_blocked',
+                sprintf(
+                    'Workflow replay is blocked at %s because history recorded [%s] but the current workflow yielded %s. Run this workflow on a compatible build, then repair it.',
+                    $step,
+                    $recorded === [] ? 'unknown' : implode(', ', $recorded),
+                    $expected,
+                ),
+            ];
+        }
+
         return [
             'workflow_replay_blocked',
             trim($task->last_error ?? 'Workflow replay is blocked.'),
@@ -987,6 +1005,21 @@ final class RunSummaryProjector
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function stringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $value,
+            static fn (mixed $item): bool => is_string($item) && $item !== '',
+        ));
     }
 
     private static function intValue(mixed $value): ?int

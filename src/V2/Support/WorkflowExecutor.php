@@ -24,6 +24,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
+use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\ActivityExecution;
@@ -1862,6 +1863,12 @@ final class WorkflowExecutor
             return;
         }
 
+        if ($throwable instanceof HistoryEventShapeMismatchException) {
+            $this->blockReplayUntilCompatibleHistoryShape($run, $task, $throwable);
+
+            return;
+        }
+
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create(array_merge(
             FailureFactory::make($throwable),
@@ -1947,6 +1954,30 @@ final class WorkflowExecutor
         $payload['replay_blocked_current_condition_key'] = $throwable->currentConditionKey;
         $payload['replay_blocked_recorded_condition_definition_fingerprint'] = $throwable->recordedConditionDefinitionFingerprint;
         $payload['replay_blocked_current_condition_definition_fingerprint'] = $throwable->currentConditionDefinitionFingerprint;
+
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'payload' => $payload,
+            'last_error' => $throwable->getMessage(),
+            'lease_expires_at' => null,
+        ])->save();
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
+    private function blockReplayUntilCompatibleHistoryShape(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        HistoryEventShapeMismatchException $throwable,
+    ): void {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $payload['replay_blocked'] = true;
+        $payload['replay_blocked_reason'] = 'history_shape_mismatch';
+        $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
+        $payload['replay_blocked_expected_history_shape'] = $throwable->expectedHistoryShape;
+        $payload['replay_blocked_recorded_event_types'] = $throwable->recordedEventTypes;
 
         $task->forceFill([
             'status' => TaskStatus::Failed,

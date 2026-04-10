@@ -166,6 +166,12 @@ final class RunTaskView
                                 $task->payload['replay_blocked_current_condition_definition_fingerprint'] ?? null
                             )
                             : null,
+                        'replay_blocked_expected_history_shape' => $replayBlocked
+                            ? self::stringValue($task->payload['replay_blocked_expected_history_shape'] ?? null)
+                            : null,
+                        'replay_blocked_recorded_event_types' => $replayBlocked
+                            ? self::stringList($task->payload['replay_blocked_recorded_event_types'] ?? null)
+                            : [],
                         'created_at' => $task->created_at,
                         'updated_at' => $task->updated_at,
                     ];
@@ -645,6 +651,8 @@ final class RunTaskView
             'replay_blocked_current_condition_key' => null,
             'replay_blocked_recorded_condition_definition_fingerprint' => null,
             'replay_blocked_current_condition_definition_fingerprint' => null,
+            'replay_blocked_expected_history_shape' => null,
+            'replay_blocked_recorded_event_types' => [],
             'created_at' => null,
             'updated_at' => null,
         ];
@@ -659,9 +667,11 @@ final class RunTaskView
         if (($task->payload['replay_blocked'] ?? false) === true) {
             $reason = self::stringValue($task->payload['replay_blocked_reason'] ?? null);
 
-            return $reason === 'condition_wait_definition_mismatch'
-                ? 'Workflow replay blocked by condition wait definition drift.'
-                : 'Workflow replay blocked.';
+            return match ($reason) {
+                'condition_wait_definition_mismatch' => 'Workflow replay blocked by condition wait definition drift.',
+                'history_shape_mismatch' => 'Workflow replay blocked by history shape drift.',
+                default => 'Workflow replay blocked.',
+            };
         }
 
         if (self::taskWaitingForCompatibleWorker($task, $compatibility)) {
@@ -986,15 +996,19 @@ final class RunTaskView
      */
     private static function taskRowPriority(array $row): int
     {
-        if (($row['is_open'] ?? false) === true) {
+        if (($row['replay_blocked'] ?? false) === true) {
             return 0;
         }
 
-        if (($row['task_missing'] ?? false) === true) {
+        if (($row['is_open'] ?? false) === true) {
             return 1;
         }
 
-        return 2;
+        if (($row['task_missing'] ?? false) === true) {
+            return 2;
+        }
+
+        return 3;
     }
 
     /**
@@ -1086,6 +1100,21 @@ final class RunTaskView
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function stringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $value,
+            static fn (mixed $item): bool => is_string($item) && $item !== '',
+        ));
     }
 
     private static function intValue(mixed $value): ?int
