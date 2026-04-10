@@ -289,6 +289,7 @@ final class RunDetailView
                         'exception_resolved_class' => $failure['exception_resolved_class'] ?? null,
                         'exception_resolution_source' => $failure['exception_resolution_source'] ?? null,
                         'exception_resolution_error' => $failure['exception_resolution_error'] ?? null,
+                        'exception_replay_blocked' => $failure['exception_replay_blocked'] ?? false,
                         'class' => ($sourceId === null ? null : ($activityClasses[$sourceId] ?? null))
                             ?? ($failure['exception_class'] ?? null),
                         'created_at' => $failure['created_at'] ?? null,

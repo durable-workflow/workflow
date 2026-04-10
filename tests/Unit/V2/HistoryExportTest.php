@@ -378,6 +378,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('terminal', $bundle['failures'][0]['propagation_kind']);
         $this->assertSame('runtime.failure', $bundle['failures'][0]['exception_type']);
         $this->assertSame(RuntimeException::class, $bundle['failures'][0]['exception_class']);
+        $this->assertFalse($bundle['failures'][0]['exception_replay_blocked']);
         $this->assertSame('history-only boom', $bundle['failures'][0]['message']);
         $this->assertSame(__FILE__, $bundle['failures'][0]['file']);
         $this->assertSame(222, $bundle['failures'][0]['line']);

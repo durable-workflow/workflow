@@ -23,6 +23,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -1789,6 +1790,12 @@ final class WorkflowExecutor
         string $sourceKind,
         string $sourceId,
     ): void {
+        if ($throwable instanceof UnresolvedWorkflowFailureException) {
+            $this->blockReplayUntilFailureCanBeRestored($run, $task, $throwable);
+
+            return;
+        }
+
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create(array_merge(
             FailureFactory::make($throwable),
@@ -1826,6 +1833,22 @@ final class WorkflowExecutor
         ])->save();
 
         $this->dispatchParentResumeTasks($run);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
+    private function blockReplayUntilFailureCanBeRestored(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        UnresolvedWorkflowFailureException $throwable,
+    ): void {
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'last_error' => $throwable->getMessage(),
+            'lease_expires_at' => null,
+        ])->save();
 
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
@@ -2195,7 +2218,7 @@ final class WorkflowExecutor
             ? $event->payload['code']
             : 0;
 
-        return FailureFactory::restore($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
+        return FailureFactory::restoreForReplay($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
     }
 
     private function applyRecordedUpdates(

@@ -429,7 +429,7 @@ final class ChildRunHistory
             ?? self::intValue(self::terminalEventForRun($childRun)?->payload['code'] ?? null)
             ?? 0;
 
-        return FailureFactory::restore($payload ?? [], $fallbackClass, $fallbackMessage, $fallbackCode);
+        return FailureFactory::restoreForReplay($payload ?? [], $fallbackClass, $fallbackMessage, $fallbackCode);
     }
 
     public static function exceptionForChildRun(?WorkflowRun $childRun): Throwable
@@ -444,7 +444,7 @@ final class ChildRunHistory
             return self::exceptionForResolution($terminalEvent, $childRun);
         }
 
-        return FailureFactory::restore(
+        return FailureFactory::restoreForReplay(
             [],
             self::failureRow($childRun)?->exception_class ?? RuntimeException::class,
             self::failureRow($childRun)?->message ?? sprintf(

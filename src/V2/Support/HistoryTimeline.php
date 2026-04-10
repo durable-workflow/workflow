@@ -741,6 +741,7 @@ final class HistoryTimeline
             'exception_resolved_class' => self::stringValue($failure['exception_resolved_class'] ?? null),
             'exception_resolution_source' => self::stringValue($failure['exception_resolution_source'] ?? null),
             'exception_resolution_error' => self::stringValue($failure['exception_resolution_error'] ?? null),
+            'exception_replay_blocked' => (bool) ($failure['exception_replay_blocked'] ?? false),
             'message' => self::stringValue($payload['message'] ?? null)
                 ?? self::stringValue($failure['message'] ?? null),
             'file' => self::stringValue($failure['file'] ?? null),

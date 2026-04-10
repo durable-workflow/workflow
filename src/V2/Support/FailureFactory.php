@@ -12,6 +12,7 @@ use ReflectionProperty;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
+use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 
 final class FailureFactory
 {
@@ -125,6 +126,34 @@ final class FailureFactory
         }
 
         return new RestoredWorkflowException($normalized);
+    }
+
+    public static function restoreForReplay(
+        mixed $payload,
+        ?string $fallbackClass = null,
+        ?string $fallbackMessage = null,
+        ?int $fallbackCode = null,
+    ): Throwable {
+        $normalized = self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
+        $class = $normalized['class'];
+
+        try {
+            $resolution = is_string($class)
+                ? TypeRegistry::resolveThrowableClassWithSource($class, $normalized['type'])
+                : null;
+        } catch (Throwable $throwable) {
+            throw UnresolvedWorkflowFailureException::misconfigured($normalized, $throwable);
+        }
+
+        if ($resolution === null) {
+            throw UnresolvedWorkflowFailureException::unresolved($normalized);
+        }
+
+        try {
+            return self::restoreThrowable($resolution['class'], $normalized);
+        } catch (Throwable $throwable) {
+            throw UnresolvedWorkflowFailureException::unrestorable($normalized, $throwable);
+        }
     }
 
     /**

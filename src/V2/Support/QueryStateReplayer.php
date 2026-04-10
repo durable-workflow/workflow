@@ -621,7 +621,7 @@ final class QueryStateReplayer
             ? $event->payload['code']
             : 0;
 
-        return FailureFactory::restore($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
+        return FailureFactory::restoreForReplay($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
     }
 
     private function applyRecordedUpdates(

@@ -144,6 +144,7 @@ final class FailureSnapshots
             'exception_resolved_class' => $resolution['class'],
             'exception_resolution_source' => $resolution['source'],
             'exception_resolution_error' => $resolution['error'],
+            'exception_replay_blocked' => self::replayBlocked($resolution),
             'message' => $failure->message,
             'code' => 0,
             'file' => $failure->file,
@@ -211,6 +212,7 @@ final class FailureSnapshots
             'exception_resolved_class' => $resolution['class'],
             'exception_resolution_source' => $resolution['source'],
             'exception_resolution_error' => $resolution['error'],
+            'exception_replay_blocked' => self::replayBlocked($resolution),
             'message' => self::stringValue($exceptionPayload['message'] ?? null)
                 ?? $failure?->message,
             'code' => self::intValue($exceptionPayload['code'] ?? null) ?? 0,
@@ -389,5 +391,13 @@ final class FailureSnapshots
         }
 
         return 0;
+    }
+
+    /**
+     * @param array{class: ?string, source: string, error: ?string} $resolution
+     */
+    private static function replayBlocked(array $resolution): bool
+    {
+        return in_array($resolution['source'] ?? null, ['unresolved', 'misconfigured'], true);
     }
 }

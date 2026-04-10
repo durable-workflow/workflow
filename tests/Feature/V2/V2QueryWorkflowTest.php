@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestBroadFailureCatchWorkflow;
 use Tests\Fixtures\V2\TestChildHandleParentWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
@@ -36,6 +37,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
@@ -484,6 +486,104 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame([
             'stage' => 'completed',
             'caught' => $expectedState['caught'],
+            'resume' => 'go',
+        ], $workflow->output());
+    }
+
+    public function testUnmappedHistoricalFailureClassBlocksReplayInsteadOfFallingThroughBroadRuntimeCatch(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestBroadFailureCatchWorkflow::class, 'query-history-failure-unmapped');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $payload = $event->payload;
+        unset($payload['exception_type'], $payload['exception']['type']);
+        $payload['exception_class'] = 'App\\Legacy\\OrderRejected';
+        $payload['exception']['class'] = 'App\\Legacy\\OrderRejected';
+
+        DB::transaction(static function () use ($event, $payload): void {
+            $event->forceFill([
+                'payload' => $payload,
+            ])->save();
+
+            WorkflowFailure::query()
+                ->where('id', $payload['failure_id'])
+                ->update([
+                    'exception_class' => 'App\\Legacy\\OrderRejected',
+                    'message' => 'legacy row drift',
+                ]);
+        });
+
+        try {
+            $workflow->refresh()->currentState();
+            $this->fail('Expected unresolved failure replay to block the query.');
+        } catch (UnresolvedWorkflowFailureException $exception) {
+            $this->assertSame('App\\Legacy\\OrderRejected', $exception->originalExceptionClass());
+            $this->assertSame('unresolved', $exception->resolutionSource());
+            $this->assertNull($exception->exceptionType());
+        }
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $timelineFailure = collect($detail['timeline'])->firstWhere('type', HistoryEventType::ActivityFailed->value);
+
+        $this->assertSame('App\\Legacy\\OrderRejected', $detail['exceptions'][0]['exception_class']);
+        $this->assertNull($detail['exceptions'][0]['exception_resolved_class']);
+        $this->assertSame('unresolved', $detail['exceptions'][0]['exception_resolution_source']);
+        $this->assertTrue($detail['exceptions'][0]['exception_replay_blocked']);
+        $this->assertTrue($timelineFailure['failure']['exception_replay_blocked'] ?? false);
+
+        $workflow->signal('resume', 'go');
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::WorkflowFailed->value,
+        ]);
+        $this->assertDatabaseHas('workflow_tasks', [
+            'workflow_run_id' => $workflow->runId(),
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Failed->value,
+        ]);
+
+        config()->set('workflows.v2.types.exception_class_aliases', [
+            'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
+        ]);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-resume',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+            ],
+        ], WorkflowStub::loadRun($workflow->runId())->currentState());
+
+        $repair = WorkflowStub::loadRun($workflow->runId())->attemptRepair();
+
+        $this->assertTrue($repair->accepted());
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'completed',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+            ],
             'resume' => 'go',
         ], $workflow->output());
     }
