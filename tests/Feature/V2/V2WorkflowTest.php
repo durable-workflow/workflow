@@ -66,7 +66,9 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityLease;
+use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -231,6 +233,70 @@ final class V2WorkflowTest extends TestCase
             ->orderBy('sequence')
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testTypedActivityHistoryBlocksMutableCompletedExecutionWithoutTerminalHistory(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-history-authority');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+        $this->runReadyTaskForRun($runId, TaskType::Activity);
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityCompleted->value)
+            ->delete();
+
+        $execution->forceFill([
+            'status' => ActivityStatus::Completed->value,
+            'result' => Serializer::serialize('MUTATED'),
+            'closed_at' => now(),
+        ])->save();
+
+        $state = (new QueryStateReplayer())->replayState(WorkflowRun::query()->findOrFail($runId));
+
+        $this->assertSame(1, $state->sequence);
+        $this->assertInstanceOf(ActivityCall::class, $state->current);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        $workflow->refresh();
+
+        $this->assertFalse($workflow->completed());
+        $this->assertSame('waiting', WorkflowRun::query()->findOrFail($runId)->status->value);
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::WorkflowCompleted->value,
+        ]);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+
+        $this->assertSame('activity', $detail['wait_kind']);
+        $this->assertSame('activity_running_without_task', $detail['liveness_state']);
+        $this->assertSame($execution->id, $detail['activities'][0]['id']);
+        $this->assertSame('running', $detail['activities'][0]['status']);
+        $this->assertNull(unserialize($detail['activities'][0]['result']));
+        $this->assertNull($detail['activities'][0]['closed_at']);
+        $this->assertSame('open', $detail['waits'][0]['status']);
+        $this->assertSame('running', $detail['waits'][0]['source_status']);
+        $this->assertSame([], collect($detail['tasks'])
+            ->filter(static fn (array $task): bool => ($task['is_open'] ?? false) === true)
+            ->values()
             ->all());
     }
 

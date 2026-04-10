@@ -99,10 +99,7 @@ final class RunActivityView
                 continue;
             }
 
-            /** @var ActivityExecution|null $execution */
-            $execution = $executions->get($activityId);
-            $state = $states[$activityId]
-                ?? ($execution instanceof ActivityExecution ? ActivitySnapshot::fromExecution($execution) : ['id' => $activityId]);
+            $state = $states[$activityId] ?? ['id' => $activityId];
 
             $states[$activityId] = ActivitySnapshot::merge($state, $snapshot);
         }
@@ -179,6 +176,7 @@ final class RunActivityView
         $attemptCount = is_int($state['attempt_count'] ?? null)
             ? $state['attempt_count']
             : (is_int($latestAttempt['attempt_number'] ?? null) ? $latestAttempt['attempt_number'] : 0);
+        $status = $state['status'] ?? 'pending';
 
         return [
             'id' => $state['id'] ?? null,
@@ -193,7 +191,7 @@ final class RunActivityView
             'parallel_group_index' => $state['parallel_group_index'] ?? null,
             'parallel_group_path' => $state['parallel_group_path'] ?? [],
             'attempt_id' => $state['attempt_id'] ?? ($latestAttempt['id'] ?? null),
-            'status' => $state['status'] ?? 'pending',
+            'status' => $status,
             'attempt_count' => $attemptCount,
             'retry_policy' => $state['retry_policy'] ?? ($execution?->retry_policy ?? null),
             'connection' => $state['connection'] ?? null,
@@ -201,11 +199,28 @@ final class RunActivityView
             'last_heartbeat_at' => $state['last_heartbeat_at'] ?? ($latestAttempt['last_heartbeat_at'] ?? null),
             'created_at' => $state['created_at'] ?? null,
             'started_at' => $state['started_at'] ?? ($latestAttempt['started_at'] ?? null),
-            'closed_at' => $state['closed_at'] ?? ($latestAttempt['closed_at'] ?? null),
+            'closed_at' => self::activityClosedAt($status, $state, $latestAttempt),
             'arguments' => self::publicSerializedValue($state['arguments'] ?? null, []),
             'result' => self::publicSerializedValue($state['result'] ?? null, null),
             'attempts' => $attempts,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     * @param array<string, mixed>|null $latestAttempt
+     */
+    private static function activityClosedAt(mixed $status, array $state, ?array $latestAttempt): mixed
+    {
+        if (! in_array($status, [
+            ActivityStatus::Completed->value,
+            ActivityStatus::Failed->value,
+            ActivityStatus::Cancelled->value,
+        ], true)) {
+            return null;
+        }
+
+        return $state['closed_at'] ?? ($latestAttempt['closed_at'] ?? null);
     }
 
     /**

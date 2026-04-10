@@ -92,6 +92,13 @@ final class QueryStateReplayer
                     continue;
                 }
 
+                if ($this->activityOpenEvent($run, $sequence) !== null) {
+                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
                 /** @var ActivityExecution|null $execution */
                 $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
 
@@ -325,6 +332,12 @@ final class QueryStateReplayer
                             continue;
                         }
 
+                        if ($this->activityOpenEvent($run, $itemSequence) !== null) {
+                            $pending = true;
+
+                            continue;
+                        }
+
                         /** @var ActivityExecution|null $execution */
                         $execution = $run->activityExecutions->firstWhere('sequence', $itemSequence);
 
@@ -523,6 +536,25 @@ final class QueryStateReplayer
             static fn (WorkflowHistoryEvent $event): bool => in_array(
                 $event->event_type,
                 [HistoryEventType::ActivityCompleted, HistoryEventType::ActivityFailed],
+                true,
+            ) && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function activityOpenEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                [
+                    HistoryEventType::ActivityScheduled,
+                    HistoryEventType::ActivityStarted,
+                    HistoryEventType::ActivityHeartbeatRecorded,
+                    HistoryEventType::ActivityRetryScheduled,
+                ],
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
         );

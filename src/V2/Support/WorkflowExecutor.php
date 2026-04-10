@@ -139,6 +139,11 @@ final class WorkflowExecutor
                     continue;
                 }
 
+                if ($this->activityOpenEvent($run, $sequence) !== null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    return $this->waitForNextResumeSource($run, $task);
+                }
+
                 /** @var ActivityExecution|null $execution */
                 $execution = $run->activityExecutions->firstWhere('sequence', $sequence);
 
@@ -668,6 +673,12 @@ final class WorkflowExecutor
                                     : null,
                                 $activityCompletion->payload,
                             );
+
+                            continue;
+                        }
+
+                        if ($this->activityOpenEvent($run, $itemSequence) !== null) {
+                            $pending = true;
 
                             continue;
                         }
@@ -2198,6 +2209,31 @@ final class WorkflowExecutor
         return $event;
     }
 
+    private function activityOpenEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                [
+                    HistoryEventType::ActivityScheduled,
+                    HistoryEventType::ActivityStarted,
+                    HistoryEventType::ActivityHeartbeatRecorded,
+                    HistoryEventType::ActivityRetryScheduled,
+                ],
+                true,
+            ) && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function activityHistoryEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        return $this->activityCompletionEvent($run, $sequence)
+            ?? $this->activityOpenEvent($run, $sequence);
+    }
+
     private function sideEffectEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
         /** @var WorkflowHistoryEvent|null $event */
@@ -2748,7 +2784,7 @@ final class WorkflowExecutor
     ): int {
         return match (true) {
             $current instanceof ActivityCall => (
-                $this->activityCompletionEvent($run, $sequence) !== null
+                $this->activityHistoryEvent($run, $sequence) !== null
                 || $run->activityExecutions->firstWhere('sequence', $sequence) instanceof ActivityExecution
             ) ? $sequence + 1 : $sequence,
             $current instanceof AwaitCall => (
@@ -2794,7 +2830,7 @@ final class WorkflowExecutor
 
             if ($call instanceof ActivityCall) {
                 if (
-                    $this->activityCompletionEvent($run, $itemSequence) !== null
+                    $this->activityHistoryEvent($run, $itemSequence) !== null
                     || $run->activityExecutions->firstWhere('sequence', $itemSequence) instanceof ActivityExecution
                 ) {
                     return $sequence + $groupSize;
