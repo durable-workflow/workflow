@@ -1,0 +1,30 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Workflow\V2\Contracts;
+
+use Carbon\CarbonInterface;
+use Workflow\V2\Models\WorkflowRun;
+
+interface OperatorObservabilityRepository
+{
+    /**
+     * @return array<string, mixed>
+     */
+    public function runDetail(WorkflowRun $run): array;
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function runHistoryExport(
+        WorkflowRun $run,
+        ?CarbonInterface $exportedAt = null,
+        HistoryExportRedactor|callable|null $redactor = null,
+    ): array;
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function metrics(?CarbonInterface $now = null): array;
+}

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\Fixtures\V2\TestAbstractReplayedException;
@@ -31,6 +32,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -54,6 +56,34 @@ use Workflow\V2\WorkflowStub;
 
 final class V2RunDetailViewTest extends TestCase
 {
+    public function testOperatorObservabilityRepositoryIsBoundToDefaultV2Payloads(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $exportedAt = Carbon::parse('2026-04-09 12:05:00');
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'operator-observability-contract');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        /** @var OperatorObservabilityRepository $repository */
+        $repository = app(OperatorObservabilityRepository::class);
+
+        $detail = $repository->runDetail($run->fresh());
+        $export = $repository->runHistoryExport($run->fresh(), $exportedAt);
+        $metrics = $repository->metrics($exportedAt);
+
+        $this->assertSame('operator-observability-contract', $detail['instance_id']);
+        $this->assertSame($run->id, $detail['run_id']);
+        $this->assertSame('durable-workflow.v2.history-export', $export['schema']);
+        $this->assertSame($run->id, $export['workflow']['run_id']);
+        $this->assertSame($exportedAt->toJSON(), $export['exported_at']);
+        $this->assertSame($exportedAt->toJSON(), $metrics['generated_at']);
+        $this->assertArrayHasKey('runs', $metrics);
+    }
+
     public function testMultipleReplayBlockedFailuresStayOrderedAcrossDetailAndExport(): void
     {
         $instance = WorkflowInstance::create([

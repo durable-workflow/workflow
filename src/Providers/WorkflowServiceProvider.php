@@ -15,6 +15,8 @@ use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\WorkflowMakeCommand;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
 
@@ -23,6 +25,11 @@ final class WorkflowServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/workflows.php', 'workflows');
+
+        $this->app->singleton(
+            OperatorObservabilityRepository::class,
+            DefaultOperatorObservabilityRepository::class,
+        );
     }
 
     public function boot(): void
