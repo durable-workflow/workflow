@@ -384,6 +384,128 @@ final class HistoryExportTest extends TestCase
         $this->assertNotSame('', $bundle['failures'][0]['trace_preview']);
     }
 
+    public function testItExportsLineageLinksFromTypedHistoryWhenLinkRowsAreMissing(): void
+    {
+        $parentInstance = WorkflowInstance::query()->create([
+            'id' => 'history-export-parent',
+            'workflow_class' => 'App\\Workflows\\ParentExportWorkflow',
+            'workflow_type' => 'export.parent',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $parentInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\ParentExportWorkflow',
+            'workflow_type' => 'export.parent',
+            'status' => RunStatus::Waiting->value,
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'workflow',
+            'started_at' => now()->subMinutes(2),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+        $parentInstance->forceFill(['current_run_id' => $parentRun->id])->save();
+
+        $childInstance = WorkflowInstance::query()->create([
+            'id' => 'history-export-child-history-only',
+            'workflow_class' => 'App\\Workflows\\ChildExportWorkflow',
+            'workflow_type' => 'export.child',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\ChildExportWorkflow',
+            'workflow_type' => 'export.child',
+            'status' => RunStatus::Waiting->value,
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'workflow',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+        $childInstance->forceFill(['current_run_id' => $childRun->id])->save();
+
+        $childCallId = (string) Str::ulid();
+        $link = WorkflowLink::query()->create([
+            'id' => $childCallId,
+            'link_type' => 'child_workflow',
+            'sequence' => 1,
+            'parent_workflow_instance_id' => $parentInstance->id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+        ]);
+
+        WorkflowHistoryEvent::record($parentRun, HistoryEventType::WorkflowStarted, [
+            'workflow_type' => 'export.parent',
+        ]);
+        WorkflowHistoryEvent::record($parentRun->refresh(), HistoryEventType::ChildWorkflowScheduled, [
+            'sequence' => 1,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+            'child_run_number' => $childRun->run_number,
+        ]);
+        WorkflowHistoryEvent::record($parentRun->refresh(), HistoryEventType::ChildRunStarted, [
+            'sequence' => 1,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+            'child_run_number' => $childRun->run_number,
+            'child_status' => $childRun->status->value,
+        ]);
+        WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
+            'workflow_type' => 'export.child',
+            'workflow_link_id' => $link->id,
+            'parent_workflow_instance_id' => $parentInstance->id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'parent_sequence' => 1,
+            'child_call_id' => $childCallId,
+        ]);
+
+        $link->delete();
+
+        $parentBundle = HistoryExport::forRun($parentRun->fresh(['historyEvents', 'childLinks']));
+        $childBundle = HistoryExport::forRun($childRun->fresh(['historyEvents', 'parentLinks']));
+
+        $this->assertCount(1, $parentBundle['links']['children']);
+        $this->assertSame($childCallId, $parentBundle['links']['children'][0]['id']);
+        $this->assertSame('child_workflow', $parentBundle['links']['children'][0]['type']);
+        $this->assertSame($parentInstance->id, $parentBundle['links']['children'][0]['parent_workflow_instance_id']);
+        $this->assertSame($parentRun->id, $parentBundle['links']['children'][0]['parent_workflow_run_id']);
+        $this->assertSame($childInstance->id, $parentBundle['links']['children'][0]['child_workflow_instance_id']);
+        $this->assertSame($childRun->id, $parentBundle['links']['children'][0]['child_workflow_run_id']);
+        $this->assertSame($childCallId, $parentBundle['links']['children'][0]['child_call_id']);
+        $this->assertSame(1, $parentBundle['links']['children'][0]['sequence']);
+        $this->assertTrue($parentBundle['links']['children'][0]['is_primary_parent']);
+
+        $this->assertCount(1, $childBundle['links']['parents']);
+        $this->assertSame($childCallId, $childBundle['links']['parents'][0]['id']);
+        $this->assertSame('child_workflow', $childBundle['links']['parents'][0]['type']);
+        $this->assertSame($parentInstance->id, $childBundle['links']['parents'][0]['parent_workflow_instance_id']);
+        $this->assertSame($parentRun->id, $childBundle['links']['parents'][0]['parent_workflow_run_id']);
+        $this->assertSame($childInstance->id, $childBundle['links']['parents'][0]['child_workflow_instance_id']);
+        $this->assertSame($childRun->id, $childBundle['links']['parents'][0]['child_workflow_run_id']);
+        $this->assertSame($childCallId, $childBundle['links']['parents'][0]['child_call_id']);
+        $this->assertSame(1, $childBundle['links']['parents'][0]['sequence']);
+    }
+
     public function testItExportsActivitySnapshotsFromTypedHistoryWhenExecutionRowIsMissing(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');

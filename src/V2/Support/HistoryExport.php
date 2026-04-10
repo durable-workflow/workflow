@@ -7,7 +7,6 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Closure;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use LogicException;
 use Throwable;
@@ -17,7 +16,6 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
@@ -137,8 +135,8 @@ final class HistoryExport
                 ->values()
                 ->all(),
             'links' => [
-                'parents' => self::links($run->parentLinks, $run, 'parent'),
-                'children' => self::links($run->childLinks, $run, 'child'),
+                'parents' => self::parentLinks($run),
+                'children' => self::childLinks($run),
             ],
         ];
 
@@ -1040,44 +1038,86 @@ final class HistoryExport
     }
 
     /**
-     * @param Collection<int, WorkflowLink> $links
-     *
      * @return list<array<string, mixed>>
      */
-    private static function links(Collection $links, WorkflowRun $run, string $direction): array
+    private static function parentLinks(WorkflowRun $run): array
     {
-        return $links
-            ->map(static fn (WorkflowLink $link): array => [
-                'id' => $link->id,
-                'type' => $link->link_type,
-                'parent_workflow_instance_id' => $link->parent_workflow_instance_id,
-                'parent_workflow_run_id' => $link->parent_workflow_run_id,
-                'child_workflow_instance_id' => $link->child_workflow_instance_id,
-                'child_workflow_run_id' => $link->child_workflow_run_id,
-                'child_call_id' => self::childCallIdForLink($link, $run, $direction),
-                'sequence' => $link->sequence,
-                'is_primary_parent' => (bool) $link->is_primary_parent,
-                'created_at' => self::timestamp($link->created_at),
+        return collect(RunLineageView::parentsForRun($run))
+            ->map(static fn (array $entry): array => [
+                'id' => $entry['id'] ?? null,
+                'type' => $entry['link_type'] ?? null,
+                'parent_workflow_instance_id' => $entry['parent_workflow_id']
+                    ?? $entry['workflow_instance_id']
+                    ?? null,
+                'parent_workflow_run_id' => $entry['parent_workflow_run_id']
+                    ?? $entry['workflow_run_id']
+                    ?? null,
+                'child_workflow_instance_id' => $run->workflow_instance_id,
+                'child_workflow_run_id' => $run->id,
+                'child_call_id' => $entry['child_call_id'] ?? null,
+                'sequence' => $entry['sequence'] ?? null,
+                'is_primary_parent' => (bool) ($entry['is_primary_parent'] ?? false),
+                'created_at' => self::lineageLinkCreatedAt($run, $entry, 'parent'),
             ])
             ->values()
             ->all();
     }
 
-    private static function childCallIdForLink(WorkflowLink $link, WorkflowRun $run, string $direction): ?string
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function childLinks(WorkflowRun $run): array
     {
-        if ($link->link_type !== 'child_workflow') {
-            return null;
+        return collect(RunLineageView::continuedWorkflowsForRun($run))
+            ->map(static fn (array $entry): array => [
+                'id' => $entry['id'] ?? null,
+                'type' => $entry['link_type'] ?? null,
+                'parent_workflow_instance_id' => $run->workflow_instance_id,
+                'parent_workflow_run_id' => $run->id,
+                'child_workflow_instance_id' => $entry['child_workflow_id']
+                    ?? $entry['workflow_instance_id']
+                    ?? null,
+                'child_workflow_run_id' => $entry['child_workflow_run_id']
+                    ?? $entry['workflow_run_id']
+                    ?? null,
+                'child_call_id' => $entry['child_call_id'] ?? null,
+                'sequence' => $entry['sequence'] ?? null,
+                'is_primary_parent' => (bool) ($entry['is_primary_parent'] ?? false),
+                'created_at' => self::lineageLinkCreatedAt($run, $entry, 'child'),
+            ])
+            ->values()
+            ->all();
+    }
+
+    private static function lineageLinkCreatedAt(WorkflowRun $run, array $entry, string $direction): ?string
+    {
+        $entryId = self::stringValue($entry['id'] ?? null);
+        $entryType = self::stringValue($entry['link_type'] ?? null);
+        $entryRunId = self::stringValue($entry['workflow_run_id'] ?? null);
+
+        $links = $direction === 'parent'
+            ? $run->parentLinks
+            : $run->childLinks;
+
+        foreach ($links as $link) {
+            if ($entryId !== null && $link->id === $entryId) {
+                return self::timestamp($link->created_at);
+            }
+
+            if ($entryType !== null && $link->link_type !== $entryType) {
+                continue;
+            }
+
+            $linkRunId = $direction === 'parent'
+                ? $link->parent_workflow_run_id
+                : $link->child_workflow_run_id;
+
+            if ($entryRunId !== null && $linkRunId === $entryRunId) {
+                return self::timestamp($link->created_at);
+            }
         }
 
-        if ($direction === 'parent') {
-            return ChildRunHistory::childCallIdForRun($run) ?? $link->id;
-        }
-
-        if ($link->sequence === null) {
-            return $link->id;
-        }
-
-        return ChildRunHistory::childCallIdForSequence($run, (int) $link->sequence) ?? $link->id;
+        return null;
     }
 
     private static function timestamp(mixed $value): ?string
