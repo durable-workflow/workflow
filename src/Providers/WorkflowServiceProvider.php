@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
+use Workflow\Commands\V2BackfillCommandContractsCommand;
 use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
@@ -40,6 +41,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->commands([
             ActivityMakeCommand::class,
             WorkflowMakeCommand::class,
+            V2BackfillCommandContractsCommand::class,
             V2DoctorCommand::class,
             V2HistoryExportCommand::class,
             V2RebuildProjectionsCommand::class,

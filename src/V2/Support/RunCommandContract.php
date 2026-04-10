@@ -165,6 +165,34 @@ final class RunCommandContract
         return WorkflowDefinition::commandContract($workflowClass);
     }
 
+    public static function historyBackfillAvailable(WorkflowRun $run): bool
+    {
+        $event = self::workflowStartedEvent($run);
+
+        if (! $event instanceof WorkflowHistoryEvent || ! self::historyContractNeedsBackfill($event)) {
+            return false;
+        }
+
+        try {
+            TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        } catch (LogicException) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public static function backfillHistory(WorkflowRun $run): bool
+    {
+        $event = self::workflowStartedEvent($run);
+
+        if (! $event instanceof WorkflowHistoryEvent || ! self::historyContractNeedsBackfill($event)) {
+            return false;
+        }
+
+        return self::backfillContractFromDefinition($run, $event) !== null;
+    }
+
     /**
      * @return array{
      *     queries: list<string>,
