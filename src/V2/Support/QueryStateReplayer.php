@@ -288,6 +288,8 @@ final class QueryStateReplayer
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
+                WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
+
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 if ($childStatus === RunStatus::Completed) {
                     $current = $result->send(ChildRunHistory::outputForChildRun($childRun));
@@ -444,6 +446,12 @@ final class QueryStateReplayer
 
                         continue;
                     }
+
+                    WorkflowStepHistory::assertTypedHistoryRecorded(
+                        $run,
+                        $itemSequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
 
                     if ($childStatus === RunStatus::Completed) {
                         $results[$offset] = ChildRunHistory::outputForChildRun($childRun);

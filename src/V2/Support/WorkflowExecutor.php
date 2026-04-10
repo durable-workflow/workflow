@@ -628,6 +628,10 @@ final class WorkflowExecutor
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
+                if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
+                    return null;
+                }
+
                 $resolutionEvent = $this->recordChildResolution($run, $task, $sequence, $childRun);
 
                 try {
@@ -814,6 +818,15 @@ final class WorkflowExecutor
                             RunStatus::Running,
                             RunStatus::Waiting,
                         ], true)) {
+                            if (! $this->ensureTypedStepHistoryRecorded(
+                                $run,
+                                $task,
+                                $itemSequence,
+                                WorkflowStepHistory::CHILD_WORKFLOW,
+                            )) {
+                                return null;
+                            }
+
                             $resolutionEvent = $this->recordChildResolution($run, $task, $itemSequence, $childRun);
                         }
                     }
@@ -874,6 +887,15 @@ final class WorkflowExecutor
                         $pending = true;
 
                         continue;
+                    }
+
+                    if (! $this->ensureTypedStepHistoryRecorded(
+                        $run,
+                        $task,
+                        $itemSequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    )) {
+                        return null;
                     }
 
                     if ($childStatus === RunStatus::Completed) {
@@ -2257,17 +2279,11 @@ final class WorkflowExecutor
                     'childLinks.childRun.historyEvents',
                 ]);
 
-                $resolutionEvent = $this->recordChildResolution(
+                $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence(
                     $parentRun,
-                    null,
                     $parentReference['parent_sequence'],
-                    $childRun,
                 );
-                $parentTaskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
-                $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload(
-                    is_array($resolutionEvent->payload) ? $resolutionEvent->payload : []
-                );
-                $childStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
+                $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
 
                 if (
                     $parallelMetadataPath !== []
@@ -2294,6 +2310,43 @@ final class WorkflowExecutor
 
                     continue;
                 }
+
+                try {
+                    WorkflowStepHistory::assertCompatible(
+                        $parentRun,
+                        $parentReference['parent_sequence'],
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
+                    WorkflowStepHistory::assertTypedHistoryRecorded(
+                        $parentRun,
+                        $parentReference['parent_sequence'],
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
+                } catch (HistoryEventShapeMismatchException) {
+                    RunSummaryProjector::project(
+                        $parentRun->fresh([
+                            'instance',
+                            'tasks',
+                            'activityExecutions',
+                            'timers',
+                            'failures',
+                            'historyEvents',
+                            'childLinks.childRun.instance.currentRun',
+                            'childLinks.childRun.failures',
+                            'childLinks.childRun.historyEvents',
+                        ])
+                    );
+
+                    continue;
+                }
+
+                $resolutionEvent = $this->recordChildResolution(
+                    $parentRun,
+                    null,
+                    $parentReference['parent_sequence'],
+                    $childRun,
+                );
+                $parentTaskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
             }
 
             $hasOpenWorkflowTask = WorkflowTask::query()
@@ -2987,7 +3040,6 @@ final class WorkflowExecutor
                 ChildRunHistory::scheduledEventForSequence($run, $sequence) !== null
                 || ChildRunHistory::startedEventForSequence($run, $sequence) !== null
                 || ChildRunHistory::resolutionEventForSequence($run, $sequence) !== null
-                || ChildRunHistory::childRunForSequence($run, $sequence) instanceof WorkflowRun
             ) ? $sequence + 1 : $sequence,
             $current instanceof AllCall => $this->visibleSequenceForAllCall($run, $current, $sequence),
             default => $sequence,
@@ -3020,7 +3072,6 @@ final class WorkflowExecutor
                 ChildRunHistory::scheduledEventForSequence($run, $itemSequence) !== null
                 || ChildRunHistory::startedEventForSequence($run, $itemSequence) !== null
                 || ChildRunHistory::resolutionEventForSequence($run, $itemSequence) !== null
-                || ChildRunHistory::childRunForSequence($run, $itemSequence) instanceof WorkflowRun
             ) {
                 return $sequence + $groupSize;
             }

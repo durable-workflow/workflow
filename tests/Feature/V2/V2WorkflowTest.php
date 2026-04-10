@@ -21,6 +21,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHeartbeatActivity;
 use Tests\Fixtures\V2\TestHeartbeatWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
+use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelFailureWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelWorkflow;
 use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
@@ -662,6 +663,87 @@ final class V2WorkflowTest extends TestCase
         } finally {
             Carbon::setTestNow();
         }
+    }
+
+    public function testReplayBlocksTerminalChildProjectionWithoutTypedParentStepHistory(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryReplayedChildWorkflow::class, 'child-row-only-terminal-history');
+        $workflow->start('Taylor');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $childRunId = $link->child_workflow_run_id;
+
+        $this->assertIsString($childRunId);
+
+        $this->runReadyTaskForRun($childRunId, TaskType::Workflow);
+        $this->runReadyTaskForRun($childRunId, TaskType::Activity);
+        $this->runReadyTaskForRun($childRunId, TaskType::Workflow);
+
+        $this->assertSame('completed', WorkflowRun::query()->findOrFail($childRunId)->status->value);
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $parentRunId,
+            'event_type' => HistoryEventType::ChildRunCompleted->value,
+        ]);
+
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->whereIn('event_type', [
+                HistoryEventType::ChildWorkflowScheduled->value,
+                HistoryEventType::ChildRunStarted->value,
+                HistoryEventType::ChildRunCompleted->value,
+                HistoryEventType::ChildRunFailed->value,
+                HistoryEventType::ChildRunCancelled->value,
+                HistoryEventType::ChildRunTerminated->value,
+            ])
+            ->delete();
+
+        try {
+            (new QueryStateReplayer())->replayState(WorkflowRun::query()->findOrFail($parentRunId));
+            $this->fail('Expected link-only terminal child replay to be blocked.');
+        } catch (HistoryEventShapeMismatchException $exception) {
+            $this->assertSame(1, $exception->workflowSequence);
+            $this->assertSame('child workflow', $exception->expectedHistoryShape);
+            $this->assertSame(['no typed history'], $exception->recordedEventTypes);
+        }
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Failed->value)
+            ->firstOrFail();
+
+        $this->assertFalse($workflow->refresh()->completed());
+        $this->assertTrue($task->payload['replay_blocked'] ?? false);
+        $this->assertSame('history_shape_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+        $this->assertSame('child workflow', $task->payload['replay_blocked_expected_history_shape'] ?? null);
+        $this->assertSame(['no typed history'], $task->payload['replay_blocked_recorded_event_types'] ?? null);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($parentRunId));
+        $replayBlockedTask = collect($detail['tasks'])
+            ->first(static fn (array $task): bool => ($task['transport_state'] ?? null) === 'replay_blocked');
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertStringContainsString('history recorded [no typed history]', $detail['liveness_reason']);
+        $this->assertIsArray($replayBlockedTask);
+        $this->assertSame(['no typed history'], $replayBlockedTask['replay_blocked_recorded_event_types']);
     }
 
     public function testActivityRetriesBeforeResumingWorkflow(): void
