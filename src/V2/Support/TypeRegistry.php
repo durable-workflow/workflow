@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use LogicException;
 use ReflectionClass;
+use Throwable;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Workflow;
@@ -50,11 +51,49 @@ final class TypeRegistry
         return self::resolveClass($storedClass, $activityType, Activity::class, 'activities', 'activity');
     }
 
+    /**
+     * @param class-string<Throwable> $class
+     */
+    public static function typeForThrowable(string $class): ?string
+    {
+        $configuredType = self::configuredTypeForClass($class);
+
+        if ($configuredType !== null) {
+            return $configuredType;
+        }
+
+        $reflection = new ReflectionClass($class);
+        $attributes = $reflection->getAttributes(Type::class);
+
+        return $attributes === []
+            ? null
+            : $attributes[0]->newInstance()->key;
+    }
+
+    /**
+     * @return class-string<Throwable>|null
+     */
+    public static function resolveThrowableClass(string $storedClass, ?string $exceptionType): ?string
+    {
+        if (is_string($exceptionType) && $exceptionType !== '') {
+            $configuredClass = self::configuredClassForType($exceptionType, 'exceptions', Throwable::class);
+
+            if ($configuredClass !== null) {
+                return $configuredClass;
+            }
+        }
+
+        return self::isValidClass($storedClass, Throwable::class)
+            ? $storedClass
+            : null;
+    }
+
     private static function configuredTypeForClass(string $class): ?string
     {
         $configKey = match (true) {
             is_subclass_of($class, Workflow::class) => 'workflows',
             is_subclass_of($class, Activity::class) => 'activities',
+            is_subclass_of($class, Throwable::class) => 'exceptions',
             default => null,
         };
 

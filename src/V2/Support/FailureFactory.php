@@ -50,6 +50,7 @@ final class FailureFactory
     /**
      * @return array{
      *     class: class-string<Throwable>|string,
+     *     type?: string,
      *     message: string,
      *     code: int,
      *     file: string,
@@ -63,6 +64,7 @@ final class FailureFactory
         if ($throwable instanceof RestoredWorkflowException) {
             /** @var array{
              *     class: class-string<Throwable>|string,
+             *     type?: string,
              *     message: string,
              *     code: int,
              *     file: string,
@@ -76,7 +78,7 @@ final class FailureFactory
             return $payload;
         }
 
-        return [
+        $payload = [
             'class' => $throwable::class,
             'message' => $throwable->getMessage(),
             'code' => $throwable->getCode(),
@@ -85,6 +87,14 @@ final class FailureFactory
             'trace' => self::normalizeTrace($throwable),
             'properties' => self::normalizeProperties($throwable),
         ];
+
+        $type = TypeRegistry::typeForThrowable($throwable::class);
+
+        if (is_string($type) && $type !== '') {
+            $payload['type'] = $type;
+        }
+
+        return $payload;
     }
 
     public static function restore(
@@ -96,9 +106,19 @@ final class FailureFactory
         $normalized = self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
         $class = $normalized['class'];
 
-        if (is_string($class) && class_exists($class) && is_subclass_of($class, Throwable::class)) {
+        try {
+            $resolvedClass = is_string($class)
+                ? TypeRegistry::resolveThrowableClass($class, $normalized['type'])
+                : null;
+        } catch (Throwable) {
+            $resolvedClass = is_string($class) && class_exists($class) && is_subclass_of($class, Throwable::class)
+                ? $class
+                : null;
+        }
+
+        if (is_string($resolvedClass)) {
             try {
-                return self::restoreThrowable($class, $normalized);
+                return self::restoreThrowable($resolvedClass, $normalized);
             } catch (Throwable) {
                 // Fall back to a typed wrapper when the original class cannot be rehydrated safely.
             }
@@ -197,6 +217,7 @@ final class FailureFactory
     /**
      * @return array{
      *     class: class-string<Throwable>|string,
+     *     type: string|null,
      *     message: string,
      *     code: int,
      *     file: string,
@@ -223,6 +244,9 @@ final class FailureFactory
             'class' => is_string($payload['class'] ?? null)
                 ? $payload['class']
                 : ($fallbackClass ?? RestoredWorkflowException::class),
+            'type' => is_string($payload['type'] ?? null)
+                ? $payload['type']
+                : null,
             'message' => is_string($payload['message'] ?? null)
                 ? $payload['message']
                 : ($fallbackMessage ?? 'Workflow failure'),
@@ -243,6 +267,7 @@ final class FailureFactory
     /**
      * @param array{
      *     class: class-string<Throwable>|string,
+     *     type?: string|null,
      *     message: string,
      *     code: int,
      *     file: string,
@@ -278,7 +303,13 @@ final class FailureFactory
                 ? Serializer::unserializeModels($property['value'])
                 : null;
 
-            self::setThrowableProperty($throwable, $property['declaring_class'], $property['name'], $value);
+            self::setPayloadProperty(
+                $throwable,
+                $class,
+                $property['declaring_class'],
+                $property['name'],
+                $value,
+            );
         }
 
         return $throwable;
@@ -293,6 +324,37 @@ final class FailureFactory
         $reflectionProperty = new ReflectionProperty($class, $property);
         $reflectionProperty->setAccessible(true);
         $reflectionProperty->setValue($throwable, $value);
+    }
+
+    private static function setPayloadProperty(
+        Throwable $throwable,
+        string $restoredClass,
+        string $declaringClass,
+        string $property,
+        mixed $value,
+    ): void {
+        $candidates = array_values(array_unique([
+            $declaringClass,
+            $restoredClass,
+        ]));
+
+        foreach ($candidates as $candidate) {
+            if (! class_exists($candidate)) {
+                continue;
+            }
+
+            if ($candidate !== $restoredClass && ! is_a($restoredClass, $candidate, true)) {
+                continue;
+            }
+
+            try {
+                self::setThrowableProperty($throwable, $candidate, $property, $value);
+
+                return;
+            } catch (Throwable) {
+                // A renamed exception should still be catchable even if one custom field no longer exists.
+            }
+        }
     }
 
     /**

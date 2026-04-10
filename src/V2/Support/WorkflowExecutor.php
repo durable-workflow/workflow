@@ -1436,6 +1436,9 @@ final class WorkflowExecutor
             'exception' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
                 ? $childTerminalEvent->payload['exception'] ?? null
                 : null,
+            'exception_type' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception_type'] ?? null
+                : null,
             'exception_class' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
                 ? $childTerminalEvent->payload['exception_class'] ?? $failure?->exception_class
                 : $failure?->exception_class,
@@ -1805,13 +1808,16 @@ final class WorkflowExecutor
             'last_progress_at' => now(),
         ])->save();
 
+        $exceptionPayload = FailureFactory::payload($throwable);
+
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, [
             'failure_id' => $failure->id,
             'source_kind' => $sourceKind,
             'source_id' => $sourceId,
+            'exception_type' => $exceptionPayload['type'] ?? null,
             'exception_class' => $failure->exception_class,
             'message' => $failure->message,
-            'exception' => FailureFactory::payload($throwable),
+            'exception' => $exceptionPayload,
         ], $task);
 
         $task->forceFill([
@@ -1865,6 +1871,13 @@ final class WorkflowExecutor
             return;
         }
 
+        $exceptionPayload = is_array($failurePayload['exception'] ?? null)
+            ? $failurePayload['exception']
+            : [];
+        $exceptionType = is_string($failurePayload['exception_type'] ?? null)
+            ? $failurePayload['exception_type']
+            : (is_string($exceptionPayload['type'] ?? null) ? $exceptionPayload['type'] : null);
+
         WorkflowHistoryEvent::record($run, HistoryEventType::FailureHandled, array_filter([
             'failure_id' => $failureId,
             'sequence' => $workflowSequence,
@@ -1876,6 +1889,7 @@ final class WorkflowExecutor
                 ?? (is_string($failurePayload['propagation_kind'] ?? null) ? $failurePayload['propagation_kind'] : null),
             'exception_class' => $failure?->exception_class
                 ?? (is_string($failurePayload['exception_class'] ?? null) ? $failurePayload['exception_class'] : null),
+            'exception_type' => $exceptionType,
             'message' => $failure?->message
                 ?? (is_string($failurePayload['message'] ?? null) ? $failurePayload['message'] : null),
             'handled' => true,
@@ -2167,6 +2181,10 @@ final class WorkflowExecutor
                 ];
         }
 
+        if (is_array($payload) && ! is_string($payload['type'] ?? null) && is_string($event?->payload['exception_type'] ?? null)) {
+            $payload['type'] = $event->payload['exception_type'];
+        }
+
         $fallbackClass = is_string($event?->payload['exception_class'] ?? null)
             ? $event->payload['exception_class']
             : RuntimeException::class;
@@ -2337,6 +2355,8 @@ final class WorkflowExecutor
                     ])->save();
                 }
             } catch (Throwable $throwable) {
+                $exceptionPayload = FailureFactory::payload($throwable);
+
                 /** @var WorkflowFailure $failure */
                 $failure = WorkflowFailure::query()->create(array_merge(
                     FailureFactory::make($throwable),
@@ -2357,10 +2377,11 @@ final class WorkflowExecutor
                     'update_name' => $update->update_name,
                     'sequence' => $sequence,
                     'failure_id' => $failure->id,
+                    'exception_type' => $exceptionPayload['type'] ?? null,
                     'exception_class' => $failure->exception_class,
                     'message' => $failure->message,
                     'code' => $throwable->getCode(),
-                    'exception' => FailureFactory::payload($throwable),
+                    'exception' => $exceptionPayload,
                 ], $task, $command);
                 $run->historyEvents->push($completedEvent);
 

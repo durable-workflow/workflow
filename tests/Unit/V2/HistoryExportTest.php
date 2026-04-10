@@ -343,9 +343,11 @@ final class HistoryExportTest extends TestCase
                 'failure_id' => '01JTESTFAILUREHISTORYONLY000001',
                 'source_kind' => 'workflow_run',
                 'source_id' => $run->id,
+                'exception_type' => 'runtime.failure',
                 'exception_class' => RuntimeException::class,
                 'message' => 'history-only boom',
                 'exception' => [
+                    'type' => 'runtime.failure',
                     'class' => RuntimeException::class,
                     'message' => 'history-only boom',
                     'code' => 99,
@@ -371,6 +373,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('workflow_run', $bundle['failures'][0]['source_kind']);
         $this->assertSame($run->id, $bundle['failures'][0]['source_id']);
         $this->assertSame('terminal', $bundle['failures'][0]['propagation_kind']);
+        $this->assertSame('runtime.failure', $bundle['failures'][0]['exception_type']);
         $this->assertSame(RuntimeException::class, $bundle['failures'][0]['exception_class']);
         $this->assertSame('history-only boom', $bundle['failures'][0]['message']);
         $this->assertSame(__FILE__, $bundle['failures'][0]['file']);

@@ -26,6 +26,7 @@ use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestQueryChildResolutionAuthorityWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
+use Tests\Fixtures\V2\TestReplayedDomainException;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -48,6 +49,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\QueryStateReplayer;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\WorkflowStub;
 
 final class V2QueryWorkflowTest extends TestCase
@@ -250,6 +252,7 @@ final class V2QueryWorkflowTest extends TestCase
 
     public function testQueriesAndResumeUseTypedActivityFailureHistoryWhenMutableRowsDrift(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestHistoryReplayedFailureWorkflow::class, 'query-history-failure');
@@ -309,6 +312,87 @@ final class V2QueryWorkflowTest extends TestCase
         });
 
         $this->assertSame($expectedState, $workflow->refresh()->currentState());
+
+        $workflow->signal('resume', 'go');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'completed',
+            'caught' => $expectedState['caught'],
+            'resume' => 'go',
+        ], $workflow->output());
+    }
+
+    public function testQueriesAndResumeRestoreActivityFailuresThroughDurableExceptionAliases(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestHistoryReplayedFailureWorkflow::class, 'query-history-failure-alias');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $payload = $event->payload;
+        $this->assertSame('order-rejected', $payload['exception_type'] ?? null);
+        $this->assertSame('order-rejected', $payload['exception']['type'] ?? null);
+        $this->assertIsArray($payload['exception']['properties'] ?? null);
+        $this->assertIsString($payload['failure_id'] ?? null);
+
+        $payload['exception_class'] = 'App\\Legacy\\OrderRejected';
+        $payload['exception']['class'] = 'App\\Legacy\\OrderRejected';
+
+        foreach ($payload['exception']['properties'] as &$property) {
+            $property['declaring_class'] = 'App\\Legacy\\OrderRejected';
+        }
+
+        unset($property);
+
+        DB::transaction(static function () use ($event, $payload): void {
+            $event->forceFill([
+                'payload' => $payload,
+            ])->save();
+
+            WorkflowFailure::query()
+                ->where('id', $payload['failure_id'])
+                ->update([
+                    'exception_class' => 'App\\Legacy\\OrderRejected',
+                    'message' => 'legacy row drift',
+                ]);
+        });
+
+        $expectedState = [
+            'stage' => 'waiting-for-resume',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+                'order_id' => 'order-123',
+                'channel' => 'api',
+            ],
+        ];
+
+        $this->assertSame($expectedState, $workflow->refresh()->currentState());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $exception = unserialize($detail['exceptions'][0]['exception']);
+        $timelineFailure = collect($detail['timeline'])->firstWhere('type', HistoryEventType::ActivityFailed->value);
+
+        $this->assertSame('order-rejected', $detail['exceptions'][0]['exception_type']);
+        $this->assertSame('order-rejected', $exception['type'] ?? null);
+        $this->assertSame('order-rejected', $timelineFailure['exception_type'] ?? null);
+        $this->assertSame('order-rejected', $timelineFailure['failure']['exception_type'] ?? null);
 
         $workflow->signal('resume', 'go');
         $this->drainReadyTasks();

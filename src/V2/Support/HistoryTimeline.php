@@ -163,6 +163,7 @@ final class HistoryTimeline
             'parallel_group_index' => $parallelMetadata['parallel_group_index'] ?? null,
             'parallel_group_path' => $parallelMetadataPath,
             'failure_id' => $failureMetadata['id'] ?? null,
+            'exception_type' => $failureMetadata['exception_type'] ?? null,
             'exception_class' => $failureMetadata['exception_class'] ?? null,
             'message' => $failureMetadata['message'] ?? null,
             'closed_reason' => $payload['closed_reason'] ?? null,
@@ -730,6 +731,8 @@ final class HistoryTimeline
                     : false,
                 default => is_bool($failure['handled'] ?? null) ? $failure['handled'] : null,
             },
+            'exception_type' => self::stringValue($payload['exception_type'] ?? null)
+                ?? self::stringValue($failure['exception_type'] ?? null),
             'exception_class' => self::stringValue($payload['exception_class'] ?? null)
                 ?? self::stringValue($failure['exception_class'] ?? null),
             'message' => self::stringValue($payload['message'] ?? null)

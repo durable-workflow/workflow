@@ -837,6 +837,7 @@ final class HistoryExport
             'source_id' => $failure['source_id'] ?? null,
             'propagation_kind' => $failure['propagation_kind'] ?? null,
             'handled' => (bool) ($failure['handled'] ?? false),
+            'exception_type' => $failure['exception_type'] ?? null,
             'exception_class' => $failure['exception_class'] ?? null,
             'message' => $failure['message'] ?? null,
             'file' => $failure['file'] ?? null,

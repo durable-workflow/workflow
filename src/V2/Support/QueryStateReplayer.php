@@ -607,6 +607,10 @@ final class QueryStateReplayer
                 ];
         }
 
+        if (is_array($payload) && ! is_string($payload['type'] ?? null) && is_string($event?->payload['exception_type'] ?? null)) {
+            $payload['type'] = $event->payload['exception_type'];
+        }
+
         $fallbackClass = is_string($event?->payload['exception_class'] ?? null)
             ? $event->payload['exception_class']
             : RuntimeException::class;

@@ -136,6 +136,7 @@ final class FailureSnapshots
             'source_id' => $failure->source_id,
             'propagation_kind' => $failure->propagation_kind,
             'handled' => (bool) $failure->handled,
+            'exception_type' => null,
             'exception_class' => $failure->exception_class,
             'message' => $failure->message,
             'code' => 0,
@@ -146,6 +147,7 @@ final class FailureSnapshots
             'event_sequence' => null,
             'exception_payload' => [
                 '__constructor' => $failure->exception_class,
+                'type' => null,
                 'message' => $failure->message,
                 'code' => 0,
                 'file' => $failure->file,
@@ -193,6 +195,8 @@ final class FailureSnapshots
             'propagation_kind' => $failure?->propagation_kind
                 ?? self::propagationKindForEvent($event),
             'handled' => (bool) ($failure?->handled ?? false),
+            'exception_type' => self::stringValue($exceptionPayload['type'] ?? null)
+                ?? self::stringValue($event->payload['exception_type'] ?? null),
             'exception_class' => self::stringValue($exceptionPayload['__constructor'] ?? null)
                 ?? $failure?->exception_class,
             'message' => self::stringValue($exceptionPayload['message'] ?? null)
@@ -236,6 +240,7 @@ final class FailureSnapshots
             '__constructor' => self::stringValue($payload['class'] ?? null)
                 ?? $fallbackClass
                 ?? $failure?->exception_class,
+            'type' => self::stringValue($payload['type'] ?? null),
             'message' => self::stringValue($payload['message'] ?? null)
                 ?? $fallbackMessage
                 ?? $failure?->message,

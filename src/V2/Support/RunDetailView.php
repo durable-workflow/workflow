@@ -284,6 +284,7 @@ final class RunDetailView
                         'id' => $failure['id'] ?? null,
                         'code' => $failure['trace_preview'] ?? null,
                         'exception' => serialize(self::exceptionPayload($failure)),
+                        'exception_type' => $failure['exception_type'] ?? null,
                         'class' => ($sourceId === null ? null : ($activityClasses[$sourceId] ?? null))
                             ?? ($failure['exception_class'] ?? null),
                         'created_at' => $failure['created_at'] ?? null,
@@ -557,6 +558,9 @@ final class RunDetailView
             '__constructor' => is_string($payload['__constructor'] ?? null)
                 ? $payload['__constructor']
                 : ($failure['exception_class'] ?? null),
+            'type' => is_string($payload['type'] ?? null)
+                ? $payload['type']
+                : ($failure['exception_type'] ?? null),
             'message' => is_string($payload['message'] ?? null)
                 ? $payload['message']
                 : ($failure['message'] ?? null),
