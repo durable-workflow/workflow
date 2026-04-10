@@ -47,6 +47,7 @@ use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunCommandContract;
+use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\TaskDispatcher;
@@ -153,21 +154,14 @@ final class WorkflowStub
             return new self($instance);
         }
 
-        /** @var WorkflowRun $run */
-        $run = WorkflowRun::query()
-            ->where('workflow_instance_id', $instanceId)
-            ->whereKey($runId)
-            ->firstOrFail();
+        $run = SelectedRunLocator::forInstanceOrFail($instance, $runId);
 
         return new self($instance, $run, true);
     }
 
     public static function loadRun(string $runId): self
     {
-        /** @var WorkflowRun $run */
-        $run = WorkflowRun::query()
-            ->with('instance')
-            ->findOrFail($runId);
+        $run = SelectedRunLocator::forRunIdOrFail($runId, ['instance']);
 
         $instance = $run->instance;
 

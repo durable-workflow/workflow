@@ -74,6 +74,7 @@ use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunSummarySortKey;
@@ -1925,6 +1926,8 @@ final class V2WorkflowTest extends TestCase
     public function testLoadSelectionCanPinHistoricalRunWithinOneInstance(): void
     {
         Queue::fake();
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
 
         $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'selection-instance');
         $workflow->start(0, 1);
@@ -1956,6 +1959,70 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($currentRun->id, $current->runId());
         $this->assertSame($currentRun->id, $current->currentRunId());
         $this->assertTrue($current->currentRunIsSelected());
+
+        $this->assertSame(
+            $historicalRun->id,
+            SelectedRunLocator::forInstanceIdOrFail('selection-instance', $historicalRun->id)->id,
+        );
+        $this->assertSame(
+            $currentRun->id,
+            SelectedRunLocator::forInstanceIdOrFail('selection-instance')->id,
+        );
+        $this->assertSame(
+            $currentRun->id,
+            SelectedRunLocator::forIdOrFail('selection-instance')->id,
+        );
+        $this->assertSame(
+            $historicalRun->id,
+            SelectedRunLocator::forIdOrFail($historicalRun->id)->id,
+        );
+    }
+
+    public function testSelectedRunLocatorPrefersContinueAsNewLineageWhenCurrentRunPointerIsMissing(): void
+    {
+        Queue::fake();
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'selection-locator-lineage');
+        $workflow->start(0, 1);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'selection-locator-lineage')
+            ->orderBy('run_number')
+            ->get();
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = $runs[0];
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = $runs[1];
+
+        WorkflowRun::query()->create([
+            'workflow_instance_id' => $historicalRun->workflow_instance_id,
+            'run_number' => $continuedRun->run_number + 1,
+            'workflow_class' => $continuedRun->workflow_class,
+            'workflow_type' => $continuedRun->workflow_type,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([999, 1000]),
+            'connection' => $continuedRun->connection,
+            'queue' => $continuedRun->queue,
+            'started_at' => now()->addMinute(),
+            'last_progress_at' => now()->addMinute(),
+        ]);
+
+        WorkflowInstance::query()
+            ->findOrFail($historicalRun->workflow_instance_id)
+            ->forceFill([
+                'current_run_id' => null,
+            ])
+            ->save();
+
+        $resolved = SelectedRunLocator::forInstanceIdOrFail('selection-locator-lineage');
+
+        $this->assertSame($continuedRun->id, $resolved->id);
     }
 
     public function testPhpApiCommandsRecordDurableCommandContext(): void
