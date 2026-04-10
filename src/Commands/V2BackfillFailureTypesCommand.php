@@ -20,6 +20,7 @@ class V2BackfillFailureTypesCommand extends Command
         HistoryEventType::ChildRunFailed,
         HistoryEventType::WorkflowFailed,
         HistoryEventType::UpdateCompleted,
+        HistoryEventType::FailureHandled,
     ];
 
     protected $signature = 'workflow:v2:backfill-failure-types

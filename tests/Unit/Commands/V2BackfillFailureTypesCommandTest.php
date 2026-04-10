@@ -14,6 +14,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\FailureSnapshots;
+use Workflow\V2\Support\HistoryTimeline;
 
 final class V2BackfillFailureTypesCommandTest extends TestCase
 {
@@ -68,6 +69,48 @@ final class V2BackfillFailureTypesCommandTest extends TestCase
 
         $this->assertArrayNotHasKey('exception_type', $payload);
         $this->assertArrayNotHasKey('type', $payload['exception']);
+    }
+
+    public function testItBackfillsDurableExceptionTypesForHandledFailureHistory(): void
+    {
+        config()->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
+        config()
+            ->set('workflows.v2.types.exception_class_aliases', [
+                'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
+            ]);
+
+        [$run, $failureEvent] = $this->createLegacyFailureEvent('failure-type-handled-backfill');
+
+        $handledEvent = WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::FailureHandled, [
+            'failure_id' => $failureEvent->payload['failure_id'],
+            'sequence' => 1,
+            'source_kind' => 'activity_execution',
+            'source_id' => 'activity-1',
+            'propagation_kind' => 'activity',
+            'exception_class' => 'App\\Legacy\\OrderRejected',
+            'message' => 'Order order-123 rejected via api',
+            'handled' => true,
+        ]);
+
+        $this->artisan('workflow:v2:backfill-failure-types', [
+            '--run-id' => [$run->id],
+        ])
+            ->expectsOutput('Backfilled 2 failure history event(s).')
+            ->assertSuccessful();
+
+        $failurePayload = $failureEvent->refresh()->payload;
+        $handledPayload = $handledEvent->refresh()->payload;
+
+        $this->assertSame('order-rejected', $failurePayload['exception_type'] ?? null);
+        $this->assertSame('order-rejected', $failurePayload['exception']['type'] ?? null);
+        $this->assertSame('order-rejected', $handledPayload['exception_type'] ?? null);
+
+        $handledTimelineEntry = collect(HistoryTimeline::forRun($run->refresh()))
+            ->firstWhere('type', HistoryEventType::FailureHandled->value);
+
+        $this->assertIsArray($handledTimelineEntry);
+        $this->assertSame('order-rejected', $handledTimelineEntry['failure']['exception_type'] ?? null);
+        $this->assertTrue($handledTimelineEntry['failure']['handled'] ?? false);
     }
 
     public function testStrictModeFailsWhenLegacyFailureHistoryCannotBeMapped(): void
