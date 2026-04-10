@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
-use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowFailure;
@@ -132,7 +131,12 @@ final class FailureSnapshots
      */
     private static function snapshotFromFailure(WorkflowFailure $failure): array
     {
-        $resolution = self::exceptionResolution($failure->exception_class, null);
+        $resolution = FailureFactory::replayResolution(
+            [],
+            $failure->exception_class,
+            $failure->message,
+            0,
+        );
 
         return [
             'id' => $failure->id,
@@ -195,7 +199,13 @@ final class FailureSnapshots
             ?? self::stringValue($event->payload['exception_type'] ?? null);
         $exceptionClass = self::stringValue($exceptionPayload['__constructor'] ?? null)
             ?? $failure?->exception_class;
-        $resolution = self::exceptionResolution($exceptionClass, $exceptionType);
+        $resolution = FailureFactory::replayResolution(
+            $event->payload['exception'] ?? null,
+            $fallbackClass,
+            $fallbackMessage,
+            $fallbackCode,
+            self::stringValue($event->payload['exception_type'] ?? null),
+        );
 
         return [
             'id' => $failure?->id ?? $failureId,
@@ -347,43 +357,6 @@ final class FailureSnapshots
     }
 
     /**
-     * @return array{class: ?string, source: 'exception_type'|'class_alias'|'recorded_class'|'unresolved'|'misconfigured', error: ?string}
-     */
-    private static function exceptionResolution(?string $recordedClass, ?string $exceptionType): array
-    {
-        if ($recordedClass === null) {
-            return [
-                'class' => null,
-                'source' => 'unresolved',
-                'error' => null,
-            ];
-        }
-
-        try {
-            $resolution = TypeRegistry::resolveThrowableClassWithSource($recordedClass, $exceptionType);
-        } catch (Throwable $throwable) {
-            return [
-                'class' => null,
-                'source' => 'misconfigured',
-                'error' => $throwable->getMessage(),
-            ];
-        }
-
-        if ($resolution === null) {
-            return [
-                'class' => null,
-                'source' => 'unresolved',
-                'error' => null,
-            ];
-        }
-
-        return [
-            'class' => $resolution['class'],
-            'source' => $resolution['source'],
-            'error' => null,
-        ];
-    }
-
     private static function timestampToMilliseconds(mixed $timestamp): int
     {
         if ($timestamp instanceof CarbonInterface) {
@@ -402,6 +375,6 @@ final class FailureSnapshots
      */
     private static function replayBlocked(array $resolution): bool
     {
-        return in_array($resolution['source'] ?? null, ['unresolved', 'misconfigured'], true);
+        return in_array($resolution['source'] ?? null, ['unresolved', 'misconfigured', 'unrestorable'], true);
     }
 }

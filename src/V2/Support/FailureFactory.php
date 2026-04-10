@@ -157,6 +157,56 @@ final class FailureFactory
     }
 
     /**
+     * @return array{class: ?class-string<Throwable>, source: 'exception_type'|'class_alias'|'recorded_class'|'unresolved'|'misconfigured'|'unrestorable', error: ?string}
+     */
+    public static function replayResolution(
+        mixed $payload,
+        ?string $fallbackClass = null,
+        ?string $fallbackMessage = null,
+        ?int $fallbackCode = null,
+        ?string $fallbackType = null,
+    ): array {
+        $normalized = self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode, $fallbackType);
+        $class = $normalized['class'];
+
+        try {
+            $resolution = is_string($class)
+                ? TypeRegistry::resolveThrowableClassWithSource($class, $normalized['type'])
+                : null;
+        } catch (Throwable $throwable) {
+            return [
+                'class' => null,
+                'source' => 'misconfigured',
+                'error' => $throwable->getMessage(),
+            ];
+        }
+
+        if ($resolution === null) {
+            return [
+                'class' => null,
+                'source' => 'unresolved',
+                'error' => null,
+            ];
+        }
+
+        try {
+            self::restoreThrowable($resolution['class'], $normalized);
+        } catch (Throwable $throwable) {
+            return [
+                'class' => $resolution['class'],
+                'source' => 'unrestorable',
+                'error' => $throwable->getMessage(),
+            ];
+        }
+
+        return [
+            'class' => $resolution['class'],
+            'source' => $resolution['source'],
+            'error' => null,
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $payload
      */
     private static function previewFromPayload(array $payload): string
@@ -260,6 +310,7 @@ final class FailureFactory
         ?string $fallbackClass,
         ?string $fallbackMessage,
         ?int $fallbackCode,
+        ?string $fallbackType = null,
     ): array {
         if (is_string($payload)) {
             $payload = Serializer::unserialize($payload);
@@ -275,7 +326,7 @@ final class FailureFactory
                 : ($fallbackClass ?? RestoredWorkflowException::class),
             'type' => is_string($payload['type'] ?? null)
                 ? $payload['type']
-                : null,
+                : $fallbackType,
             'message' => is_string($payload['message'] ?? null)
                 ? $payload['message']
                 : ($fallbackMessage ?? 'Workflow failure'),

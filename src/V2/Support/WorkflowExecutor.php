@@ -1892,8 +1892,17 @@ final class WorkflowExecutor
         WorkflowTask $task,
         UnresolvedWorkflowFailureException $throwable,
     ): void {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $payload['replay_blocked'] = true;
+        $payload['replay_blocked_reason'] = 'failure_resolution';
+        $payload['replay_blocked_exception_class'] = $throwable->originalExceptionClass();
+        $payload['replay_blocked_exception_type'] = $throwable->exceptionType();
+        $payload['replay_blocked_resolution_source'] = $throwable->resolutionSource();
+        $payload['replay_blocked_resolution_error'] = $throwable->resolutionError();
+
         $task->forceFill([
             'status' => TaskStatus::Failed,
+            'payload' => $payload,
             'last_error' => $throwable->getMessage(),
             'lease_expires_at' => null,
         ])->save();

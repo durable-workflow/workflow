@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestAbstractReplayedException;
 use Tests\Fixtures\V2\TestBroadChildFailureCatchWorkflow;
 use Tests\Fixtures\V2\TestBroadFailureCatchWorkflow;
 use Tests\Fixtures\V2\TestChildHandleParentWorkflow;
@@ -564,6 +565,208 @@ final class V2QueryWorkflowTest extends TestCase
 
         config()->set('workflows.v2.types.exception_class_aliases', [
             'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
+        ]);
+
+        $this->assertSame([
+            'stage' => 'waiting-for-resume',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+            ],
+        ], WorkflowStub::loadRun($workflow->runId())->currentState());
+
+        $repair = WorkflowStub::loadRun($workflow->runId())->attemptRepair();
+
+        $this->assertTrue($repair->accepted());
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'completed',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+            ],
+            'resume' => 'go',
+        ], $workflow->output());
+    }
+
+    public function testMisconfiguredDurableFailureAliasBlocksReplayAndRecoveryUntilMappingIsFixed(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestBroadFailureCatchWorkflow::class, 'query-history-failure-misconfigured-alias');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('order-rejected', $event->payload['exception_type'] ?? null);
+
+        config()->set('workflows.v2.types.exceptions.order-rejected', \stdClass::class);
+
+        try {
+            $workflow->refresh()->currentState();
+            $this->fail('Expected misconfigured failure alias replay to block the query.');
+        } catch (UnresolvedWorkflowFailureException $exception) {
+            $this->assertSame(TestReplayedDomainException::class, $exception->originalExceptionClass());
+            $this->assertSame('order-rejected', $exception->exceptionType());
+            $this->assertSame('misconfigured', $exception->resolutionSource());
+            $this->assertStringContainsString(\stdClass::class, (string) $exception->resolutionError());
+        }
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $timelineFailure = collect($detail['timeline'])->firstWhere('type', HistoryEventType::ActivityFailed->value);
+
+        $this->assertSame('order-rejected', $detail['exceptions'][0]['exception_type']);
+        $this->assertNull($detail['exceptions'][0]['exception_resolved_class']);
+        $this->assertSame('misconfigured', $detail['exceptions'][0]['exception_resolution_source']);
+        $this->assertStringContainsString(\stdClass::class, (string) $detail['exceptions'][0]['exception_resolution_error']);
+        $this->assertTrue($detail['exceptions'][0]['exception_replay_blocked']);
+        $this->assertSame('misconfigured', $timelineFailure['failure']['exception_resolution_source'] ?? null);
+        $this->assertTrue($timelineFailure['failure']['exception_replay_blocked'] ?? false);
+
+        $export = HistoryExport::forRun($run);
+        $this->assertSame('misconfigured', $export['failures'][0]['exception_resolution_source']);
+        $this->assertTrue($export['failures'][0]['exception_replay_blocked']);
+
+        $workflow->signal('resume', 'go');
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::WorkflowFailed->value,
+        ]);
+
+        /** @var WorkflowTask $blockedTask */
+        $blockedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Failed->value)
+            ->latest('updated_at')
+            ->firstOrFail();
+
+        $this->assertTrue($blockedTask->payload['replay_blocked'] ?? false);
+        $this->assertSame('failure_resolution', $blockedTask->payload['replay_blocked_reason'] ?? null);
+        $this->assertSame('misconfigured', $blockedTask->payload['replay_blocked_resolution_source'] ?? null);
+        $this->assertSame('order-rejected', $blockedTask->payload['replay_blocked_exception_type'] ?? null);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId()));
+        $replayBlockedTask = collect($detail['tasks'])->firstWhere('transport_state', 'replay_blocked');
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertNotNull($replayBlockedTask);
+        $this->assertSame('failure_resolution', $replayBlockedTask['replay_blocked_reason']);
+
+        config()->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
+
+        $repair = WorkflowStub::loadRun($workflow->runId())->attemptRepair();
+
+        $this->assertTrue($repair->accepted());
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'stage' => 'completed',
+            'caught' => [
+                'class' => TestReplayedDomainException::class,
+                'message' => 'Order order-123 rejected via api',
+                'code' => 422,
+            ],
+            'resume' => 'go',
+        ], $workflow->output());
+    }
+
+    public function testUnrestorableHistoricalFailureClassBlocksReplayAndOperatorDetail(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestBroadFailureCatchWorkflow::class, 'query-history-failure-unrestorable');
+        $workflow->start('order-123');
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $payload = $event->payload;
+        unset($payload['exception_type'], $payload['exception']['type']);
+        $payload['exception_class'] = TestAbstractReplayedException::class;
+        $payload['exception']['class'] = TestAbstractReplayedException::class;
+
+        DB::transaction(static function () use ($event, $payload): void {
+            $event->forceFill([
+                'payload' => $payload,
+            ])->save();
+
+            WorkflowFailure::query()
+                ->where('id', $payload['failure_id'])
+                ->update([
+                    'exception_class' => TestAbstractReplayedException::class,
+                    'message' => 'abstract replay row drift',
+                ]);
+        });
+
+        try {
+            $workflow->refresh()->currentState();
+            $this->fail('Expected unrestorable failure replay to block the query.');
+        } catch (UnresolvedWorkflowFailureException $exception) {
+            $this->assertSame(TestAbstractReplayedException::class, $exception->originalExceptionClass());
+            $this->assertSame('unrestorable', $exception->resolutionSource());
+            $this->assertNull($exception->exceptionType());
+            $this->assertStringContainsString('abstract throwable', (string) $exception->resolutionError());
+        }
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $timelineFailure = collect($detail['timeline'])->firstWhere('type', HistoryEventType::ActivityFailed->value);
+
+        $this->assertSame(TestAbstractReplayedException::class, $detail['exceptions'][0]['exception_class']);
+        $this->assertSame(TestAbstractReplayedException::class, $detail['exceptions'][0]['exception_resolved_class']);
+        $this->assertSame('unrestorable', $detail['exceptions'][0]['exception_resolution_source']);
+        $this->assertStringContainsString('abstract throwable', (string) $detail['exceptions'][0]['exception_resolution_error']);
+        $this->assertTrue($detail['exceptions'][0]['exception_replay_blocked']);
+        $this->assertSame('unrestorable', $timelineFailure['failure']['exception_resolution_source'] ?? null);
+        $this->assertTrue($timelineFailure['failure']['exception_replay_blocked'] ?? false);
+
+        $export = HistoryExport::forRun($run);
+        $this->assertSame('unrestorable', $export['failures'][0]['exception_resolution_source']);
+        $this->assertTrue($export['failures'][0]['exception_replay_blocked']);
+
+        $workflow->signal('resume', 'go');
+        $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
+
+        /** @var WorkflowTask $blockedTask */
+        $blockedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Failed->value)
+            ->latest('updated_at')
+            ->firstOrFail();
+
+        $this->assertTrue($blockedTask->payload['replay_blocked'] ?? false);
+        $this->assertSame('unrestorable', $blockedTask->payload['replay_blocked_resolution_source'] ?? null);
+        $this->assertSame(TestAbstractReplayedException::class, $blockedTask->payload['replay_blocked_exception_class'] ?? null);
+
+        config()->set('workflows.v2.types.exception_class_aliases', [
+            TestAbstractReplayedException::class => TestReplayedDomainException::class,
         ]);
 
         $this->assertSame([
