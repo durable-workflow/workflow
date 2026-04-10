@@ -22,6 +22,14 @@ final class HistoryTimeline
      */
     public static function forRun(WorkflowRun $run): array
     {
+        return RunTimelineProjector::snapshotForRun($run)['timeline'];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public static function fromHistory(WorkflowRun $run): array
+    {
         $run->loadMissing(['historyEvents', 'commands', 'tasks', 'activityExecutions', 'timers', 'failures']);
 
         /** @var Collection<string, WorkflowCommand> $commands */

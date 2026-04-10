@@ -30,6 +30,7 @@ return [
         'failure_model' => Workflow\V2\Models\WorkflowFailure::class,
         'run_summary_model' => Workflow\V2\Models\WorkflowRunSummary::class,
         'run_wait_model' => Workflow\V2\Models\WorkflowRunWait::class,
+        'run_timeline_entry_model' => Workflow\V2\Models\WorkflowTimelineEntry::class,
         'types' => [
             'workflows' => [
                 // 'billing.invoice-sync' => App\Workflows\InvoiceSyncWorkflow::class,

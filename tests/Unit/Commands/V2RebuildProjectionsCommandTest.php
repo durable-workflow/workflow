@@ -65,6 +65,18 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'status_bucket' => 'completed',
             'history_event_count' => 2,
         ]);
+        $this->assertDatabaseHas('workflow_run_timeline_entries', [
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'type' => HistoryEventType::WorkflowStarted->value,
+            'kind' => 'workflow',
+        ]);
+        $this->assertDatabaseHas('workflow_run_timeline_entries', [
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'type' => HistoryEventType::WorkflowCompleted->value,
+            'kind' => 'workflow',
+        ]);
         $this->assertGreaterThan(
             0,
             (int) WorkflowRunSummary::query()->whereKey($run->id)->value('history_size_bytes'),

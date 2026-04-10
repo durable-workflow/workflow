@@ -301,6 +301,7 @@ final class RunSummaryProjector
         );
 
         RunWaitProjector::project($run);
+        RunTimelineProjector::project($run);
 
         return $summary;
     }

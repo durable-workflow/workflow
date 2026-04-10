@@ -28,6 +28,7 @@ final class RunDetailView
             'failures',
             'historyEvents',
             'waits',
+            'timelineEntries',
             'parentLinks.parentRun.summary',
             'childLinks.childRun.summary',
             'childLinks.childRun.historyEvents',
@@ -104,6 +105,7 @@ final class RunDetailView
                 'history_size_bytes' => (int) $summary->history_size_bytes,
                 'continue_as_new_recommended' => (bool) $summary->continue_as_new_recommended,
             ];
+        $timelineSnapshot = RunTimelineProjector::snapshotForRun($run);
 
         return [
             'id' => $run->id,
@@ -279,7 +281,8 @@ final class RunDetailView
             'tasks_scope' => 'selected_run',
             'tasks' => $tasks,
             'timeline_scope' => 'selected_run',
-            'timeline' => HistoryTimeline::forRun($run),
+            'timeline_projection_source' => $timelineSnapshot['source'],
+            'timeline' => $timelineSnapshot['timeline'],
             'logs' => RunActivityView::logsFromActivities($activities),
             'exceptions' => collect($failureSnapshots)
                 ->map(static function (array $failure) use ($activityClasses): array {

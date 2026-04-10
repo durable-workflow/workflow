@@ -117,6 +117,13 @@ class WorkflowRun extends Model
             ->orderBy('wait_id');
     }
 
+    public function timelineEntries(): HasMany
+    {
+        return $this->hasMany(WorkflowTimelineEntry::class, 'workflow_run_id')
+            ->orderBy('sequence')
+            ->orderBy('history_event_id');
+    }
+
     public function parentLinks(): HasMany
     {
         return $this->hasMany(WorkflowLink::class, 'child_workflow_run_id')

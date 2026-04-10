@@ -32,8 +32,11 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
 final class V2HistoryTimelineTest extends TestCase
@@ -610,6 +613,58 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame($originalAttemptId, $completed['activity']['attempt_id']);
         $this->assertSame(1, $completed['activity']['attempt_count']);
         $this->assertSame($originalClosedAt, $completed['activity']['closed_at']);
+    }
+
+    public function testRunDetailReadsProjectedTimelineEntriesWhenAvailable(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'timeline-projection-source');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        $fallbackDetail = RunDetailView::forRun($run->fresh());
+
+        $this->assertSame('live_fallback', $fallbackDetail['timeline_projection_source']);
+
+        RunSummaryProjector::project($run->fresh());
+
+        $this->assertSame(
+            $run->historyEvents()->count(),
+            WorkflowTimelineEntry::query()
+                ->where('workflow_run_id', $runId)
+                ->count(),
+        );
+
+        /** @var ActivityExecution $activity */
+        $activity = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        $activity->forceFill([
+            'activity_type' => 'drifted.activity',
+            'activity_class' => 'App\\Activities\\DriftedActivity',
+        ])->save();
+
+        $projectedDetail = RunDetailView::forRun($run->fresh());
+        $scheduled = collect($projectedDetail['timeline'])->firstWhere('type', 'ActivityScheduled');
+
+        $this->assertSame('workflow_run_timeline_entries', $projectedDetail['timeline_projection_source']);
+        $this->assertIsArray($scheduled);
+        $this->assertSame('Scheduled TestGreetingActivity.', $scheduled['summary']);
+        $this->assertSame(TestGreetingActivity::class, $scheduled['activity_type']);
+        $this->assertSame(TestGreetingActivity::class, $scheduled['activity']['class']);
     }
 
     public function testTimelineKeepsTimerSnapshotsWhenTimerRowDrifts(): void
