@@ -196,7 +196,7 @@ final class RunTaskView
     {
         $rows = [];
 
-        $waits = RunWaitView::forRun($run);
+        $waits = RunWaitProjector::snapshotForRun($run)['waits'];
 
         foreach ($waits as $wait) {
             if (($wait['status'] ?? null) !== 'open' || ($wait['task_backed'] ?? false) === true) {

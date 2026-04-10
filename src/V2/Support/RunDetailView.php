@@ -27,6 +27,7 @@ final class RunDetailView
             'timers',
             'failures',
             'historyEvents',
+            'waits',
             'parentLinks.parentRun.summary',
             'childLinks.childRun.summary',
             'childLinks.childRun.historyEvents',
@@ -73,7 +74,8 @@ final class RunDetailView
             ->keyBy('command_id');
         $failureSnapshots = FailureSnapshots::forRun($run);
         $tasks = RunTaskView::forRun($run);
-        $waits = RunWaitView::forRun($run);
+        $waitSnapshot = RunWaitProjector::snapshotForRun($run);
+        $waits = $waitSnapshot['waits'];
         $openWaitCount = collect($waits)
             ->filter(static fn (array $wait): bool => ($wait['status'] ?? null) === 'open')
             ->count();
@@ -272,6 +274,7 @@ final class RunDetailView
             'updates_scope' => 'selected_run',
             'updates' => $updates,
             'waits_scope' => 'selected_run',
+            'waits_projection_source' => $waitSnapshot['source'],
             'waits' => $waits,
             'tasks_scope' => 'selected_run',
             'tasks' => $tasks,

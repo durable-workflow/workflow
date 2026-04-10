@@ -43,6 +43,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -434,6 +435,71 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('SignalWaitOpened', $detail['timeline'][2]['type']);
         $this->assertSame('signal', $detail['timeline'][2]['kind']);
         $this->assertSame('Waiting for signal name-provided.', $detail['timeline'][2]['summary']);
+    }
+
+    public function testRunDetailViewReadsWaitRowsFromRebuildableProjection(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-projected-wait');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runNextReadyTask();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()
+            ->with('summary')
+            ->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+        $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+
+        $this->assertSame('workflow_run_waits', $detail['waits_projection_source']);
+        $this->assertDatabaseHas('workflow_run_waits', [
+            'workflow_run_id' => $runId,
+            'workflow_instance_id' => 'detail-projected-wait',
+            'wait_id' => $signalWait['id'],
+            'kind' => 'signal',
+            'status' => 'open',
+            'target_name' => 'name-provided',
+            'task_backed' => false,
+            'external_only' => true,
+        ]);
+
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->delete();
+
+        $projectedDetail = RunDetailView::forRun(
+            WorkflowRun::query()
+                ->with(['summary', 'waits'])
+                ->findOrFail($runId)
+        );
+        $projectedSignalWait = $this->findWait($projectedDetail['waits'], 'signal', 'name-provided');
+
+        $this->assertSame('workflow_run_waits', $projectedDetail['waits_projection_source']);
+        $this->assertSame($signalWait['id'], $projectedSignalWait['id']);
+        $this->assertSame($signalWait['signal_wait_id'], $projectedSignalWait['signal_wait_id']);
+        $this->assertSame('open', $projectedSignalWait['status']);
+        $this->assertSame('Waiting for signal name-provided.', $projectedSignalWait['summary']);
+
+        WorkflowRunWait::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        $fallbackDetail = RunDetailView::forRun(
+            WorkflowRun::query()
+                ->with('summary')
+                ->findOrFail($runId)
+        );
+
+        $this->assertSame('live_fallback', $fallbackDetail['waits_projection_source']);
+        $this->assertSame([], $fallbackDetail['waits']);
     }
 
     public function testRunDetailViewExposesNormalizedCommandTargetsForMixedSignalContracts(): void

@@ -300,6 +300,8 @@ final class RunSummaryProjector
             ],
         );
 
+        RunWaitProjector::project($run);
+
         return $summary;
     }
 

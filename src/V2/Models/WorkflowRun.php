@@ -110,6 +110,13 @@ class WorkflowRun extends Model
         return $this->hasOne(WorkflowRunSummary::class, 'id', 'id');
     }
 
+    public function waits(): HasMany
+    {
+        return $this->hasMany(WorkflowRunWait::class, 'workflow_run_id')
+            ->orderBy('position')
+            ->orderBy('wait_id');
+    }
+
     public function parentLinks(): HasMany
     {
         return $this->hasMany(WorkflowLink::class, 'child_workflow_run_id')
