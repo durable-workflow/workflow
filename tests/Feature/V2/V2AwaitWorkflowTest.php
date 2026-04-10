@@ -102,6 +102,66 @@ final class V2AwaitWorkflowTest extends TestCase
             ->all());
     }
 
+    public function testConditionWaitProjectionIgnoresUnrelatedOpenWorkflowTaskRows(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestAwaitWorkflow::class, 'await-condition-stray-task');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()
+            ->with('summary')
+            ->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $conditionWait = $this->findConditionWait($detail['waits']);
+
+        /** @var WorkflowTask $strayTask */
+        $strayTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [
+                'resume_source_kind' => 'workflow_task',
+                'resume_source_id' => 'unrelated',
+            ],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        /** @var WorkflowRun $projectedRun */
+        $projectedRun = WorkflowRun::query()
+            ->with('summary')
+            ->findOrFail($run->id);
+        $summary = $projectedRun->summary;
+        $projectedDetail = RunDetailView::forRun($projectedRun);
+        $projectedConditionWait = $this->findConditionWait($projectedDetail['waits']);
+
+        $this->assertSame('condition', $summary?->wait_kind);
+        $this->assertSame('Waiting for condition', $summary?->wait_reason);
+        $this->assertSame($conditionWait['condition_wait_id'], $summary?->open_wait_id);
+        $this->assertSame('external_input', $summary?->resume_source_kind);
+        $this->assertNull($summary?->resume_source_id);
+        $this->assertSame('waiting_for_condition', $summary?->liveness_state);
+        $this->assertNotSame('workflow-task:' . $strayTask->id, $summary?->open_wait_id);
+
+        $this->assertSame('condition', $projectedDetail['wait_kind']);
+        $this->assertSame($conditionWait['condition_wait_id'], $projectedDetail['open_wait_id']);
+        $this->assertSame('external_input', $projectedDetail['resume_source_kind']);
+        $this->assertNull($projectedDetail['resume_source_id']);
+        $this->assertSame('waiting_for_condition', $projectedDetail['liveness_state']);
+        $this->assertSame($conditionWait['condition_wait_id'], $projectedConditionWait['condition_wait_id']);
+        $this->assertNotSame('workflow-task:' . $strayTask->id, $projectedDetail['open_wait_id']);
+    }
+
     public function testKeyedAwaitWorkflowRecordsConditionKeyAndResumesAfterUpdate(): void
     {
         Queue::fake();

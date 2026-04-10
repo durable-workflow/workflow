@@ -80,15 +80,17 @@ final class RunDetailView
         $currentOpenWait = self::currentOpenWait($waits);
         $workflowTaskResumeSource = self::currentWorkflowTaskResumeSource($tasks, $summary?->next_task_id);
         $fleetCompatibility = self::fleetCompatibility($run, $tasks);
-        $openWaitId = $summary?->open_wait_id
-            ?? $currentOpenWait['id']
-            ?? $workflowTaskResumeSource['open_wait_id'];
-        $resumeSourceKind = $summary?->resume_source_kind
-            ?? $currentOpenWait['resume_source_kind']
-            ?? $workflowTaskResumeSource['resume_source_kind'];
-        $resumeSourceId = $summary?->resume_source_id
-            ?? $currentOpenWait['resume_source_id']
-            ?? $workflowTaskResumeSource['resume_source_id'];
+        $summaryOpenWaitId = $summary?->open_wait_id;
+        $summaryHasOpenWait = $summaryOpenWaitId !== null;
+        $openWaitId = $summaryHasOpenWait
+            ? $summaryOpenWaitId
+            : ($currentOpenWait['id'] ?? $workflowTaskResumeSource['open_wait_id']);
+        $resumeSourceKind = $summaryHasOpenWait
+            ? $summary?->resume_source_kind
+            : ($currentOpenWait['resume_source_kind'] ?? $workflowTaskResumeSource['resume_source_kind']);
+        $resumeSourceId = $summaryHasOpenWait
+            ? $summary?->resume_source_id
+            : ($currentOpenWait['resume_source_id'] ?? $workflowTaskResumeSource['resume_source_id']);
         $recordedDefinitionFingerprint = WorkflowDefinitionFingerprint::recordedForRun($run);
         $currentDefinitionFingerprint = WorkflowDefinitionFingerprint::currentForRun($run);
         $definitionMatchesCurrent = WorkflowDefinitionFingerprint::matchesCurrent($run);

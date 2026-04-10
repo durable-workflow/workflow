@@ -53,7 +53,7 @@ final class RunSummaryProjector
             ? null
             : self::openSignalApplicationWait($run);
 
-        $openConditionWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null || ($nextTask?->task_type === TaskType::Workflow)
+        $openConditionWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null
             ? null
             : self::openConditionWait($run);
 
@@ -134,6 +134,22 @@ final class RunSummaryProjector
             $openWaitId = sprintf('timer:%s', $openTimer['id']);
             $resumeSourceKind = 'timer';
             $resumeSourceId = $openTimer['id'];
+        } elseif ($openConditionWait !== null) {
+            $waitKind = 'condition';
+            $conditionLabel = self::conditionLabel($openConditionWait);
+            $waitReason = match (true) {
+                self::timestamp($openConditionWait['timeout_fired_at'] ?? null) !== null => sprintf(
+                    'Waiting to apply condition%s timeout',
+                    $conditionLabel,
+                ),
+                $openConditionWait['timer_id'] === null => sprintf('Waiting for condition%s', $conditionLabel),
+                default => sprintf('Waiting for condition%s or timeout', $conditionLabel),
+            };
+            $waitStartedAt = $openConditionWait['opened_at'];
+            $waitDeadlineAt = $openConditionWait['deadline_at'];
+            $openWaitId = $openConditionWait['id'];
+            $resumeSourceKind = $openConditionWait['resume_source_kind'];
+            $resumeSourceId = $openConditionWait['resume_source_id'];
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
@@ -153,22 +169,6 @@ final class RunSummaryProjector
             $openWaitId = sprintf('workflow-task:%s', $nextTask->id);
             $resumeSourceKind = 'workflow_task';
             $resumeSourceId = $nextTask->id;
-        } elseif ($openConditionWait !== null) {
-            $waitKind = 'condition';
-            $conditionLabel = self::conditionLabel($openConditionWait);
-            $waitReason = match (true) {
-                self::timestamp($openConditionWait['timeout_fired_at'] ?? null) !== null => sprintf(
-                    'Waiting to apply condition%s timeout',
-                    $conditionLabel,
-                ),
-                $openConditionWait['timer_id'] === null => sprintf('Waiting for condition%s', $conditionLabel),
-                default => sprintf('Waiting for condition%s or timeout', $conditionLabel),
-            };
-            $waitStartedAt = $openConditionWait['opened_at'];
-            $waitDeadlineAt = $openConditionWait['deadline_at'];
-            $openWaitId = $openConditionWait['id'];
-            $resumeSourceKind = $openConditionWait['resume_source_kind'];
-            $resumeSourceId = $openConditionWait['resume_source_id'];
         } elseif ($pendingChildResolutionWait !== null) {
             $waitKind = 'child';
             $waitReason = sprintf('Waiting to apply child workflow %s result', $pendingChildResolutionWait['label']);
