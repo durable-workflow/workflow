@@ -10,6 +10,7 @@ use Illuminate\Support\ServiceProvider;
 use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
 use Workflow\Commands\V2BackfillCommandContractsCommand;
+use Workflow\Commands\V2BackfillCommandLifecyclesCommand;
 use Workflow\Commands\V2BackfillFailureTypesCommand;
 use Workflow\Commands\V2BackfillParallelGroupMetadataCommand;
 use Workflow\Commands\V2DoctorCommand;
@@ -51,6 +52,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             ActivityMakeCommand::class,
             WorkflowMakeCommand::class,
             V2BackfillCommandContractsCommand::class,
+            V2BackfillCommandLifecyclesCommand::class,
             V2BackfillFailureTypesCommand::class,
             V2BackfillParallelGroupMetadataCommand::class,
             V2DoctorCommand::class,
