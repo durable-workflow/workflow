@@ -1533,6 +1533,33 @@ final class V2QueryWorkflowTest extends TestCase
         $workflow->refresh()->currentState();
     }
 
+    public function testQueriesRejectParallelActivityHistoryWithoutGroupMetadata(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            TestParallelActivityWorkflow::class,
+            'query-parallel-missing-group-metadata',
+        );
+        $workflow->start('Taylor', 'Abigail');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->removeActivityHistoryParallelMetadata($parentRunId, 1);
+
+        try {
+            $workflow->refresh()->currentState();
+            $this->fail('Expected query replay to reject parallel activity history without group metadata.');
+        } catch (HistoryEventShapeMismatchException $exception) {
+            $this->assertSame(1, $exception->workflowSequence);
+            $this->assertSame('parallel all barrier matching current topology', $exception->expectedHistoryShape);
+            $this->assertSame(['ActivityScheduled'], $exception->recordedEventTypes);
+        }
+    }
+
     public function testQueriesReplayParallelActivityFailureBeforeParentWorkflowTaskRuns(): void
     {
         Queue::fake();
@@ -1734,5 +1761,38 @@ final class V2QueryWorkflowTest extends TestCase
                 'parallel_group_path' => $path,
             ]),
         ])->save();
+    }
+
+    private function removeActivityHistoryParallelMetadata(string $runId, int $sequence): void
+    {
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', [
+                HistoryEventType::ActivityScheduled->value,
+                HistoryEventType::ActivityStarted->value,
+                HistoryEventType::ActivityHeartbeatRecorded->value,
+                HistoryEventType::ActivityRetryScheduled->value,
+                HistoryEventType::ActivityCompleted->value,
+                HistoryEventType::ActivityFailed->value,
+            ])
+            ->get()
+            ->each(static function (WorkflowHistoryEvent $event) use ($sequence): void {
+                $payload = is_array($event->payload) ? $event->payload : [];
+
+                if (($payload['sequence'] ?? null) !== $sequence) {
+                    return;
+                }
+
+                unset(
+                    $payload['parallel_group_id'],
+                    $payload['parallel_group_kind'],
+                    $payload['parallel_group_base_sequence'],
+                    $payload['parallel_group_size'],
+                    $payload['parallel_group_index'],
+                    $payload['parallel_group_path'],
+                );
+
+                $event->forceFill(['payload' => $payload])->save();
+            });
     }
 }

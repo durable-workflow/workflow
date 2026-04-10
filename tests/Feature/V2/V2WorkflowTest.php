@@ -223,6 +223,66 @@ final class V2WorkflowTest extends TestCase
         );
     }
 
+    public function testWorkflowWorkerBlocksReplayWhenParallelActivityHistoryLacksGroupMetadata(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            TestParallelActivityWorkflow::class,
+            'parallel-missing-group-metadata-worker-drift',
+        );
+        $workflow->start('Taylor', 'Abigail');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+        $this->runReadyActivityTaskForSequence($runId, 1);
+        $this->runReadyActivityTaskForSequence($runId, 2);
+        $this->removeActivityHistoryParallelMetadata($runId, 1);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        $this->assertFalse($workflow->refresh()->completed());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::WorkflowCompleted->value,
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Failed->value)
+            ->firstOrFail();
+
+        $this->assertTrue($task->payload['replay_blocked'] ?? false);
+        $this->assertSame('history_shape_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+        $this->assertSame(1, $task->payload['replay_blocked_workflow_sequence'] ?? null);
+        $this->assertSame(
+            'parallel all barrier matching current topology',
+            $task->payload['replay_blocked_expected_history_shape'] ?? null,
+        );
+        $this->assertSame(
+            ['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted'],
+            $task->payload['replay_blocked_recorded_event_types'] ?? null,
+        );
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
+        $this->assertSame(
+            'parallel all barrier matching current topology',
+            $detail['tasks'][0]['replay_blocked_expected_history_shape'],
+        );
+        $this->assertSame(
+            ['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted'],
+            $detail['tasks'][0]['replay_blocked_recorded_event_types'],
+        );
+    }
+
     public function testWorkflowCompletesWithDistinctInstanceAndRunIds(): void
     {
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
@@ -6090,6 +6150,39 @@ final class V2WorkflowTest extends TestCase
                 'parallel_group_path' => $path,
             ]),
         ])->save();
+    }
+
+    private function removeActivityHistoryParallelMetadata(string $runId, int $sequence): void
+    {
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', [
+                HistoryEventType::ActivityScheduled->value,
+                HistoryEventType::ActivityStarted->value,
+                HistoryEventType::ActivityHeartbeatRecorded->value,
+                HistoryEventType::ActivityRetryScheduled->value,
+                HistoryEventType::ActivityCompleted->value,
+                HistoryEventType::ActivityFailed->value,
+            ])
+            ->get()
+            ->each(static function (WorkflowHistoryEvent $event) use ($sequence): void {
+                $payload = is_array($event->payload) ? $event->payload : [];
+
+                if (($payload['sequence'] ?? null) !== $sequence) {
+                    return;
+                }
+
+                unset(
+                    $payload['parallel_group_id'],
+                    $payload['parallel_group_kind'],
+                    $payload['parallel_group_base_sequence'],
+                    $payload['parallel_group_size'],
+                    $payload['parallel_group_index'],
+                    $payload['parallel_group_path'],
+                );
+
+                $event->forceFill(['payload' => $payload])->save();
+            });
     }
 
     private function wakeTaskWatchdog(): void

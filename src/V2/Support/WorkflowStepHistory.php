@@ -49,6 +49,7 @@ final class WorkflowStepHistory
 
     /**
      * @param list<array{
+     *     call: ActivityCall|ChildWorkflowCall,
      *     offset: int,
      *     group_path: list<array{
      *         parallel_group_id: string,
@@ -76,16 +77,23 @@ final class WorkflowStepHistory
 
             $sequence = $baseSequence + $offset;
             $recordedPath = ParallelChildGroup::metadataPathForSequence($run, $sequence);
+            $eventTypes = self::workflowStepEventTypesForSequence($run, $sequence);
 
             if ($recordedPath === []) {
+                if ($eventTypes !== [] && self::eventTypesMatchParallelLeaf($eventTypes, $descriptor['call'] ?? null)) {
+                    throw new HistoryEventShapeMismatchException(
+                        $sequence,
+                        self::PARALLEL_GROUP,
+                        $eventTypes,
+                    );
+                }
+
                 continue;
             }
 
             if ($recordedPath === $expectedPath) {
                 continue;
             }
-
-            $eventTypes = self::workflowStepEventTypesForSequence($run, $sequence);
 
             throw new HistoryEventShapeMismatchException(
                 $sequence,
@@ -159,6 +167,51 @@ final class WorkflowStepHistory
             self::VERSION_MARKER => $event->event_type === HistoryEventType::VersionMarkerRecorded,
             default => false,
         };
+    }
+
+    /**
+     * @param list<string> $eventTypes
+     */
+    private static function eventTypesMatchParallelLeaf(array $eventTypes, mixed $call): bool
+    {
+        if ($call instanceof ActivityCall) {
+            return self::hasAnyEventType($eventTypes, [
+                HistoryEventType::ActivityScheduled->value,
+                HistoryEventType::ActivityStarted->value,
+                HistoryEventType::ActivityHeartbeatRecorded->value,
+                HistoryEventType::ActivityRetryScheduled->value,
+                HistoryEventType::ActivityCompleted->value,
+                HistoryEventType::ActivityFailed->value,
+            ]);
+        }
+
+        if ($call instanceof ChildWorkflowCall) {
+            return self::hasAnyEventType($eventTypes, [
+                HistoryEventType::ChildWorkflowScheduled->value,
+                HistoryEventType::ChildRunStarted->value,
+                HistoryEventType::ChildRunCompleted->value,
+                HistoryEventType::ChildRunFailed->value,
+                HistoryEventType::ChildRunCancelled->value,
+                HistoryEventType::ChildRunTerminated->value,
+            ]);
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<string> $eventTypes
+     * @param list<string> $candidates
+     */
+    private static function hasAnyEventType(array $eventTypes, array $candidates): bool
+    {
+        foreach ($eventTypes as $eventType) {
+            if (in_array($eventType, $candidates, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function isWorkflowStepEvent(WorkflowHistoryEvent $event): bool
