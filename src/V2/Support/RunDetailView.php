@@ -37,9 +37,10 @@ final class RunDetailView
         ]);
 
         $summary = $run->summary;
-        $currentRun = $run->instance === null
-            ? null
-            : CurrentRunResolver::forInstance($run->instance, ['summary']);
+        $currentRunResolution = $run->instance === null
+            ? ['run' => null, 'source' => null]
+            : CurrentRunResolver::resolutionForInstance($run->instance, ['summary']);
+        $currentRun = $currentRunResolution['run'];
         $currentSummary = $currentRun?->summary;
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
         $commandContract = RunCommandContract::forRun($run);
@@ -116,6 +117,7 @@ final class RunDetailView
             'run_id' => $run->id,
             'is_current_run' => $isCurrentRun,
             'current_run_id' => $currentRun?->id,
+            'current_run_source' => $currentRunResolution['source'],
             'current_run_status' => $currentRun?->status?->value,
             'current_run_status_bucket' => $currentSummary?->status_bucket,
             'current_run_closed_reason' => $currentSummary?->closed_reason ?? $currentRun?->closed_reason,

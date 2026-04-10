@@ -193,9 +193,11 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame(1, $historical->currentCount());
     }
 
-    public function testLoadResolvesLatestRunWhenCurrentRunPointerIsMissing(): void
+    public function testLoadPrefersContinueAsNewLineageWhenCurrentRunPointerIsMissing(): void
     {
         Queue::fake();
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
 
         $instanceId = 'query-continue-pointer-drift';
 
@@ -210,6 +212,19 @@ final class V2QueryWorkflowTest extends TestCase
             ->where('workflow_instance_id', $instanceId)
             ->orderByDesc('run_number')
             ->firstOrFail();
+
+        WorkflowRun::query()->create([
+            'workflow_instance_id' => $instanceId,
+            'run_number' => $currentRun->run_number + 1,
+            'workflow_class' => $currentRun->workflow_class,
+            'workflow_type' => $currentRun->workflow_type,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([999, 1000]),
+            'connection' => $currentRun->connection,
+            'queue' => $currentRun->queue,
+            'started_at' => now()->addMinute(),
+            'last_progress_at' => now()->addMinute(),
+        ]);
 
         WorkflowInstance::query()
             ->findOrFail($instanceId)
@@ -1394,6 +1409,12 @@ final class V2QueryWorkflowTest extends TestCase
         WorkflowLink::query()
             ->where('parent_workflow_run_id', $parentRunId)
             ->where('link_type', 'child_workflow')
+            ->delete();
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', HistoryEventType::ChildRunStarted->value)
+            ->get()
+            ->each
             ->delete();
 
         $this->assertSame([

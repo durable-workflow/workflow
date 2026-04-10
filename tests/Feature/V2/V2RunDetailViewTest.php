@@ -1523,6 +1523,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($historicalRun->id, $detail['run_id']);
         $this->assertFalse($detail['is_current_run']);
         $this->assertSame($currentRun->id, $detail['current_run_id']);
+        $this->assertSame('run_order_fallback', $detail['current_run_source']);
         $this->assertSame('waiting', $detail['current_run_status']);
         $this->assertSame('running', $detail['current_run_status_bucket']);
         $this->assertFalse($detail['can_cancel']);
@@ -1540,6 +1541,63 @@ final class V2RunDetailViewTest extends TestCase
             $detail['read_only_reason'],
         );
         $this->assertTrue($instance->fresh()->current_run_id === null);
+    }
+
+    public function testRunDetailViewPrefersContinueAsNewLineageOverRunOrderingForCurrentRun(): void
+    {
+        Queue::fake();
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'detail-continued-current-run');
+        $workflow->start(0, 1);
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'detail-continued-current-run')
+            ->orderBy('run_number')
+            ->get();
+
+        /** @var WorkflowRun $historicalRun */
+        $historicalRun = $runs[0];
+        /** @var WorkflowRun $currentRun */
+        $currentRun = $runs[1];
+
+        WorkflowRun::query()->create([
+            'workflow_instance_id' => $historicalRun->workflow_instance_id,
+            'run_number' => $currentRun->run_number + 1,
+            'workflow_class' => $currentRun->workflow_class,
+            'workflow_type' => $currentRun->workflow_type,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([999, 1000]),
+            'connection' => $currentRun->connection,
+            'queue' => $currentRun->queue,
+            'started_at' => now()->addMinute(),
+            'last_progress_at' => now()->addMinute(),
+        ]);
+
+        WorkflowInstance::query()
+            ->findOrFail($historicalRun->workflow_instance_id)
+            ->forceFill([
+                'current_run_id' => null,
+            ])
+            ->save();
+
+        RunSummaryProjector::project(
+            $historicalRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+        RunSummaryProjector::project(
+            $currentRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($historicalRun->fresh(['summary', 'instance.runs.summary']));
+
+        $this->assertSame($currentRun->id, $detail['current_run_id']);
+        $this->assertSame('continue_as_new_lineage', $detail['current_run_source']);
+        $this->assertSame('completed', $detail['current_run_status']);
+        $this->assertSame('completed', $detail['current_run_status_bucket']);
     }
 
     public function testRunDetailViewIncludesContinueAsNewLineage(): void
@@ -2019,6 +2077,12 @@ final class V2RunDetailViewTest extends TestCase
         WorkflowLink::query()
             ->where('parent_workflow_run_id', $parentRunId)
             ->where('link_type', 'child_workflow')
+            ->delete();
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', 'ChildRunStarted')
+            ->get()
+            ->each
             ->delete();
 
         /** @var WorkflowRun $parentRun */

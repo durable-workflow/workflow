@@ -55,9 +55,10 @@ final class HistoryExport
             'childLinks',
         ]);
 
-        $currentRun = $run->instance === null
-            ? null
-            : CurrentRunResolver::forInstance($run->instance, ['summary']);
+        $currentRunResolution = $run->instance === null
+            ? ['run' => null, 'source' => null]
+            : CurrentRunResolver::resolutionForInstance($run->instance, ['summary']);
+        $currentRun = $currentRunResolution['run'];
         $summary = $run->summary;
         $lineageSnapshot = RunLineageProjector::snapshotForRun($run);
 
@@ -73,6 +74,7 @@ final class HistoryExport
                 'run_number' => $run->run_number,
                 'is_current_run' => $currentRun?->id === $run->id,
                 'current_run_id' => $currentRun?->id,
+                'current_run_source' => $currentRunResolution['source'],
                 'workflow_type' => $run->workflow_type,
                 'workflow_class' => $run->workflow_class,
                 'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,

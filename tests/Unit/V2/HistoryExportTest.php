@@ -251,6 +251,7 @@ final class HistoryExportTest extends TestCase
         $this->assertTrue($bundle['history_complete']);
         $this->assertSame($instance->id, $bundle['workflow']['instance_id']);
         $this->assertSame($run->id, $bundle['workflow']['run_id']);
+        $this->assertSame('run_order_fallback', $bundle['workflow']['current_run_source']);
         $this->assertSame('completed', $bundle['workflow']['status']);
         $this->assertSame('completed', $bundle['workflow']['status_bucket']);
         $this->assertSame('build-export', $bundle['workflow']['compatibility']);
