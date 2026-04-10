@@ -90,6 +90,8 @@ final class RunTaskView
                         'last_dispatch_error' => $task->last_dispatch_error,
                         'last_claim_failed_at' => $task->last_claim_failed_at,
                         'last_claim_error' => $task->last_claim_error,
+                        'repair_available_at' => $task->repair_available_at,
+                        'repair_backoff_seconds' => TaskRepairPolicy::failureBackoffSeconds($task),
                         'lease_expired' => TaskRepairPolicy::leaseExpired($task),
                         'lease_owner' => $task->lease_owner,
                         'lease_expires_at' => $task->lease_expires_at,
@@ -185,6 +187,25 @@ final class RunTaskView
         }
 
         if (TaskRepairPolicy::dispatchFailed($task)) {
+            if ($task->repair_available_at !== null && $task->repair_available_at->isFuture()) {
+                return match ($task->task_type) {
+                    TaskType::Workflow => sprintf(
+                        'Workflow task dispatch failed; next repair is available at %s.',
+                        $task->repair_available_at->toJSON(),
+                    ),
+                    TaskType::Activity => sprintf(
+                        'Activity task dispatch failed for %s; next repair is available at %s.',
+                        $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                        $task->repair_available_at->toJSON(),
+                    ),
+                    TaskType::Timer => sprintf(
+                        '%s dispatch failed; next repair is available at %s.',
+                        ucfirst(self::timerLabel($task, $timer) . ' task'),
+                        $task->repair_available_at->toJSON(),
+                    ),
+                };
+            }
+
             return match ($task->task_type) {
                 TaskType::Workflow => 'Workflow task dispatch failed; waiting for recovery.',
                 TaskType::Activity => sprintf(
@@ -199,6 +220,25 @@ final class RunTaskView
         }
 
         if (TaskRepairPolicy::claimFailed($task)) {
+            if ($task->repair_available_at !== null && $task->repair_available_at->isFuture()) {
+                return match ($task->task_type) {
+                    TaskType::Workflow => sprintf(
+                        'Workflow task claim failed; next repair is available at %s.',
+                        $task->repair_available_at->toJSON(),
+                    ),
+                    TaskType::Activity => sprintf(
+                        'Activity task claim failed for %s; next repair is available at %s.',
+                        $activity?->activity_type ?? $activity?->activity_class ?? 'activity',
+                        $task->repair_available_at->toJSON(),
+                    ),
+                    TaskType::Timer => sprintf(
+                        '%s claim failed; next repair is available at %s.',
+                        ucfirst(self::timerLabel($task, $timer) . ' task'),
+                        $task->repair_available_at->toJSON(),
+                    ),
+                };
+            }
+
             return match ($task->task_type) {
                 TaskType::Workflow => 'Workflow task claim failed; worker backend capability is unsupported.',
                 TaskType::Activity => sprintf(
@@ -318,16 +358,28 @@ final class RunTaskView
         }
 
         if ($task->available_at !== null && $task->available_at->isFuture()) {
+            if (TaskRepairPolicy::dispatchFailed($task) && ! TaskRepairPolicy::dispatchFailedNeedsRedispatch($task)) {
+                return 'repair_backoff';
+            }
+
             return TaskRepairPolicy::dispatchFailed($task)
                 ? 'dispatch_failed'
                 : 'scheduled';
         }
 
         if (TaskRepairPolicy::dispatchFailed($task)) {
+            if (! TaskRepairPolicy::dispatchFailedNeedsRedispatch($task)) {
+                return 'repair_backoff';
+            }
+
             return 'dispatch_failed';
         }
 
         if (TaskRepairPolicy::claimFailed($task)) {
+            if (! TaskRepairPolicy::claimFailedNeedsRedispatch($task)) {
+                return 'repair_backoff';
+            }
+
             return 'claim_failed';
         }
 

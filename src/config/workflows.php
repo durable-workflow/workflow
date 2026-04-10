@@ -66,6 +66,7 @@ return [
             'redispatch_after_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 3),
             'loop_throttle_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS', 5),
             'scan_limit' => (int) env('WORKFLOW_V2_TASK_REPAIR_SCAN_LIMIT', 25),
+            'failure_backoff_max_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS', 60),
         ],
     ],
 

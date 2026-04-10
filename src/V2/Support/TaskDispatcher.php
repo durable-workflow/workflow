@@ -91,6 +91,7 @@ final class TaskDispatcher
             'last_dispatch_attempt_at' => $attemptedAt,
             'last_dispatched_at' => $attemptedAt,
             'last_dispatch_error' => null,
+            'repair_available_at' => null,
         ])->save();
 
         self::refreshRunSummary($task);
@@ -101,6 +102,11 @@ final class TaskDispatcher
         $task->forceFill([
             'last_dispatch_attempt_at' => $attemptedAt,
             'last_dispatch_error' => $message,
+            'repair_available_at' => TaskRepairPolicy::repairAvailableAtAfterFailure(
+                $task,
+                $attemptedAt,
+                immediateFirstFailure: true,
+            ),
         ])->save();
 
         self::refreshRunSummary($task);

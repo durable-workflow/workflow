@@ -52,6 +52,8 @@ final class V2OperatorMetricsTest extends TestCase
         config()
             ->set('workflows.v2.task_repair.scan_limit', 13);
         config()
+            ->set('workflows.v2.task_repair.failure_backoff_max_seconds', 31);
+        config()
             ->set('queue.default', 'redis');
         config()
             ->set('queue.connections.redis.driver', 'redis');
@@ -226,8 +228,53 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(11, $snapshot['repair_policy']['loop_throttle_seconds']);
         $this->assertSame(13, $snapshot['repair_policy']['scan_limit']);
         $this->assertSame('scope_fair_round_robin', $snapshot['repair_policy']['scan_strategy']);
+        $this->assertSame(31, $snapshot['repair_policy']['failure_backoff_max_seconds']);
+        $this->assertSame('exponential_by_repair_count', $snapshot['repair_policy']['failure_backoff_strategy']);
         $this->assertFalse(TaskRepairPolicy::dispatchOverdue($claimFailedTask->fresh()));
         $this->assertTrue(TaskRepairPolicy::readyTaskNeedsRedispatch($claimFailedTask->fresh()));
+    }
+
+    public function testRepairCandidatesRespectDurableFailureBackoff(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 5);
+        config()->set('workflows.v2.task_repair.failure_backoff_max_seconds', 60);
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'repair-backoff-instance',
+            runId: '01JBACKOFFRUN000000000001',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_ready',
+        );
+
+        $backingOffTask = $this->createTask($run, '01JBACKOFFTASK00000000001', TaskStatus::Ready->value, [
+            'available_at' => now()->subMinute(),
+            'last_dispatch_attempt_at' => now()->subSecond(),
+            'last_dispatch_error' => 'Queue transport unavailable.',
+            'repair_count' => 2,
+            'repair_available_at' => now()->addSeconds(10),
+        ]);
+        $readyTask = $this->createTask($run, '01JBACKOFFTASK00000000002', TaskStatus::Ready->value, [
+            'available_at' => now()->subMinute(),
+            'last_dispatch_attempt_at' => now()->subSeconds(20),
+            'last_dispatch_error' => 'Queue transport unavailable.',
+            'repair_count' => 2,
+            'repair_available_at' => now()->subSecond(),
+        ]);
+
+        $snapshot = TaskRepairCandidates::snapshot();
+        $taskIds = TaskRepairCandidates::taskIds();
+
+        $this->assertFalse(TaskRepairPolicy::readyTaskNeedsRedispatch($backingOffTask->fresh()));
+        $this->assertTrue(TaskRepairPolicy::readyTaskNeedsRedispatch($readyTask->fresh()));
+        $this->assertSame([$readyTask->id], $taskIds);
+        $this->assertSame(1, $snapshot['existing_task_candidates']);
+        $this->assertSame(1, $snapshot['selected_existing_task_candidates']);
     }
 
     public function testRepairCandidateScanIsScopeFairAcrossConnectionQueueAndCompatibility(): void

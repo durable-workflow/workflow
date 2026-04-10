@@ -22,9 +22,12 @@ final class TaskBackendCapabilities
             return null;
         }
 
+        $failedAt ??= now();
+
         $task->forceFill([
-            'last_claim_failed_at' => $failedAt ?? now(),
+            'last_claim_failed_at' => $failedAt,
             'last_claim_error' => $message,
+            'repair_available_at' => TaskRepairPolicy::repairAvailableAtAfterFailure($task, $failedAt),
         ])->save();
 
         return $message;
@@ -39,6 +42,7 @@ final class TaskBackendCapabilities
         $task->forceFill([
             'last_claim_failed_at' => null,
             'last_claim_error' => null,
+            'repair_available_at' => null,
         ])->save();
     }
 

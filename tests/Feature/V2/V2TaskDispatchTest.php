@@ -123,6 +123,11 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertNotNull($task->last_dispatch_attempt_at);
         $this->assertNull($task->last_dispatched_at);
         $this->assertSame('Queue transport unavailable.', $task->last_dispatch_error);
+        $this->assertNotNull($task->repair_available_at);
+        $this->assertSame(
+            $task->last_dispatch_attempt_at?->toJSON(),
+            $task->repair_available_at?->toJSON(),
+        );
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -192,6 +197,11 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertNotNull($task->last_dispatch_attempt_at);
         $this->assertNull($task->last_dispatched_at);
         $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_dispatch_error);
+        $this->assertNotNull($task->repair_available_at);
+        $this->assertSame(
+            $task->last_dispatch_attempt_at?->toJSON(),
+            $task->repair_available_at?->toJSON(),
+        );
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -235,6 +245,8 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertNull($task->lease_expires_at);
         $this->assertNotNull($task->last_claim_failed_at);
         $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_claim_error);
+        $this->assertNotNull($task->repair_available_at);
+        $this->assertTrue($task->repair_available_at->gt($task->last_claim_failed_at));
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -248,9 +260,13 @@ final class V2TaskDispatchTest extends TestCase
 
         $this->assertSame('workflow_task_claim_failed', $detail['liveness_state']);
         $this->assertTrue($detail['tasks'][0]['claim_failed']);
-        $this->assertSame('claim_failed', $detail['tasks'][0]['transport_state']);
+        $this->assertSame('repair_backoff', $detail['tasks'][0]['transport_state']);
         $this->assertSame($task->last_claim_error, $detail['tasks'][0]['last_claim_error']);
         $this->assertNotNull($detail['tasks'][0]['last_claim_failed_at']);
+        $this->assertSame(
+            $task->repair_available_at?->toJSON(),
+            $detail['tasks'][0]['repair_available_at']?->toJSON(),
+        );
     }
 
     public function testActivityTaskClaimFailureRecordsUnsupportedQueueCapabilityWithoutStartingAttempt(): void
@@ -300,6 +316,7 @@ final class V2TaskDispatchTest extends TestCase
             ->count());
         $this->assertNotNull($task->last_claim_failed_at);
         $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_claim_error);
+        $this->assertNotNull($task->repair_available_at);
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -308,7 +325,7 @@ final class V2TaskDispatchTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
         $this->assertTrue($detail['tasks'][0]['claim_failed']);
-        $this->assertSame('claim_failed', $detail['tasks'][0]['transport_state']);
+        $this->assertSame('repair_backoff', $detail['tasks'][0]['transport_state']);
     }
 
     public function testActivityTaskBridgeClaimFailureRecordsUnsupportedQueueCapabilityWithoutStartingAttempt(): void
@@ -358,6 +375,7 @@ final class V2TaskDispatchTest extends TestCase
             ->count());
         $this->assertNotNull($task->last_claim_failed_at);
         $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_claim_error);
+        $this->assertNotNull($task->repair_available_at);
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -366,7 +384,7 @@ final class V2TaskDispatchTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
         $this->assertTrue($detail['tasks'][0]['claim_failed']);
-        $this->assertSame('claim_failed', $detail['tasks'][0]['transport_state']);
+        $this->assertSame('repair_backoff', $detail['tasks'][0]['transport_state']);
     }
 
     public function testTimerTaskClaimFailureRecordsUnsupportedQueueCapabilityWithoutFiringTimer(): void
@@ -412,6 +430,7 @@ final class V2TaskDispatchTest extends TestCase
             ->count());
         $this->assertNotNull($task->last_claim_failed_at);
         $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_claim_error);
+        $this->assertNotNull($task->repair_available_at);
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -420,7 +439,7 @@ final class V2TaskDispatchTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
         $this->assertTrue($detail['tasks'][0]['claim_failed']);
-        $this->assertSame('claim_failed', $detail['tasks'][0]['transport_state']);
+        $this->assertSame('repair_backoff', $detail['tasks'][0]['transport_state']);
     }
 
     private function createWaitingRun(string $instanceId): WorkflowRun

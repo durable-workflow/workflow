@@ -520,14 +520,25 @@ final class TaskRepairCandidates
                             $available->whereNull('available_at')
                                 ->orWhere('available_at', '<=', $now);
                         })
-                        ->where(static function ($repairable) use ($staleDispatchCutoff): void {
+                        ->where(static function ($repairable) use ($now, $staleDispatchCutoff): void {
                             $repairable
-                                ->where(static function ($dispatchFailed): void {
+                                ->where(static function ($dispatchFailed) use ($now): void {
                                     self::applyDispatchFailed($dispatchFailed);
+                                    self::applyRepairBackoffReady($dispatchFailed, $now);
                                 })
-                                ->orWhere(static function ($claimFailed) use ($staleDispatchCutoff): void {
+                                ->orWhere(static function ($claimFailed) use ($now, $staleDispatchCutoff): void {
                                     self::applyClaimFailed($claimFailed);
-                                    $claimFailed->where('last_claim_failed_at', '<=', $staleDispatchCutoff);
+                                    $claimFailed->where(static function ($claimRepairable) use ($now, $staleDispatchCutoff): void {
+                                        $claimRepairable
+                                            ->where(static function ($backoffReady) use ($now): void {
+                                                $backoffReady->whereNotNull('repair_available_at')
+                                                    ->where('repair_available_at', '<=', $now);
+                                            })
+                                            ->orWhere(static function ($legacyClaimFailure) use ($staleDispatchCutoff): void {
+                                                $legacyClaimFailure->whereNull('repair_available_at')
+                                                    ->where('last_claim_failed_at', '<=', $staleDispatchCutoff);
+                                            });
+                                    });
                                 })
                                 ->orWhere(static function ($dispatchOverdue) use ($staleDispatchCutoff): void {
                                     $dispatchOverdue
@@ -624,6 +635,14 @@ final class TaskRepairCandidates
             ->whereNotNull('last_claim_failed_at')
             ->whereNotNull('last_claim_error')
             ->where('last_claim_error', '!=', '');
+    }
+
+    private static function applyRepairBackoffReady($query, CarbonInterface $now): void
+    {
+        $query->where(static function ($repairBackoff) use ($now): void {
+            $repairBackoff->whereNull('repair_available_at')
+                ->orWhere('repair_available_at', '<=', $now);
+        });
     }
 
     private static function applyClaimHealthy($query): void

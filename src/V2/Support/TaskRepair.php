@@ -54,6 +54,7 @@ final class TaskRepair
 
             $task->forceFill([
                 'repair_count' => $task->repair_count + 1,
+                'repair_available_at' => null,
                 'last_error' => null,
             ])->save();
 
@@ -73,6 +74,7 @@ final class TaskRepair
                 'lease_owner' => null,
                 'lease_expires_at' => null,
                 'repair_count' => $task->repair_count + 1,
+                'repair_available_at' => null,
                 'last_error' => null,
             ])->save();
 

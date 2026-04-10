@@ -758,6 +758,7 @@ final class HistoryExport
             'last_dispatch_error' => $task->last_dispatch_error,
             'last_claim_failed_at' => self::timestamp($task->last_claim_failed_at),
             'last_claim_error' => $task->last_claim_error,
+            'repair_available_at' => self::timestamp($task->repair_available_at),
         ];
     }
 

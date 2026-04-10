@@ -18,6 +18,10 @@ final class TaskRepairPolicy
 
     public const SCAN_STRATEGY = 'scope_fair_round_robin';
 
+    public const FAILURE_BACKOFF_MAX_SECONDS = 60;
+
+    public const FAILURE_BACKOFF_STRATEGY = 'exponential_by_repair_count';
+
     public static function redispatchAfterSeconds(): int
     {
         return self::configuredPositiveInt(
@@ -42,8 +46,23 @@ final class TaskRepairPolicy
         );
     }
 
+    public static function failureBackoffMaxSeconds(): int
+    {
+        return self::configuredPositiveInt(
+            'workflows.v2.task_repair.failure_backoff_max_seconds',
+            self::FAILURE_BACKOFF_MAX_SECONDS,
+        );
+    }
+
     /**
-     * @return array{redispatch_after_seconds: int, loop_throttle_seconds: int, scan_limit: int, scan_strategy: string}
+     * @return array{
+     *     redispatch_after_seconds: int,
+     *     loop_throttle_seconds: int,
+     *     scan_limit: int,
+     *     scan_strategy: string,
+     *     failure_backoff_max_seconds: int,
+     *     failure_backoff_strategy: string
+     * }
      */
     public static function snapshot(): array
     {
@@ -52,7 +71,41 @@ final class TaskRepairPolicy
             'loop_throttle_seconds' => self::loopThrottleSeconds(),
             'scan_limit' => self::scanLimit(),
             'scan_strategy' => self::SCAN_STRATEGY,
+            'failure_backoff_max_seconds' => self::failureBackoffMaxSeconds(),
+            'failure_backoff_strategy' => self::FAILURE_BACKOFF_STRATEGY,
         ];
+    }
+
+    public static function repairAvailableAtAfterFailure(
+        WorkflowTask $task,
+        CarbonInterface $failedAt,
+        bool $immediateFirstFailure = false,
+    ): CarbonInterface {
+        $seconds = self::failureBackoffSeconds($task, $immediateFirstFailure);
+
+        return $failedAt->copy()->addSeconds($seconds);
+    }
+
+    public static function failureBackoffSeconds(
+        WorkflowTask $task,
+        bool $immediateFirstFailure = false,
+    ): int {
+        $repairCount = max(0, (int) $task->repair_count);
+
+        if ($immediateFirstFailure && $repairCount === 0) {
+            return 0;
+        }
+
+        $exponent = max(0, $repairCount - 1);
+        $base = self::redispatchAfterSeconds();
+        $max = self::failureBackoffMaxSeconds();
+        $seconds = $base;
+
+        for ($i = 0; $i < $exponent && $seconds < $max; $i++) {
+            $seconds = min($max, $seconds * 2);
+        }
+
+        return $seconds;
     }
 
     public static function leaseExpired(WorkflowTask $task, ?CarbonInterface $now = null): bool
@@ -78,6 +131,19 @@ final class TaskRepairPolicy
 
         return $task->last_dispatched_at === null
             || $task->last_dispatch_attempt_at->gt($task->last_dispatched_at);
+    }
+
+    public static function dispatchFailedNeedsRedispatch(WorkflowTask $task, ?CarbonInterface $now = null): bool
+    {
+        if (! self::dispatchFailed($task)) {
+            return false;
+        }
+
+        if ($task->repair_available_at !== null) {
+            return $task->repair_available_at->lte($now ?? now());
+        }
+
+        return true;
     }
 
     public static function dispatchOverdue(WorkflowTask $task, ?CarbonInterface $now = null): bool
@@ -126,14 +192,18 @@ final class TaskRepairPolicy
             return false;
         }
 
-        return $task->last_claim_failed_at->lte(
-            ($now ?? now())->copy()->subSeconds(self::redispatchAfterSeconds())
-        );
+        $now ??= now();
+
+        if ($task->repair_available_at !== null) {
+            return $task->repair_available_at->lte($now);
+        }
+
+        return $task->last_claim_failed_at->lte($now->copy()->subSeconds(self::redispatchAfterSeconds()));
     }
 
     public static function readyTaskNeedsRedispatch(WorkflowTask $task, ?CarbonInterface $now = null): bool
     {
-        return self::dispatchFailed($task)
+        return self::dispatchFailedNeedsRedispatch($task, $now)
             || self::claimFailedNeedsRedispatch($task, $now)
             || self::dispatchOverdue($task, $now);
     }
