@@ -646,17 +646,17 @@ final class HistoryTimeline
             'started_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? null
                 : self::timestamp(
-                    $activity?->started_at
-                    ?? self::stringValue($snapshot['started_at'] ?? null)
+                    self::stringValue($snapshot['started_at'] ?? null)
+                    ?? $activity?->started_at
                     ?? ($event->event_type === HistoryEventType::ActivityStarted ? $event->recorded_at : null)
                 ),
             'closed_at' => in_array($event->event_type, [
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
             ], true)
-                ? self::timestamp($activity?->closed_at ?? self::stringValue($snapshot['closed_at'] ?? null))
+                ? self::timestamp(self::stringValue($snapshot['closed_at'] ?? null) ?? $activity?->closed_at)
                 : null,
-            'last_heartbeat_at' => self::timestamp($snapshot['last_heartbeat_at'] ?? null)
+            'last_heartbeat_at' => self::timestamp(self::stringValue($snapshot['last_heartbeat_at'] ?? null))
                 ?? self::timestamp($activity?->last_heartbeat_at),
         ];
     }
@@ -683,21 +683,21 @@ final class HistoryTimeline
         }
 
         return [
-            'id' => $timer?->id ?? $timerId,
-            'sequence' => $timer?->sequence ?? self::intValue($payload['sequence'] ?? null),
+            'id' => $timerId ?? $timer?->id,
+            'sequence' => self::intValue($payload['sequence'] ?? null) ?? $timer?->sequence,
             'status' => match ($event->event_type) {
                 HistoryEventType::TimerScheduled => 'pending',
                 HistoryEventType::TimerFired => 'fired',
                 HistoryEventType::TimerCancelled => 'cancelled',
                 default => $timer?->status?->value,
             },
-            'delay_seconds' => $timer?->delay_seconds ?? self::intValue($payload['delay_seconds'] ?? null),
-            'fire_at' => self::timestamp($timer?->fire_at ?? self::stringValue($payload['fire_at'] ?? null)),
+            'delay_seconds' => self::intValue($payload['delay_seconds'] ?? null) ?? $timer?->delay_seconds,
+            'fire_at' => self::timestamp(self::stringValue($payload['fire_at'] ?? null) ?? $timer?->fire_at),
             'fired_at' => $event->event_type === HistoryEventType::TimerScheduled
                 ? null
-                : self::timestamp($timer?->fired_at ?? self::stringValue($payload['fired_at'] ?? null)),
+                : self::timestamp(self::stringValue($payload['fired_at'] ?? null) ?? $timer?->fired_at),
             'cancelled_at' => $event->event_type === HistoryEventType::TimerCancelled
-                ? self::timestamp(self::stringValue($payload['cancelled_at'] ?? null))
+                ? self::timestamp(self::stringValue($payload['cancelled_at'] ?? null) ?? $timer?->cancelled_at)
                 : null,
         ];
     }

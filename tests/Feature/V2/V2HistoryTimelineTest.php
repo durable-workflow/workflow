@@ -553,6 +553,136 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame($originalTaskAttemptCount, $activityCompleted['task']['attempt_count']);
     }
 
+    public function testTimelineKeepsActivitySnapshotsWhenExecutionRowDrifts(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'timeline-activity-snapshot-drift');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        /** @var ActivityExecution $activity */
+        $activity = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        $originalTimeline = collect(HistoryTimeline::forRun($run));
+        $originalStarted = $originalTimeline->firstWhere('type', 'ActivityStarted');
+        $originalCompleted = $originalTimeline->firstWhere('type', 'ActivityCompleted');
+
+        $this->assertIsArray($originalStarted);
+        $this->assertIsArray($originalCompleted);
+
+        $originalAttemptId = $originalStarted['activity']['attempt_id'];
+        $originalStartedAt = $originalStarted['activity']['started_at'];
+        $originalClosedAt = $originalCompleted['activity']['closed_at'];
+
+        $activity->forceFill([
+            'status' => 'failed',
+            'attempt_count' => 99,
+            'current_attempt_id' => '01JTIMELINEDRIFTATTEMPT001',
+            'started_at' => now()->addDay(),
+            'closed_at' => now()->addDays(2),
+            'last_heartbeat_at' => now()->addDays(3),
+        ])->save();
+
+        $timeline = collect(HistoryTimeline::forRun($run->fresh()));
+        $started = $timeline->firstWhere('type', 'ActivityStarted');
+        $completed = $timeline->firstWhere('type', 'ActivityCompleted');
+
+        $this->assertIsArray($started);
+        $this->assertIsArray($completed);
+        $this->assertSame('running', $started['activity_status']);
+        $this->assertSame('running', $started['activity']['status']);
+        $this->assertSame($originalAttemptId, $started['activity']['attempt_id']);
+        $this->assertSame(1, $started['activity']['attempt_count']);
+        $this->assertSame($originalStartedAt, $started['activity']['started_at']);
+        $this->assertNull($started['activity']['closed_at']);
+        $this->assertSame('completed', $completed['activity_status']);
+        $this->assertSame('completed', $completed['activity']['status']);
+        $this->assertSame($originalAttemptId, $completed['activity']['attempt_id']);
+        $this->assertSame(1, $completed['activity']['attempt_count']);
+        $this->assertSame($originalClosedAt, $completed['activity']['closed_at']);
+    }
+
+    public function testTimelineKeepsTimerSnapshotsWhenTimerRowDrifts(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'timeline-timer-snapshot-drift');
+        $workflow->start(5);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Timer->value)
+            ->firstOrFail();
+
+        if ($timerTask->status === TaskStatus::Ready) {
+            $timerTask->forceFill([
+                'available_at' => now()
+                    ->subSecond(),
+            ])->save();
+
+            $this->drainReadyTasks();
+        }
+
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        $originalTimeline = collect(HistoryTimeline::forRun($run));
+        $originalScheduled = $originalTimeline->firstWhere('type', 'TimerScheduled');
+        $originalFired = $originalTimeline->firstWhere('type', 'TimerFired');
+
+        $this->assertIsArray($originalScheduled);
+        $this->assertIsArray($originalFired);
+
+        $originalFireAt = $originalScheduled['timer']['fire_at'];
+        $originalFiredAt = $originalFired['timer']['fired_at'];
+
+        $timer->forceFill([
+            'sequence' => 99,
+            'delay_seconds' => 86400,
+            'fire_at' => now()->addDay(),
+            'fired_at' => now()->addDays(2),
+        ])->save();
+
+        $timeline = collect(HistoryTimeline::forRun($run->fresh()));
+        $scheduled = $timeline->firstWhere('type', 'TimerScheduled');
+        $fired = $timeline->firstWhere('type', 'TimerFired');
+
+        $this->assertIsArray($scheduled);
+        $this->assertIsArray($fired);
+        $this->assertSame(1, $scheduled['timer']['sequence']);
+        $this->assertSame(5, $scheduled['delay_seconds']);
+        $this->assertSame(5, $scheduled['timer']['delay_seconds']);
+        $this->assertSame($originalFireAt, $scheduled['timer']['fire_at']);
+        $this->assertNull($scheduled['timer']['fired_at']);
+        $this->assertSame(1, $fired['timer']['sequence']);
+        $this->assertSame(5, $fired['delay_seconds']);
+        $this->assertSame(5, $fired['timer']['delay_seconds']);
+        $this->assertSame($originalFireAt, $fired['timer']['fire_at']);
+        $this->assertSame($originalFiredAt, $fired['timer']['fired_at']);
+    }
+
     public function testTimelineIncludesTypedChildWorkflowEntriesForCompletedParentRun(): void
     {
         $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'timeline-child');
