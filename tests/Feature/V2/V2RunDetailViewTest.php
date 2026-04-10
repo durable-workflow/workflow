@@ -71,8 +71,13 @@ final class V2RunDetailViewTest extends TestCase
         /** @var OperatorObservabilityRepository $repository */
         $repository = app(OperatorObservabilityRepository::class);
 
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
         $detail = $repository->runDetail($run->fresh());
         $export = $repository->runHistoryExport($run->fresh(), $exportedAt);
+        $dashboard = $repository->dashboardSummary($exportedAt);
         $metrics = $repository->metrics($exportedAt);
 
         $this->assertSame('operator-observability-contract', $detail['instance_id']);
@@ -80,6 +85,8 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('durable-workflow.v2.history-export', $export['schema']);
         $this->assertSame($run->id, $export['workflow']['run_id']);
         $this->assertSame($exportedAt->toJSON(), $export['exported_at']);
+        $this->assertSame(1, $dashboard['flows']);
+        $this->assertSame($exportedAt->toJSON(), $dashboard['operator_metrics']['generated_at']);
         $this->assertSame($exportedAt->toJSON(), $metrics['generated_at']);
         $this->assertArrayHasKey('runs', $metrics);
     }

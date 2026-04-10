@@ -33,6 +33,14 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     /**
      * @return array<string, mixed>
      */
+    public function dashboardSummary(?CarbonInterface $now = null): array
+    {
+        return OperatorDashboardSummary::snapshot($now);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function metrics(?CarbonInterface $now = null): array
     {
         return OperatorMetrics::snapshot($now);
