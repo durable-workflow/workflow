@@ -42,7 +42,14 @@ final class RunSummaryProjector
             ? null
             : self::openUpdateWait($run);
 
-        $openConditionWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || ($nextTask?->task_type === TaskType::Workflow)
+        $openSignalApplicationWait = $isTerminal
+            || $openActivity !== null
+            || $openUpdateWait !== null
+            || $nextTask !== null
+            ? null
+            : self::openSignalApplicationWait($run);
+
+        $openConditionWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null || ($nextTask?->task_type === TaskType::Workflow)
             ? null
             : self::openConditionWait($run);
 
@@ -55,13 +62,14 @@ final class RunSummaryProjector
                         && ($timer['id'] ?? null) !== ($openConditionWait['timer_id'] ?? null)
                 );
 
-        $openChildWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
+        $openChildWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
             ? null
             : self::openChildWait($run);
 
         $openSignalWait = $isTerminal
             || $openActivity !== null
             || $openUpdateWait !== null
+            || $openSignalApplicationWait !== null
             || $openConditionWait !== null
             || $openTimer !== null
             || $nextTask !== null
@@ -92,6 +100,13 @@ final class RunSummaryProjector
             $openWaitId = $openUpdateWait['id'];
             $resumeSourceKind = $openUpdateWait['resume_source_kind'];
             $resumeSourceId = $openUpdateWait['resume_source_id'];
+        } elseif ($openSignalApplicationWait !== null) {
+            $waitKind = 'signal';
+            $waitReason = sprintf('Waiting to apply signal %s', $openSignalApplicationWait['name']);
+            $waitStartedAt = $openSignalApplicationWait['opened_at'];
+            $openWaitId = $openSignalApplicationWait['id'];
+            $resumeSourceKind = $openSignalApplicationWait['resume_source_kind'];
+            $resumeSourceId = $openSignalApplicationWait['resume_source_id'];
         } elseif ($openTimer !== null) {
             $waitKind = 'timer';
             $waitReason = 'Waiting for timer';
@@ -150,6 +165,7 @@ final class RunSummaryProjector
             $isTerminal,
             $openActivity,
             $openUpdateWait,
+            $openSignalApplicationWait,
             $openConditionWait,
             $openTimer,
             $nextTask,
@@ -285,6 +301,7 @@ final class RunSummaryProjector
         bool $isTerminal,
         ?array $openActivity,
         ?array $openUpdateWait,
+        ?array $openSignalApplicationWait,
         ?array $openConditionWait,
         ?array $openTimer,
         ?WorkflowTask $nextTask,
@@ -330,6 +347,16 @@ final class RunSummaryProjector
                 sprintf(
                     'Accepted update %s is open without an open workflow task.',
                     $openUpdateWait['name'],
+                ),
+            ];
+        }
+
+        if ($openSignalApplicationWait !== null) {
+            return [
+                'repair_needed',
+                sprintf(
+                    'Accepted signal %s is received without an open workflow task.',
+                    $openSignalApplicationWait['name'],
                 ),
             ];
         }
@@ -401,6 +428,68 @@ final class RunSummaryProjector
         }
 
         return ['repair_needed', 'Run is non-terminal but has no durable next-resume source.'];
+    }
+
+    /**
+     * @return array{
+     *     id: string,
+     *     name: string,
+     *     opened_at: \Carbon\CarbonInterface|null,
+     *     signal_id: string|null,
+     *     command_id: string|null,
+     *     signal_wait_id: string|null,
+     *     resume_source_kind: string,
+     *     resume_source_id: string|null
+     * }|null
+     */
+    private static function openSignalApplicationWait(WorkflowRun $run): ?array
+    {
+        $receivedSignals = array_values(array_filter(
+            RunSignalView::forRun($run),
+            static fn (array $signal): bool => ($signal['status'] ?? null) === 'received',
+        ));
+
+        if ($receivedSignals === []) {
+            return null;
+        }
+
+        usort($receivedSignals, static function (array $left, array $right): int {
+            $leftSequence = self::intValue($left['command_sequence'] ?? null) ?? PHP_INT_MAX;
+            $rightSequence = self::intValue($right['command_sequence'] ?? null) ?? PHP_INT_MAX;
+
+            if ($leftSequence !== $rightSequence) {
+                return $leftSequence <=> $rightSequence;
+            }
+
+            $leftReceivedAt = self::timestamp($left['received_at'] ?? null)?->getTimestampMs() ?? PHP_INT_MAX;
+            $rightReceivedAt = self::timestamp($right['received_at'] ?? null)?->getTimestampMs() ?? PHP_INT_MAX;
+
+            if ($leftReceivedAt !== $rightReceivedAt) {
+                return $leftReceivedAt <=> $rightReceivedAt;
+            }
+
+            return (string) ($left['id'] ?? $left['command_id'] ?? $left['signal_wait_id'] ?? '')
+                <=> (string) ($right['id'] ?? $right['command_id'] ?? $right['signal_wait_id'] ?? '');
+        });
+
+        $signal = $receivedSignals[0];
+        $signalId = self::nonEmptyString($signal['id'] ?? null);
+        $commandId = self::nonEmptyString($signal['command_id'] ?? null);
+        $signalWaitId = self::nonEmptyString($signal['signal_wait_id'] ?? null);
+        $resumeSourceKind = $signalId === null ? 'workflow_command' : 'workflow_signal';
+        $resumeSourceId = $signalId ?? $commandId;
+        $waitIdentity = $signalId ?? $commandId ?? $signalWaitId ?? 'unknown';
+
+        return [
+            'id' => sprintf('signal-application:%s', $waitIdentity),
+            'name' => self::nonEmptyString($signal['name'] ?? null) ?? 'signal',
+            'opened_at' => self::timestamp($signal['received_at'] ?? null),
+            'signal_id' => $signalId,
+            'command_id' => $commandId,
+            'signal_wait_id' => $signalWaitId,
+            'resume_source_kind' => $resumeSourceKind,
+            'resume_source_id' => $resumeSourceId,
+        ];
     }
 
     /**
@@ -721,6 +810,17 @@ final class RunSummaryProjector
     {
         return is_string($value) && $value !== ''
             ? $value
+            : null;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        return is_string($value) && is_numeric($value)
+            ? (int) $value
             : null;
     }
 }

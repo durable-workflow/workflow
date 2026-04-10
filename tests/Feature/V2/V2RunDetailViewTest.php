@@ -36,6 +36,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\ActivitySnapshot;
@@ -588,19 +589,26 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewMarksReceivedSignalWithoutWorkflowTaskAsRepairNeeded(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-repair');
         $workflow->start();
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+        $this->drainReadyTasks();
 
-        Queue::fake();
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
         $signal = $workflow->signal('name-provided', 'Taylor');
 
         $this->assertSame('signal_received', $signal->outcome());
+
+        /** @var WorkflowSignal $signalRecord */
+        $signalRecord = WorkflowSignal::query()
+            ->where('workflow_command_id', $signal->commandId())
+            ->sole();
 
         WorkflowTask::query()
             ->where('workflow_run_id', $runId)
@@ -617,10 +625,13 @@ final class V2RunDetailViewTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary']));
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
 
-        $this->assertNull($detail['wait_kind']);
-        $this->assertNull($detail['wait_reason']);
+        $this->assertSame('signal', $detail['wait_kind']);
+        $this->assertSame('Waiting to apply signal name-provided', $detail['wait_reason']);
+        $this->assertSame('signal-application:' . $signalRecord->id, $detail['open_wait_id']);
+        $this->assertSame('workflow_signal', $detail['resume_source_kind']);
+        $this->assertSame($signalRecord->id, $detail['resume_source_id']);
         $this->assertSame('repair_needed', $detail['liveness_state']);
-        $this->assertSame('Run is non-terminal but has no durable next-resume source.', $detail['liveness_reason']);
+        $this->assertSame('Accepted signal name-provided is received without an open workflow task.', $detail['liveness_reason']);
         $this->assertTrue($detail['can_repair']);
         $this->assertSame('resolved', $signalWait['status']);
         $this->assertSame('received', $signalWait['source_status']);

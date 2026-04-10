@@ -3768,8 +3768,12 @@ final class V2WorkflowTest extends TestCase
 
     public function testRepairRecreatesMissingWorkflowTaskAfterSignalIsReceived(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'repair-signal-received');
         $workflow->start();
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
@@ -3777,12 +3781,15 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertNotNull($runId);
 
-        Queue::fake();
-
         $signal = $workflow->signal('name-provided', 'Taylor');
 
         $this->assertTrue($signal->accepted());
         $this->assertSame('signal_received', $signal->outcome());
+
+        /** @var WorkflowSignal $signalRecord */
+        $signalRecord = WorkflowSignal::query()
+            ->where('workflow_command_id', $signal->commandId())
+            ->sole();
 
         WorkflowTask::query()
             ->where('workflow_run_id', $runId)
@@ -3797,10 +3804,13 @@ final class V2WorkflowTest extends TestCase
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
-        $this->assertNull($summary->wait_kind);
-        $this->assertNull($summary->wait_reason);
+        $this->assertSame('signal', $summary->wait_kind);
+        $this->assertSame('Waiting to apply signal name-provided', $summary->wait_reason);
+        $this->assertSame('signal-application:' . $signalRecord->id, $summary->open_wait_id);
+        $this->assertSame('workflow_signal', $summary->resume_source_kind);
+        $this->assertSame($signalRecord->id, $summary->resume_source_id);
         $this->assertSame('repair_needed', $summary->liveness_state);
-        $this->assertSame('Run is non-terminal but has no durable next-resume source.', $summary->liveness_reason);
+        $this->assertSame('Accepted signal name-provided is received without an open workflow task.', $summary->liveness_reason);
 
         $result = WorkflowStub::loadRun($runId)->attemptRepair();
 
@@ -3814,7 +3824,13 @@ final class V2WorkflowTest extends TestCase
             ->where('status', TaskStatus::Ready->value)
             ->sole();
 
-        $this->assertSame([], $task->payload);
+        $this->assertSame([
+            'workflow_wait_kind' => 'signal',
+            'open_wait_id' => 'signal-application:' . $signalRecord->id,
+            'resume_source_kind' => 'workflow_signal',
+            'resume_source_id' => $signalRecord->id,
+            'workflow_signal_id' => $signalRecord->id,
+        ], $task->payload);
         $this->assertSame(1, $task->repair_count);
 
         Queue::assertPushed(
@@ -3828,6 +3844,14 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
         $this->assertSame($task->id, $updatedSummary->next_task_id);
         $this->assertSame('workflow', $updatedSummary->next_task_type);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+        $taskDetail = collect($detail['tasks'])->firstWhere('id', $task->id);
+
+        $this->assertIsArray($taskDetail);
+        $this->assertSame('Workflow task ready to apply accepted signal.', $taskDetail['summary']);
+        $this->assertSame('signal', $taskDetail['workflow_wait_kind']);
+        $this->assertSame($signalRecord->id, $taskDetail['workflow_signal_id']);
     }
 
     public function testTaskWatchdogRedispatchesReadyWorkflowTaskWhenDispatchIsOverdue(): void

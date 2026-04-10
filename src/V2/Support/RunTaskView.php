@@ -116,6 +116,8 @@ final class RunTaskView
                         'workflow_resume_source_kind' => $workflowResumeSourceKind,
                         'workflow_resume_source_id' => $workflowResumeSourceId,
                         'workflow_update_id' => self::stringValue($task->payload['workflow_update_id'] ?? null),
+                        'workflow_signal_id' => self::stringValue($task->payload['workflow_signal_id'] ?? null),
+                        'workflow_command_id' => self::stringValue($task->payload['workflow_command_id'] ?? null),
                         'created_at' => $task->created_at,
                         'updated_at' => $task->updated_at,
                     ];
@@ -226,12 +228,16 @@ final class RunTaskView
 
         return match ($task->task_type) {
             TaskType::Workflow => match ($task->status) {
-                TaskStatus::Ready => self::stringValue($task->payload['workflow_wait_kind'] ?? null) === 'update'
-                    ? 'Workflow task ready to apply accepted update.'
-                    : 'Workflow task ready to resume the selected run.',
-                TaskStatus::Leased => self::stringValue($task->payload['workflow_wait_kind'] ?? null) === 'update'
-                    ? 'Workflow task leased to apply accepted update.'
-                    : 'Workflow task leased to a worker.',
+                TaskStatus::Ready => match (self::stringValue($task->payload['workflow_wait_kind'] ?? null)) {
+                    'update' => 'Workflow task ready to apply accepted update.',
+                    'signal' => 'Workflow task ready to apply accepted signal.',
+                    default => 'Workflow task ready to resume the selected run.',
+                },
+                TaskStatus::Leased => match (self::stringValue($task->payload['workflow_wait_kind'] ?? null)) {
+                    'update' => 'Workflow task leased to apply accepted update.',
+                    'signal' => 'Workflow task leased to apply accepted signal.',
+                    default => 'Workflow task leased to a worker.',
+                },
                 TaskStatus::Completed => 'Workflow task completed.',
                 TaskStatus::Cancelled => 'Workflow task cancelled.',
                 TaskStatus::Failed => 'Workflow task failed.',

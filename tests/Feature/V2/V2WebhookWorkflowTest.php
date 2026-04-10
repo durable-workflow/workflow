@@ -23,6 +23,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -1424,6 +1425,107 @@ final class V2WebhookWorkflowTest extends TestCase
             'status' => 'completed',
             'outcome' => 'update_completed',
             'workflow_sequence' => 1,
+        ]);
+    }
+
+    public function testRepairWebhookRecreatesMissingWorkflowTaskForAcceptedSignalWebhook(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-repair-signal-webhook');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $accepted = $this->postJson('/webhooks/instances/order-repair-signal-webhook/signals/name-provided', [
+            'arguments' => ['Taylor'],
+        ]);
+
+        $accepted
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', 'signal_received')
+            ->assertJsonPath('command_source', 'webhook');
+
+        $runId = $workflow->runId();
+        $commandId = $accepted->json('command_id');
+
+        $this->assertIsString($runId);
+        $this->assertIsString($commandId);
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $commandId)
+            ->sole();
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('signal', $summary->wait_kind);
+        $this->assertSame('Waiting to apply signal name-provided', $summary->wait_reason);
+        $this->assertSame('signal-application:' . $signal->id, $summary->open_wait_id);
+        $this->assertSame('workflow_signal', $summary->resume_source_kind);
+        $this->assertSame($signal->id, $summary->resume_source_id);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+
+        $repair = $this->postJson('/webhooks/instances/order-repair-signal-webhook/repair');
+
+        $repair
+            ->assertOk()
+            ->assertJsonPath('outcome', 'repair_dispatched')
+            ->assertJsonPath('workflow_id', 'order-repair-signal-webhook')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('command_source', 'webhook')
+            ->assertJsonPath('rejection_reason', null);
+
+        /** @var WorkflowTask $repairedTask */
+        $repairedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame(1, $repairedTask->repair_count);
+        $this->assertSame([
+            'workflow_wait_kind' => 'signal',
+            'open_wait_id' => 'signal-application:' . $signal->id,
+            'resume_source_kind' => 'workflow_signal',
+            'resume_source_id' => $signal->id,
+            'workflow_signal_id' => $signal->id,
+        ], $repairedTask->payload);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $repairedTask->id
+        );
+
+        /** @var WorkflowRun $detailRun */
+        $detailRun = WorkflowRun::query()->findOrFail($runId);
+        $detail = RunDetailView::forRun($detailRun);
+        $taskDetail = collect($detail['tasks'])->firstWhere('id', $repairedTask->id);
+
+        $this->assertIsArray($taskDetail);
+        $this->assertSame('Workflow task ready to apply accepted signal.', $taskDetail['summary']);
+        $this->assertSame('signal', $taskDetail['workflow_wait_kind']);
+        $this->assertSame($signal->id, $taskDetail['workflow_signal_id']);
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->assertDatabaseHas('workflow_signal_records', [
+            'id' => $signal->id,
+            'status' => 'applied',
         ]);
     }
 
