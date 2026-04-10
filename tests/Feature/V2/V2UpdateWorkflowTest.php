@@ -1218,6 +1218,89 @@ final class V2UpdateWorkflowTest extends TestCase
         ], $workflow->refresh()->currentState());
     }
 
+    public function testUpdateFailureDetailUsesUpdateIdHistoryWhenCommandRelationIsMissing(): void
+    {
+        config()->set('queue.default', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-failure-missing-command');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $result = $workflow->submitUpdate('explode', 'boom');
+
+        $this->assertTrue($result->accepted());
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        /** @var WorkflowHistoryEvent $completed */
+        $completed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateCompleted')
+            ->firstOrFail();
+
+        $updateId = $completed->payload['update_id'] ?? null;
+        $failureId = $completed->payload['failure_id'] ?? null;
+
+        $this->assertIsString($updateId);
+        $this->assertIsString($failureId);
+
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->whereIn('event_type', ['UpdateAccepted', 'UpdateApplied', 'UpdateCompleted'])
+            ->get()
+            ->each(static function (WorkflowHistoryEvent $event): void {
+                $payload = $event->payload;
+
+                unset($payload['workflow_command_id'], $payload['command']);
+
+                $event->forceFill([
+                    'workflow_command_id' => null,
+                    'payload' => $payload,
+                ])->save();
+            });
+
+        WorkflowUpdate::query()
+            ->where('id', $updateId)
+            ->update([
+                'status' => 'completed',
+                'outcome' => 'update_completed',
+                'failure_id' => null,
+                'failure_message' => 'corrupted update row',
+                'result' => Serializer::serialize(['wrong' => true]),
+                'closed_at' => now(),
+            ]);
+
+        WorkflowFailure::query()
+            ->where('id', $failureId)
+            ->update([
+                'exception_class' => \RuntimeException::class,
+                'message' => 'corrupted failure row',
+            ]);
+
+        WorkflowCommand::query()
+            ->where('id', $result->commandId())
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $update = $detail['updates'][0];
+
+        $this->assertSame($updateId, $update['id']);
+        $this->assertSame($result->commandId(), $update['command_id']);
+        $this->assertSame('explode', $update['name']);
+        $this->assertSame('failed', $update['status']);
+        $this->assertSame('update_failed', $update['outcome']);
+        $this->assertSame($failureId, $update['failure_id']);
+        $this->assertSame('boom', $update['failure_message']);
+        $this->assertFalse($update['result_available']);
+        $this->assertNull($update['result']);
+    }
+
     public function testAttemptUpdateRejectsUnknownUpdateTarget(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-unknown');
