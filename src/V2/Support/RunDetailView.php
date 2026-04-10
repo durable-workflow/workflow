@@ -285,6 +285,10 @@ final class RunDetailView
                         'code' => $failure['trace_preview'] ?? null,
                         'exception' => serialize(self::exceptionPayload($failure)),
                         'exception_type' => $failure['exception_type'] ?? null,
+                        'exception_class' => $failure['exception_class'] ?? null,
+                        'exception_resolved_class' => $failure['exception_resolved_class'] ?? null,
+                        'exception_resolution_source' => $failure['exception_resolution_source'] ?? null,
+                        'exception_resolution_error' => $failure['exception_resolution_error'] ?? null,
                         'class' => ($sourceId === null ? null : ($activityClasses[$sourceId] ?? null))
                             ?? ($failure['exception_class'] ?? null),
                         'created_at' => $failure['created_at'] ?? null,

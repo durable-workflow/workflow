@@ -75,17 +75,44 @@ final class TypeRegistry
      */
     public static function resolveThrowableClass(string $storedClass, ?string $exceptionType): ?string
     {
+        $resolution = self::resolveThrowableClassWithSource($storedClass, $exceptionType);
+
+        return $resolution['class'] ?? null;
+    }
+
+    /**
+     * @return array{class: class-string<Throwable>, source: 'exception_type'|'class_alias'|'recorded_class'}|null
+     */
+    public static function resolveThrowableClassWithSource(string $storedClass, ?string $exceptionType): ?array
+    {
         if (is_string($exceptionType) && $exceptionType !== '') {
             $configuredClass = self::configuredClassForType($exceptionType, 'exceptions', Throwable::class);
 
             if ($configuredClass !== null) {
-                return $configuredClass;
+                return [
+                    'class' => $configuredClass,
+                    'source' => 'exception_type',
+                ];
             }
         }
 
-        return self::isValidClass($storedClass, Throwable::class)
-            ? $storedClass
-            : null;
+        $aliasedClass = self::configuredThrowableClassAlias($storedClass);
+
+        if ($aliasedClass !== null) {
+            return [
+                'class' => $aliasedClass,
+                'source' => 'class_alias',
+            ];
+        }
+
+        if (self::isValidClass($storedClass, Throwable::class)) {
+            return [
+                'class' => $storedClass,
+                'source' => 'recorded_class',
+            ];
+        }
+
+        return null;
     }
 
     private static function configuredTypeForClass(string $class): ?string
@@ -131,6 +158,36 @@ final class TypeRegistry
                 $type,
                 $mappedClass,
                 $expectedBaseClass,
+            ));
+        }
+
+        return $mappedClass;
+    }
+
+    /**
+     * @return class-string<Throwable>|null
+     */
+    private static function configuredThrowableClassAlias(string $storedClass): ?string
+    {
+        /** @var array<string, class-string>|null $aliases */
+        $aliases = config('workflows.v2.types.exception_class_aliases');
+
+        if (! is_array($aliases)) {
+            return null;
+        }
+
+        $mappedClass = $aliases[$storedClass] ?? null;
+
+        if (! is_string($mappedClass) || $mappedClass === '') {
+            return null;
+        }
+
+        if (! self::isValidClass($mappedClass, Throwable::class)) {
+            throw new LogicException(sprintf(
+                'Configured exception class alias [%s] points to [%s], which is not a loadable %s.',
+                $storedClass,
+                $mappedClass,
+                Throwable::class,
             ));
         }
 

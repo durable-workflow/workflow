@@ -165,6 +165,9 @@ final class HistoryTimeline
             'failure_id' => $failureMetadata['id'] ?? null,
             'exception_type' => $failureMetadata['exception_type'] ?? null,
             'exception_class' => $failureMetadata['exception_class'] ?? null,
+            'exception_resolved_class' => $failureMetadata['exception_resolved_class'] ?? null,
+            'exception_resolution_source' => $failureMetadata['exception_resolution_source'] ?? null,
+            'exception_resolution_error' => $failureMetadata['exception_resolution_error'] ?? null,
             'message' => $failureMetadata['message'] ?? null,
             'closed_reason' => $payload['closed_reason'] ?? null,
             'command' => $commandMetadata,
@@ -735,6 +738,9 @@ final class HistoryTimeline
                 ?? self::stringValue($failure['exception_type'] ?? null),
             'exception_class' => self::stringValue($payload['exception_class'] ?? null)
                 ?? self::stringValue($failure['exception_class'] ?? null),
+            'exception_resolved_class' => self::stringValue($failure['exception_resolved_class'] ?? null),
+            'exception_resolution_source' => self::stringValue($failure['exception_resolution_source'] ?? null),
+            'exception_resolution_error' => self::stringValue($failure['exception_resolution_error'] ?? null),
             'message' => self::stringValue($payload['message'] ?? null)
                 ?? self::stringValue($failure['message'] ?? null),
             'file' => self::stringValue($failure['file'] ?? null),

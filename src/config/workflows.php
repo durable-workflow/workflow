@@ -39,6 +39,9 @@ return [
             'exceptions' => [
                 // 'billing.invoice-declined' => App\Exceptions\InvoiceDeclined::class,
             ],
+            'exception_class_aliases' => [
+                // App\Exceptions\LegacyInvoiceDeclined::class => App\Exceptions\InvoiceDeclined::class,
+            ],
         ],
         'compatibility' => [
             'current' => env('WORKFLOW_V2_CURRENT_COMPATIBILITY'),

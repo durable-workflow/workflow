@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowFailure;
@@ -130,6 +131,8 @@ final class FailureSnapshots
      */
     private static function snapshotFromFailure(WorkflowFailure $failure): array
     {
+        $resolution = self::exceptionResolution($failure->exception_class, null);
+
         return [
             'id' => $failure->id,
             'source_kind' => $failure->source_kind,
@@ -138,6 +141,9 @@ final class FailureSnapshots
             'handled' => (bool) $failure->handled,
             'exception_type' => null,
             'exception_class' => $failure->exception_class,
+            'exception_resolved_class' => $resolution['class'],
+            'exception_resolution_source' => $resolution['source'],
+            'exception_resolution_error' => $resolution['error'],
             'message' => $failure->message,
             'code' => 0,
             'file' => $failure->file,
@@ -183,6 +189,11 @@ final class FailureSnapshots
             $fallbackCode,
             $failure,
         );
+        $exceptionType = self::stringValue($exceptionPayload['type'] ?? null)
+            ?? self::stringValue($event->payload['exception_type'] ?? null);
+        $exceptionClass = self::stringValue($exceptionPayload['__constructor'] ?? null)
+            ?? $failure?->exception_class;
+        $resolution = self::exceptionResolution($exceptionClass, $exceptionType);
 
         return [
             'id' => $failure?->id ?? $failureId,
@@ -195,10 +206,11 @@ final class FailureSnapshots
             'propagation_kind' => $failure?->propagation_kind
                 ?? self::propagationKindForEvent($event),
             'handled' => (bool) ($failure?->handled ?? false),
-            'exception_type' => self::stringValue($exceptionPayload['type'] ?? null)
-                ?? self::stringValue($event->payload['exception_type'] ?? null),
-            'exception_class' => self::stringValue($exceptionPayload['__constructor'] ?? null)
-                ?? $failure?->exception_class,
+            'exception_type' => $exceptionType,
+            'exception_class' => $exceptionClass,
+            'exception_resolved_class' => $resolution['class'],
+            'exception_resolution_source' => $resolution['source'],
+            'exception_resolution_error' => $resolution['error'],
             'message' => self::stringValue($exceptionPayload['message'] ?? null)
                 ?? $failure?->message,
             'code' => self::intValue($exceptionPayload['code'] ?? null) ?? 0,
@@ -326,6 +338,44 @@ final class FailureSnapshots
         return is_int($value)
             ? $value
             : null;
+    }
+
+    /**
+     * @return array{class: ?string, source: 'exception_type'|'class_alias'|'recorded_class'|'unresolved'|'misconfigured', error: ?string}
+     */
+    private static function exceptionResolution(?string $recordedClass, ?string $exceptionType): array
+    {
+        if ($recordedClass === null) {
+            return [
+                'class' => null,
+                'source' => 'unresolved',
+                'error' => null,
+            ];
+        }
+
+        try {
+            $resolution = TypeRegistry::resolveThrowableClassWithSource($recordedClass, $exceptionType);
+        } catch (Throwable $throwable) {
+            return [
+                'class' => null,
+                'source' => 'misconfigured',
+                'error' => $throwable->getMessage(),
+            ];
+        }
+
+        if ($resolution === null) {
+            return [
+                'class' => null,
+                'source' => 'unresolved',
+                'error' => null,
+            ];
+        }
+
+        return [
+            'class' => $resolution['class'],
+            'source' => $resolution['source'],
+            'error' => null,
+        ];
     }
 
     private static function timestampToMilliseconds(mixed $timestamp): int
