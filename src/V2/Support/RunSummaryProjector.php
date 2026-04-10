@@ -38,11 +38,15 @@ final class RunSummaryProjector
             ? null
             : self::nextOpenTask($run);
 
-        $openConditionWait = $isTerminal || $openActivity !== null || ($nextTask?->task_type === TaskType::Workflow)
+        $openUpdateWait = $isTerminal || $openActivity !== null
+            ? null
+            : self::openUpdateWait($run);
+
+        $openConditionWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || ($nextTask?->task_type === TaskType::Workflow)
             ? null
             : self::openConditionWait($run);
 
-        $openTimer = $isTerminal
+        $openTimer = $isTerminal || $openUpdateWait !== null
             ? null
             : collect(RunTimerView::timersForRun($run))
                 ->first(
@@ -51,12 +55,13 @@ final class RunSummaryProjector
                         && ($timer['id'] ?? null) !== ($openConditionWait['timer_id'] ?? null)
                 );
 
-        $openChildWait = $isTerminal || $openActivity !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
+        $openChildWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
             ? null
             : self::openChildWait($run);
 
         $openSignalWait = $isTerminal
             || $openActivity !== null
+            || $openUpdateWait !== null
             || $openConditionWait !== null
             || $openTimer !== null
             || $nextTask !== null
@@ -80,6 +85,13 @@ final class RunSummaryProjector
             $openWaitId = sprintf('activity:%s', $openActivity['id']);
             $resumeSourceKind = 'activity_execution';
             $resumeSourceId = $openActivity['id'];
+        } elseif ($openUpdateWait !== null) {
+            $waitKind = 'update';
+            $waitReason = sprintf('Waiting for update %s', $openUpdateWait['name']);
+            $waitStartedAt = $openUpdateWait['opened_at'];
+            $openWaitId = $openUpdateWait['id'];
+            $resumeSourceKind = $openUpdateWait['resume_source_kind'];
+            $resumeSourceId = $openUpdateWait['resume_source_id'];
         } elseif ($openTimer !== null) {
             $waitKind = 'timer';
             $waitReason = 'Waiting for timer';
@@ -137,6 +149,7 @@ final class RunSummaryProjector
             $run,
             $isTerminal,
             $openActivity,
+            $openUpdateWait,
             $openConditionWait,
             $openTimer,
             $nextTask,
@@ -271,6 +284,7 @@ final class RunSummaryProjector
         WorkflowRun $run,
         bool $isTerminal,
         ?array $openActivity,
+        ?array $openUpdateWait,
         ?array $openConditionWait,
         ?array $openTimer,
         ?WorkflowTask $nextTask,
@@ -302,6 +316,20 @@ final class RunSummaryProjector
                     'Activity %s is %s without an open activity task.',
                     $openActivity['id'],
                     $openActivity['status'] ?? ActivityStatus::Pending->value,
+                ),
+            ];
+        }
+
+        if ($openUpdateWait !== null) {
+            if ($nextTask !== null) {
+                return self::taskLiveness($nextTask, $run, 'Update');
+            }
+
+            return [
+                'repair_needed',
+                sprintf(
+                    'Accepted update %s is open without an open workflow task.',
+                    $openUpdateWait['name'],
                 ),
             ];
         }
@@ -510,6 +538,36 @@ final class RunSummaryProjector
     }
 
     /**
+     * @return array{
+     *     id: string,
+     *     name: string,
+     *     opened_at: \Carbon\CarbonInterface|null,
+     *     resume_source_kind: string,
+     *     resume_source_id: string|null
+     * }|null
+     */
+    private static function openUpdateWait(WorkflowRun $run): ?array
+    {
+        foreach (UpdateWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            $name = self::nonEmptyString($wait['target_name'] ?? null) ?? 'update';
+
+            return [
+                'id' => self::nonEmptyString($wait['id'] ?? null) ?? sprintf('update:%s', $name),
+                'name' => $name,
+                'opened_at' => self::timestamp($wait['opened_at'] ?? null),
+                'resume_source_kind' => self::nonEmptyString($wait['resume_source_kind'] ?? null) ?? 'workflow_update',
+                'resume_source_id' => self::nonEmptyString($wait['resume_source_id'] ?? null),
+            ];
+        }
+
+        return null;
+    }
+
+    /**
      * @return array{0: string, 1: string}
      */
     private static function taskLiveness(WorkflowTask $task, WorkflowRun $run, string $label): array
@@ -656,6 +714,13 @@ final class RunSummaryProjector
 
         return is_string($value) && $value !== ''
             ? Carbon::parse($value)
+            : null;
+    }
+
+    private static function nonEmptyString(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
             : null;
     }
 }

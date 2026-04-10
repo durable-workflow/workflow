@@ -25,6 +25,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
 final class V2UpdateWorkflowTest extends TestCase
@@ -270,6 +271,32 @@ final class V2UpdateWorkflowTest extends TestCase
             'outcome' => null,
             'workflow_sequence' => null,
         ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $updateWait = $this->findWait($detail['waits'], 'update', 'approve');
+        $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+
+        $this->assertSame('update', $detail['wait_kind']);
+        $this->assertSame('Waiting for update approve', $detail['wait_reason']);
+        $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
+        $this->assertSame('update:' . $result->updateId(), $detail['open_wait_id']);
+        $this->assertSame('workflow_update', $detail['resume_source_kind']);
+        $this->assertSame($result->updateId(), $detail['resume_source_id']);
+        $this->assertSame(2, $detail['open_wait_count']);
+        $this->assertSame('open', $updateWait['status']);
+        $this->assertSame('accepted', $updateWait['source_status']);
+        $this->assertSame('Waiting for update approve.', $updateWait['summary']);
+        $this->assertSame($result->updateId(), $updateWait['update_id']);
+        $this->assertTrue($updateWait['task_backed']);
+        $this->assertFalse($updateWait['external_only']);
+        $this->assertSame('workflow_update', $updateWait['resume_source_kind']);
+        $this->assertSame($result->updateId(), $updateWait['resume_source_id']);
+        $this->assertSame('workflow', $updateWait['task_type']);
+        $this->assertSame('ready', $updateWait['task_status']);
+        $this->assertSame('open', $signalWait['status']);
+        $this->assertSame('waiting', $signalWait['source_status']);
     }
 
     public function testInspectUpdateCanFollowTimedOutLifecycleUntilItCloses(): void
@@ -318,6 +345,63 @@ final class V2UpdateWorkflowTest extends TestCase
             'events' => ['started', 'approved:yes:inspect-timeout'],
         ], $completed->result());
         $this->assertNotNull($completed->closedAt());
+    }
+
+    public function testAcceptedUpdateWithoutWorkflowTaskMarksTheRunAsRepairNeeded(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-repair-needed');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $update = $workflow->submitUpdate('approve', true, 'repair-test');
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->delete();
+
+        /** @var WorkflowRun $projectedRun */
+        $projectedRun = WorkflowRun::query()->findOrFail($workflow->runId());
+        RunSummaryProjector::project($projectedRun->fresh([
+            'instance',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+        ]));
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $updateWait = $this->findWait($detail['waits'], 'update', 'approve');
+        $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+
+        $this->assertSame('update', $run->summary?->wait_kind);
+        $this->assertSame('repair_needed', $run->summary?->liveness_state);
+        $this->assertSame('update', $detail['wait_kind']);
+        $this->assertSame('repair_needed', $detail['liveness_state']);
+        $this->assertSame('Accepted update approve is open without an open workflow task.', $detail['liveness_reason']);
+        $this->assertTrue($detail['can_repair']);
+        $this->assertNull($detail['repair_blocked_reason']);
+        $this->assertSame('update:' . $update->updateId(), $detail['open_wait_id']);
+        $this->assertSame('workflow_update', $detail['resume_source_kind']);
+        $this->assertSame($update->updateId(), $detail['resume_source_id']);
+        $this->assertSame(2, $detail['open_wait_count']);
+        $this->assertSame('open', $updateWait['status']);
+        $this->assertSame('accepted', $updateWait['source_status']);
+        $this->assertFalse($updateWait['task_backed']);
+        $this->assertSame($update->updateId(), $updateWait['update_id']);
+        $this->assertSame('open', $signalWait['status']);
+        $this->assertSame('waiting', $signalWait['source_status']);
     }
 
     public function testUpdateThrowsHelpfulMessageWhenCompletionWaitTimesOut(): void
@@ -1360,5 +1444,25 @@ final class V2UpdateWorkflowTest extends TestCase
         }
 
         $this->fail('Condition was not met within 5 seconds.');
+    }
+
+    /**
+     * @param list<array<string, mixed>> $waits
+     */
+    private function findWait(array $waits, string $kind, ?string $targetName = null): array
+    {
+        foreach ($waits as $wait) {
+            if (($wait['kind'] ?? null) !== $kind) {
+                continue;
+            }
+
+            if ($targetName !== null && ($wait['target_name'] ?? null) !== $targetName) {
+                continue;
+            }
+
+            return $wait;
+        }
+
+        $this->fail(sprintf('Unable to find %s wait.', $kind));
     }
 }

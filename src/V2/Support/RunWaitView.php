@@ -53,6 +53,7 @@ final class RunWaitView
         }
 
         $waits = array_merge($waits, self::conditionWaits($conditionWaits, $taskByTimerId));
+        $waits = array_merge($waits, UpdateWaits::forRun($run));
 
         foreach (RunTimerView::timersForRun($run) as $timer) {
             if (
