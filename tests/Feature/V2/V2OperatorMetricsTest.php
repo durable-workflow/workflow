@@ -212,6 +212,12 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(4096, $snapshot['history']['max_size_bytes']);
         $this->assertSame(5, $snapshot['history']['event_threshold']);
         $this->assertSame(5000, $snapshot['history']['size_bytes_threshold']);
+        $this->assertSame(4, $snapshot['projections']['run_summaries']['runs']);
+        $this->assertSame(4, $snapshot['projections']['run_summaries']['summaries']);
+        $this->assertSame(0, $snapshot['projections']['run_summaries']['missing']);
+        $this->assertSame(0, $snapshot['projections']['run_summaries']['orphaned']);
+        $this->assertSame(0, $snapshot['projections']['run_summaries']['stale']);
+        $this->assertSame(0, $snapshot['projections']['run_summaries']['needs_rebuild']);
         $this->assertSame('metrics-test', $snapshot['workers']['compatibility_namespace']);
         $this->assertSame('build-a', $snapshot['workers']['required_compatibility']);
         $this->assertSame(2, $snapshot['workers']['active_workers']);
@@ -232,6 +238,33 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame('exponential_by_repair_count', $snapshot['repair_policy']['failure_backoff_strategy']);
         $this->assertFalse(TaskRepairPolicy::dispatchOverdue($claimFailedTask->fresh()));
         $this->assertTrue(TaskRepairPolicy::readyTaskNeedsRedispatch($claimFailedTask->fresh()));
+    }
+
+    public function testSnapshotCountsStaleRunSummaryProjectionRows(): void
+    {
+        $run = $this->createRunWithSummary(
+            instanceId: 'metrics-stale-instance',
+            runId: '01JMETRICSSTALERUN000001',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'waiting_for_signal',
+        );
+
+        $run->forceFill([
+            'status' => 'failed',
+            'closed_reason' => 'failed',
+            'closed_at' => now(),
+            'last_progress_at' => now(),
+        ])->save();
+
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertSame(1, $snapshot['projections']['run_summaries']['runs']);
+        $this->assertSame(1, $snapshot['projections']['run_summaries']['summaries']);
+        $this->assertSame(0, $snapshot['projections']['run_summaries']['missing']);
+        $this->assertSame(0, $snapshot['projections']['run_summaries']['orphaned']);
+        $this->assertSame(1, $snapshot['projections']['run_summaries']['stale']);
+        $this->assertSame(1, $snapshot['projections']['run_summaries']['needs_rebuild']);
     }
 
     public function testRepairCandidatesRespectDurableFailureBackoff(): void

@@ -10,6 +10,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\RunSummaryProjectionDrift;
 use Workflow\V2\Support\RunSummaryProjector;
 
 #[AsCommand(name: 'workflow:v2:rebuild-projections')]
@@ -19,6 +20,7 @@ class V2RebuildProjectionsCommand extends Command
         {--run-id=* : Rebuild one or more selected workflow run ids}
         {--instance-id= : Rebuild every run for one workflow instance id}
         {--missing : Only rebuild runs that do not have a run-summary row}
+        {--needs-rebuild : Only rebuild runs whose run-summary row is missing or drifted from durable run state}
         {--prune-stale : Delete run-summary rows whose workflow run row no longer exists}
         {--dry-run : Report the affected rows without changing projection tables}
         {--json : Output the rebuild report as JSON}';
@@ -30,10 +32,11 @@ class V2RebuildProjectionsCommand extends Command
         $runIds = $this->runIds();
         $instanceId = $this->stringOption('instance-id');
         $missingOnly = (bool) $this->option('missing');
+        $needsRebuildOnly = (bool) $this->option('needs-rebuild');
         $pruneStale = (bool) $this->option('prune-stale');
         $dryRun = (bool) $this->option('dry-run');
 
-        $runQuery = $this->runQuery($runIds, $instanceId, $missingOnly);
+        $runQuery = $this->runQuery($runIds, $instanceId, $missingOnly, $needsRebuildOnly);
         $matchedRuns = (clone $runQuery)->count();
 
         $report = [
@@ -83,10 +86,12 @@ class V2RebuildProjectionsCommand extends Command
     /**
      * @param list<string> $runIds
      */
-    private function runQuery(array $runIds, ?string $instanceId, bool $missingOnly)
+    private function runQuery(array $runIds, ?string $instanceId, bool $missingOnly, bool $needsRebuildOnly)
     {
         $runModel = $this->runModel();
         $summaryModel = $this->summaryModel();
+        $runTable = (new $runModel())->getTable();
+        $summaryTable = (new $summaryModel())->getTable();
 
         $query = $runModel::query()
             ->with([
@@ -108,7 +113,15 @@ class V2RebuildProjectionsCommand extends Command
             $query->where('workflow_instance_id', $instanceId);
         }
 
-        if ($missingOnly) {
+        if ($needsRebuildOnly) {
+            $staleSummaryIds = RunSummaryProjectionDrift::staleSummaryQuery($runIds, $instanceId)
+                ->select(sprintf('%s.id', $summaryTable));
+
+            $query->where(static function ($query) use ($summaryModel, $staleSummaryIds, $runTable): void {
+                $query->whereNotIn(sprintf('%s.id', $runTable), $summaryModel::query()->select('id'))
+                    ->orWhereIn(sprintf('%s.id', $runTable), $staleSummaryIds);
+            });
+        } elseif ($missingOnly) {
             $query->whereNotIn('id', $summaryModel::query()->select('id'));
         }
 

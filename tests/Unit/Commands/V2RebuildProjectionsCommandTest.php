@@ -102,6 +102,73 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
     }
 
+    public function testNeedsRebuildOptionRebuildsMissingAndStaleRunSummaries(): void
+    {
+        [$missingInstance, $missingRun] = $this->createCompletedRun('projection-command-missing');
+        [$staleInstance, $staleRun] = $this->createCompletedRun('projection-command-stale');
+        [, $alignedRun] = $this->createCompletedRun('projection-command-aligned');
+
+        WorkflowRunSummary::query()->create([
+            'id' => $staleRun->id,
+            'workflow_instance_id' => $staleInstance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'App\\Workflows\\ProjectionWorkflow',
+            'workflow_type' => 'projection.workflow',
+            'status' => RunStatus::Waiting->value,
+            'status_bucket' => 'running',
+            'started_at' => now()
+                ->subMinutes(5),
+            'exception_count' => 0,
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinutes(4),
+        ]);
+        WorkflowRunSummary::query()->create([
+            'id' => $alignedRun->id,
+            'workflow_instance_id' => $alignedRun->workflow_instance_id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'App\\Workflows\\ProjectionWorkflow',
+            'workflow_type' => 'projection.workflow',
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'closed_reason' => 'completed',
+            'started_at' => $alignedRun->started_at,
+            'closed_at' => $alignedRun->closed_at,
+            'duration_ms' => 240000,
+            'exception_count' => 0,
+            'history_event_count' => 2,
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinute(),
+        ]);
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--needs-rebuild' => true,
+        ])
+            ->expectsOutput('Rebuilt 2 run-summary projection row(s).')
+            ->assertSuccessful();
+
+        $this->assertDatabaseHas('workflow_run_summaries', [
+            'id' => $missingRun->id,
+            'workflow_instance_id' => $missingInstance->id,
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+        ]);
+        $this->assertDatabaseHas('workflow_run_summaries', [
+            'id' => $staleRun->id,
+            'workflow_instance_id' => $staleInstance->id,
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'closed_reason' => 'completed',
+        ]);
+    }
+
     public function testItUsesConfiguredRunAndSummaryModels(): void
     {
         $this->createCustomProjectionTables();
@@ -155,6 +222,56 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
         $this->assertDatabaseMissing('projection_command_workflow_run_summaries', [
             'id' => $staleRunId,
+        ]);
+        $this->assertDatabaseMissing('workflow_run_summaries', [
+            'id' => $run->id,
+        ]);
+    }
+
+    public function testNeedsRebuildOptionUsesConfiguredRunAndSummaryModels(): void
+    {
+        $this->createCustomProjectionTables();
+        config()
+            ->set('workflows.v2.run_model', ProjectionCommandWorkflowRun::class);
+        config()
+            ->set('workflows.v2.run_summary_model', ProjectionCommandWorkflowRunSummary::class);
+
+        [$instance, $run] = $this->createCompletedRun(
+            'projection-command-custom-needs-rebuild',
+            ProjectionCommandWorkflowRun::class,
+        );
+
+        ProjectionCommandWorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'App\\Workflows\\ProjectionWorkflow',
+            'workflow_type' => 'projection.workflow',
+            'status' => RunStatus::Waiting->value,
+            'status_bucket' => 'running',
+            'started_at' => now()
+                ->subMinutes(5),
+            'exception_count' => 0,
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinutes(4),
+        ]);
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--needs-rebuild' => true,
+        ])
+            ->expectsOutput('Rebuilt 1 run-summary projection row(s).')
+            ->assertSuccessful();
+
+        $this->assertDatabaseHas('projection_command_workflow_run_summaries', [
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'closed_reason' => 'completed',
         ]);
         $this->assertDatabaseMissing('workflow_run_summaries', [
             'id' => $run->id,

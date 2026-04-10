@@ -212,23 +212,12 @@ final class OperatorMetrics
      */
     private static function projectionMetrics(): array
     {
-        $runModel = self::runModel();
         $summaryModel = self::summaryModel();
-
-        $missing = $runModel::query()
-            ->whereNotIn('id', $summaryModel::query()->select('id'))
-            ->count();
-        $orphaned = $summaryModel::query()
-            ->whereNotIn('id', $runModel::query()->select('id'))
-            ->count();
+        $runSummaries = RunSummaryProjectionDrift::metrics();
 
         return [
             'run_summaries' => [
-                'runs' => $runModel::query()->count(),
-                'summaries' => $summaryModel::query()->count(),
-                'missing' => $missing,
-                'orphaned' => $orphaned,
-                'needs_rebuild' => $missing + $orphaned,
+                ...$runSummaries,
                 'oldest_updated_at' => self::jsonTimestamp($summaryModel::query()->min('updated_at')),
                 'newest_updated_at' => self::jsonTimestamp($summaryModel::query()->max('updated_at')),
             ],

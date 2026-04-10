@@ -76,6 +76,65 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(1, $projection['data']['needs_rebuild']);
         $this->assertSame(1, $projection['data']['missing']);
         $this->assertSame(0, $projection['data']['orphaned']);
+        $this->assertSame(0, $projection['data']['stale']);
+    }
+
+    public function testSnapshotWarnsWhenRunSummaryProjectionIsStale(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'health-stale-summary',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'id' => 'health-stale-run-000001',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'failed',
+            'closed_reason' => 'failed',
+            'started_at' => now()->subMinute(),
+            'closed_at' => now()->subSecond(),
+            'last_progress_at' => now()->subSecond(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'waiting',
+            'status_bucket' => 'running',
+            'started_at' => now()->subMinute(),
+            'liveness_state' => 'waiting_for_signal',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now(),
+        ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $projection = collect($snapshot['checks'])->firstWhere('name', 'run_summary_projection');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertSame('warning', $projection['status']);
+        $this->assertSame(1, $projection['data']['needs_rebuild']);
+        $this->assertSame(0, $projection['data']['missing']);
+        $this->assertSame(0, $projection['data']['orphaned']);
+        $this->assertSame(1, $projection['data']['stale']);
     }
 
     public function testSnapshotWarnsWhenOpenRunHasNoDurableResumePath(): void
