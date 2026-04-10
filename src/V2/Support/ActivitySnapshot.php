@@ -88,6 +88,7 @@ final class ActivitySnapshot
             'closed_at' => in_array($event->event_type, [
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
             ], true)
                 ? self::timestamp($event->recorded_at)
                 : null,
@@ -161,6 +162,7 @@ final class ActivitySnapshot
             HistoryEventType::ActivityRetryScheduled => 'pending',
             HistoryEventType::ActivityCompleted => 'completed',
             HistoryEventType::ActivityFailed => 'failed',
+            HistoryEventType::ActivityCancelled => 'cancelled',
             default => null,
         };
     }
@@ -180,6 +182,7 @@ final class ActivitySnapshot
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityCancelled,
         ], true)
             ? self::intValue($taskSnapshot['attempt_count'] ?? null)
             : null;

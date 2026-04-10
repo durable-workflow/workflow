@@ -44,6 +44,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
@@ -501,6 +502,130 @@ final class V2RunDetailViewTest extends TestCase
 
         $this->assertSame('live_fallback', $fallbackDetail['waits_projection_source']);
         $this->assertSame([], $fallbackDetail['waits']);
+    }
+
+    public function testRunDetailViewFallsBackToTypedChildWaitsWhenSummaryHasNoCurrentWait(): void
+    {
+        $parentInstance = WorkflowInstance::create([
+            'id' => 'detail-child-summary-no-wait-parent',
+            'workflow_class' => TestParentChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'run_count' => 1,
+        ]);
+
+        $childInstance = WorkflowInstance::create([
+            'id' => 'detail-child-summary-no-wait-child',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::create([
+            'workflow_instance_id' => $parentInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestParentChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'arguments' => Serializer::serialize([]),
+            'output' => Serializer::serialize(['ok' => true]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinutes(4),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::create([
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinutes(3),
+            'last_progress_at' => now()
+                ->subMinute(),
+        ]);
+
+        $parentInstance->update(['current_run_id' => $parentRun->id]);
+        $childInstance->update(['current_run_id' => $childRun->id]);
+
+        $link = WorkflowLink::create([
+            'link_type' => 'child_workflow',
+            'sequence' => 1,
+            'parent_workflow_instance_id' => $parentInstance->id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+        ]);
+
+        WorkflowHistoryEvent::record($parentRun->refresh(), HistoryEventType::ChildWorkflowScheduled, [
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $link->id,
+            'sequence' => 1,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_type' => 'workflow.child',
+            'child_workflow_class' => TestGreetingWorkflow::class,
+            'child_run_number' => 1,
+        ]);
+
+        WorkflowHistoryEvent::record($parentRun->refresh(), HistoryEventType::ChildRunCompleted, [
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $link->id,
+            'sequence' => 1,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_type' => 'workflow.child',
+            'child_workflow_class' => TestGreetingWorkflow::class,
+            'child_run_number' => 1,
+            'child_status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'output' => Serializer::serialize(['ok' => true]),
+        ]);
+
+        WorkflowRunSummary::create([
+            'id' => $parentRun->id,
+            'workflow_instance_id' => $parentInstance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => TestParentChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'closed_reason' => 'completed',
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => $parentRun->started_at,
+            'closed_at' => $parentRun->closed_at,
+            'duration_ms' => 180000,
+        ]);
+
+        $detail = RunDetailView::forRun(
+            WorkflowRun::query()
+                ->with(['summary', 'waits'])
+                ->findOrFail($parentRun->id)
+        );
+        $childWait = $this->findWait($detail['waits'], 'child');
+
+        $this->assertSame('live_fallback', $detail['waits_projection_source']);
+        $this->assertSame('completed', $detail['status']);
+        $this->assertNull($detail['wait_kind']);
+        $this->assertSame('resolved', $childWait['status']);
+        $this->assertSame('completed', $childWait['source_status']);
+        $this->assertSame($link->id, $childWait['child_call_id']);
+        $this->assertSame($childRun->id, $childWait['resume_source_id']);
     }
 
     public function testRunDetailViewExposesNormalizedCommandTargetsForMixedSignalContracts(): void

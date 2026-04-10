@@ -841,6 +841,7 @@ final class HistoryExport
                 HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
             ], true))
             ->sortBy('sequence');
     }

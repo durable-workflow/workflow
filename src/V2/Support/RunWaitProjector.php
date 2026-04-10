@@ -8,7 +8,6 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunWait;
 
 final class RunWaitProjector
@@ -96,18 +95,6 @@ final class RunWaitProjector
                     ->map(static fn (WorkflowRunWait $wait): array => $wait->toWaitPayload())
                     ->values()
                     ->all(),
-            ];
-        }
-
-        $summary = $run->relationLoaded('summary')
-            ? $run->summary
-            : $run->summary()
-                ->first();
-
-        if ($summary instanceof WorkflowRunSummary && $summary->wait_kind === null) {
-            return [
-                'source' => 'workflow_run_waits',
-                'waits' => [],
             ];
         }
 

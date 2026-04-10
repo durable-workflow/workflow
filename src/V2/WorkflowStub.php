@@ -39,6 +39,7 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\HistoryExport;
@@ -1798,11 +1799,20 @@ final class WorkflowStub
                 ])->save();
             }
 
+            $tasksByActivityExecutionId = $openTasks
+                ->filter(static fn (WorkflowTask $task): bool => is_string($task->payload['activity_execution_id'] ?? null))
+                ->keyBy(static fn (WorkflowTask $task): string => $task->payload['activity_execution_id']);
+
             foreach ($openActivityExecutions as $execution) {
                 $execution->forceFill([
                     'status' => ActivityStatus::Cancelled,
                     'closed_at' => $execution->closed_at ?? now(),
                 ])->save();
+
+                /** @var WorkflowTask|null $activityTask */
+                $activityTask = $tasksByActivityExecutionId->get($execution->id);
+
+                ActivityCancellation::record($run, $execution, $activityTask, $command);
             }
 
             foreach ($openTimers as $timer) {

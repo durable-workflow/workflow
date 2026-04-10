@@ -95,6 +95,8 @@ final class ActivityOutcomeRecorder
                     'lease_expires_at' => null,
                 ])->save();
 
+                ActivityCancellation::record($run, $lockedExecution, $task);
+
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return self::recorded(null);

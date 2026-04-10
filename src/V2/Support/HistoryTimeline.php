@@ -221,7 +221,8 @@ final class HistoryTimeline
             HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
-            HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityCancelled => 'activity',
             HistoryEventType::FailureHandled => 'failure',
             HistoryEventType::SideEffectRecorded => 'side_effect',
             HistoryEventType::VersionMarkerRecorded => 'version',
@@ -346,6 +347,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityFailed => $message === null
                 ? sprintf('Failed %s.', $activityLabel)
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
+            HistoryEventType::ActivityCancelled => sprintf('Cancelled %s.', $activityLabel),
             HistoryEventType::FailureHandled => $message === null
                 ? 'Failure handled.'
                 : sprintf('Handled failure: %s.', $message),
@@ -636,6 +638,7 @@ final class HistoryTimeline
                     HistoryEventType::ActivityRetryScheduled => 'pending',
                     HistoryEventType::ActivityCompleted => 'completed',
                     HistoryEventType::ActivityFailed => 'failed',
+                    HistoryEventType::ActivityCancelled => 'cancelled',
                     default => $activity?->status?->value,
                 },
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null)
@@ -661,6 +664,7 @@ final class HistoryTimeline
             'closed_at' => in_array($event->event_type, [
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
             ], true)
                 ? self::timestamp(self::stringValue($snapshot['closed_at'] ?? null) ?? $activity?->closed_at)
                 : null,
@@ -801,7 +805,8 @@ final class HistoryTimeline
             HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
-            HistoryEventType::ActivityFailed => 'activity_execution',
+            HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityCancelled => 'activity_execution',
             HistoryEventType::FailureHandled => 'workflow_failure',
             HistoryEventType::VersionMarkerRecorded => 'version_marker',
             HistoryEventType::TimerScheduled,
@@ -908,7 +913,8 @@ final class HistoryTimeline
             HistoryEventType::ActivityHeartbeatRecorded,
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
-            HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityCancelled => 'activity',
             HistoryEventType::TimerFired => 'timer',
             default => 'workflow',
         };
@@ -923,6 +929,7 @@ final class HistoryTimeline
         return match ($event->event_type) {
             HistoryEventType::ActivityStarted,
             HistoryEventType::ActivityHeartbeatRecorded => 'leased',
+            HistoryEventType::ActivityCancelled => 'cancelled',
             HistoryEventType::WorkflowFailed => 'failed',
             default => 'completed',
         };

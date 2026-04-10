@@ -122,6 +122,7 @@ final class ActivityRecovery
                 HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
             ], true)) {
                 continue;
             }

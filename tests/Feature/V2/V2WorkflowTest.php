@@ -589,6 +589,65 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame(['no typed history'], $detail['tasks'][0]['replay_blocked_recorded_event_types']);
     }
 
+    public function testRowOnlyCancelledActivityWithoutTypedHistoryIsMarkedDiagnosticFallback(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'row-only-activity-cancelled',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'started_at' => now()
+                ->subMinutes(3),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Cancelled->value,
+            'closed_reason' => 'cancelled',
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinutes(3),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'status' => ActivityStatus::Cancelled->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'attempt_count' => 1,
+            'started_at' => now()
+                ->subMinutes(2),
+            'closed_at' => now()
+                ->subMinute(),
+        ]);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('cancelled', $detail['activities'][0]['status']);
+        $this->assertSame('mutable_cancel_fallback', $detail['activities'][0]['history_authority']);
+        $this->assertNull($detail['activities'][0]['history_unsupported_reason']);
+        $this->assertSame('cancelled', $detail['activities'][0]['row_status']);
+        $this->assertNotNull($detail['activities'][0]['closed_at']);
+    }
+
     public function testReplayBlocksFiredTimerProjectionWithoutTypedStepHistory(): void
     {
         config()->set('queue.default', 'redis');
@@ -1251,6 +1310,26 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('cancelled', $execution->status->value);
         $this->assertSame('cancelled', $claimedTask->status->value);
         $this->assertNotNull($attempt->closed_at);
+
+        $activityCancelled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityCancelled->value)
+            ->firstOrFail();
+
+        $this->assertSame($execution->id, $activityCancelled->payload['activity_execution_id']);
+        $this->assertSame($attempt->id, $activityCancelled->payload['activity_attempt_id']);
+        $this->assertSame('cancelled', $activityCancelled->payload['activity']['status'] ?? null);
+        $this->assertSame('cancelled', $activityCancelled->payload['activity_attempt']['status'] ?? null);
+
+        $detail = RunDetailView::forRun(
+            WorkflowRun::query()
+                ->with(['summary', 'historyEvents', 'activityExecutions.attempts'])
+                ->findOrFail($runId)
+        );
+
+        $this->assertSame('cancelled', $detail['activities'][0]['status']);
+        $this->assertSame('typed_history', $detail['activities'][0]['history_authority']);
+        $this->assertNotNull(collect($detail['timeline'])->firstWhere('type', 'ActivityCancelled'));
 
         $lateCompletion = ActivityTaskBridge::complete($claim['activity_attempt_id'], 'too late');
 

@@ -18,6 +18,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivitySnapshot;
@@ -351,6 +352,14 @@ final class ActivityTaskBridge
         ?WorkflowTask $task,
     ): array {
         if ($attempt->status !== ActivityAttemptStatus::Running) {
+            if ($run instanceof WorkflowRun && $run->status === RunStatus::Cancelled) {
+                return [false, true, 'run_cancelled'];
+            }
+
+            if ($run instanceof WorkflowRun && $run->status === RunStatus::Terminated) {
+                return [false, true, 'run_terminated'];
+            }
+
             return [
                 false,
                 $attempt->status === ActivityAttemptStatus::Cancelled,
@@ -445,6 +454,8 @@ final class ActivityTaskBridge
                 'lease_expires_at' => null,
             ])->save();
         }
+
+        ActivityCancellation::record($run, $execution, $task);
 
         RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
     }

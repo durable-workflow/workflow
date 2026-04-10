@@ -95,6 +95,7 @@ final class ActivityAttemptSnapshots
                 HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
             ], true))
             ->sortBy('sequence');
     }
@@ -125,6 +126,7 @@ final class ActivityAttemptSnapshots
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityCancelled,
         ], true);
 
         $snapshot = array_filter([
@@ -222,6 +224,7 @@ final class ActivityAttemptSnapshots
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityFailed => ActivityAttemptStatus::Failed->value,
             HistoryEventType::ActivityCompleted => ActivityAttemptStatus::Completed->value,
+            HistoryEventType::ActivityCancelled => ActivityAttemptStatus::Cancelled->value,
             default => null,
         };
     }
