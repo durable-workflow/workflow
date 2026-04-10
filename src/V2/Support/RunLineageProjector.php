@@ -103,6 +103,30 @@ final class RunLineageProjector
     }
 
     /**
+     * @return array{
+     *     has_projection: bool,
+     *     has_canonical: bool,
+     *     missing: bool,
+     *     stale: bool
+     * }
+     */
+    public static function driftStatusForRun(WorkflowRun $run): array
+    {
+        $projected = self::projectedRows($run);
+        $parents = RunLineageView::parentsForRun($run);
+        $continuedWorkflows = RunLineageView::continuedWorkflowsForRun($run);
+        $hasProjection = $projected->isNotEmpty();
+        $hasCanonical = $parents !== [] || $continuedWorkflows !== [];
+
+        return [
+            'has_projection' => $hasProjection,
+            'has_canonical' => $hasCanonical,
+            'missing' => $hasCanonical && ! $hasProjection,
+            'stale' => $hasProjection && ! self::projectionCoversSnapshot($projected, $parents, $continuedWorkflows),
+        ];
+    }
+
+    /**
      * @param class-string<WorkflowRunLineageEntry> $lineageModel
      * @param array<string, mixed> $entry
      * @param array<int, string> $seen

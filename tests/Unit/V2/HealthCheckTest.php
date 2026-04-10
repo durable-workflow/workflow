@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
@@ -15,6 +16,7 @@ use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\HealthCheck;
+use Workflow\V2\Support\RunSummaryProjector;
 
 final class HealthCheckTest extends TestCase
 {
@@ -239,16 +241,147 @@ final class HealthCheckTest extends TestCase
 
         $this->assertSame('warning', $snapshot['status']);
         $this->assertSame('warning', $projection['status']);
-        $this->assertSame(7, $projection['data']['needs_rebuild']);
-        $this->assertSame(2, $projection['data']['run_waits_needs_rebuild']);
+        $this->assertSame(5, $projection['data']['needs_rebuild']);
+        $this->assertSame(1, $projection['data']['run_waits_needs_rebuild']);
+        $this->assertSame(0, $projection['data']['run_waits_missing_runs_with_waits']);
         $this->assertSame(1, $projection['data']['run_waits_missing_current_open_waits']);
+        $this->assertSame(0, $projection['data']['run_waits_stale_projected_runs']);
         $this->assertSame(1, $projection['data']['run_waits_orphaned']);
-        $this->assertSame(3, $projection['data']['timeline_needs_rebuild']);
+        $this->assertSame(2, $projection['data']['timeline_needs_rebuild']);
+        $this->assertSame(1, $projection['data']['timeline_missing_runs_with_history']);
         $this->assertSame(2, $projection['data']['timeline_missing_history_events']);
+        $this->assertSame(0, $projection['data']['timeline_stale_projected_runs']);
         $this->assertSame(1, $projection['data']['timeline_orphaned']);
         $this->assertSame(2, $projection['data']['lineage_needs_rebuild']);
         $this->assertSame(1, $projection['data']['lineage_missing_runs_with_lineage']);
+        $this->assertSame(0, $projection['data']['lineage_stale_projected_runs']);
         $this->assertSame(1, $projection['data']['lineage_orphaned']);
+    }
+
+    public function testSnapshotWarnsWhenSelectedRunProjectionPayloadsAreStale(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
+        $waitInstance = WorkflowInstance::query()->create([
+            'id' => 'health-stale-wait-instance',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $waitRun */
+        $waitRun = WorkflowRun::query()->create([
+            'id' => '01JHEALTHSTALEWAITRUN0001',
+            'workflow_instance_id' => $waitInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'waiting',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSecond(),
+        ]);
+
+        $waitInstance->forceFill([
+            'current_run_id' => $waitRun->id,
+        ])->save();
+
+        ActivityExecution::query()->create([
+            'id' => 'health-stale-activity-0001',
+            'workflow_run_id' => $waitRun->id,
+            'sequence' => 1,
+            'activity_class' => 'HealthWaitActivity',
+            'activity_type' => 'health.wait',
+            'status' => 'pending',
+            'arguments' => serialize([]),
+            'attempt_count' => 0,
+            'created_at' => now()->subMinute(),
+            'updated_at' => now(),
+        ]);
+
+        RunSummaryProjector::project($waitRun->refresh());
+
+        WorkflowRunWait::query()
+            ->where('workflow_run_id', $waitRun->id)
+            ->update([
+                'summary' => 'Stale wait row.',
+            ]);
+
+        $lineageInstance = WorkflowInstance::query()->create([
+            'id' => 'health-stale-lineage-instance',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $lineageRun */
+        $lineageRun = WorkflowRun::query()->create([
+            'id' => '01JHEALTHSTALELINEAGERUN1',
+            'workflow_instance_id' => $lineageInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'completed',
+            'closed_reason' => 'completed',
+            'started_at' => now()->subMinute(),
+            'closed_at' => now()->subSecond(),
+            'last_progress_at' => now()->subSecond(),
+        ]);
+
+        $lineageInstance->forceFill([
+            'current_run_id' => $lineageRun->id,
+        ])->save();
+
+        WorkflowHistoryEvent::record($lineageRun, HistoryEventType::WorkflowStarted, [
+            'workflow_run_id' => $lineageRun->id,
+        ]);
+        WorkflowHistoryEvent::record(
+            $lineageRun->refresh(),
+            HistoryEventType::WorkflowContinuedAsNew,
+            [
+                'sequence' => 2,
+                'workflow_link_id' => 'health-stale-lineage-link',
+                'continued_to_run_id' => 'health-stale-child-run',
+            ],
+        );
+
+        RunSummaryProjector::project($lineageRun->refresh());
+
+        WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $lineageRun->id)
+            ->where('type', HistoryEventType::WorkflowStarted->value)
+            ->update([
+                'summary' => 'Stale timeline row.',
+            ]);
+
+        WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $lineageRun->id)
+            ->update([
+                'related_workflow_run_id' => 'health-stale-child-run-wrong',
+            ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $projection = collect($snapshot['checks'])->firstWhere('name', 'selected_run_projections');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertSame('warning', $projection['status']);
+        $this->assertSame(3, $projection['data']['needs_rebuild']);
+        $this->assertSame(1, $projection['data']['run_waits_needs_rebuild']);
+        $this->assertSame(0, $projection['data']['run_waits_missing_runs_with_waits']);
+        $this->assertSame(0, $projection['data']['run_waits_missing_current_open_waits']);
+        $this->assertSame(1, $projection['data']['run_waits_stale_projected_runs']);
+        $this->assertSame(0, $projection['data']['run_waits_orphaned']);
+        $this->assertSame(1, $projection['data']['timeline_needs_rebuild']);
+        $this->assertSame(0, $projection['data']['timeline_missing_runs_with_history']);
+        $this->assertSame(0, $projection['data']['timeline_missing_history_events']);
+        $this->assertSame(1, $projection['data']['timeline_stale_projected_runs']);
+        $this->assertSame(0, $projection['data']['timeline_orphaned']);
+        $this->assertSame(1, $projection['data']['lineage_needs_rebuild']);
+        $this->assertSame(0, $projection['data']['lineage_missing_runs_with_lineage']);
+        $this->assertSame(1, $projection['data']['lineage_stale_projected_runs']);
+        $this->assertSame(0, $projection['data']['lineage_orphaned']);
     }
 
     public function testSnapshotWarnsWhenOpenRunHasNoDurableResumePath(): void

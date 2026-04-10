@@ -14,6 +14,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\SelectedRunProjectionDrift;
 use Workflow\V2\Support\RunSummaryProjectionDrift;
 use Workflow\V2\Support\RunSummaryProjector;
 
@@ -153,150 +154,35 @@ class V2RebuildProjectionsCommand extends Command
         if ($needsRebuildOnly) {
             $staleSummaryIds = RunSummaryProjectionDrift::staleSummaryQuery($runIds, $instanceId)
                 ->select(sprintf('%s.id', $summaryTable));
-            $missingWaitRunIds = $this->missingCurrentOpenWaitRunIdQuery($runIds, $instanceId);
-            $missingTimelineRunIds = $this->missingTimelineEventRunIdQuery($runIds, $instanceId);
-            $missingLineageRunIds = $this->missingLineageRunIdQuery($runIds, $instanceId);
+            $selectedRunWaitIds = SelectedRunProjectionDrift::waitRunIdsNeedingRebuild($runIds, $instanceId);
+            $selectedRunTimelineIds = SelectedRunProjectionDrift::timelineRunIdsNeedingRebuild($runIds, $instanceId);
+            $selectedRunLineageIds = SelectedRunProjectionDrift::lineageRunIdsNeedingRebuild($runIds, $instanceId);
 
             $query->where(static function ($query) use (
-                $missingLineageRunIds,
-                $missingTimelineRunIds,
-                $missingWaitRunIds,
+                $selectedRunLineageIds,
+                $selectedRunTimelineIds,
+                $selectedRunWaitIds,
                 $summaryModel,
                 $staleSummaryIds,
                 $runTable,
             ): void {
                 $query->whereNotIn(sprintf('%s.id', $runTable), $summaryModel::query()->select('id'))
-                    ->orWhereIn(sprintf('%s.id', $runTable), $staleSummaryIds)
-                    ->orWhereIn(sprintf('%s.id', $runTable), $missingWaitRunIds)
-                    ->orWhereIn(sprintf('%s.id', $runTable), $missingTimelineRunIds)
-                    ->orWhereIn(sprintf('%s.id', $runTable), $missingLineageRunIds);
+                    ->orWhereIn(sprintf('%s.id', $runTable), $staleSummaryIds);
+
+                if ($selectedRunWaitIds !== []) {
+                    $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunWaitIds);
+                }
+
+                if ($selectedRunTimelineIds !== []) {
+                    $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunTimelineIds);
+                }
+
+                if ($selectedRunLineageIds !== []) {
+                    $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunLineageIds);
+                }
             });
         } elseif ($missingOnly) {
             $query->whereNotIn('id', $summaryModel::query()->select('id'));
-        }
-
-        return $query;
-    }
-
-    /**
-     * @param list<string> $runIds
-     */
-    private function missingCurrentOpenWaitRunIdQuery(array $runIds, ?string $instanceId)
-    {
-        $summaryModel = $this->summaryModel();
-        $waitModel = $this->runWaitModel();
-        $summaryTable = $this->tableFor($summaryModel);
-        $waitTable = $this->tableFor($waitModel);
-
-        $query = $summaryModel::query()
-            ->select(sprintf('%s.id', $summaryTable))
-            ->leftJoin($waitTable, static function ($join) use ($summaryTable, $waitTable): void {
-                $join->on(sprintf('%s.workflow_run_id', $waitTable), '=', sprintf('%s.id', $summaryTable))
-                    ->on(sprintf('%s.wait_id', $waitTable), '=', sprintf('%s.open_wait_id', $summaryTable));
-            })
-            ->whereNotNull(sprintf('%s.open_wait_id', $summaryTable))
-            ->whereNull(sprintf('%s.id', $waitTable));
-
-        if ($runIds !== []) {
-            $query->whereIn(sprintf('%s.id', $summaryTable), $runIds);
-        }
-
-        if ($instanceId !== null) {
-            $query->where(sprintf('%s.workflow_instance_id', $summaryTable), $instanceId);
-        }
-
-        return $query;
-    }
-
-    /**
-     * @param list<string> $runIds
-     */
-    private function missingTimelineEventRunIdQuery(array $runIds, ?string $instanceId)
-    {
-        $runModel = $this->runModel();
-        $historyModel = $this->historyEventModel();
-        $timelineModel = $this->runTimelineEntryModel();
-        $runTable = $this->tableFor($runModel);
-        $historyTable = $this->tableFor($historyModel);
-        $timelineTable = $this->tableFor($timelineModel);
-
-        $query = $historyModel::query()
-            ->select(sprintf('%s.workflow_run_id', $historyTable))
-            ->distinct()
-            ->leftJoin($timelineTable, static function ($join) use ($historyTable, $timelineTable): void {
-                $join->on(
-                    sprintf('%s.workflow_run_id', $timelineTable),
-                    '=',
-                    sprintf('%s.workflow_run_id', $historyTable),
-                )->on(sprintf('%s.history_event_id', $timelineTable), '=', sprintf('%s.id', $historyTable));
-            })
-            ->whereNull(sprintf('%s.id', $timelineTable));
-
-        if ($runIds !== []) {
-            $query->whereIn(sprintf('%s.workflow_run_id', $historyTable), $runIds);
-        }
-
-        if ($instanceId !== null) {
-            $query->join($runTable, sprintf('%s.id', $runTable), '=', sprintf('%s.workflow_run_id', $historyTable))
-                ->where(sprintf('%s.workflow_instance_id', $runTable), $instanceId);
-        }
-
-        return $query;
-    }
-
-    /**
-     * @param list<string> $runIds
-     */
-    private function missingLineageRunIdQuery(array $runIds, ?string $instanceId)
-    {
-        $runModel = $this->runModel();
-        $historyModel = $this->historyEventModel();
-        $linkModel = $this->linkModel();
-        $lineageModel = $this->runLineageEntryModel();
-        $runTable = $this->tableFor($runModel);
-        $historyTable = $this->tableFor($historyModel);
-        $linkTable = $this->tableFor($linkModel);
-        $lineageTable = $this->tableFor($lineageModel);
-
-        $query = $runModel::query()
-            ->select(sprintf('%s.id', $runTable))
-            ->where(static function ($query) use ($historyTable, $linkTable, $runTable): void {
-                $query->whereExists(static function ($history) use ($historyTable, $runTable): void {
-                    $history->selectRaw('1')
-                        ->from($historyTable)
-                        ->whereColumn(sprintf('%s.workflow_run_id', $historyTable), sprintf('%s.id', $runTable))
-                        ->whereIn(sprintf('%s.event_type', $historyTable), [
-                            'WorkflowContinuedAsNew',
-                            'ChildWorkflowScheduled',
-                            'ChildRunStarted',
-                            'ChildRunCompleted',
-                            'ChildRunFailed',
-                            'ChildRunCancelled',
-                            'ChildRunTerminated',
-                        ]);
-                })->orWhereExists(static function ($links) use ($linkTable, $runTable): void {
-                    $links->selectRaw('1')
-                        ->from($linkTable)
-                        ->where(static function ($link) use ($linkTable, $runTable): void {
-                            $link->whereColumn(
-                                sprintf('%s.parent_workflow_run_id', $linkTable),
-                                sprintf('%s.id', $runTable),
-                            )->orWhereColumn(
-                                sprintf('%s.child_workflow_run_id', $linkTable),
-                                sprintf('%s.id', $runTable),
-                            );
-                        });
-                });
-            })
-            ->leftJoin($lineageTable, sprintf('%s.workflow_run_id', $lineageTable), '=', sprintf('%s.id', $runTable))
-            ->whereNull(sprintf('%s.id', $lineageTable));
-
-        if ($runIds !== []) {
-            $query->whereIn(sprintf('%s.id', $runTable), $runIds);
-        }
-
-        if ($instanceId !== null) {
-            $query->where(sprintf('%s.workflow_instance_id', $runTable), $instanceId);
         }
 
         return $query;
@@ -494,17 +380,6 @@ class V2RebuildProjectionsCommand extends Command
     {
         /** @var class-string<WorkflowRunLineageEntry> $model */
         $model = config('workflows.v2.run_lineage_entry_model', WorkflowRunLineageEntry::class);
-
-        return $model;
-    }
-
-    /**
-     * @return class-string<\Workflow\V2\Models\WorkflowLink>
-     */
-    private function linkModel(): string
-    {
-        /** @var class-string<\Workflow\V2\Models\WorkflowLink> $model */
-        $model = config('workflows.v2.link_model', \Workflow\V2\Models\WorkflowLink::class);
 
         return $model;
     }

@@ -272,7 +272,7 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['projections']['run_summaries']['needs_rebuild']);
     }
 
-    public function testSnapshotCountsSelectedRunWaitAndTimelineProjectionDrift(): void
+    public function testSnapshotCountsSelectedRunProjectionDrift(): void
     {
         $missingWaitRun = $this->createRunWithSummary(
             instanceId: 'metrics-wait-missing-instance',
@@ -383,7 +383,7 @@ final class V2OperatorMetricsTest extends TestCase
             'position' => 0,
             'link_type' => 'continue_as_new',
             'related_workflow_instance_id' => $projectedWaitRun->workflow_instance_id,
-            'related_workflow_run_id' => 'projection-lineage-valid-current',
+            'related_workflow_run_id' => 'projection-lineage-valid-stale',
             'payload' => [],
         ]);
         WorkflowRunLineageEntry::query()->create([
@@ -404,9 +404,13 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(2, $snapshot['projections']['run_waits']['runs']);
         $this->assertSame(2, $snapshot['projections']['run_waits']['rows']);
         $this->assertSame(2, $snapshot['projections']['run_waits']['projected_runs']);
+        $this->assertSame(0, $snapshot['projections']['run_waits']['runs_with_waits']);
+        $this->assertSame(0, $snapshot['projections']['run_waits']['projected_runs_with_waits']);
+        $this->assertSame(0, $snapshot['projections']['run_waits']['missing_runs_with_waits']);
         $this->assertSame(2, $snapshot['projections']['run_waits']['summaries_with_open_waits']);
         $this->assertSame(1, $snapshot['projections']['run_waits']['projected_current_open_waits']);
         $this->assertSame(1, $snapshot['projections']['run_waits']['missing_current_open_waits']);
+        $this->assertSame(1, $snapshot['projections']['run_waits']['stale_projected_runs']);
         $this->assertSame(1, $snapshot['projections']['run_waits']['orphaned']);
         $this->assertSame(2, $snapshot['projections']['run_waits']['needs_rebuild']);
 
@@ -414,17 +418,23 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(4, $snapshot['projections']['run_timeline_entries']['history_events']);
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['rows']);
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['projected_runs']);
+        $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['runs_with_history']);
+        $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['projected_runs_with_history']);
+        $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['missing_runs_with_history']);
         $this->assertSame(3, $snapshot['projections']['run_timeline_entries']['missing_history_events']);
+        $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['stale_projected_runs']);
         $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['orphaned']);
-        $this->assertSame(4, $snapshot['projections']['run_timeline_entries']['needs_rebuild']);
+        $this->assertSame(3, $snapshot['projections']['run_timeline_entries']['needs_rebuild']);
 
         $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['runs']);
         $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['rows']);
+        $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['projected_runs']);
         $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['runs_with_lineage']);
         $this->assertSame(1, $snapshot['projections']['run_lineage_entries']['projected_runs_with_lineage']);
         $this->assertSame(1, $snapshot['projections']['run_lineage_entries']['missing_runs_with_lineage']);
+        $this->assertSame(1, $snapshot['projections']['run_lineage_entries']['stale_projected_runs']);
         $this->assertSame(1, $snapshot['projections']['run_lineage_entries']['orphaned']);
-        $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['needs_rebuild']);
+        $this->assertSame(3, $snapshot['projections']['run_lineage_entries']['needs_rebuild']);
     }
 
     public function testRepairCandidatesRespectDurableFailureBackoff(): void

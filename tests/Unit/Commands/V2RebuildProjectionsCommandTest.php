@@ -11,6 +11,7 @@ use Illuminate\Support\Str;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
@@ -181,6 +182,19 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         [, $waitDriftRun] = $this->createWaitingRun('projection-command-wait-drift');
         [, $alignedRun] = $this->createCompletedRun('projection-command-aligned');
 
+        ActivityExecution::query()->create([
+            'id' => 'projection-command-wait-activity',
+            'workflow_run_id' => $waitDriftRun->id,
+            'sequence' => 1,
+            'activity_class' => 'ProjectionWaitActivity',
+            'activity_type' => 'projection.wait',
+            'status' => 'pending',
+            'arguments' => serialize([]),
+            'attempt_count' => 0,
+            'created_at' => now()->subMinutes(5),
+            'updated_at' => now()->subMinute(),
+        ]);
+
         WorkflowRunSummary::query()->create([
             'id' => $staleRun->id,
             'workflow_instance_id' => $staleInstance->id,
@@ -231,8 +245,10 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'status' => RunStatus::Waiting->value,
             'status_bucket' => 'running',
             'started_at' => $waitDriftRun->started_at,
-            'open_wait_id' => 'signal:missing',
-            'liveness_state' => 'waiting_for_signal',
+            'open_wait_id' => 'activity:projection-command-wait-activity',
+            'wait_kind' => 'activity',
+            'wait_reason' => 'Waiting for activity projection.wait',
+            'liveness_state' => 'waiting_for_activity',
             'exception_count' => 0,
             'created_at' => now()
                 ->subMinutes(5),
@@ -279,6 +295,11 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'workflow_instance_id' => $waitDriftRun->workflow_instance_id,
             'status' => RunStatus::Waiting->value,
         ]);
+        $this->assertDatabaseHas('workflow_run_waits', [
+            'workflow_run_id' => $waitDriftRun->id,
+            'wait_id' => 'activity:projection-command-wait-activity',
+            'target_type' => 'projection.wait',
+        ]);
     }
 
     public function testNeedsRebuildOptionIncludesRunsMissingLineageProjectionRows(): void
@@ -300,6 +321,12 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             ],
         );
 
+        RunSummaryProjector::project($run->refresh());
+
+        WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $run->id)
+            ->delete();
+
         $this->artisan('workflow:v2:rebuild-projections', [
             '--needs-rebuild' => true,
         ])
@@ -311,6 +338,91 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'direction' => 'child',
             'lineage_id' => 'projection-lineage-link',
             'link_type' => 'child_workflow',
+        ]);
+    }
+
+    public function testNeedsRebuildOptionIncludesRunsWithStaleSelectedRunProjectionPayloads(): void
+    {
+        [, $waitRun] = $this->createWaitingRun('projection-command-stale-wait-selected');
+        [, $timelineRun] = $this->createCompletedRun('projection-command-stale-timeline-selected');
+        [, $lineageRun] = $this->createCompletedRun('projection-command-stale-lineage-selected');
+
+        ActivityExecution::query()->create([
+            'id' => 'projection-command-stale-wait-activity',
+            'workflow_run_id' => $waitRun->id,
+            'sequence' => 1,
+            'activity_class' => 'ProjectionSelectedWaitActivity',
+            'activity_type' => 'projection.selected.wait',
+            'status' => 'pending',
+            'arguments' => serialize([]),
+            'attempt_count' => 0,
+            'created_at' => now()->subMinutes(5),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        WorkflowHistoryEvent::record(
+            $lineageRun->refresh(),
+            HistoryEventType::WorkflowContinuedAsNew,
+            [
+                'sequence' => 3,
+                'workflow_link_id' => 'projection-stale-lineage-link',
+                'continued_to_run_id' => 'projection-stale-child-run',
+            ],
+        );
+
+        RunSummaryProjector::project($waitRun->refresh());
+        RunSummaryProjector::project($timelineRun->refresh());
+        RunSummaryProjector::project($lineageRun->refresh());
+
+        WorkflowRunWait::query()
+            ->where('workflow_run_id', $waitRun->id)
+            ->update([
+                'summary' => 'Stale wait row.',
+            ]);
+        WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $timelineRun->id)
+            ->where('type', HistoryEventType::WorkflowStarted->value)
+            ->update([
+                'summary' => 'Stale timeline row.',
+            ]);
+        WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $lineageRun->id)
+            ->update([
+                'related_workflow_run_id' => 'projection-stale-child-run-wrong',
+            ]);
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--needs-rebuild' => true,
+        ])
+            ->expectsOutput('Rebuilt 3 run-summary projection row(s).')
+            ->assertSuccessful();
+
+        $this->assertDatabaseMissing('workflow_run_waits', [
+            'workflow_run_id' => $waitRun->id,
+            'summary' => 'Stale wait row.',
+        ]);
+        $this->assertDatabaseHas('workflow_run_waits', [
+            'workflow_run_id' => $waitRun->id,
+            'wait_id' => 'activity:projection-command-stale-wait-activity',
+            'target_type' => 'projection.selected.wait',
+        ]);
+        $this->assertDatabaseMissing('workflow_run_timeline_entries', [
+            'workflow_run_id' => $timelineRun->id,
+            'summary' => 'Stale timeline row.',
+        ]);
+        $this->assertDatabaseHas('workflow_run_timeline_entries', [
+            'workflow_run_id' => $timelineRun->id,
+            'type' => HistoryEventType::WorkflowStarted->value,
+            'summary' => 'Workflow run started.',
+        ]);
+        $this->assertDatabaseMissing('workflow_run_lineage_entries', [
+            'workflow_run_id' => $lineageRun->id,
+            'related_workflow_run_id' => 'projection-stale-child-run-wrong',
+        ]);
+        $this->assertDatabaseHas('workflow_run_lineage_entries', [
+            'workflow_run_id' => $lineageRun->id,
+            'lineage_id' => 'projection-stale-lineage-link',
+            'related_workflow_run_id' => 'projection-stale-child-run',
         ]);
     }
 

@@ -10,7 +10,6 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
-use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -237,21 +236,25 @@ final class OperatorMetrics
      */
     private static function runWaitProjectionMetrics(): array
     {
-        $summaryModel = self::summaryModel();
         $waitModel = self::runWaitModel();
         $summariesWithOpenWaits = self::summariesWithOpenWaits();
         $missingCurrentOpenWaits = self::missingCurrentOpenWaitProjections();
+        $drift = SelectedRunProjectionDrift::waitMetrics();
         $orphaned = self::projectionRowsMissingRun($waitModel);
 
         return [
             'runs' => self::runModel()::query()->count(),
             'rows' => $waitModel::query()->count(),
             'projected_runs' => $waitModel::query()->distinct()->count('workflow_run_id'),
+            'runs_with_waits' => $drift['runs_with_waits'],
+            'projected_runs_with_waits' => $drift['projected_runs_with_waits'],
+            'missing_runs_with_waits' => $drift['missing_runs_with_waits'],
             'summaries_with_open_waits' => $summariesWithOpenWaits,
             'projected_current_open_waits' => max(0, $summariesWithOpenWaits - $missingCurrentOpenWaits),
             'missing_current_open_waits' => $missingCurrentOpenWaits,
+            'stale_projected_runs' => $drift['stale_projected_runs'],
             'orphaned' => $orphaned,
-            'needs_rebuild' => $missingCurrentOpenWaits + $orphaned,
+            'needs_rebuild' => $drift['missing_runs_with_waits'] + $drift['stale_projected_runs'] + $orphaned,
             'oldest_updated_at' => self::jsonTimestamp($waitModel::query()->min('updated_at')),
             'newest_updated_at' => self::jsonTimestamp($waitModel::query()->max('updated_at')),
         ];
@@ -264,6 +267,7 @@ final class OperatorMetrics
     {
         $timelineModel = self::runTimelineEntryModel();
         $missingHistoryEvents = self::missingTimelineEventProjections();
+        $drift = SelectedRunProjectionDrift::timelineMetrics();
         $orphaned = self::orphanedTimelineRows();
 
         return [
@@ -271,9 +275,13 @@ final class OperatorMetrics
             'history_events' => self::historyEventModel()::query()->count(),
             'rows' => $timelineModel::query()->count(),
             'projected_runs' => $timelineModel::query()->distinct()->count('workflow_run_id'),
+            'runs_with_history' => $drift['runs_with_history'],
+            'projected_runs_with_history' => $drift['projected_runs_with_history'],
+            'missing_runs_with_history' => $drift['missing_runs_with_history'],
             'missing_history_events' => $missingHistoryEvents,
+            'stale_projected_runs' => $drift['stale_projected_runs'],
             'orphaned' => $orphaned,
-            'needs_rebuild' => $missingHistoryEvents + $orphaned,
+            'needs_rebuild' => $drift['missing_runs_with_history'] + $drift['stale_projected_runs'] + $orphaned,
             'oldest_updated_at' => self::jsonTimestamp($timelineModel::query()->min('updated_at')),
             'newest_updated_at' => self::jsonTimestamp($timelineModel::query()->max('updated_at')),
         ];
@@ -285,19 +293,19 @@ final class OperatorMetrics
     private static function runLineageProjectionMetrics(): array
     {
         $lineageModel = self::runLineageEntryModel();
-        $runsWithLineage = self::runsWithLineage();
-        $missingRunsWithLineage = self::missingLineageRunProjections();
+        $drift = SelectedRunProjectionDrift::lineageMetrics();
         $orphaned = self::projectionRowsMissingRun($lineageModel);
 
         return [
             'runs' => self::runModel()::query()->count(),
             'rows' => $lineageModel::query()->count(),
             'projected_runs' => $lineageModel::query()->distinct()->count('workflow_run_id'),
-            'runs_with_lineage' => $runsWithLineage,
-            'projected_runs_with_lineage' => max(0, $runsWithLineage - $missingRunsWithLineage),
-            'missing_runs_with_lineage' => $missingRunsWithLineage,
+            'runs_with_lineage' => $drift['runs_with_lineage'],
+            'projected_runs_with_lineage' => $drift['projected_runs_with_lineage'],
+            'missing_runs_with_lineage' => $drift['missing_runs_with_lineage'],
+            'stale_projected_runs' => $drift['stale_projected_runs'],
             'orphaned' => $orphaned,
-            'needs_rebuild' => $missingRunsWithLineage + $orphaned,
+            'needs_rebuild' => $drift['missing_runs_with_lineage'] + $drift['stale_projected_runs'] + $orphaned,
             'oldest_updated_at' => self::jsonTimestamp($lineageModel::query()->min('updated_at')),
             'newest_updated_at' => self::jsonTimestamp($lineageModel::query()->max('updated_at')),
         ];
@@ -358,23 +366,6 @@ final class OperatorMetrics
             ->count($historyTable . '.id');
     }
 
-    private static function runsWithLineage(): int
-    {
-        return self::lineageEvidenceRunQuery()
-            ->count();
-    }
-
-    private static function missingLineageRunProjections(): int
-    {
-        $lineageModel = self::runLineageEntryModel();
-        $lineageTable = self::tableFor($lineageModel);
-
-        return self::lineageEvidenceRunQuery()
-            ->leftJoin($lineageTable, $lineageTable . '.workflow_run_id', '=', self::tableFor(self::runModel()) . '.id')
-            ->whereNull($lineageTable . '.id')
-            ->count(self::tableFor(self::runModel()) . '.id');
-    }
-
     private static function orphanedTimelineRows(): int
     {
         $runModel = self::runModel();
@@ -395,41 +386,6 @@ final class OperatorMetrics
                     ->orWhereNull($historyTable . '.id');
             })
             ->count($timelineTable . '.id');
-    }
-
-    private static function lineageEvidenceRunQuery()
-    {
-        $runModel = self::runModel();
-        $historyModel = self::historyEventModel();
-        $linkModel = self::linkModel();
-        $runTable = self::tableFor($runModel);
-        $historyTable = self::tableFor($historyModel);
-        $linkTable = self::tableFor($linkModel);
-
-        return $runModel::query()
-            ->where(static function ($query) use ($historyTable, $linkTable, $runTable): void {
-                $query->whereExists(static function ($history) use ($historyTable, $runTable): void {
-                    $history->selectRaw('1')
-                        ->from($historyTable)
-                        ->whereColumn($historyTable . '.workflow_run_id', $runTable . '.id')
-                        ->whereIn($historyTable . '.event_type', [
-                            HistoryEventType::WorkflowContinuedAsNew->value,
-                            HistoryEventType::ChildWorkflowScheduled->value,
-                            HistoryEventType::ChildRunStarted->value,
-                            HistoryEventType::ChildRunCompleted->value,
-                            HistoryEventType::ChildRunFailed->value,
-                            HistoryEventType::ChildRunCancelled->value,
-                            HistoryEventType::ChildRunTerminated->value,
-                        ]);
-                })->orWhereExists(static function ($links) use ($linkTable, $runTable): void {
-                    $links->selectRaw('1')
-                        ->from($linkTable)
-                        ->where(static function ($link) use ($linkTable, $runTable): void {
-                            $link->whereColumn($linkTable . '.parent_workflow_run_id', $runTable . '.id')
-                                ->orWhereColumn($linkTable . '.child_workflow_run_id', $runTable . '.id');
-                        });
-                });
-            });
     }
 
     private static function compatibilityBlockedRuns(): int
@@ -740,17 +696,6 @@ final class OperatorMetrics
     {
         /** @var class-string<WorkflowRunLineageEntry> $model */
         $model = config('workflows.v2.run_lineage_entry_model', WorkflowRunLineageEntry::class);
-
-        return $model;
-    }
-
-    /**
-     * @return class-string<\Workflow\V2\Models\WorkflowLink>
-     */
-    private static function linkModel(): string
-    {
-        /** @var class-string<\Workflow\V2\Models\WorkflowLink> $model */
-        $model = config('workflows.v2.link_model', \Workflow\V2\Models\WorkflowLink::class);
 
         return $model;
     }

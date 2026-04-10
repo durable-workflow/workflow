@@ -112,6 +112,29 @@ final class RunTimelineProjector
     }
 
     /**
+     * @return array{
+     *     has_projection: bool,
+     *     has_canonical: bool,
+     *     missing: bool,
+     *     stale: bool
+     * }
+     */
+    public static function driftStatusForRun(WorkflowRun $run): array
+    {
+        $projected = self::projectedRows($run);
+        $canonicalTimeline = HistoryTimeline::fromHistory($run);
+        $hasProjection = $projected->isNotEmpty();
+        $hasCanonical = $canonicalTimeline !== [];
+
+        return [
+            'has_projection' => $hasProjection,
+            'has_canonical' => $hasCanonical,
+            'missing' => $hasCanonical && ! $hasProjection,
+            'stale' => $hasProjection && ! self::projectionMatchesHistory($projected, $canonicalTimeline),
+        ];
+    }
+
+    /**
      * @return class-string<WorkflowTimelineEntry>
      */
     private static function entryModel(): string

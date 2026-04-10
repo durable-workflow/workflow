@@ -114,15 +114,20 @@ final class HealthCheck
             [
                 'needs_rebuild' => $needsRebuild,
                 'run_waits_needs_rebuild' => $waitNeedsRebuild,
+                'run_waits_missing_runs_with_waits' => self::integer($waits['missing_runs_with_waits'] ?? 0),
                 'run_waits_missing_current_open_waits' => self::integer(
                     $waits['missing_current_open_waits'] ?? 0
                 ),
+                'run_waits_stale_projected_runs' => self::integer($waits['stale_projected_runs'] ?? 0),
                 'run_waits_orphaned' => self::integer($waits['orphaned'] ?? 0),
                 'timeline_needs_rebuild' => $timelineNeedsRebuild,
+                'timeline_missing_runs_with_history' => self::integer($timeline['missing_runs_with_history'] ?? 0),
                 'timeline_missing_history_events' => self::integer($timeline['missing_history_events'] ?? 0),
+                'timeline_stale_projected_runs' => self::integer($timeline['stale_projected_runs'] ?? 0),
                 'timeline_orphaned' => self::integer($timeline['orphaned'] ?? 0),
                 'lineage_needs_rebuild' => $lineageNeedsRebuild,
                 'lineage_missing_runs_with_lineage' => self::integer($lineage['missing_runs_with_lineage'] ?? 0),
+                'lineage_stale_projected_runs' => self::integer($lineage['stale_projected_runs'] ?? 0),
                 'lineage_orphaned' => self::integer($lineage['orphaned'] ?? 0),
             ],
         );

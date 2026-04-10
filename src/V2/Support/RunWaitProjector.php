@@ -118,6 +118,29 @@ final class RunWaitProjector
     }
 
     /**
+     * @return array{
+     *     has_projection: bool,
+     *     has_canonical: bool,
+     *     missing: bool,
+     *     stale: bool
+     * }
+     */
+    public static function driftStatusForRun(WorkflowRun $run): array
+    {
+        $projected = self::projectedRows($run);
+        $canonicalWaits = RunWaitView::forRun($run);
+        $hasProjection = $projected->isNotEmpty();
+        $hasCanonical = $canonicalWaits !== [];
+
+        return [
+            'has_projection' => $hasProjection,
+            'has_canonical' => $hasCanonical,
+            'missing' => $hasCanonical && ! $hasProjection,
+            'stale' => $hasProjection && ! self::projectionMatchesSnapshot($projected, $canonicalWaits),
+        ];
+    }
+
+    /**
      * @return class-string<WorkflowRunWait>
      */
     private static function waitModel(): string
