@@ -687,6 +687,10 @@ final class WorkflowExecutor
                     }
                 }
 
+                if (! $this->ensureParallelGroupHistoryCompatible($run, $task, $sequence, $leafDescriptors)) {
+                    return null;
+                }
+
                 $scheduledTasks = [];
                 $pending = false;
                 $results = [];
@@ -1967,6 +1971,26 @@ final class WorkflowExecutor
     ): bool {
         try {
             WorkflowStepHistory::assertCompatible($run, $sequence, $expectedShape);
+
+            return true;
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+            return false;
+        }
+    }
+
+    /**
+     * @param list<array<string, mixed>> $leafDescriptors
+     */
+    private function ensureParallelGroupHistoryCompatible(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        array $leafDescriptors,
+    ): bool {
+        try {
+            WorkflowStepHistory::assertParallelGroupCompatible($run, $sequence, $leafDescriptors);
 
             return true;
         } catch (Throwable $throwable) {

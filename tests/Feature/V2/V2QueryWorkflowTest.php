@@ -39,6 +39,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Jobs\RunActivityTask;
@@ -1468,6 +1469,7 @@ final class V2QueryWorkflowTest extends TestCase
 
     public function testQueriesReplayNestedParallelActivityGroupsBeforeParentWorkflowTaskRuns(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestNestedParallelActivityWorkflow::class, 'query-nested-parallel-activities');
@@ -1499,6 +1501,36 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame([
             'stage' => 'completed',
         ], $workflow->currentState());
+    }
+
+    public function testQueriesRejectParallelActivityBarrierTopologyDrift(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            TestNestedParallelActivityWorkflow::class,
+            'query-parallel-topology-drift',
+        );
+        $workflow->start('Taylor', 'Abigail', 'Selena');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+        $this->replaceActivityScheduledParallelPath($parentRunId, 2, [[
+            'parallel_group_id' => 'parallel-activities:1:3',
+            'parallel_group_kind' => 'activity',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 3,
+            'parallel_group_index' => 1,
+        ]]);
+
+        $this->expectException(HistoryEventShapeMismatchException::class);
+        $this->expectExceptionMessage('recorded [ActivityScheduled]');
+        $this->expectExceptionMessage('current workflow yielded parallel all barrier matching current topology');
+
+        $workflow->refresh()->currentState();
     }
 
     public function testQueriesReplayParallelActivityFailureBeforeParentWorkflowTaskRuns(): void
@@ -1678,5 +1710,29 @@ final class V2QueryWorkflowTest extends TestCase
             ->sole(static fn (WorkflowTask $task): bool => ($task->payload['activity_execution_id'] ?? null) === $execution->id);
 
         $this->app->call([new RunActivityTask($task->id), 'handle']);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $path
+     */
+    private function replaceActivityScheduledParallelPath(string $runId, int $sequence, array $path): void
+    {
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityScheduled->value)
+            ->get()
+            ->sole(
+                static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === $sequence
+            );
+
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $last = $path[array_key_last($path)] ?? [];
+
+        $event->forceFill([
+            'payload' => array_merge($payload, $last, [
+                'parallel_group_path' => $path,
+            ]),
+        ])->save();
     }
 }

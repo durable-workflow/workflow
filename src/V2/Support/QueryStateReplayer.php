@@ -313,6 +313,8 @@ final class QueryStateReplayer
                 $results = [];
                 $failure = null;
 
+                WorkflowStepHistory::assertParallelGroupCompatible($run, $sequence, $leafDescriptors);
+
                 foreach ($leafDescriptors as $descriptor) {
                     $call = $descriptor['call'];
                     $offset = $descriptor['offset'];

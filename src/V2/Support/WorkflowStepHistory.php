@@ -15,6 +15,7 @@ final class WorkflowStepHistory
     public const CHILD_WORKFLOW = 'child workflow';
     public const CONDITION_WAIT = 'condition wait';
     public const CONTINUE_AS_NEW = 'continue as new';
+    public const PARALLEL_GROUP = 'parallel all barrier matching current topology';
     public const SIGNAL_WAIT = 'signal wait';
     public const SIDE_EFFECT = 'side effect';
     public const TIMER = 'timer';
@@ -26,6 +27,54 @@ final class WorkflowStepHistory
 
         if ($conflictingEventTypes !== []) {
             throw new HistoryEventShapeMismatchException($sequence, $expectedShape, $conflictingEventTypes);
+        }
+    }
+
+    /**
+     * @param list<array{
+     *     offset: int,
+     *     group_path: list<array{
+     *         parallel_group_id: string,
+     *         parallel_group_kind: string,
+     *         parallel_group_base_sequence: int,
+     *         parallel_group_size: int,
+     *         parallel_group_index: int
+     *     }>
+     * }> $leafDescriptors
+     */
+    public static function assertParallelGroupCompatible(
+        WorkflowRun $run,
+        int $baseSequence,
+        array $leafDescriptors,
+    ): void {
+        $run->loadMissing('historyEvents');
+
+        foreach ($leafDescriptors as $descriptor) {
+            $offset = self::intValue($descriptor['offset'] ?? null);
+            $expectedPath = self::parallelPath($descriptor['group_path'] ?? null);
+
+            if ($offset === null || $expectedPath === []) {
+                continue;
+            }
+
+            $sequence = $baseSequence + $offset;
+            $recordedPath = ParallelChildGroup::metadataPathForSequence($run, $sequence);
+
+            if ($recordedPath === []) {
+                continue;
+            }
+
+            if ($recordedPath === $expectedPath) {
+                continue;
+            }
+
+            $eventTypes = self::workflowStepEventTypesForSequence($run, $sequence);
+
+            throw new HistoryEventShapeMismatchException(
+                $sequence,
+                self::PARALLEL_GROUP,
+                $eventTypes === [] ? ['ParallelGroupTopology'] : $eventTypes,
+            );
         }
     }
 
@@ -168,5 +217,51 @@ final class WorkflowStepHistory
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function workflowStepEventTypesForSequence(WorkflowRun $run, int $sequence): array
+    {
+        $eventTypes = [];
+
+        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+
+            if (! self::isWorkflowStepEvent($event)) {
+                continue;
+            }
+
+            if (self::intValue($event->payload['sequence'] ?? null) !== $sequence) {
+                continue;
+            }
+
+            $eventTypes[] = $event->event_type->value;
+        }
+
+        return array_values(array_unique($eventTypes));
+    }
+
+    /**
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>
+     */
+    private static function parallelPath(mixed $path): array
+    {
+        if (! is_array($path)) {
+            return [];
+        }
+
+        return ParallelChildGroup::metadataPathFromPayload([
+            'parallel_group_path' => $path,
+        ]);
     }
 }
