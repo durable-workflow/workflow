@@ -22,6 +22,7 @@ final class FailureSnapshots
 
         $snapshots = [];
         $failuresById = $run->failures->keyBy('id');
+        $handledFailureIds = [];
 
         foreach ($run->failures as $failure) {
             if (! $failure instanceof WorkflowFailure) {
@@ -32,13 +33,23 @@ final class FailureSnapshots
         }
 
         foreach ($run->historyEvents->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent || ! self::supportsEvent($event)) {
+            if (! $event instanceof WorkflowHistoryEvent) {
                 continue;
             }
 
             $failureId = self::stringValue($event->payload['failure_id'] ?? null);
 
             if ($failureId === null) {
+                continue;
+            }
+
+            if ($event->event_type === HistoryEventType::FailureHandled) {
+                $handledFailureIds[$failureId] = true;
+
+                continue;
+            }
+
+            if (! self::supportsEvent($event)) {
                 continue;
             }
 
@@ -52,6 +63,14 @@ final class FailureSnapshots
             }
 
             $snapshots[$failureId] = $snapshot;
+        }
+
+        foreach (array_keys($handledFailureIds) as $failureId) {
+            if (! isset($snapshots[$failureId])) {
+                continue;
+            }
+
+            $snapshots[$failureId]['handled'] = true;
         }
 
         $snapshots = array_values($snapshots);

@@ -725,6 +725,17 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('order-123', $properties->get('orderId')['value'] ?? null);
         $this->assertSame('api', $properties->get('channel')['value'] ?? null);
         $this->assertNotEmpty($exception['trace']);
+
+        $handledTimelineEntry = collect($detail['timeline'])
+            ->firstWhere('type', 'FailureHandled');
+
+        $this->assertIsArray($handledTimelineEntry);
+        $this->assertSame('failure', $handledTimelineEntry['kind']);
+        $this->assertSame('workflow_failure', $handledTimelineEntry['source_kind']);
+        $this->assertSame($failureId, $handledTimelineEntry['source_id']);
+        $this->assertSame($failureId, $handledTimelineEntry['failure_id']);
+        $this->assertSame('Handled failure: Order order-123 rejected via api.', $handledTimelineEntry['summary']);
+        $this->assertTrue($handledTimelineEntry['failure']['handled'] ?? false);
     }
 
     public function testRunDetailViewDistinguishesRepeatedSameNamedSignalWaits(): void

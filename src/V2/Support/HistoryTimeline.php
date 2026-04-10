@@ -206,6 +206,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::FailureHandled => 'failure',
             HistoryEventType::SideEffectRecorded => 'side_effect',
             HistoryEventType::VersionMarkerRecorded => 'version',
             HistoryEventType::TimerScheduled,
@@ -327,6 +328,9 @@ final class HistoryTimeline
             HistoryEventType::ActivityFailed => $message === null
                 ? sprintf('Failed %s.', $activityLabel)
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
+            HistoryEventType::FailureHandled => $message === null
+                ? 'Failure handled.'
+                : sprintf('Handled failure: %s.', $message),
             HistoryEventType::SideEffectRecorded => 'Recorded side effect.',
             HistoryEventType::VersionMarkerRecorded => match (true) {
                 $changeId !== null && $version !== null => sprintf(
@@ -710,12 +714,15 @@ final class HistoryTimeline
             'propagation_kind' => match ($event->event_type) {
                 HistoryEventType::ActivityFailed => 'activity',
                 HistoryEventType::WorkflowFailed => 'terminal',
+                HistoryEventType::FailureHandled => self::stringValue($payload['propagation_kind'] ?? null)
+                    ?? self::stringValue($failure['propagation_kind'] ?? null),
                 HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
                     ? null
                     : 'update',
                 default => self::stringValue($failure['propagation_kind'] ?? null),
             },
             'handled' => match ($event->event_type) {
+                HistoryEventType::FailureHandled => true,
                 HistoryEventType::ActivityFailed,
                 HistoryEventType::WorkflowFailed => false,
                 HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
@@ -763,6 +770,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed => 'activity_execution',
+            HistoryEventType::FailureHandled => 'workflow_failure',
             HistoryEventType::VersionMarkerRecorded => 'version_marker',
             HistoryEventType::TimerScheduled,
             HistoryEventType::TimerFired => 'timer',
@@ -800,6 +808,8 @@ final class HistoryTimeline
                         ? self::stringValue($failure['source_id'] ?? null)
                         : null
                 ),
+            'workflow_failure' => self::stringValue($failure['id'] ?? null)
+                ?? self::stringValue($event->payload['failure_id'] ?? null),
             'timer' => self::stringValue($timer['id'] ?? null),
             'workflow_run' => self::stringValue($event->workflow_run_id),
             default => self::stringValue($task['id'] ?? null),

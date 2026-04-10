@@ -2710,10 +2710,15 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowFailureIsProjected(): void
     {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestFailingWorkflow::class);
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->failed());
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->failed());
 
         $failure = WorkflowFailure::query()
             ->where('source_kind', 'activity_execution')
@@ -2722,21 +2727,75 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertNotNull($failure);
         $this->assertSame('boom', $failure->message);
+        $this->assertFalse($failure->handled);
         $this->assertSame('failed', $workflow->status());
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ActivityScheduled',
+            'ActivityStarted',
+            'ActivityFailed',
+            'WorkflowFailed',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
     }
 
     public function testWorkflowCanHandleActivityFailureAndContinue(): void
     {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestHandledFailureWorkflow::class);
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
 
         $summary = WorkflowRunSummary::query()->findOrFail($workflow->runId());
 
         $this->assertSame('Hello, Recovered!', $workflow->output());
         $this->assertSame('completed', $summary->status);
         $this->assertSame(1, WorkflowFailure::query()->where('handled', true)->count());
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('source_kind', 'activity_execution')
+            ->firstOrFail();
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'ActivityScheduled',
+            'ActivityStarted',
+            'ActivityFailed',
+            'FailureHandled',
+            'ActivityScheduled',
+            'ActivityStarted',
+            'ActivityCompleted',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $handledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::FailureHandled->value)
+            ->sole();
+
+        $this->assertSame($failure->id, $handledEvent->payload['failure_id'] ?? null);
+        $this->assertSame('activity_execution', $handledEvent->payload['source_kind'] ?? null);
+        $this->assertSame($failure->source_id, $handledEvent->payload['source_id'] ?? null);
+        $this->assertSame('activity', $handledEvent->payload['propagation_kind'] ?? null);
+        $this->assertTrue($handledEvent->payload['handled'] ?? false);
     }
 
     public function testWorkflowCanWaitForTimerAndResume(): void

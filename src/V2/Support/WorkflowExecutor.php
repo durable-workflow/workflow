@@ -117,18 +117,15 @@ final class WorkflowExecutor
                         } else {
                             $failureId = $activityCompletion->payload['failure_id'] ?? null;
 
-                            if (is_string($failureId)) {
-                                /** @var WorkflowFailure|null $failure */
-                                $failure = $run->failures->firstWhere('id', $failureId);
-
-                                if ($failure !== null) {
-                                    $failure->forceFill([
-                                        'handled' => true,
-                                    ])->save();
-                                }
-                            }
-
                             $current = $result->throw($this->activityException($activityCompletion, null, $run));
+
+                            $this->recordFailureHandled(
+                                $run,
+                                $task,
+                                is_string($failureId) ? $failureId : null,
+                                $sequence,
+                                $activityCompletion->payload,
+                            );
                         }
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -161,13 +158,20 @@ final class WorkflowExecutor
                         $failure = $run->failures
                             ->firstWhere('source_id', $execution->id);
 
-                        if ($failure !== null) {
-                            $failure->forceFill([
-                                'handled' => true,
-                            ])->save();
-                        }
-
                         $current = $result->throw($this->activityException(null, $execution, $run));
+
+                        $this->recordFailureHandled(
+                            $run,
+                            $task,
+                            $failure instanceof WorkflowFailure ? $failure->id : null,
+                            $sequence,
+                            [
+                                'source_kind' => 'activity_execution',
+                                'source_id' => $execution->id,
+                                'exception_class' => $failure?->exception_class,
+                                'message' => $failure?->message,
+                            ],
+                        );
                     }
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -624,6 +628,10 @@ final class WorkflowExecutor
                                 $activityCompletion->recorded_at?->getTimestampMs()
                                     ?? $activityCompletion->created_at?->getTimestampMs()
                                     ?? PHP_INT_MAX,
+                                is_string($activityCompletion->payload['failure_id'] ?? null)
+                                    ? $activityCompletion->payload['failure_id']
+                                    : null,
+                                $activityCompletion->payload,
                             );
 
                             continue;
@@ -661,11 +669,21 @@ final class WorkflowExecutor
                             continue;
                         }
 
+                        /** @var WorkflowFailure|null $activityFailure */
+                        $activityFailure = $run->failures->firstWhere('source_id', $execution->id);
+
                         $failure = ParallelFailureSelector::select(
                             $failure,
                             $offset,
                             $this->activityException(null, $execution, $run),
                             $execution->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
+                            $activityFailure?->id,
+                            [
+                                'source_kind' => 'activity_execution',
+                                'source_id' => $execution->id,
+                                'exception_class' => $activityFailure?->exception_class,
+                                'message' => $activityFailure?->message,
+                            ],
                         );
 
                         continue;
@@ -758,6 +776,14 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
                         $current = $result->throw($failure['exception']);
+
+                        $this->recordFailureHandled(
+                            $run,
+                            $task,
+                            is_string($failure['failure_id'] ?? null) ? $failure['failure_id'] : null,
+                            $sequence + (int) $failure['index'],
+                            is_array($failure['failure_payload'] ?? null) ? $failure['failure_payload'] : [],
+                        );
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -1798,6 +1824,62 @@ final class WorkflowExecutor
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+    }
+
+    /**
+     * @param array<string, mixed> $failurePayload
+     */
+    private function recordFailureHandled(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ?string $failureId,
+        int $workflowSequence,
+        array $failurePayload = [],
+    ): void {
+        if ($failureId === null || $failureId === '') {
+            return;
+        }
+
+        /** @var WorkflowFailure|null $failure */
+        $failure = WorkflowFailure::query()
+            ->whereKey($failureId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if ($failure !== null && ! $failure->handled) {
+            $failure->forceFill([
+                'handled' => true,
+            ])->save();
+        }
+
+        $alreadyRecorded = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::FailureHandled->value)
+            ->get(['payload'])
+            ->contains(static function (WorkflowHistoryEvent $event) use ($failureId): bool {
+                return is_array($event->payload)
+                    && ($event->payload['failure_id'] ?? null) === $failureId;
+            });
+
+        if ($alreadyRecorded) {
+            return;
+        }
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::FailureHandled, array_filter([
+            'failure_id' => $failureId,
+            'sequence' => $workflowSequence,
+            'source_kind' => $failure?->source_kind
+                ?? (is_string($failurePayload['source_kind'] ?? null) ? $failurePayload['source_kind'] : null),
+            'source_id' => $failure?->source_id
+                ?? (is_string($failurePayload['source_id'] ?? null) ? $failurePayload['source_id'] : null),
+            'propagation_kind' => $failure?->propagation_kind
+                ?? (is_string($failurePayload['propagation_kind'] ?? null) ? $failurePayload['propagation_kind'] : null),
+            'exception_class' => $failure?->exception_class
+                ?? (is_string($failurePayload['exception_class'] ?? null) ? $failurePayload['exception_class'] : null),
+            'message' => $failure?->message
+                ?? (is_string($failurePayload['message'] ?? null) ? $failurePayload['message'] : null),
+            'handled' => true,
+        ], static fn (mixed $value): bool => $value !== null), $task);
     }
 
     private function dispatchParentResumeTasks(WorkflowRun $childRun): void
