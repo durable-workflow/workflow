@@ -16,6 +16,8 @@ final class TaskRepairPolicy
 
     public const SCAN_LIMIT = 25;
 
+    public const SCAN_STRATEGY = 'scope_fair_round_robin';
+
     public static function redispatchAfterSeconds(): int
     {
         return self::configuredPositiveInt(
@@ -41,7 +43,7 @@ final class TaskRepairPolicy
     }
 
     /**
-     * @return array{redispatch_after_seconds: int, loop_throttle_seconds: int, scan_limit: int}
+     * @return array{redispatch_after_seconds: int, loop_throttle_seconds: int, scan_limit: int, scan_strategy: string}
      */
     public static function snapshot(): array
     {
@@ -49,6 +51,7 @@ final class TaskRepairPolicy
             'redispatch_after_seconds' => self::redispatchAfterSeconds(),
             'loop_throttle_seconds' => self::loopThrottleSeconds(),
             'scan_limit' => self::scanLimit(),
+            'scan_strategy' => self::SCAN_STRATEGY,
         ];
     }
 

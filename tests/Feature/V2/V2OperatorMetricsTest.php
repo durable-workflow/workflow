@@ -17,6 +17,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\OperatorMetrics;
+use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
@@ -172,6 +173,10 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['repair']['missing_task_candidates']);
         $this->assertSame(5, $snapshot['repair']['total_candidates']);
         $this->assertSame(13, $snapshot['repair']['scan_limit']);
+        $this->assertSame('scope_fair_round_robin', $snapshot['repair']['scan_strategy']);
+        $this->assertSame(4, $snapshot['repair']['selected_existing_task_candidates']);
+        $this->assertSame(1, $snapshot['repair']['selected_missing_task_candidates']);
+        $this->assertSame(5, $snapshot['repair']['selected_total_candidates']);
         $this->assertFalse($snapshot['repair']['existing_task_scan_limit_reached']);
         $this->assertFalse($snapshot['repair']['missing_task_scan_limit_reached']);
         $this->assertFalse($snapshot['repair']['scan_pressure']);
@@ -185,10 +190,13 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(4, $repairScopes->sum('existing_task_candidates'));
         $this->assertSame(1, $repairScopes->sum('missing_task_candidates'));
         $this->assertSame(3, $repairScopes->get('redis:default:any')['existing_task_candidates']);
+        $this->assertSame(3, $repairScopes->get('redis:default:any')['selected_existing_task_candidates']);
         $this->assertSame(120000, $repairScopes->get('redis:default:any')['max_task_candidate_age_ms']);
         $this->assertSame(1, $repairScopes->get('sync:default:any')['existing_task_candidates']);
+        $this->assertSame(1, $repairScopes->get('sync:default:any')['selected_existing_task_candidates']);
         $this->assertTrue($repairScopes->contains(
             static fn (array $scope): bool => $scope['missing_task_candidates'] === 1
+                && $scope['selected_missing_task_candidates'] === 1
                 && $scope['max_missing_run_age_ms'] === 600000
         ));
         $this->assertFalse($repairScopes->get('redis:default:any')['scan_limited_by_global_policy']);
@@ -217,8 +225,156 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(7, $snapshot['repair_policy']['redispatch_after_seconds']);
         $this->assertSame(11, $snapshot['repair_policy']['loop_throttle_seconds']);
         $this->assertSame(13, $snapshot['repair_policy']['scan_limit']);
+        $this->assertSame('scope_fair_round_robin', $snapshot['repair_policy']['scan_strategy']);
         $this->assertFalse(TaskRepairPolicy::dispatchOverdue($claimFailedTask->fresh()));
         $this->assertTrue(TaskRepairPolicy::readyTaskNeedsRedispatch($claimFailedTask->fresh()));
+    }
+
+    public function testRepairCandidateScanIsScopeFairAcrossConnectionQueueAndCompatibility(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 1);
+        config()->set('workflows.v2.task_repair.scan_limit', 3);
+
+        $hotTaskRun = $this->createRunWithSummary(
+            instanceId: 'fair-task-hot',
+            runId: '01JFAIRSCANRUN00000000001',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_ready',
+            connection: 'redis',
+            queue: 'default',
+            compatibility: 'build-a',
+        );
+        $importsTaskRun = $this->createRunWithSummary(
+            instanceId: 'fair-task-imports',
+            runId: '01JFAIRSCANRUN00000000002',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_ready',
+            connection: 'redis',
+            queue: 'imports',
+            compatibility: 'build-a',
+        );
+        $syncTaskRun = $this->createRunWithSummary(
+            instanceId: 'fair-task-sync',
+            runId: '01JFAIRSCANRUN00000000003',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_ready',
+            connection: 'sync',
+            queue: 'default',
+        );
+
+        $hotTaskIds = [];
+
+        for ($i = 1; $i <= 5; $i++) {
+            $hotTaskIds[] = sprintf('01JFAIRTASKHOT%011d', $i);
+            $this->createTask($hotTaskRun, $hotTaskIds[$i - 1], TaskStatus::Ready->value, [
+                'connection' => 'redis',
+                'queue' => 'default',
+                'compatibility' => 'build-a',
+                'available_at' => now()->subMinutes(10),
+                'last_dispatched_at' => now()->subMinutes(10),
+                'created_at' => now()->subMinutes(10)->addSeconds($i),
+            ]);
+        }
+
+        $importsTaskId = '01JFAIRTASKIMPORTS000001';
+        $syncTaskId = '01JFAIRTASKSYNC00000001';
+
+        $this->createTask($importsTaskRun, $importsTaskId, TaskStatus::Ready->value, [
+            'connection' => 'redis',
+            'queue' => 'imports',
+            'compatibility' => 'build-a',
+            'available_at' => now()->subMinutes(9),
+            'last_dispatched_at' => now()->subMinutes(9),
+            'created_at' => now()->subMinutes(9),
+        ]);
+        $this->createTask($syncTaskRun, $syncTaskId, TaskStatus::Ready->value, [
+            'connection' => 'sync',
+            'queue' => 'default',
+            'available_at' => now()->subMinutes(8),
+            'last_dispatched_at' => now()->subMinutes(8),
+            'created_at' => now()->subMinutes(8),
+        ]);
+
+        $hotMissingRunIds = [];
+
+        for ($i = 1; $i <= 4; $i++) {
+            $hotMissingRunIds[] = sprintf('01JFAIRMISSRUNHOT%09d', $i);
+            $this->createRunWithSummary(
+                instanceId: sprintf('fair-missing-hot-%d', $i),
+                runId: $hotMissingRunIds[$i - 1],
+                status: 'waiting',
+                statusBucket: 'running',
+                livenessState: 'repair_needed',
+                connection: 'redis',
+                queue: 'default',
+                compatibility: 'build-a',
+            );
+        }
+
+        $importsMissingRunId = '01JFAIRMISSRUNIMPORTS001';
+        $syncMissingRunId = '01JFAIRMISSRUNSYNC000001';
+
+        $this->createRunWithSummary(
+            instanceId: 'fair-missing-imports',
+            runId: $importsMissingRunId,
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'repair_needed',
+            connection: 'redis',
+            queue: 'imports',
+            compatibility: 'build-a',
+        );
+        $this->createRunWithSummary(
+            instanceId: 'fair-missing-sync',
+            runId: $syncMissingRunId,
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'repair_needed',
+            connection: 'sync',
+            queue: 'default',
+        );
+
+        $taskIds = TaskRepairCandidates::taskIds();
+        $runIds = TaskRepairCandidates::runIds();
+
+        $this->assertCount(3, $taskIds);
+        $this->assertCount(1, array_intersect($taskIds, $hotTaskIds));
+        $this->assertContains($importsTaskId, $taskIds);
+        $this->assertContains($syncTaskId, $taskIds);
+        $this->assertCount(3, $runIds);
+        $this->assertCount(1, array_intersect($runIds, $hotMissingRunIds));
+        $this->assertContains($importsMissingRunId, $runIds);
+        $this->assertContains($syncMissingRunId, $runIds);
+
+        $snapshot = TaskRepairCandidates::snapshot();
+        $scopes = collect($snapshot['scopes'])->keyBy('scope_key');
+
+        $this->assertSame('scope_fair_round_robin', $snapshot['scan_strategy']);
+        $this->assertSame(7, $snapshot['existing_task_candidates']);
+        $this->assertSame(6, $snapshot['missing_task_candidates']);
+        $this->assertSame(3, $snapshot['selected_existing_task_candidates']);
+        $this->assertSame(3, $snapshot['selected_missing_task_candidates']);
+        $this->assertSame(6, $snapshot['selected_total_candidates']);
+        $this->assertTrue($snapshot['scan_pressure']);
+        $this->assertSame(5, $scopes->get('redis:default:build-a')['existing_task_candidates']);
+        $this->assertSame(4, $scopes->get('redis:default:build-a')['missing_task_candidates']);
+        $this->assertSame(1, $scopes->get('redis:default:build-a')['selected_existing_task_candidates']);
+        $this->assertSame(1, $scopes->get('redis:default:build-a')['selected_missing_task_candidates']);
+        $this->assertTrue($scopes->get('redis:default:build-a')['scan_limited_by_global_policy']);
+        $this->assertSame(1, $scopes->get('redis:imports:build-a')['selected_existing_task_candidates']);
+        $this->assertSame(1, $scopes->get('redis:imports:build-a')['selected_missing_task_candidates']);
+        $this->assertFalse($scopes->get('redis:imports:build-a')['scan_limited_by_global_policy']);
+        $this->assertSame(1, $scopes->get('sync:default:any')['selected_existing_task_candidates']);
+        $this->assertSame(1, $scopes->get('sync:default:any')['selected_missing_task_candidates']);
+        $this->assertFalse($scopes->get('sync:default:any')['scan_limited_by_global_policy']);
     }
 
     private function createRunWithSummary(
@@ -230,6 +386,9 @@ final class V2OperatorMetricsTest extends TestCase
         int $historyEventCount = 0,
         int $historySizeBytes = 0,
         bool $continueAsNewRecommended = false,
+        ?string $connection = null,
+        ?string $queue = null,
+        ?string $compatibility = null,
     ): WorkflowRun {
         $instance = WorkflowInstance::query()->create([
             'id' => $instanceId,
@@ -246,6 +405,9 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'status' => $status,
+            'connection' => $connection,
+            'queue' => $queue,
+            'compatibility' => $compatibility,
             'started_at' => now()
                 ->subMinutes(10),
             'last_progress_at' => now()
@@ -269,6 +431,9 @@ final class V2OperatorMetricsTest extends TestCase
             'started_at' => now()
                 ->subMinutes(10),
             'liveness_state' => $livenessState,
+            'connection' => $connection,
+            'queue' => $queue,
+            'compatibility' => $compatibility,
             'history_event_count' => $historyEventCount,
             'history_size_bytes' => $historySizeBytes,
             'continue_as_new_recommended' => $continueAsNewRecommended,
