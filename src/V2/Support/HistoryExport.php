@@ -11,6 +11,7 @@ use InvalidArgumentException;
 use LogicException;
 use Throwable;
 use Workflow\V2\Contracts\HistoryExportRedactor;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -783,10 +784,14 @@ final class HistoryExport
                 continue;
             }
 
-            /** @var ActivityExecution|null $execution */
-            $execution = $executions->get($activityId);
-            $state = $states[$activityId]
-                ?? ($execution instanceof ActivityExecution ? ActivitySnapshot::fromExecution($execution) : ['id' => $activityId]);
+            $state = $states[$activityId] ?? ['id' => $activityId];
+            $eventTypes = is_array($state['history_event_types'] ?? null)
+                ? $state['history_event_types']
+                : [];
+            $eventTypes[] = $event->event_type->value;
+
+            $state['history_authority'] = RunActivityView::HISTORY_AUTHORITY_TYPED;
+            $state['history_event_types'] = array_values(array_unique($eventTypes));
 
             $states[$activityId] = ActivitySnapshot::merge($state, $snapshot);
         }
@@ -796,7 +801,21 @@ final class HistoryExport
                 continue;
             }
 
-            $states[$execution->id] = ActivitySnapshot::fromExecution($execution);
+            $snapshot = ActivitySnapshot::fromExecution($execution);
+            $snapshot['history_event_types'] = [];
+            $snapshot['row_status'] = $execution->status?->value;
+
+            if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                $snapshot['history_authority'] = RunActivityView::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK;
+            } elseif ($execution->status === ActivityStatus::Cancelled) {
+                $snapshot['history_authority'] = RunActivityView::HISTORY_AUTHORITY_MUTABLE_CANCEL_FALLBACK;
+            } else {
+                $snapshot['history_authority'] = RunActivityView::HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL;
+                $snapshot['history_unsupported_reason'] = RunActivityView::UNSUPPORTED_TERMINAL_REASON;
+                unset($snapshot['result'], $snapshot['closed_at'], $snapshot['exception']);
+            }
+
+            $states[$execution->id] = $snapshot;
         }
 
         $activities = [];
@@ -804,6 +823,7 @@ final class HistoryExport
         foreach ($states as $activityId => $state) {
             /** @var ActivityExecution|null $execution */
             $execution = $executions->get($activityId);
+            $state = self::mergeActivityExecutionMetadata($state, $execution);
             $activities[] = self::activityState($state, $execution, $attemptsByActivityId[$activityId] ?? []);
         }
 
@@ -857,26 +877,99 @@ final class HistoryExport
         array $attemptStates = [],
     ): array
     {
+        $unsupportedReason = self::stringValue($state['history_unsupported_reason'] ?? null);
+        $status = $unsupportedReason === RunActivityView::UNSUPPORTED_TERMINAL_REASON
+            ? 'unsupported'
+            : ($state['status'] ?? 'pending');
+
         return [
             'id' => $state['id'] ?? null,
             'idempotency_key' => $state['idempotency_key'] ?? $state['id'] ?? null,
             'sequence' => $state['sequence'] ?? null,
             'activity_type' => $state['type'] ?? null,
             'activity_class' => $state['class'] ?? null,
-            'status' => $state['status'] ?? 'pending',
+            'status' => $status,
+            'source_status' => self::stringValue($state['row_status'] ?? null)
+                ?? self::stringValue($state['status'] ?? null)
+                ?? 'pending',
+            'history_authority' => self::stringValue($state['history_authority'] ?? null),
+            'history_event_types' => is_array($state['history_event_types'] ?? null)
+                ? array_values(array_filter(
+                    $state['history_event_types'],
+                    static fn (mixed $eventType): bool => is_string($eventType) && $eventType !== '',
+                ))
+                : [],
+            'history_unsupported_reason' => $unsupportedReason,
+            'row_status' => self::stringValue($state['row_status'] ?? null),
+            'parallel_group_kind' => $state['parallel_group_kind'] ?? null,
+            'parallel_group_id' => $state['parallel_group_id'] ?? null,
+            'parallel_group_base_sequence' => $state['parallel_group_base_sequence'] ?? null,
+            'parallel_group_size' => $state['parallel_group_size'] ?? null,
+            'parallel_group_index' => $state['parallel_group_index'] ?? null,
+            'parallel_group_path' => $state['parallel_group_path'] ?? [],
             'connection' => $state['connection'] ?? null,
             'queue' => $state['queue'] ?? null,
             'retry_policy' => $state['retry_policy'] ?? ($execution?->retry_policy ?? null),
             'attempt_count' => $state['attempt_count'] ?? 0,
             'current_attempt_id' => $state['attempt_id'] ?? $execution?->current_attempt_id,
             'arguments' => $state['arguments'] ?? null,
-            'result' => $state['result'] ?? null,
+            'result' => $unsupportedReason === RunActivityView::UNSUPPORTED_TERMINAL_REASON
+                ? null
+                : ($state['result'] ?? null),
             'created_at' => self::timestamp($state['created_at'] ?? null),
             'started_at' => self::timestamp($state['started_at'] ?? null),
             'last_heartbeat_at' => self::timestamp($state['last_heartbeat_at'] ?? null),
-            'closed_at' => self::timestamp($state['closed_at'] ?? null),
+            'closed_at' => $unsupportedReason === RunActivityView::UNSUPPORTED_TERMINAL_REASON
+                ? null
+                : self::timestamp($state['closed_at'] ?? null),
             'attempts' => self::activityAttempts($state, $execution, $attemptStates),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     * @return array<string, mixed>
+     */
+    private static function mergeActivityExecutionMetadata(array $state, ?ActivityExecution $execution): array
+    {
+        if (! $execution instanceof ActivityExecution) {
+            return $state;
+        }
+
+        if (($state['history_authority'] ?? null) !== RunActivityView::HISTORY_AUTHORITY_TYPED) {
+            return $state;
+        }
+
+        $snapshot = ActivitySnapshot::fromExecution($execution);
+
+        foreach ([
+            'sequence',
+            'type',
+            'class',
+            'retry_policy',
+            'connection',
+            'queue',
+            'arguments',
+        ] as $key) {
+            if (! array_key_exists($key, $state) && array_key_exists($key, $snapshot)) {
+                $state[$key] = $snapshot[$key];
+            }
+        }
+
+        if (
+            in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)
+            && ParallelChildGroup::metadataPathFromPayload($state) === []
+        ) {
+            $path = ParallelChildGroup::metadataPathFromPayload([
+                'parallel_group_path' => $execution->parallel_group_path,
+            ]);
+
+            if ($path !== []) {
+                $state = ActivitySnapshot::merge($state, ParallelChildGroup::payloadForPath($path));
+            }
+        }
+
+        return $state;
     }
 
     /**
@@ -951,6 +1044,10 @@ final class HistoryExport
      */
     private static function syntheticActivityAttempt(array $state, ?ActivityExecution $execution): ?array
     {
+        if (($state['history_unsupported_reason'] ?? null) === RunActivityView::UNSUPPORTED_TERMINAL_REASON) {
+            return null;
+        }
+
         $attemptId = self::stringValue($state['attempt_id'] ?? null)
             ?? self::stringValue($execution?->current_attempt_id);
         $attemptNumber = self::intValue($state['attempt_count'] ?? null)
@@ -986,6 +1083,21 @@ final class HistoryExport
             'activity_type' => $activity['activity_type'] ?? null,
             'activity_class' => $activity['activity_class'] ?? null,
             'status' => $activity['status'] ?? null,
+            'source_status' => $activity['source_status'] ?? ($activity['status'] ?? null),
+            'history_authority' => $activity['history_authority'] ?? null,
+            'history_event_types' => is_array($activity['history_event_types'] ?? null)
+                ? array_values($activity['history_event_types'])
+                : [],
+            'history_unsupported_reason' => $activity['history_unsupported_reason'] ?? null,
+            'row_status' => $activity['row_status'] ?? null,
+            'parallel_group_kind' => $activity['parallel_group_kind'] ?? null,
+            'parallel_group_id' => $activity['parallel_group_id'] ?? null,
+            'parallel_group_base_sequence' => $activity['parallel_group_base_sequence'] ?? null,
+            'parallel_group_size' => $activity['parallel_group_size'] ?? null,
+            'parallel_group_index' => $activity['parallel_group_index'] ?? null,
+            'parallel_group_path' => is_array($activity['parallel_group_path'] ?? null)
+                ? array_values($activity['parallel_group_path'])
+                : [],
             'connection' => $activity['connection'] ?? null,
             'queue' => $activity['queue'] ?? null,
             'retry_policy' => $activity['retry_policy'] ?? null,

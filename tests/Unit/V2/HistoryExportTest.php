@@ -10,6 +10,7 @@ use RuntimeException;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryExportRedactor;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
@@ -791,6 +792,52 @@ final class HistoryExportTest extends TestCase
         );
         $this->assertSame([], $bundle['timers'][0]['history_event_types']);
         $this->assertNull($bundle['timers'][0]['fired_at']);
+    }
+
+    public function testItLabelsTerminalActivityRowsWithoutTypedHistoryAsUnsupportedInExports(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:30:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createMinimalCompletedRun('history-export-row-only-activity');
+
+        /** @var ActivityExecution $activity */
+        $activity = ActivityExecution::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 2,
+            'activity_class' => 'App\\Activities\\RowOnlyActivity',
+            'activity_type' => 'row.only.activity',
+            'status' => ActivityStatus::Completed->value,
+            'arguments' => Serializer::serialize(['order-123']),
+            'result' => Serializer::serialize('mutable-result'),
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'attempt_count' => 1,
+            'started_at' => now()->subMinutes(2),
+            'closed_at' => now()->subMinute(),
+        ]);
+
+        $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'activityExecutions.attempts']));
+
+        $this->assertCount(1, $bundle['activities']);
+        $this->assertSame($activity->id, $bundle['activities'][0]['id']);
+        $this->assertSame(2, $bundle['activities'][0]['sequence']);
+        $this->assertSame('row.only.activity', $bundle['activities'][0]['activity_type']);
+        $this->assertSame('unsupported', $bundle['activities'][0]['status']);
+        $this->assertSame('completed', $bundle['activities'][0]['source_status']);
+        $this->assertSame('completed', $bundle['activities'][0]['row_status']);
+        $this->assertSame('unsupported_terminal_without_history', $bundle['activities'][0]['history_authority']);
+        $this->assertSame(
+            'terminal_activity_row_without_typed_history',
+            $bundle['activities'][0]['history_unsupported_reason'],
+        );
+        $this->assertSame([], $bundle['activities'][0]['history_event_types']);
+        $this->assertSame($activity->arguments, $bundle['activities'][0]['arguments']);
+        $this->assertNull($bundle['activities'][0]['result']);
+        $this->assertNull($bundle['activities'][0]['closed_at']);
     }
 
     public function testItAppliesConfiguredRedactionPolicyToPayloadAndDiagnosticSlots(): void
