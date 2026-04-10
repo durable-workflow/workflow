@@ -244,6 +244,9 @@ final class WorkflowExecutor
                 $timeoutTimer = $current instanceof AwaitWithTimeoutCall
                     ? $run->timers->firstWhere('sequence', $sequence)
                     : null;
+                $timeoutScheduledEvent = $current instanceof AwaitWithTimeoutCall
+                    ? $this->conditionTimeoutScheduledEvent($run, $sequence)
+                    : null;
                 $timeoutFiredEvent = $current instanceof AwaitWithTimeoutCall
                     ? $this->conditionTimeoutFiredEvent($run, $sequence)
                     : null;
@@ -252,7 +255,7 @@ final class WorkflowExecutor
                     $current instanceof AwaitWithTimeoutCall
                     && (
                         $timeoutFiredEvent !== null
-                        || $timeoutTimer?->status === TimerStatus::Fired
+                        || ($timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired)
                     )
                 ) {
                     $this->recordConditionWaitTimedOut(
@@ -2434,6 +2437,18 @@ final class WorkflowExecutor
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
+                && ($event->payload['timer_kind'] ?? null) === 'condition_timeout'
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function conditionTimeoutScheduledEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
                 && ($event->payload['timer_kind'] ?? null) === 'condition_timeout'
                 && ($event->payload['sequence'] ?? null) === $sequence
         );

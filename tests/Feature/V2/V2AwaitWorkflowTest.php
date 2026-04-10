@@ -14,6 +14,7 @@ use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Jobs\RunTimerTask;
@@ -885,6 +886,110 @@ final class V2AwaitWorkflowTest extends TestCase
             $this->assertTrue($conditionWait['task_backed']);
             $this->assertSame($conditionWait['condition_wait_id'], $timerTask['condition_wait_id']);
             $this->assertSame($timerId, $timerTask['timer_id']);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testAwaitWithTimeoutDoesNotTimeOutFromDriftedTimerRowWithoutFiredHistory(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-08 14:15:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'await-timeout-row-fired-without-history');
+            $workflow->start();
+
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyWorkflowTask($runId);
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+            $conditionWait = $this->findConditionWait($detail['waits']);
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+
+            $timer->forceFill([
+                'status' => TimerStatus::Fired->value,
+                'fired_at' => now()->addSeconds(5),
+            ])->save();
+
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($runId);
+
+            WorkflowTask::query()->create([
+                'workflow_run_id' => $runId,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now()->addSeconds(5),
+                'payload' => [
+                    'workflow_wait_kind' => 'condition',
+                    'open_wait_id' => $conditionWait['condition_wait_id'],
+                    'resume_source_kind' => 'timer',
+                    'resume_source_id' => $timer->id,
+                    'timer_id' => $timer->id,
+                    'condition_wait_id' => $conditionWait['condition_wait_id'],
+                    'condition_key' => $conditionWait['condition_key'],
+                    'condition_definition_fingerprint' => $conditionWait['condition_definition_fingerprint'],
+                    'workflow_sequence' => 1,
+                ],
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            Carbon::setTestNow(now()->addSeconds(5));
+
+            $this->runReadyWorkflowTask($runId);
+
+            $this->assertSame('waiting', $workflow->refresh()->status());
+            $this->assertDatabaseMissing('workflow_history_events', [
+                'workflow_run_id' => $runId,
+                'event_type' => HistoryEventType::TimerFired->value,
+            ]);
+            $this->assertDatabaseMissing('workflow_history_events', [
+                'workflow_run_id' => $runId,
+                'event_type' => HistoryEventType::ConditionWaitTimedOut->value,
+            ]);
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+            $conditionWait = $this->findConditionWait($detail['waits']);
+
+            $this->assertSame('condition', $detail['wait_kind']);
+            $this->assertSame('Waiting for condition or timeout', $detail['wait_reason']);
+            $this->assertSame('open', $conditionWait['status']);
+            $this->assertSame('waiting', $conditionWait['source_status']);
+            $this->assertSame($timer->id, $conditionWait['resume_source_id']);
+            $this->assertSame('pending', $detail['timers'][0]['status']);
+            $this->assertSame($timer->id, $detail['timers'][0]['id']);
+
+            $this->runReadyTimerTask($runId);
+            $this->runReadyWorkflowTask($runId);
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame([
+                'approved' => false,
+                'timed_out' => true,
+                'stage' => 'timed-out',
+                'workflow_id' => 'await-timeout-row-fired-without-history',
+                'run_id' => $runId,
+            ], $workflow->output());
+
+            $this->assertSame(1, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::TimerFired->value)
+                ->count());
+            $this->assertSame(1, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ConditionWaitTimedOut->value)
+                ->count());
         } finally {
             Carbon::setTestNow();
         }
