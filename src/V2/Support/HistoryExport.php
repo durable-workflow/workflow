@@ -12,7 +12,6 @@ use LogicException;
 use Throwable;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -771,6 +770,7 @@ final class HistoryExport
 
         $states = [];
         $executions = $run->activityExecutions->keyBy('id');
+        $attemptsByActivityId = ActivityAttemptSnapshots::forRun($run);
 
         foreach (self::activityEvents($run) as $event) {
             $snapshot = ActivitySnapshot::fromEvent($event);
@@ -803,7 +803,7 @@ final class HistoryExport
         foreach ($states as $activityId => $state) {
             /** @var ActivityExecution|null $execution */
             $execution = $executions->get($activityId);
-            $activities[] = self::activityState($state, $execution);
+            $activities[] = self::activityState($state, $execution, $attemptsByActivityId[$activityId] ?? []);
         }
 
         usort($activities, static function (array $left, array $right): int {
@@ -846,9 +846,14 @@ final class HistoryExport
 
     /**
      * @param array<string, mixed> $state
+     * @param list<array<string, mixed>> $attemptStates
      * @return array<string, mixed>
      */
-    private static function activityState(array $state, ?ActivityExecution $execution = null): array
+    private static function activityState(
+        array $state,
+        ?ActivityExecution $execution = null,
+        array $attemptStates = [],
+    ): array
     {
         return [
             'id' => $state['id'] ?? null,
@@ -868,27 +873,25 @@ final class HistoryExport
             'started_at' => self::timestamp($state['started_at'] ?? null),
             'last_heartbeat_at' => self::timestamp($state['last_heartbeat_at'] ?? null),
             'closed_at' => self::timestamp($state['closed_at'] ?? null),
-            'attempts' => self::activityAttempts($state, $execution),
+            'attempts' => self::activityAttempts($state, $execution, $attemptStates),
         ];
     }
 
     /**
      * @param array<string, mixed> $state
+     * @param list<array<string, mixed>> $attemptStates
      * @return list<array<string, mixed>>
      */
-    private static function activityAttempts(array $state, ?ActivityExecution $execution): array
+    private static function activityAttempts(
+        array $state,
+        ?ActivityExecution $execution,
+        array $attemptStates,
+    ): array
     {
-        $attempts = [];
-
-        if ($execution instanceof ActivityExecution) {
-            foreach ($execution->attempts as $attempt) {
-                if (! $attempt instanceof ActivityAttempt) {
-                    continue;
-                }
-
-                $attempts[] = self::attempt($attempt);
-            }
-        }
+        $attempts = array_map(
+            static fn (array $attempt): array => self::activityAttemptSnapshot($attempt, $execution),
+            $attemptStates,
+        );
 
         $syntheticAttempt = self::syntheticActivityAttempt($state, $execution);
 
@@ -918,6 +921,26 @@ final class HistoryExport
         });
 
         return array_values($attempts);
+    }
+
+    /**
+     * @param array<string, mixed> $attempt
+     * @return array<string, mixed>
+     */
+    private static function activityAttemptSnapshot(array $attempt, ?ActivityExecution $execution): array
+    {
+        return [
+            'id' => $attempt['id'] ?? null,
+            'activity_execution_id' => $attempt['activity_execution_id'] ?? ($execution?->id),
+            'workflow_task_id' => $attempt['workflow_task_id'] ?? null,
+            'attempt_number' => $attempt['attempt_number'] ?? null,
+            'status' => $attempt['status'] ?? null,
+            'lease_owner' => $attempt['lease_owner'] ?? null,
+            'started_at' => self::timestamp($attempt['started_at'] ?? null),
+            'last_heartbeat_at' => self::timestamp($attempt['last_heartbeat_at'] ?? null),
+            'lease_expires_at' => self::timestamp($attempt['lease_expires_at'] ?? null),
+            'closed_at' => self::timestamp($attempt['closed_at'] ?? null),
+        ];
     }
 
     /**
@@ -973,25 +996,6 @@ final class HistoryExport
             'last_heartbeat_at' => self::timestamp($activity['last_heartbeat_at'] ?? null),
             'closed_at' => self::timestamp($activity['closed_at'] ?? null),
             'attempts' => is_array($activity['attempts'] ?? null) ? $activity['attempts'] : [],
-        ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private static function attempt(ActivityAttempt $attempt): array
-    {
-        return [
-            'id' => $attempt->id,
-            'activity_execution_id' => $attempt->activity_execution_id,
-            'workflow_task_id' => $attempt->workflow_task_id,
-            'attempt_number' => $attempt->attempt_number,
-            'status' => $attempt->status->value,
-            'lease_owner' => $attempt->lease_owner,
-            'started_at' => self::timestamp($attempt->started_at),
-            'last_heartbeat_at' => self::timestamp($attempt->last_heartbeat_at),
-            'lease_expires_at' => self::timestamp($attempt->lease_expires_at),
-            'closed_at' => self::timestamp($attempt->closed_at),
         ];
     }
 

@@ -2069,6 +2069,221 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
     }
 
+    public function testRunDetailViewRebuildsActivityAttemptsFromTypedHistoryWhenAttemptRowsAndTaskRowsAreMissing(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'detail-activity-attempt-history',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(2),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subSeconds(20),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => \Tests\Fixtures\V2\TestGreetingActivity::class,
+            'activity_type' => \Tests\Fixtures\V2\TestGreetingActivity::class,
+            'status' => \Workflow\V2\Enums\ActivityStatus::Pending->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'attempt_count' => 0,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ]);
+
+        /** @var WorkflowTask $firstTask */
+        $firstTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Leased->value,
+            'payload' => ['activity_execution_id' => $execution->id],
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'available_at' => now()
+                ->subMinute(),
+            'leased_at' => now()
+                ->subSeconds(55),
+            'lease_owner' => 'worker-one',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+            'attempt_count' => 1,
+        ]);
+
+        $firstAttemptId = (string) \Illuminate\Support\Str::ulid();
+        $execution->forceFill([
+            'status' => \Workflow\V2\Enums\ActivityStatus::Running->value,
+            'attempt_count' => 1,
+            'current_attempt_id' => $firstAttemptId,
+            'started_at' => now()
+                ->subSeconds(55),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityStarted, [
+            'activity_execution_id' => $execution->id,
+            'activity_attempt_id' => $firstAttemptId,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'attempt_number' => 1,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ], $firstTask);
+
+        $execution->forceFill([
+            'status' => \Workflow\V2\Enums\ActivityStatus::Pending->value,
+            'last_heartbeat_at' => null,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityRetryScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_attempt_id' => $firstAttemptId,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'retry_after_attempt_id' => $firstAttemptId,
+            'retry_after_attempt' => 1,
+            'retry_backoff_seconds' => 5,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ], $firstTask);
+
+        /** @var WorkflowTask $secondTask */
+        $secondTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Leased->value,
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+                'retry_after_attempt_id' => $firstAttemptId,
+                'retry_after_attempt' => 1,
+            ],
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'available_at' => now()
+                ->subSeconds(30),
+            'leased_at' => now()
+                ->subSeconds(25),
+            'lease_owner' => 'worker-two',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+            'attempt_count' => 2,
+        ]);
+
+        $secondAttemptId = (string) \Illuminate\Support\Str::ulid();
+        $heartbeatAt = now()->subSeconds(10);
+        $leaseExpiresAt = now()->addMinutes(5);
+
+        $execution->forceFill([
+            'status' => \Workflow\V2\Enums\ActivityStatus::Running->value,
+            'attempt_count' => 2,
+            'current_attempt_id' => $secondAttemptId,
+            'started_at' => now()
+                ->subSeconds(25),
+            'last_heartbeat_at' => $heartbeatAt,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityStarted, [
+            'activity_execution_id' => $execution->id,
+            'activity_attempt_id' => $secondAttemptId,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'attempt_number' => 2,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ], $secondTask);
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityHeartbeatRecorded, [
+            'activity_execution_id' => $execution->id,
+            'activity_attempt_id' => $secondAttemptId,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'attempt_number' => 2,
+            'heartbeat_at' => $heartbeatAt->toJSON(),
+            'lease_expires_at' => $leaseExpiresAt->toJSON(),
+            'activity' => ActivitySnapshot::fromExecution($execution),
+            'activity_attempt' => [
+                'id' => $secondAttemptId,
+                'attempt_number' => 2,
+                'status' => 'running',
+                'task_id' => $secondTask->id,
+                'lease_owner' => 'worker-two',
+                'started_at' => $execution->started_at?->toJSON(),
+                'last_heartbeat_at' => $heartbeatAt->toJSON(),
+                'lease_expires_at' => $leaseExpiresAt->toJSON(),
+            ],
+        ], $secondTask);
+
+        $executionId = $execution->id;
+        $firstTaskId = $firstTask->id;
+        $secondTaskId = $secondTask->id;
+
+        $firstTask->delete();
+        $secondTask->delete();
+        $execution->delete();
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('activity', $detail['wait_kind']);
+        $this->assertSame('activity_running_without_task', $detail['liveness_state']);
+        $this->assertCount(1, $detail['activities']);
+        $this->assertSame($executionId, $detail['activities'][0]['id']);
+        $this->assertSame($secondAttemptId, $detail['activities'][0]['attempt_id']);
+        $this->assertSame(2, $detail['activities'][0]['attempt_count']);
+        $this->assertSame('running', $detail['activities'][0]['status']);
+        $this->assertCount(2, $detail['activities'][0]['attempts']);
+        $this->assertSame($firstAttemptId, $detail['activities'][0]['attempts'][0]['id']);
+        $this->assertSame($firstTaskId, $detail['activities'][0]['attempts'][0]['task_id']);
+        $this->assertSame('worker-one', $detail['activities'][0]['attempts'][0]['lease_owner']);
+        $this->assertSame('failed', $detail['activities'][0]['attempts'][0]['status']);
+        $this->assertSame('attempt_closed', $detail['activities'][0]['attempts'][0]['stop_reason']);
+        $this->assertSame($secondAttemptId, $detail['activities'][0]['attempts'][1]['id']);
+        $this->assertSame($secondTaskId, $detail['activities'][0]['attempts'][1]['task_id']);
+        $this->assertSame('worker-two', $detail['activities'][0]['attempts'][1]['lease_owner']);
+        $this->assertSame('running', $detail['activities'][0]['attempts'][1]['status']);
+        $this->assertTrue($detail['activities'][0]['attempts'][1]['can_continue']);
+        $this->assertFalse($detail['activities'][0]['attempts'][1]['cancel_requested']);
+        $this->assertNull($detail['activities'][0]['attempts'][1]['stop_reason']);
+        $this->assertSame($heartbeatAt->toJSON(), $detail['activities'][0]['attempts'][1]['last_heartbeat_at']?->toJSON());
+        $this->assertSame($leaseExpiresAt->toJSON(), $detail['activities'][0]['attempts'][1]['lease_expires_at']?->toJSON());
+        $this->assertSame(['ActivityScheduled', 'ActivityStarted', 'ActivityRetryScheduled', 'ActivityStarted', 'ActivityHeartbeatRecorded'], array_column($detail['timeline'], 'type'));
+        $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
+    }
+
     private function waitFor(callable $condition): void
     {
         $startedAt = microtime(true);

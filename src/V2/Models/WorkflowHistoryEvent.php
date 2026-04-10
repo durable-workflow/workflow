@@ -107,6 +107,7 @@ class WorkflowHistoryEvent extends Model
             'status' => $task->status?->value,
             'available_at' => self::timestamp($task->available_at),
             'leased_at' => self::timestamp($task->leased_at),
+            'lease_owner' => $task->lease_owner,
             'lease_expires_at' => self::timestamp($task->lease_expires_at),
             'attempt_count' => $task->attempt_count,
             'repair_count' => $task->repair_count,

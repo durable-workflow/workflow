@@ -608,6 +608,7 @@ final class HistoryExportTest extends TestCase
 
         $activityId = $activity->id;
         $attemptId = $attempt->id;
+        $taskId = $task->id;
         $arguments = $activity->arguments;
         $result = $activity->result;
 
@@ -631,7 +632,9 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($activityId, $bundle['activities'][0]['attempts'][0]['activity_execution_id']);
         $this->assertSame(1, $bundle['activities'][0]['attempts'][0]['attempt_number']);
         $this->assertSame('completed', $bundle['activities'][0]['attempts'][0]['status']);
-        $this->assertNull($bundle['activities'][0]['attempts'][0]['workflow_task_id']);
+        $this->assertSame($taskId, $bundle['activities'][0]['attempts'][0]['workflow_task_id']);
+        $this->assertSame('worker-a', $bundle['activities'][0]['attempts'][0]['lease_owner']);
+        $this->assertNull($bundle['activities'][0]['attempts'][0]['lease_expires_at']);
     }
 
     public function testItExportsTimerSnapshotsFromTypedHistoryWhenTimerRowIsMissing(): void

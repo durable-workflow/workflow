@@ -10,7 +10,6 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -88,6 +87,7 @@ final class RunActivityView
 
         $states = [];
         $executions = $run->activityExecutions->keyBy('id');
+        $attemptsByActivityId = ActivityAttemptSnapshots::forRun($run);
 
         foreach (self::activityEvents($run) as $event) {
             $snapshot = ActivitySnapshot::fromEvent($event);
@@ -120,7 +120,7 @@ final class RunActivityView
         foreach ($states as $activityId => $state) {
             /** @var ActivityExecution|null $execution */
             $execution = $executions->get($activityId);
-            $activities[] = self::presentActivity($state, $execution);
+            $activities[] = self::presentActivity($state, $execution, $attemptsByActivityId[$activityId] ?? []);
         }
 
         usort($activities, static function (array $left, array $right): int {
@@ -163,11 +163,16 @@ final class RunActivityView
 
     /**
      * @param array<string, mixed> $state
+     * @param list<array<string, mixed>> $attemptStates
      * @return array<string, mixed>
      */
-    private static function presentActivity(array $state, ?ActivityExecution $execution = null): array
+    private static function presentActivity(
+        array $state,
+        ?ActivityExecution $execution = null,
+        array $attemptStates = [],
+    ): array
     {
-        $attempts = self::presentAttempts($state, $execution);
+        $attempts = self::presentAttempts($state, $execution, $attemptStates);
         $latestAttempt = $attempts === []
             ? null
             : $attempts[array_key_last($attempts)];
@@ -205,34 +210,19 @@ final class RunActivityView
 
     /**
      * @param array<string, mixed> $state
+     * @param list<array<string, mixed>> $attemptStates
      * @return list<array<string, mixed>>
      */
-    private static function presentAttempts(array $state, ?ActivityExecution $execution): array
+    private static function presentAttempts(
+        array $state,
+        ?ActivityExecution $execution,
+        array $attemptStates,
+    ): array
     {
-        $attempts = [];
-
-        if ($execution instanceof ActivityExecution) {
-            foreach ($execution->attempts as $attempt) {
-                if (! $attempt instanceof ActivityAttempt) {
-                    continue;
-                }
-
-                $attempts[] = [
-                    'id' => $attempt->id,
-                    'attempt_number' => $attempt->attempt_number,
-                    'status' => $attempt->status?->value,
-                    'task_id' => $attempt->workflow_task_id,
-                    'lease_owner' => $attempt->lease_owner,
-                    'lease_expires_at' => $attempt->lease_expires_at,
-                    'started_at' => $attempt->started_at,
-                    'last_heartbeat_at' => $attempt->last_heartbeat_at,
-                    'closed_at' => $attempt->closed_at,
-                    'can_continue' => self::attemptCanContinue($attempt, $execution),
-                    'cancel_requested' => self::attemptCancelRequested($attempt, $execution),
-                    'stop_reason' => self::attemptStopReason($attempt, $execution),
-                ];
-            }
-        }
+        $attempts = array_map(
+            static fn (array $attempt): array => self::presentAttempt($attempt, $execution),
+            $attemptStates,
+        );
 
         $syntheticAttempt = self::syntheticAttempt($state, $execution);
 
@@ -262,6 +252,28 @@ final class RunActivityView
         });
 
         return array_values($attempts);
+    }
+
+    /**
+     * @param array<string, mixed> $attempt
+     * @return array<string, mixed>
+     */
+    private static function presentAttempt(array $attempt, ?ActivityExecution $execution): array
+    {
+        return [
+            'id' => $attempt['id'] ?? null,
+            'attempt_number' => $attempt['attempt_number'] ?? null,
+            'status' => $attempt['status'] ?? null,
+            'task_id' => $attempt['workflow_task_id'] ?? null,
+            'lease_owner' => $attempt['lease_owner'] ?? null,
+            'lease_expires_at' => self::timestamp($attempt['lease_expires_at'] ?? null),
+            'started_at' => self::timestamp($attempt['started_at'] ?? null),
+            'last_heartbeat_at' => self::timestamp($attempt['last_heartbeat_at'] ?? null),
+            'closed_at' => self::timestamp($attempt['closed_at'] ?? null),
+            'can_continue' => self::attemptStateCanContinue($attempt, $execution),
+            'cancel_requested' => self::attemptStateCancelRequested($attempt, $execution),
+            'stop_reason' => self::attemptStateStopReason($attempt, $execution),
+        ];
     }
 
     /**
@@ -296,43 +308,61 @@ final class RunActivityView
         ];
     }
 
-    private static function attemptCanContinue(ActivityAttempt $attempt, ActivityExecution $execution): bool
+    /**
+     * @param array<string, mixed> $attempt
+     */
+    private static function attemptStateCanContinue(array $attempt, ?ActivityExecution $execution): bool
     {
-        return $attempt->status === ActivityAttemptStatus::Running
-            && $execution->status === ActivityStatus::Running
-            && $execution->current_attempt_id === $attempt->id
-            && $execution->attempt_count === $attempt->attempt_number;
+        if ($execution instanceof ActivityExecution) {
+            return self::stringValue($attempt['id'] ?? null) === self::stringValue($execution->current_attempt_id)
+                && self::intValue($attempt['attempt_number'] ?? null) === self::intValue($execution->attempt_count)
+                && $execution->status === ActivityStatus::Running
+                && self::stringValue($attempt['status'] ?? null) === ActivityAttemptStatus::Running->value;
+        }
+
+        return self::stringValue($attempt['status'] ?? null) === ActivityAttemptStatus::Running->value;
     }
 
-    private static function attemptCancelRequested(ActivityAttempt $attempt, ActivityExecution $execution): bool
+    /**
+     * @param array<string, mixed> $attempt
+     */
+    private static function attemptStateCancelRequested(array $attempt, ?ActivityExecution $execution): bool
     {
-        return $attempt->status === ActivityAttemptStatus::Cancelled
-            || $execution->status === ActivityStatus::Cancelled;
+        return self::stringValue($attempt['status'] ?? null) === ActivityAttemptStatus::Cancelled->value
+            || $execution?->status === ActivityStatus::Cancelled;
     }
 
-    private static function attemptStopReason(ActivityAttempt $attempt, ActivityExecution $execution): ?string
+    /**
+     * @param array<string, mixed> $attempt
+     */
+    private static function attemptStateStopReason(array $attempt, ?ActivityExecution $execution): ?string
     {
-        if ($attempt->status === ActivityAttemptStatus::Cancelled) {
+        $status = self::stringValue($attempt['status'] ?? null);
+
+        if ($status === ActivityAttemptStatus::Cancelled->value) {
             return 'attempt_cancelled';
         }
 
-        if ($execution->status === ActivityStatus::Cancelled) {
+        if ($execution?->status === ActivityStatus::Cancelled) {
             return 'activity_cancelled';
         }
 
-        if ($attempt->status === ActivityAttemptStatus::Expired) {
+        if ($status === ActivityAttemptStatus::Expired->value) {
             return 'attempt_expired';
         }
 
-        if (in_array($attempt->status, [ActivityAttemptStatus::Completed, ActivityAttemptStatus::Failed], true)) {
+        if (in_array($status, [
+            ActivityAttemptStatus::Completed->value,
+            ActivityAttemptStatus::Failed->value,
+        ], true)) {
             return 'attempt_closed';
         }
 
-        if (in_array($execution->status, [ActivityStatus::Completed, ActivityStatus::Failed], true)) {
+        if (in_array($execution?->status, [ActivityStatus::Completed, ActivityStatus::Failed], true)) {
             return 'activity_closed';
         }
 
-        if (! self::attemptCanContinue($attempt, $execution)) {
+        if (! self::attemptStateCanContinue($attempt, $execution)) {
             return 'stale_attempt';
         }
 
@@ -418,6 +448,28 @@ final class RunActivityView
     {
         return is_string($value) && $value !== ''
             ? $value
+            : null;
+    }
+
+    private static function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        return is_string($value) && is_numeric($value)
+            ? (int) $value
+            : null;
+    }
+
+    private static function timestamp(mixed $value): ?\Carbon\CarbonInterface
+    {
+        if ($value instanceof \Carbon\CarbonInterface) {
+            return $value;
+        }
+
+        return is_string($value) && $value !== ''
+            ? Carbon::parse($value)
             : null;
     }
 
