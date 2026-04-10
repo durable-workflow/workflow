@@ -3898,6 +3898,83 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('workflow_task_ready', $summary->liveness_state);
     }
 
+    public function testTaskWatchdogRedispatchesReadyWorkflowTaskAfterDispatchFailureBeforeAgeCutoff(): void
+    {
+        Queue::fake();
+
+        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 60);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'repair-dispatch-failed-wf-task',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'last_dispatch_attempt_at' => now(),
+            'last_dispatch_error' => 'Queue transport unavailable.',
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('repair_needed', WorkflowRunSummary::query()->findOrFail($run->id)->liveness_state);
+
+        $this->wakeTaskWatchdog();
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame(1, $task->repair_count);
+        $this->assertNull($task->last_dispatch_error);
+        $this->assertNotNull($task->last_dispatched_at);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+
+        $this->assertSame('workflow-task', $summary->wait_kind);
+        $this->assertSame('workflow_task_ready', $summary->liveness_state);
+    }
+
     public function testTaskWatchdogRecreatesMissingWorkflowTaskForRepairNeededRun(): void
     {
         Queue::fake();

@@ -112,6 +112,8 @@ final class V2OperatorMetricsTest extends TestCase
                 ->subMinutes(2),
             'lease_expires_at' => now()
                 ->subMinute(),
+            'created_at' => now()
+                ->subMinutes(2),
         ]);
         $this->createTask($run, '01JMETRICSTASK000000000005', TaskStatus::Ready->value, [
             'available_at' => now()
@@ -165,6 +167,17 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['backlog']['repair_needed_runs']);
         $this->assertSame(1, $snapshot['backlog']['claim_failed_runs']);
         $this->assertSame(1, $snapshot['backlog']['compatibility_blocked_runs']);
+        $this->assertSame(4, $snapshot['repair']['existing_task_candidates']);
+        $this->assertSame(1, $snapshot['repair']['missing_task_candidates']);
+        $this->assertSame(5, $snapshot['repair']['total_candidates']);
+        $this->assertSame(13, $snapshot['repair']['scan_limit']);
+        $this->assertFalse($snapshot['repair']['existing_task_scan_limit_reached']);
+        $this->assertFalse($snapshot['repair']['missing_task_scan_limit_reached']);
+        $this->assertFalse($snapshot['repair']['scan_pressure']);
+        $this->assertSame('2026-04-09T11:58:00.000000Z', $snapshot['repair']['oldest_task_candidate_created_at']);
+        $this->assertSame('2026-04-09T11:50:00.000000Z', $snapshot['repair']['oldest_missing_run_started_at']);
+        $this->assertSame(120000, $snapshot['repair']['max_task_candidate_age_ms']);
+        $this->assertSame(600000, $snapshot['repair']['max_missing_run_age_ms']);
         $this->assertSame(1, $snapshot['starts']['pending_runs']);
         $this->assertSame(1, $snapshot['starts']['pending_commands']);
         $this->assertSame(3, $snapshot['starts']['ready_tasks']);

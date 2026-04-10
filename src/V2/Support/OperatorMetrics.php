@@ -35,6 +35,7 @@ final class OperatorMetrics
             'tasks' => self::taskMetrics($now),
             'activities' => self::activityMetrics(),
             'backlog' => self::backlogMetrics($now),
+            'repair' => TaskRepairCandidates::snapshot($now),
             'starts' => self::startMetrics($now),
             'history' => self::historyMetrics(),
             'projections' => self::projectionMetrics(),

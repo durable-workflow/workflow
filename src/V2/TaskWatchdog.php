@@ -7,13 +7,12 @@ namespace Workflow\V2;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Throwable;
-use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -30,11 +29,11 @@ final class TaskWatchdog
             return;
         }
 
-        foreach (self::candidateTaskIds() as $candidateId) {
+        foreach (TaskRepairCandidates::taskIds() as $candidateId) {
             self::recoverExistingTask($candidateId);
         }
 
-        foreach (self::repairCandidateRunIds() as $runId) {
+        foreach (TaskRepairCandidates::runIds() as $runId) {
             self::recoverMissingTask($runId);
         }
     }
@@ -119,63 +118,4 @@ final class TaskWatchdog
         }
     }
 
-    /**
-     * @return list<string>
-     */
-    private static function repairCandidateRunIds(): array
-    {
-        /** @var list<string> $ids */
-        $ids = WorkflowRunSummary::query()
-            ->where('liveness_state', 'repair_needed')
-            ->whereNull('next_task_id')
-            ->whereIn('status', ['pending', 'running', 'waiting'])
-            ->orderBy('wait_started_at')
-            ->orderBy('started_at')
-            ->orderBy('id')
-            ->limit(TaskRepairPolicy::scanLimit())
-            ->pluck('id')
-            ->all();
-
-        return $ids;
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function candidateTaskIds(): array
-    {
-        $now = now();
-        $staleDispatchCutoff = $now->copy()
-            ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
-
-        /** @var list<string> $ids */
-        $ids = WorkflowTask::query()
-            ->where(static function ($query) use ($now, $staleDispatchCutoff): void {
-                $query->where(static function ($ready) use ($now, $staleDispatchCutoff): void {
-                    $ready->where('status', TaskStatus::Ready->value)
-                        ->where(static function ($available) use ($now): void {
-                            $available->whereNull('available_at')
-                                ->orWhere('available_at', '<=', $now);
-                        })
-                        ->where(static function ($dispatch) use ($staleDispatchCutoff): void {
-                            $dispatch->where('last_dispatched_at', '<=', $staleDispatchCutoff)
-                                ->orWhere(static function ($neverDispatched) use ($staleDispatchCutoff): void {
-                                    $neverDispatched->whereNull('last_dispatched_at')
-                                        ->where('created_at', '<=', $staleDispatchCutoff);
-                                });
-                        });
-                })->orWhere(static function ($leased) use ($now): void {
-                    $leased->where('status', TaskStatus::Leased->value)
-                        ->whereNotNull('lease_expires_at')
-                        ->where('lease_expires_at', '<=', $now);
-                });
-            })
-            ->orderBy('available_at')
-            ->orderBy('created_at')
-            ->limit(TaskRepairPolicy::scanLimit())
-            ->pluck('id')
-            ->all();
-
-        return $ids;
-    }
 }
