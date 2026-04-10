@@ -5327,6 +5327,84 @@ final class V2WorkflowTest extends TestCase
         ]);
     }
 
+    public function testRepairRecreatesMissingActivityTaskFromTypedHistoryWhenActivityExecutionRowIsMissing(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'repair-activity-history-only');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+        $executionId = $execution->id;
+        $executionArguments = $execution->arguments;
+        $retryPolicy = $execution->retry_policy;
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->delete();
+        $execution->delete();
+
+        $summary = RunSummaryProjector::project(
+            WorkflowRun::query()
+                ->with(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                ->findOrFail($runId)
+        );
+
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame('activity', $summary->wait_kind);
+        $this->assertSame($executionId, $summary->resume_source_id);
+        $this->assertNull($summary->next_task_id);
+
+        $result = WorkflowStub::loadRun($runId)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair_dispatched', $result->outcome());
+
+        /** @var ActivityExecution $restoredExecution */
+        $restoredExecution = ActivityExecution::query()->findOrFail($executionId);
+
+        $this->assertSame($runId, $restoredExecution->workflow_run_id);
+        $this->assertSame(1, $restoredExecution->sequence);
+        $this->assertSame(TestGreetingActivity::class, $restoredExecution->activity_class);
+        $this->assertSame(TestGreetingActivity::class, $restoredExecution->activity_type);
+        $this->assertSame(ActivityStatus::Pending, $restoredExecution->status);
+        $this->assertSame($executionArguments, $restoredExecution->arguments);
+        $this->assertSame(0, $restoredExecution->attempt_count);
+        $this->assertSame($retryPolicy, $restoredExecution->retry_policy);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->sole();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertSame([
+            'activity_execution_id' => $executionId,
+        ], $task->payload);
+        $this->assertSame(1, $task->repair_count);
+
+        Queue::assertPushed(
+            RunActivityTask::class,
+            static fn (RunActivityTask $job): bool => $job->taskId === $task->id
+        );
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($runId);
+
+        $this->assertSame('activity', $updatedSummary->wait_kind);
+        $this->assertSame('activity_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+    }
+
     public function testRepairRecreatesMissingDelayedActivityRetryTaskFromTypedHistory(): void
     {
         Queue::fake();

@@ -156,13 +156,7 @@ final class TaskRepair
     private static function createMissingTask(WorkflowRun $run, WorkflowRunSummary $summary): ?WorkflowTask
     {
         if ($summary->wait_kind === 'activity') {
-            /** @var ActivityExecution|null $execution */
-            $execution = $run->activityExecutions
-                ->first(static fn (ActivityExecution $execution): bool => in_array(
-                    $execution->status,
-                    [ActivityStatus::Pending],
-                    true,
-                ));
+            $execution = ActivityRecovery::pendingExecutionForSummary($run, $summary);
 
             if ($execution instanceof ActivityExecution) {
                 $taskAttributes = self::missingActivityTaskAttributes($run, $execution);
