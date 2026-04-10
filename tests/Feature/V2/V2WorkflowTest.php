@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Queue;
 use LogicException;
 use ReflectionException;
 use Tests\Fixtures\V2\TestAsyncWorkflow;
+use Tests\Fixtures\V2\TestBroadFailureCatchWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredContinueSignalWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
@@ -69,6 +70,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
@@ -1345,6 +1347,68 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertFalse($lateCompletion['recorded']);
         $this->assertSame('stale_attempt', $lateCompletion['reason']);
+    }
+
+    public function testActivityCancelledHistoryIsTerminalForQueryAndWorkerReplay(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestBroadFailureCatchWorkflow::class, 'activity-cancelled-terminal-history');
+        $workflow->start('order-123');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->where('sequence', 1)
+            ->firstOrFail();
+        /** @var WorkflowTask $activityTask */
+        $activityTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        ActivityCancellation::record($run, $execution, $activityTask);
+
+        $state = $workflow->refresh()->currentState();
+
+        $this->assertSame('waiting-for-resume', $state['stage']);
+        $this->assertSame(\RuntimeException::class, $state['caught']['class']);
+        $this->assertSame('Activity cancelled', $state['caught']['message']);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $runId,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [
+                'workflow_wait_kind' => 'activity',
+                'activity_execution_id' => $execution->id,
+            ],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::SignalWaitOpened->value,
+        ]);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+
+        $this->assertSame('signal', $detail['wait_kind']);
+        $this->assertSame('waiting-for-resume', $workflow->refresh()->currentState()['stage']);
     }
 
     public function testActivityHeartbeatRenewsCurrentAttemptLease(): void

@@ -2508,7 +2508,11 @@ final class WorkflowExecutor
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => in_array(
                 $event->event_type,
-                [HistoryEventType::ActivityCompleted, HistoryEventType::ActivityFailed],
+                [
+                    HistoryEventType::ActivityCompleted,
+                    HistoryEventType::ActivityFailed,
+                    HistoryEventType::ActivityCancelled,
+                ],
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
         );
@@ -2693,7 +2697,10 @@ final class WorkflowExecutor
             : RuntimeException::class;
         $fallbackMessage = is_string($event?->payload['message'] ?? null)
             ? $event->payload['message']
-            : 'Activity failed';
+            : match ($event?->event_type) {
+                HistoryEventType::ActivityCancelled => 'Activity cancelled',
+                default => 'Activity failed',
+            };
         $fallbackCode = is_int($event?->payload['code'] ?? null)
             ? $event->payload['code']
             : 0;
