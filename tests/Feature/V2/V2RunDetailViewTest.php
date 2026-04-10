@@ -24,10 +24,13 @@ use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestUnsafeDeterminismWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\CommandStatus;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -41,6 +44,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunDetailView;
@@ -794,6 +798,151 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($signalRecord->id, $missingTask['workflow_resume_source_id']);
         $this->assertSame($signalRecord->id, $missingTask['workflow_signal_id']);
         $this->assertSame($signal->commandId(), $missingTask['workflow_command_id']);
+    }
+
+    public function testRunDetailViewDoesNotTreatUnrelatedWorkflowTaskAsAcceptedUpdateTransport(): void
+    {
+        $instance = WorkflowInstance::create([
+            'id' => 'detail-update-unrelated-task',
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        $run = WorkflowRun::create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
+
+        $command = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Update->value,
+            'target_scope' => 'instance',
+            'status' => CommandStatus::Accepted->value,
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'name' => 'mark-approved',
+                'arguments' => [true],
+                'validation_errors' => [],
+            ]),
+            'accepted_at' => now()
+                ->subSeconds(20),
+        ]);
+
+        $update = WorkflowUpdate::create([
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'instance',
+            'resolved_workflow_run_id' => $run->id,
+            'update_name' => 'mark-approved',
+            'status' => UpdateStatus::Accepted->value,
+            'command_sequence' => $command->command_sequence,
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize([true]),
+            'accepted_at' => $command->accepted_at,
+        ]);
+
+        $unrelatedTask = WorkflowTask::create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSeconds(10),
+            'payload' => [
+                'workflow_wait_kind' => 'signal',
+                'open_wait_id' => 'signal-application:signal-transport',
+                'resume_source_kind' => 'workflow_signal',
+                'resume_source_id' => 'signal-transport',
+                'workflow_signal_id' => 'signal-transport',
+                'workflow_command_id' => 'signal-command',
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $updateWait = $this->findWait($detail['waits'], 'update', 'mark-approved');
+        $openWorkflowTask = $this->findOpenTaskOrNull($detail['tasks'], 'workflow');
+        $missingUpdateTask = collect($detail['tasks'])
+            ->first(static fn (array $task): bool => ($task['task_missing'] ?? false) === true
+                && ($task['workflow_wait_kind'] ?? null) === 'update');
+
+        $this->assertSame('update', $detail['wait_kind']);
+        $this->assertSame('Waiting for update mark-approved', $detail['wait_reason']);
+        $this->assertSame('update:' . $update->id, $detail['open_wait_id']);
+        $this->assertSame('workflow_update', $detail['resume_source_kind']);
+        $this->assertSame($update->id, $detail['resume_source_id']);
+        $this->assertSame('repair_needed', $detail['liveness_state']);
+        $this->assertSame('Accepted update mark-approved is open without an open workflow task.', $detail['liveness_reason']);
+        $this->assertNull($detail['next_task_id']);
+        $this->assertTrue($detail['can_repair']);
+        $this->assertFalse($updateWait['task_backed']);
+        $this->assertNull($updateWait['task_id']);
+        $this->assertIsArray($openWorkflowTask);
+        $this->assertSame($unrelatedTask->id, $openWorkflowTask['id']);
+        $this->assertSame('signal', $openWorkflowTask['workflow_wait_kind']);
+        $this->assertIsArray($missingUpdateTask);
+        $this->assertSame('missing', $missingUpdateTask['transport_state']);
+        $this->assertSame('update:' . $update->id, $missingUpdateTask['workflow_open_wait_id']);
+        $this->assertSame('workflow_update', $missingUpdateTask['workflow_resume_source_kind']);
+        $this->assertSame($update->id, $missingUpdateTask['workflow_update_id']);
+        $this->assertSame($command->id, $missingUpdateTask['workflow_command_id']);
+    }
+
+    public function testAcceptedUpdateAnnotatesReusedReadyWorkflowTask(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-update-reused-ready-task');
+        $workflow->start();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame([], $task->payload);
+
+        $result = $workflow->submitUpdate('mark-approved', true);
+
+        $this->assertSame('accepted', $result->status());
+        $this->assertIsString($result->updateId());
+
+        $task->refresh();
+
+        $this->assertSame([
+            'workflow_wait_kind' => 'update',
+            'open_wait_id' => 'update:' . $result->updateId(),
+            'resume_source_kind' => 'workflow_update',
+            'resume_source_id' => $result->updateId(),
+            'workflow_update_id' => $result->updateId(),
+            'workflow_command_id' => $result->commandId(),
+        ], $task->payload);
     }
 
     public function testRunDetailViewKeepsTypedFailureCodeAndPropertiesWhenFailureRowsDrift(): void

@@ -944,6 +944,13 @@ final class WorkflowStub
 
             $resumeTask = $this->readyWorkflowTaskForDispatch($run->id);
 
+            if ($resumeTask instanceof WorkflowTask) {
+                $resumeTask = $this->mergeWorkflowTaskPayload(
+                    $resumeTask,
+                    WorkflowTaskPayload::forUpdate($update),
+                );
+            }
+
             if (! $resumeTask instanceof WorkflowTask && ! $this->hasOpenWorkflowTask($run->id)) {
                 /** @var WorkflowTask $resumeTask */
                 $resumeTask = WorkflowTask::query()->create([
@@ -2666,6 +2673,37 @@ final class WorkflowStub
             ->first();
 
         return $task;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function mergeWorkflowTaskPayload(WorkflowTask $task, array $payload): WorkflowTask
+    {
+        $existing = is_array($task->payload) ? $task->payload : [];
+        $existingWaitKind = is_string($existing['workflow_wait_kind'] ?? null)
+            ? $existing['workflow_wait_kind']
+            : null;
+        $newWaitKind = is_string($payload['workflow_wait_kind'] ?? null)
+            ? $payload['workflow_wait_kind']
+            : null;
+
+        if (
+            $existingWaitKind !== null
+            && $newWaitKind !== null
+            && $existingWaitKind !== $newWaitKind
+        ) {
+            return $task;
+        }
+
+        $task->forceFill([
+            'payload' => array_filter(
+                array_merge($existing, $payload),
+                static fn (mixed $value): bool => $value !== null,
+            ),
+        ])->save();
+
+        return $task->fresh() ?? $task;
     }
 
     private function loadLockedRunRelations(WorkflowRun $run, WorkflowInstance $instance): void

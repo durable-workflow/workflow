@@ -46,6 +46,10 @@ final class RunSummaryProjector
             ? null
             : self::openUpdateWait($run);
 
+        $openUpdateTask = $openUpdateWait === null
+            ? null
+            : self::openTaskById($run, self::nonEmptyString($openUpdateWait['task_id'] ?? null));
+
         $openSignalApplicationWait = $isTerminal
             || $openActivity !== null
             || $openUpdateWait !== null
@@ -197,6 +201,7 @@ final class RunSummaryProjector
             $isTerminal,
             $openActivity,
             $openUpdateWait,
+            $openUpdateTask,
             $openSignalApplicationWait,
             $openConditionWait,
             $openTimer,
@@ -218,6 +223,7 @@ final class RunSummaryProjector
 
         $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
         $summaryModel = self::summaryModel();
+        $selectedNextTask = $openUpdateWait !== null ? $openUpdateTask : $nextTask;
 
         /** @var WorkflowRunSummary $summary */
         $summary = $summaryModel::query()->updateOrCreate(
@@ -259,13 +265,13 @@ final class RunSummaryProjector
                 'open_wait_id' => $openWaitId,
                 'resume_source_kind' => $resumeSourceKind,
                 'resume_source_id' => $resumeSourceId,
-                'next_task_at' => $nextTask?->available_at,
+                'next_task_at' => $selectedNextTask?->available_at,
                 'liveness_state' => $livenessState,
                 'liveness_reason' => $livenessReason,
-                'next_task_id' => $nextTask?->id,
-                'next_task_type' => $nextTask?->task_type->value,
-                'next_task_status' => $nextTask?->status->value,
-                'next_task_lease_expires_at' => $nextTask?->lease_expires_at,
+                'next_task_id' => $selectedNextTask?->id,
+                'next_task_type' => $selectedNextTask?->task_type->value,
+                'next_task_status' => $selectedNextTask?->status->value,
+                'next_task_lease_expires_at' => $selectedNextTask?->lease_expires_at,
                 'exception_count' => count(FailureSnapshots::forRun($run)),
                 'history_event_count' => $historyBudget['history_event_count'],
                 'history_size_bytes' => $historyBudget['history_size_bytes'],
@@ -350,6 +356,7 @@ final class RunSummaryProjector
         bool $isTerminal,
         ?array $openActivity,
         ?array $openUpdateWait,
+        ?WorkflowTask $openUpdateTask,
         ?array $openSignalApplicationWait,
         ?array $openConditionWait,
         ?array $openTimer,
@@ -393,8 +400,8 @@ final class RunSummaryProjector
         }
 
         if ($openUpdateWait !== null) {
-            if ($nextTask !== null) {
-                return self::taskLiveness($nextTask, $run, 'Update');
+            if ($openUpdateTask !== null) {
+                return self::taskLiveness($openUpdateTask, $run, 'Update');
             }
 
             return [
@@ -826,7 +833,8 @@ final class RunSummaryProjector
      *     name: string,
      *     opened_at: \Carbon\CarbonInterface|null,
      *     resume_source_kind: string,
-     *     resume_source_id: string|null
+     *     resume_source_id: string|null,
+     *     task_id: string|null
      * }|null
      */
     private static function openUpdateWait(WorkflowRun $run): ?array
@@ -844,10 +852,25 @@ final class RunSummaryProjector
                 'opened_at' => self::timestamp($wait['opened_at'] ?? null),
                 'resume_source_kind' => self::nonEmptyString($wait['resume_source_kind'] ?? null) ?? 'workflow_update',
                 'resume_source_id' => self::nonEmptyString($wait['resume_source_id'] ?? null),
+                'task_id' => self::nonEmptyString($wait['task_id'] ?? null),
             ];
         }
 
         return null;
+    }
+
+    private static function openTaskById(WorkflowRun $run, ?string $taskId): ?WorkflowTask
+    {
+        if ($taskId === null) {
+            return null;
+        }
+
+        /** @var WorkflowTask|null $task */
+        $task = $run->tasks
+            ->first(static fn (WorkflowTask $task): bool => $task->id === $taskId
+                && in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true));
+
+        return $task;
     }
 
     /**
