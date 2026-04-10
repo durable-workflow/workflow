@@ -191,6 +191,14 @@ final class WorkflowExecutor
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
+                try {
+                    ConditionWaits::assertReplayCompatible($run, $sequence, $current);
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
                 $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
 
                 if ($resolutionEvent !== null) {
@@ -217,6 +225,7 @@ final class WorkflowExecutor
                     $sequence,
                     $waitId,
                     $current instanceof AwaitWithTimeoutCall ? $current->seconds : null,
+                    $current->conditionKey,
                 );
 
                 /** @var WorkflowTimer|null $timeoutTimer */
@@ -237,7 +246,8 @@ final class WorkflowExecutor
                         $sequence,
                         $waitId,
                         $timeoutTimer,
-                        $current->seconds
+                        $current->seconds,
+                        $current->conditionKey,
                     );
 
                     try {
@@ -298,6 +308,7 @@ final class WorkflowExecutor
                             $waitId,
                             $timeoutTimer,
                             $current->seconds,
+                            $current->conditionKey,
                         );
 
                         try {
@@ -947,6 +958,7 @@ final class WorkflowExecutor
             'fire_at' => $timer->fire_at?->toJSON(),
             'timer_kind' => 'condition_timeout',
             'condition_wait_id' => $waitId,
+            'condition_key' => $awaitWithTimeout->conditionKey,
         ], $task);
 
         /** @var WorkflowTask $timerTask */
@@ -955,10 +967,11 @@ final class WorkflowExecutor
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $fireAt,
-            'payload' => [
+            'payload' => array_filter([
                 'timer_id' => $timer->id,
                 'condition_wait_id' => $waitId,
-            ],
+                'condition_key' => $awaitWithTimeout->conditionKey,
+            ], static fn (mixed $value): bool => $value !== null),
             'connection' => $run->connection,
             'queue' => $run->queue,
             'compatibility' => $run->compatibility,
@@ -1222,6 +1235,7 @@ final class WorkflowExecutor
             'fire_at' => $timer->fire_at?->toJSON(),
             'timer_kind' => 'condition_timeout',
             'condition_wait_id' => $waitId,
+            'condition_key' => $awaitWithTimeout->conditionKey,
         ], $task);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
@@ -1231,6 +1245,7 @@ final class WorkflowExecutor
             'fired_at' => $timer->fired_at?->toJSON(),
             'timer_kind' => 'condition_timeout',
             'condition_wait_id' => $waitId,
+            'condition_key' => $awaitWithTimeout->conditionKey,
         ], $task);
 
         return $timer;
@@ -2546,6 +2561,7 @@ final class WorkflowExecutor
         int $sequence,
         string $waitId,
         ?int $timeoutSeconds,
+        ?string $conditionKey,
     ): WorkflowHistoryEvent {
         $existingEvent = $this->conditionWaitOpenedEvent($run, $sequence);
 
@@ -2555,6 +2571,7 @@ final class WorkflowExecutor
 
         return WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitOpened, array_filter([
             'condition_wait_id' => $waitId,
+            'condition_key' => $conditionKey,
             'sequence' => $sequence,
             'timeout_seconds' => $timeoutSeconds,
         ], static fn (mixed $value): bool => $value !== null), $task);
@@ -2576,6 +2593,7 @@ final class WorkflowExecutor
 
         return WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitSatisfied, array_filter([
             'condition_wait_id' => $waitId,
+            'condition_key' => $current->conditionKey,
             'sequence' => $sequence,
             'timer_id' => $timer?->id,
             'timeout_seconds' => $current instanceof AwaitWithTimeoutCall ? $current->seconds : null,
@@ -2589,6 +2607,7 @@ final class WorkflowExecutor
         string $waitId,
         ?WorkflowTimer $timer,
         ?int $timeoutSeconds,
+        ?string $conditionKey,
     ): WorkflowHistoryEvent {
         $existingEvent = $this->conditionWaitResolutionEvent($run, $sequence);
 
@@ -2598,6 +2617,7 @@ final class WorkflowExecutor
 
         return WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitTimedOut, array_filter([
             'condition_wait_id' => $waitId,
+            'condition_key' => $conditionKey,
             'sequence' => $sequence,
             'timer_id' => $timer?->id,
             'timeout_seconds' => $timeoutSeconds,

@@ -120,6 +120,7 @@ final class QueryStateReplayer
 
             if ($current instanceof AwaitCall || $current instanceof AwaitWithTimeoutCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
+                ConditionWaits::assertReplayCompatible($run, $sequence, $current);
 
                 $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
 

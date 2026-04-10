@@ -127,6 +127,9 @@ final class RunTimerTask implements ShouldQueue
                 'condition_wait_id' => is_string($task->payload['condition_wait_id'] ?? null)
                     ? $task->payload['condition_wait_id']
                     : null,
+                'condition_key' => is_string($task->payload['condition_key'] ?? null)
+                    ? $task->payload['condition_key']
+                    : null,
             ], static fn (mixed $value): bool => $value !== null), $task);
 
             $task->forceFill([

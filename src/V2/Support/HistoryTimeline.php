@@ -129,6 +129,7 @@ final class HistoryTimeline
             'signal_id' => self::stringValue($payload['signal_id'] ?? null),
             'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
             'condition_wait_id' => self::stringValue($payload['condition_wait_id'] ?? null),
+            'condition_key' => self::stringValue($payload['condition_key'] ?? null),
             'signal_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['signal_name'] ?? null),
             'update_name' => $commandMetadata['target_name'] ?? self::stringValue($payload['update_name'] ?? null),
             'version_change_id' => self::stringValue($payload['change_id'] ?? null),
@@ -263,9 +264,10 @@ final class HistoryTimeline
             HistoryEventType::ChildRunCancelled => sprintf('Child workflow %s cancelled.', $childLabel),
             HistoryEventType::ChildRunTerminated => sprintf('Child workflow %s terminated.', $childLabel),
             HistoryEventType::ConditionWaitOpened => ($payload['timeout_seconds'] ?? null) === null
-                ? 'Waiting for condition.'
+                ? sprintf('Waiting for condition%s.', self::conditionLabel($payload))
                 : sprintf(
-                    'Waiting for condition or timeout after %s.',
+                    'Waiting for condition%s or timeout after %s.',
+                    self::conditionLabel($payload),
                     self::durationLabel(self::intValue($payload['timeout_seconds'] ?? null) ?? 0),
                 ),
             HistoryEventType::ConditionWaitSatisfied => 'Condition satisfied.',
@@ -927,6 +929,18 @@ final class HistoryTimeline
         return $seconds === 1
             ? '1 second'
             : sprintf('%d seconds', $seconds);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function conditionLabel(array $payload): string
+    {
+        $conditionKey = self::stringValue($payload['condition_key'] ?? null);
+
+        return $conditionKey === null
+            ? ''
+            : sprintf(' %s', $conditionKey);
     }
 
     private static function stringValue(mixed $value): ?string

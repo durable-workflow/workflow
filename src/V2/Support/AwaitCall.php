@@ -10,6 +10,7 @@ final class AwaitCall
 {
     public function __construct(
         public readonly Closure $condition,
+        public readonly ?string $conditionKey = null,
     ) {
     }
 }

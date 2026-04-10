@@ -188,6 +188,7 @@ final class TaskRepair
                     'payload' => array_filter([
                         'timer_id' => $timerId,
                         'condition_wait_id' => self::nonEmptyString($conditionWait['condition_wait_id'] ?? null),
+                        'condition_key' => self::nonEmptyString($conditionWait['condition_key'] ?? null),
                     ], static fn (mixed $value): bool => $value !== null),
                     'connection' => $run->connection,
                     'queue' => $run->queue,

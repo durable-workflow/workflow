@@ -263,6 +263,7 @@ final class RunWaitView
                 $timerId = self::stringValue($wait['timer_id'] ?? null);
                 $task = $timerId === null ? null : ($taskByTimerId[$timerId] ?? null);
                 $timeoutSeconds = self::intValue($wait['timeout_seconds'] ?? null);
+                $conditionKey = self::stringValue($wait['condition_key'] ?? null);
                 $resumeSourceKind = self::stringValue($wait['resume_source_kind'] ?? null) ?? 'external_input';
                 $resumeSourceId = self::stringValue($wait['resume_source_id'] ?? null);
                 $summary = match ($wait['status']) {
@@ -287,6 +288,7 @@ final class RunWaitView
                 return [
                     'id' => $wait['condition_wait_id'],
                     'condition_wait_id' => $wait['condition_wait_id'],
+                    'condition_key' => $conditionKey,
                     'kind' => 'condition',
                     'sequence' => $sequence,
                     'status' => $wait['status'],
@@ -295,7 +297,7 @@ final class RunWaitView
                     'opened_at' => $wait['opened_at'],
                     'deadline_at' => self::timestamp($wait['deadline_at'] ?? null),
                     'resolved_at' => $wait['resolved_at'],
-                    'target_name' => null,
+                    'target_name' => $conditionKey,
                     'target_type' => 'condition',
                     'task_backed' => self::isOpenTask($task),
                     'external_only' => true,

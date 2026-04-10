@@ -136,9 +136,10 @@ final class RunSummaryProjector
             $resumeSourceId = $nextTask->id;
         } elseif ($openConditionWait !== null) {
             $waitKind = 'condition';
+            $conditionLabel = self::conditionLabel($openConditionWait);
             $waitReason = $openConditionWait['timer_id'] === null
-                ? 'Waiting for condition'
-                : 'Waiting for condition or timeout';
+                ? sprintf('Waiting for condition%s', $conditionLabel)
+                : sprintf('Waiting for condition%s or timeout', $conditionLabel);
             $waitStartedAt = $openConditionWait['opened_at'];
             $waitDeadlineAt = $openConditionWait['deadline_at'];
             $openWaitId = $openConditionWait['id'];
@@ -499,6 +500,7 @@ final class RunSummaryProjector
      *     deadline_at: \Carbon\CarbonInterface|null,
      *     timer_id: string|null,
      *     timeout_seconds: int|null,
+     *     condition_key: string|null,
      *     resume_source_kind: string,
      *     resume_source_id: string|null
      * }|null
@@ -532,7 +534,7 @@ final class RunSummaryProjector
             return $left['condition_wait_id'] <=> $right['condition_wait_id'];
         });
 
-        /** @var array{id: string, condition_wait_id: string, sequence: int|null, opened_at: \Carbon\CarbonInterface|null, deadline_at: \Carbon\CarbonInterface|null, timer_id: string|null, timeout_seconds: int|null, resume_source_kind: string, resume_source_id: string|null} $condition */
+        /** @var array{id: string, condition_wait_id: string, sequence: int|null, opened_at: \Carbon\CarbonInterface|null, deadline_at: \Carbon\CarbonInterface|null, timer_id: string|null, timeout_seconds: int|null, condition_key: string|null, resume_source_kind: string, resume_source_id: string|null} $condition */
         $condition = end($openConditions);
 
         return [
@@ -541,9 +543,22 @@ final class RunSummaryProjector
             'deadline_at' => $condition['deadline_at'],
             'timer_id' => $condition['timer_id'],
             'timeout_seconds' => $condition['timeout_seconds'],
+            'condition_key' => $condition['condition_key'] ?? null,
             'resume_source_kind' => $condition['resume_source_kind'],
             'resume_source_id' => $condition['resume_source_id'],
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $conditionWait
+     */
+    private static function conditionLabel(array $conditionWait): string
+    {
+        $conditionKey = self::nonEmptyString($conditionWait['condition_key'] ?? null);
+
+        return $conditionKey === null
+            ? ''
+            : sprintf(' %s', $conditionKey);
     }
 
     /**

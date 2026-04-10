@@ -11,6 +11,7 @@ final class AwaitWithTimeoutCall
     public function __construct(
         public readonly int $seconds,
         public readonly Closure $condition,
+        public readonly ?string $conditionKey = null,
     ) {
     }
 }

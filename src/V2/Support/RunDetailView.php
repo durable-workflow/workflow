@@ -308,6 +308,7 @@ final class RunDetailView
                     'cancelled_at' => $timer['cancelled_at'] ?? null,
                     'timer_kind' => $timer['timer_kind'] ?? null,
                     'condition_wait_id' => $timer['condition_wait_id'] ?? null,
+                    'condition_key' => $timer['condition_key'] ?? null,
                 ])
                 ->values(),
             'parents' => RunLineageView::parentsForRun($run),

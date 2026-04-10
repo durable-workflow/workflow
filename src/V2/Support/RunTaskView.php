@@ -58,6 +58,7 @@ final class RunTaskView
                     $activityExecutionId = self::stringValue($task->payload['activity_execution_id'] ?? null);
                     $timerId = self::stringValue($task->payload['timer_id'] ?? null);
                     $conditionWaitId = self::stringValue($task->payload['condition_wait_id'] ?? null);
+                    $conditionKey = self::stringValue($task->payload['condition_key'] ?? null);
                     $workflowWaitKind = self::stringValue($task->payload['workflow_wait_kind'] ?? null);
                     $workflowResumeSourceKind = self::stringValue($task->payload['resume_source_kind'] ?? null);
                     $workflowResumeSourceId = self::stringValue($task->payload['resume_source_id'] ?? null);
@@ -113,6 +114,7 @@ final class RunTaskView
                         'timer_sequence' => self::intValue($timer['sequence'] ?? null),
                         'timer_fire_at' => $timer['fire_at'] ?? null,
                         'condition_wait_id' => $conditionWaitId,
+                        'condition_key' => $conditionKey,
                         'workflow_wait_kind' => $workflowWaitKind,
                         'workflow_open_wait_id' => self::stringValue($task->payload['open_wait_id'] ?? null),
                         'workflow_resume_source_kind' => $workflowResumeSourceKind,

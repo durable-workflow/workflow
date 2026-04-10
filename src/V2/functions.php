@@ -25,14 +25,18 @@ if (! function_exists(__NAMESPACE__ . '\\activity')) {
 }
 
 if (! function_exists(__NAMESPACE__ . '\\await')) {
-    function await(callable $condition): AwaitCall
+    function await(callable $condition, ?string $conditionKey = null): AwaitCall
     {
-        return new AwaitCall(\Closure::fromCallable($condition));
+        return new AwaitCall(\Closure::fromCallable($condition), Support\ConditionWaitKey::normalize($conditionKey));
     }
 }
 
 if (! function_exists(__NAMESPACE__ . '\\awaitWithTimeout')) {
-    function awaitWithTimeout(int|string|CarbonInterval $duration, callable $condition): AwaitWithTimeoutCall
+    function awaitWithTimeout(
+        int|string|CarbonInterval $duration,
+        callable $condition,
+        ?string $conditionKey = null,
+    ): AwaitWithTimeoutCall
     {
         if ($duration instanceof CarbonInterval) {
             $duration = (int) ceil($duration->totalSeconds);
@@ -40,7 +44,11 @@ if (! function_exists(__NAMESPACE__ . '\\awaitWithTimeout')) {
             $duration = (int) ceil(CarbonInterval::fromString($duration)->totalSeconds);
         }
 
-        return new AwaitWithTimeoutCall(max(0, $duration), \Closure::fromCallable($condition));
+        return new AwaitWithTimeoutCall(
+            max(0, $duration),
+            \Closure::fromCallable($condition),
+            Support\ConditionWaitKey::normalize($conditionKey),
+        );
     }
 }
 

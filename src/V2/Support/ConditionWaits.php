@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -15,6 +16,7 @@ final class ConditionWaits
      * @return list<array{
      *     id: string,
      *     condition_wait_id: string,
+     *     condition_key: string|null,
      *     sequence: int|null,
      *     status: string,
      *     source_status: string,
@@ -71,6 +73,8 @@ final class ConditionWaits
 
                 $waits[$waitId]['sequence'] = self::intValue($waits[$waitId]['sequence'] ?? null)
                     ?? self::intValue($event->payload['sequence'] ?? null);
+                $waits[$waitId]['condition_key'] = self::stringValue($waits[$waitId]['condition_key'] ?? null)
+                    ?? self::stringValue($event->payload['condition_key'] ?? null);
                 $waits[$waitId]['timeout_seconds'] = self::intValue($waits[$waitId]['timeout_seconds'] ?? null)
                     ?? self::intValue($event->payload['delay_seconds'] ?? null);
                 $waits[$waitId]['timer_id'] = $timerId ?? $waits[$waitId]['timer_id'];
@@ -118,6 +122,8 @@ final class ConditionWaits
                 : 'satisfied';
             $waits[$waitId]['sequence'] = self::intValue($waits[$waitId]['sequence'] ?? null)
                 ?? self::intValue($event->payload['sequence'] ?? null);
+            $waits[$waitId]['condition_key'] = self::stringValue($waits[$waitId]['condition_key'] ?? null)
+                ?? self::stringValue($event->payload['condition_key'] ?? null);
             $waits[$waitId]['timeout_seconds'] = self::intValue($event->payload['timeout_seconds'] ?? null)
                 ?? $waits[$waitId]['timeout_seconds'];
             $waits[$waitId]['timer_id'] = self::stringValue($event->payload['timer_id'] ?? null)
@@ -144,6 +150,7 @@ final class ConditionWaits
      * @return array{
      *     id: string,
      *     condition_wait_id: string,
+     *     condition_key: string|null,
      *     sequence: int|null,
      *     status: string,
      *     source_status: string,
@@ -173,6 +180,7 @@ final class ConditionWaits
      * @return array{
      *     id: string,
      *     condition_wait_id: string,
+     *     condition_key: string|null,
      *     sequence: int|null,
      *     status: string,
      *     source_status: string,
@@ -192,6 +200,7 @@ final class ConditionWaits
         return [
             'id' => $waitId,
             'condition_wait_id' => $waitId,
+            'condition_key' => self::stringValue($event->payload['condition_key'] ?? null),
             'sequence' => self::intValue($event->payload['sequence'] ?? null),
             'status' => 'open',
             'source_status' => 'waiting',
@@ -211,6 +220,53 @@ final class ConditionWaits
         foreach (self::forRun($run) as $wait) {
             if (($wait['sequence'] ?? null) === $sequence) {
                 return $wait['condition_wait_id'];
+            }
+        }
+
+        return null;
+    }
+
+    public static function assertReplayCompatible(
+        WorkflowRun $run,
+        int $sequence,
+        AwaitCall|AwaitWithTimeoutCall $call,
+    ): void {
+        $recordedKey = self::conditionKeyForSequence($run, $sequence);
+
+        if ($recordedKey === null || $recordedKey === $call->conditionKey) {
+            return;
+        }
+
+        throw new ConditionWaitDefinitionMismatchException($sequence, $recordedKey, $call->conditionKey);
+    }
+
+    public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
+    {
+        $run->loadMissing('historyEvents');
+
+        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+
+            if (! in_array($event->event_type, [
+                HistoryEventType::ConditionWaitOpened,
+                HistoryEventType::TimerScheduled,
+                HistoryEventType::TimerFired,
+                HistoryEventType::ConditionWaitSatisfied,
+                HistoryEventType::ConditionWaitTimedOut,
+            ], true)) {
+                continue;
+            }
+
+            if (self::intValue($event->payload['sequence'] ?? null) !== $sequence) {
+                continue;
+            }
+
+            $key = self::stringValue($event->payload['condition_key'] ?? null);
+
+            if ($key !== null) {
+                return $key;
             }
         }
 

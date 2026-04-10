@@ -8,12 +8,16 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
 use Tests\Fixtures\V2\TestAwaitWorkflow;
+use Tests\Fixtures\V2\TestKeyedAwaitWithTimeoutWorkflow;
+use Tests\Fixtures\V2\TestKeyedAwaitWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -97,6 +101,135 @@ final class V2AwaitWorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+    }
+
+    public function testKeyedAwaitWorkflowRecordsConditionKeyAndResumesAfterUpdate(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestKeyedAwaitWorkflow::class, 'await-keyed-update');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertSame('condition', $workflow->refresh()->summary()?->wait_kind);
+        $this->assertSame('Waiting for condition approval.ready', $workflow->summary()?->wait_reason);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+        $conditionWait = $this->findConditionWait($detail['waits']);
+        $conditionTimeline = collect($detail['timeline'])
+            ->firstWhere('type', HistoryEventType::ConditionWaitOpened->value);
+
+        $this->assertSame('approval.ready', $conditionWait['condition_key']);
+        $this->assertSame('approval.ready', $conditionWait['target_name']);
+        $this->assertSame('condition', $conditionWait['target_type']);
+        $this->assertSame('approval.ready', $conditionTimeline['condition_key'] ?? null);
+        $this->assertSame('Waiting for condition approval.ready.', $conditionTimeline['summary'] ?? null);
+
+        /** @var WorkflowHistoryEvent $opened */
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame('approval.ready', $opened->payload['condition_key'] ?? null);
+
+        $update = $workflow->attemptUpdate('approve', true);
+
+        $this->assertTrue($update->completed());
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(['approved' => true], $workflow->output());
+
+        /** @var WorkflowHistoryEvent $satisfied */
+        $satisfied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ConditionWaitSatisfied->value)
+            ->firstOrFail();
+
+        $this->assertSame('approval.ready', $satisfied->payload['condition_key'] ?? null);
+    }
+
+    public function testKeyedAwaitWithTimeoutCarriesConditionKeyIntoTimeoutTransport(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestKeyedAwaitWithTimeoutWorkflow::class, 'await-keyed-timeout');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+        $conditionWait = $this->findConditionWait($detail['waits']);
+        $timerTask = $this->findTask($detail['tasks'], 'timer');
+
+        $this->assertSame('Waiting for condition approval.ready or timeout', $detail['wait_reason']);
+        $this->assertSame('approval.ready', $conditionWait['condition_key']);
+        $this->assertSame('approval.ready', $conditionWait['target_name']);
+        $this->assertSame('approval.ready', $timerTask['condition_key']);
+        $this->assertSame('approval.ready', $detail['timers'][0]['condition_key']);
+
+        /** @var WorkflowHistoryEvent $timerScheduled */
+        $timerScheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::TimerScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame('approval.ready', $timerScheduled->payload['condition_key'] ?? null);
+    }
+
+    public function testQueryReplayRejectsConditionWaitKeyDrift(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestKeyedAwaitWorkflow::class, 'await-keyed-query-drift');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        /** @var WorkflowHistoryEvent $opened */
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->firstOrFail();
+
+        $payload = $opened->payload;
+        $payload['condition_key'] = 'approval.changed';
+        $opened->forceFill(['payload' => $payload])->save();
+
+        $this->expectException(ConditionWaitDefinitionMismatchException::class);
+        $this->expectExceptionMessage('approval.changed');
+
+        $workflow->refresh()->currentState();
+    }
+
+    public function testWorkflowWorkerFailsRunWhenRecordedConditionKeyDoesNotMatchCurrentYield(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestKeyedAwaitWorkflow::class, 'await-keyed-worker-drift');
+        $workflow->start();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitOpened, [
+            'condition_wait_id' => 'condition:1',
+            'condition_key' => 'approval.changed',
+            'sequence' => 1,
+        ]);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertTrue($workflow->refresh()->failed());
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        $this->assertSame(ConditionWaitDefinitionMismatchException::class, $failure->exception_class);
+        $this->assertStringContainsString('recorded with condition key [approval.changed]', $failure->message);
+        $this->assertStringContainsString('current workflow yielded [approval.ready]', $failure->message);
     }
 
     public function testAwaitWorkflowCanApplySubmittedUpdateOnWorkflowWorker(): void
