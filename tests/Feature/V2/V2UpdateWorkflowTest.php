@@ -277,6 +277,8 @@ final class V2UpdateWorkflowTest extends TestCase
         $detail = RunDetailView::forRun($run);
         $updateWait = $this->findWait($detail['waits'], 'update', 'approve');
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
+        $updateTask = collect($detail['tasks'])
+            ->first(static fn (array $task): bool => ($task['workflow_update_id'] ?? null) === $result->updateId());
 
         $this->assertSame('update', $detail['wait_kind']);
         $this->assertSame('Waiting for update approve', $detail['wait_reason']);
@@ -297,6 +299,12 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('ready', $updateWait['task_status']);
         $this->assertSame('open', $signalWait['status']);
         $this->assertSame('waiting', $signalWait['source_status']);
+        $this->assertIsArray($updateTask);
+        $this->assertSame('update', $updateTask['workflow_wait_kind']);
+        $this->assertSame('update:' . $result->updateId(), $updateTask['workflow_open_wait_id']);
+        $this->assertSame('workflow_update', $updateTask['workflow_resume_source_kind']);
+        $this->assertSame($result->updateId(), $updateTask['workflow_resume_source_id']);
+        $this->assertSame($result->commandId(), $updateTask['workflow_command_id']);
     }
 
     public function testInspectUpdateCanFollowTimedOutLifecycleUntilItCloses(): void
@@ -767,11 +775,18 @@ final class V2UpdateWorkflowTest extends TestCase
         /** @var WorkflowRun $pendingRun */
         $pendingRun = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
         $pendingDetail = RunDetailView::forRun($pendingRun);
+        $pendingTask = collect($pendingDetail['tasks'])
+            ->first(static fn (array $task): bool => ($task['type'] ?? null) === 'workflow');
 
         $this->assertSame('workflow-task', $pendingDetail['wait_kind']);
         $this->assertSame('workflow_task_ready', $pendingDetail['liveness_state']);
         $this->assertFalse($pendingDetail['can_update']);
         $this->assertSame('earlier_signal_pending', $pendingDetail['update_blocked_reason']);
+        $this->assertIsArray($pendingTask);
+        $this->assertSame('signal', $pendingTask['workflow_wait_kind']);
+        $this->assertSame('workflow_signal', $pendingTask['workflow_resume_source_kind']);
+        $this->assertIsString($pendingTask['workflow_signal_id']);
+        $this->assertSame($signal->commandId(), $pendingTask['workflow_command_id']);
 
         $result = $workflow->attemptUpdate('approve', true, 'api');
 

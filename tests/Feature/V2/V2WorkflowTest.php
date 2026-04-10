@@ -2904,15 +2904,32 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($runId, $result->runId());
         $this->assertSame(2, $result->commandSequence());
 
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $result->commandId())
+            ->sole();
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame([
+            'workflow_wait_kind' => 'signal',
+            'open_wait_id' => 'signal-application:' . $signal->id,
+            'resume_source_kind' => 'workflow_signal',
+            'resume_source_id' => $signal->id,
+            'workflow_signal_id' => $signal->id,
+            'workflow_command_id' => $result->commandId(),
+        ], $signalTask->payload);
+
         $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         $command = WorkflowCommand::query()->findOrFail($result->commandId());
-        /** @var WorkflowSignal $signal */
-        $signal = WorkflowSignal::query()
-            ->where('workflow_command_id', $result->commandId())
-            ->sole();
+        $signal->refresh();
 
         $this->assertNotNull($command->applied_at);
         $this->assertSame(2, $command->command_sequence);
@@ -3830,6 +3847,7 @@ final class V2WorkflowTest extends TestCase
             'resume_source_kind' => 'workflow_signal',
             'resume_source_id' => $signalRecord->id,
             'workflow_signal_id' => $signalRecord->id,
+            'workflow_command_id' => $signalRecord->workflow_command_id,
         ], $task->payload);
         $this->assertSame(1, $task->repair_count);
 

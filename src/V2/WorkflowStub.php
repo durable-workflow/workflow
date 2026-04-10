@@ -58,6 +58,7 @@ use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowExecutionGate;
 use Workflow\V2\Support\WorkflowInstanceId;
+use Workflow\V2\Support\WorkflowTaskPayload;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowStub
@@ -950,7 +951,7 @@ final class WorkflowStub
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => now(),
-                    'payload' => [],
+                    'payload' => WorkflowTaskPayload::forUpdate($update),
                     'connection' => $run->connection,
                     'queue' => $run->queue,
                     'compatibility' => $run->compatibility,
@@ -1612,7 +1613,7 @@ final class WorkflowStub
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => now(),
-                    'payload' => [],
+                    'payload' => WorkflowTaskPayload::forSignal($signal),
                     'connection' => $run->connection,
                     'queue' => $run->queue,
                     'compatibility' => $run->compatibility,

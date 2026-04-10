@@ -205,7 +205,7 @@ final class TaskRepair
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => now(),
-            'payload' => self::missingWorkflowTaskPayload($summary),
+            'payload' => WorkflowTaskPayload::forMissingWorkflowTask($summary),
             'connection' => $run->connection,
             'queue' => $run->queue,
             'compatibility' => $run->compatibility,
@@ -213,38 +213,6 @@ final class TaskRepair
         ]);
 
         return $task;
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private static function missingWorkflowTaskPayload(WorkflowRunSummary $summary): array
-    {
-        if ($summary->wait_kind === 'update') {
-            return array_filter([
-                'workflow_wait_kind' => $summary->wait_kind,
-                'open_wait_id' => self::nonEmptyString($summary->open_wait_id),
-                'resume_source_kind' => self::nonEmptyString($summary->resume_source_kind),
-                'resume_source_id' => self::nonEmptyString($summary->resume_source_id),
-                'workflow_update_id' => self::nonEmptyString($summary->resume_source_id),
-            ], static fn (mixed $value): bool => $value !== null);
-        }
-
-        if ($summary->wait_kind === 'signal') {
-            $resumeSourceKind = self::nonEmptyString($summary->resume_source_kind);
-            $resumeSourceId = self::nonEmptyString($summary->resume_source_id);
-
-            return array_filter([
-                'workflow_wait_kind' => $summary->wait_kind,
-                'open_wait_id' => self::nonEmptyString($summary->open_wait_id),
-                'resume_source_kind' => $resumeSourceKind,
-                'resume_source_id' => $resumeSourceId,
-                'workflow_signal_id' => $resumeSourceKind === 'workflow_signal' ? $resumeSourceId : null,
-                'workflow_command_id' => $resumeSourceKind === 'workflow_command' ? $resumeSourceId : null,
-            ], static fn (mixed $value): bool => $value !== null);
-        }
-
-        return [];
     }
 
     /**

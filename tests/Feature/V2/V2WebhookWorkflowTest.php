@@ -1345,9 +1345,11 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('command_source', 'webhook');
 
         $runId = $workflow->runId();
+        $commandId = $accepted->json('command_id');
         $updateId = $accepted->json('update_id');
 
         $this->assertIsString($runId);
+        $this->assertIsString($commandId);
         $this->assertIsString($updateId);
 
         WorkflowTask::query()
@@ -1394,6 +1396,7 @@ final class V2WebhookWorkflowTest extends TestCase
             'resume_source_kind' => 'workflow_update',
             'resume_source_id' => $updateId,
             'workflow_update_id' => $updateId,
+            'workflow_command_id' => $commandId,
         ], $repairedTask->payload);
 
         Queue::assertPushed(
@@ -1504,6 +1507,7 @@ final class V2WebhookWorkflowTest extends TestCase
             'resume_source_kind' => 'workflow_signal',
             'resume_source_id' => $signal->id,
             'workflow_signal_id' => $signal->id,
+            'workflow_command_id' => $commandId,
         ], $repairedTask->payload);
 
         Queue::assertPushed(
