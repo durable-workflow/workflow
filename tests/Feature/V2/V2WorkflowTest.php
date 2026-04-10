@@ -2564,6 +2564,93 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($secondChildRunId, $workflow->output()['children'][1]['run_id'] ?? null);
     }
 
+    public function testParallelChildLinkSnapshotBackfillsGroupMetadataForChildResolutionHistory(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelChildWorkflow::class, 'parallel-child-link-group-snapshot');
+        $workflow->start(0, 0);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+        $this->assertSame([[
+            'parallel_group_id' => 'parallel-children:1:2',
+            'parallel_group_kind' => 'child',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 2,
+            'parallel_group_index' => 0,
+        ]], $links[0]->parallel_group_path);
+        $this->assertSame([[
+            'parallel_group_id' => 'parallel-children:1:2',
+            'parallel_group_kind' => 'child',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 2,
+            'parallel_group_index' => 1,
+        ]], $links[1]->parallel_group_path);
+
+        $this->removeChildHistoryParallelMetadata($parentRunId, 1);
+        $this->removeChildHistoryParallelMetadata($parentRunId, 2);
+
+        $firstChildRunId = $links[0]->child_workflow_run_id;
+        $secondChildRunId = $links[1]->child_workflow_run_id;
+
+        $this->assertIsString($firstChildRunId);
+        $this->assertIsString($secondChildRunId);
+
+        $this->runReadyTaskForRun($firstChildRunId, TaskType::Workflow);
+
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyTaskForRun($secondChildRunId, TaskType::Workflow);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $childCompletedEvents = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->get();
+
+        $this->assertSame([1, 2], $childCompletedEvents
+            ->map(static fn (WorkflowHistoryEvent $event): mixed => $event->payload['sequence'] ?? null)
+            ->sort()
+            ->values()
+            ->all());
+
+        /** @var WorkflowHistoryEvent $firstChildCompleted */
+        $firstChildCompleted = $childCompletedEvents
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 1);
+        /** @var WorkflowHistoryEvent $secondChildCompleted */
+        $secondChildCompleted = $childCompletedEvents
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 2);
+
+        $this->assertSame('parallel-children:1:2', $firstChildCompleted->payload['parallel_group_id'] ?? null);
+        $this->assertSame($links[0]->parallel_group_path, $firstChildCompleted->payload['parallel_group_path'] ?? null);
+        $this->assertSame('parallel-children:1:2', $secondChildCompleted->payload['parallel_group_id'] ?? null);
+        $this->assertSame($links[1]->parallel_group_path, $secondChildCompleted->payload['parallel_group_path'] ?? null);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+    }
+
     public function testParallelChildAllResumesParentImmediatelyOnFirstChildFailure(): void
     {
         Queue::fake();
@@ -2681,6 +2768,80 @@ final class V2WorkflowTest extends TestCase
             'Hello, Taylor!',
             'Hello, Abigail!',
         ], $workflow->output()['results'] ?? null);
+    }
+
+    public function testParallelActivityExecutionSnapshotBackfillsGroupMetadataForLaterActivityHistory(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelActivityWorkflow::class, 'parallel-activity-execution-group-snapshot');
+        $workflow->start('Taylor', 'Abigail');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        /** @var ActivityExecution $firstExecution */
+        $firstExecution = ActivityExecution::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('sequence', 1)
+            ->firstOrFail();
+
+        $this->assertSame([[
+            'parallel_group_id' => 'parallel-activities:1:2',
+            'parallel_group_kind' => 'activity',
+            'parallel_group_base_sequence' => 1,
+            'parallel_group_size' => 2,
+            'parallel_group_index' => 0,
+        ]], $firstExecution->parallel_group_path);
+
+        $this->removeActivityHistoryParallelMetadata($parentRunId, 1);
+
+        RunSummaryProjector::project(
+            WorkflowRun::query()->findOrFail($parentRunId)
+                ->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($parentRunId));
+        $firstActivityWait = collect($detail['waits'])
+            ->first(static fn (array $wait): bool => ($wait['kind'] ?? null) === 'activity'
+                && ($wait['sequence'] ?? null) === 1);
+
+        $this->assertIsArray($firstActivityWait);
+        $this->assertSame('parallel-activities:1:2', $firstActivityWait['parallel_group_id'] ?? null);
+        $this->assertSame($firstExecution->parallel_group_path, $firstActivityWait['parallel_group_path'] ?? null);
+
+        $this->runReadyActivityTaskForSequence($parentRunId, 1);
+
+        /** @var WorkflowHistoryEvent $firstActivityStarted */
+        $firstActivityStarted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', HistoryEventType::ActivityStarted->value)
+            ->get()
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 1);
+        /** @var WorkflowHistoryEvent $firstActivityCompleted */
+        $firstActivityCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('event_type', HistoryEventType::ActivityCompleted->value)
+            ->get()
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 1);
+
+        $this->assertSame('parallel-activities:1:2', $firstActivityStarted->payload['parallel_group_id'] ?? null);
+        $this->assertSame($firstExecution->parallel_group_path, $firstActivityStarted->payload['parallel_group_path'] ?? null);
+        $this->assertSame('parallel-activities:1:2', $firstActivityCompleted->payload['parallel_group_id'] ?? null);
+        $this->assertSame($firstExecution->parallel_group_path, $firstActivityCompleted->payload['parallel_group_path'] ?? null);
+
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+
+        $this->runReadyActivityTaskForSequence($parentRunId, 2);
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
     }
 
     public function testNestedParallelActivityAllWaitsForOuterActivityBeforeResumingParentAndPreservesNestedResults(): void
@@ -6292,6 +6453,39 @@ final class V2WorkflowTest extends TestCase
                 HistoryEventType::ActivityRetryScheduled->value,
                 HistoryEventType::ActivityCompleted->value,
                 HistoryEventType::ActivityFailed->value,
+            ])
+            ->get()
+            ->each(static function (WorkflowHistoryEvent $event) use ($sequence): void {
+                $payload = is_array($event->payload) ? $event->payload : [];
+
+                if (($payload['sequence'] ?? null) !== $sequence) {
+                    return;
+                }
+
+                unset(
+                    $payload['parallel_group_id'],
+                    $payload['parallel_group_kind'],
+                    $payload['parallel_group_base_sequence'],
+                    $payload['parallel_group_size'],
+                    $payload['parallel_group_index'],
+                    $payload['parallel_group_path'],
+                );
+
+                $event->forceFill(['payload' => $payload])->save();
+            });
+    }
+
+    private function removeChildHistoryParallelMetadata(string $runId, int $sequence): void
+    {
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', [
+                HistoryEventType::ChildWorkflowScheduled->value,
+                HistoryEventType::ChildRunStarted->value,
+                HistoryEventType::ChildRunCompleted->value,
+                HistoryEventType::ChildRunFailed->value,
+                HistoryEventType::ChildRunCancelled->value,
+                HistoryEventType::ChildRunTerminated->value,
             ])
             ->get()
             ->each(static function (WorkflowHistoryEvent $event) use ($sequence): void {

@@ -17,6 +17,10 @@ final class ActivitySnapshot
      */
     public static function fromExecution(ActivityExecution $execution): array
     {
+        $parallelMetadata = ParallelChildGroup::payloadForPath(
+            self::arrayValue($execution->parallel_group_path) ?? [],
+        );
+
         return array_filter([
             'id' => $execution->id,
             'idempotency_key' => $execution->id,
@@ -36,6 +40,7 @@ final class ActivitySnapshot
             'arguments' => self::stringValue($execution->arguments),
             'result' => self::stringValue($execution->result),
             'exception' => self::stringValue($execution->exception),
+            ...$parallelMetadata,
         ], static fn (mixed $value): bool => $value !== null);
     }
 

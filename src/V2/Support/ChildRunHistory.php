@@ -143,6 +143,34 @@ final class ChildRunHistory
         return $link;
     }
 
+    /**
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>
+     */
+    public static function parallelGroupPathForSequence(WorkflowRun $run, int $sequence): array
+    {
+        $historyPath = ParallelChildGroup::metadataPathForSequence($run, $sequence);
+
+        if ($historyPath !== []) {
+            return $historyPath;
+        }
+
+        $link = self::latestLinkForSequence($run, $sequence);
+
+        if (! $link instanceof WorkflowLink) {
+            return [];
+        }
+
+        return ParallelChildGroup::metadataPathFromPayload([
+            'parallel_group_path' => $link->parallel_group_path,
+        ]);
+    }
+
     public static function childRunForSequence(WorkflowRun $run, int $sequence): ?WorkflowRun
     {
         $resolutionEvent = self::resolutionEventForSequence($run, $sequence);
@@ -200,7 +228,8 @@ final class ChildRunHistory
      *     status: string,
      *     source_status: ?string,
      *     history_authority: string,
-     *     history_unsupported_reason: ?string
+     *     history_unsupported_reason: ?string,
+     *     parallel_group_path: list<array<string, mixed>>
      * }|null
      */
     public static function waitSnapshotForSequence(WorkflowRun $run, int $sequence): ?array
@@ -298,6 +327,7 @@ final class ChildRunHistory
             'history_unsupported_reason' => $isTerminalChildWithoutParentHistory
                 ? self::UNSUPPORTED_TERMINAL_REASON
                 : null,
+            'parallel_group_path' => self::parallelGroupPathForSequence($run, $sequence),
         ];
     }
 

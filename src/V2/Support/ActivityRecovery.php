@@ -95,6 +95,9 @@ final class ActivityRecovery
             'queue' => self::stringValue($state['queue'] ?? null) ?? $run->queue,
             'attempt_count' => max(0, self::intValue($state['attempt_count'] ?? null) ?? 0),
             'retry_policy' => is_array($state['retry_policy'] ?? null) ? $state['retry_policy'] : null,
+            'parallel_group_path' => is_array($state['parallel_group_path'] ?? null)
+                ? $state['parallel_group_path']
+                : null,
             'created_at' => self::timestamp($state['created_at'] ?? null) ?? now(),
             'updated_at' => now(),
         ]);

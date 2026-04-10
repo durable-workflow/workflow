@@ -25,6 +25,7 @@ class WorkflowLink extends Model
     protected $casts = [
         'sequence' => 'integer',
         'is_primary_parent' => 'boolean',
+        'parallel_group_path' => 'array',
     ];
 
     public function parentRun(): BelongsTo

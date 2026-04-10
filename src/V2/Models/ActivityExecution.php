@@ -28,6 +28,7 @@ class ActivityExecution extends Model
     protected $casts = [
         'status' => ActivityStatus::class,
         'retry_policy' => 'array',
+        'parallel_group_path' => 'array',
         'started_at' => 'datetime',
         'closed_at' => 'datetime',
         'last_heartbeat_at' => 'datetime',

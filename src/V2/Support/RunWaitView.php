@@ -385,16 +385,15 @@ final class RunWaitView
                 RunStatus::Terminated->value => sprintf('Child workflow %s terminated.', $label),
                 default => sprintf('Waiting for child workflow %s.', $label),
             };
-            $parallelMetadata = ParallelChildGroup::metadataFromPayload(
-                is_array($scheduledEvent?->payload) ? $scheduledEvent->payload : (
-                    is_array($resolutionEvent?->payload) ? $resolutionEvent->payload : []
-                )
-            );
-            $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload(
-                is_array($scheduledEvent?->payload) ? $scheduledEvent->payload : (
-                    is_array($resolutionEvent?->payload) ? $resolutionEvent->payload : []
-                )
-            );
+            $parallelPayload = is_array($snapshot['parallel_group_path'] ?? null)
+                ? ['parallel_group_path' => $snapshot['parallel_group_path']]
+                : (
+                    is_array($scheduledEvent?->payload) ? $scheduledEvent->payload : (
+                        is_array($resolutionEvent?->payload) ? $resolutionEvent->payload : []
+                    )
+                );
+            $parallelMetadata = ParallelChildGroup::metadataFromPayload($parallelPayload);
+            $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload($parallelPayload);
 
             return [
                 'id' => sprintf('child:%s', $childCallId ?? $sequence),

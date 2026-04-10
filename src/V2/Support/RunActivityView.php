@@ -122,7 +122,18 @@ final class RunActivityView
         }
 
         foreach ($run->activityExecutions as $execution) {
-            if (! $execution instanceof ActivityExecution || array_key_exists($execution->id, $states)) {
+            if (! $execution instanceof ActivityExecution) {
+                continue;
+            }
+
+            if (array_key_exists($execution->id, $states)) {
+                if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                    $states[$execution->id] = self::mergeExecutionParallelMetadata(
+                        $states[$execution->id],
+                        $execution,
+                    );
+                }
+
                 continue;
             }
 
@@ -168,6 +179,27 @@ final class RunActivityView
         });
 
         return $activities;
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     * @return array<string, mixed>
+     */
+    private static function mergeExecutionParallelMetadata(array $state, ActivityExecution $execution): array
+    {
+        if (ParallelChildGroup::metadataPathFromPayload($state) !== []) {
+            return $state;
+        }
+
+        $executionPath = ParallelChildGroup::metadataPathFromPayload([
+            'parallel_group_path' => $execution->parallel_group_path,
+        ]);
+
+        if ($executionPath === []) {
+            return $state;
+        }
+
+        return ActivitySnapshot::merge($state, ParallelChildGroup::payloadForPath($executionPath));
     }
 
     /**

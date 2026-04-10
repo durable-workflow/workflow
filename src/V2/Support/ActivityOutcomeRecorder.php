@@ -129,6 +129,11 @@ final class ActivityOutcomeRecorder
                 $run,
                 (int) $lockedExecution->sequence,
             );
+            if ($parallelMetadataPath === []) {
+                $parallelMetadataPath = ParallelChildGroup::metadataPathFromPayload([
+                    'parallel_group_path' => $lockedExecution->parallel_group_path,
+                ]);
+            }
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
             if ($throwable === null) {

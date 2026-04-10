@@ -1005,6 +1005,7 @@ final class WorkflowExecutor
             'arguments' => Serializer::serialize($activityCall->arguments),
             'connection' => RoutingResolver::activityConnection($activityCall->activity, $run),
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run),
+            'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
         ]);
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = new $activityClass($execution, $run, $task->id);
@@ -1160,6 +1161,7 @@ final class WorkflowExecutor
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'is_primary_parent' => true,
+            'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
         ]);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, array_merge([
@@ -1566,7 +1568,7 @@ final class WorkflowExecutor
             ->sortByDesc('sequence')
             ->first();
         $failure = $childRun->failures->first();
-        $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($run, $sequence);
+        $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($run, $sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
         return WorkflowHistoryEvent::record($run, $eventType, array_filter([
@@ -1710,6 +1712,7 @@ final class WorkflowExecutor
                 'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
                 'child_workflow_run_id' => $continuedRun->id,
                 'is_primary_parent' => $parentChildLink->is_primary_parent,
+                'parallel_group_path' => $parentChildLink->parallel_group_path,
             ]);
 
             if (
@@ -1751,7 +1754,7 @@ final class WorkflowExecutor
 
             $parallelMetadata = is_int($parentChildLink->sequence)
                 ? ParallelChildGroup::payloadForPath(
-                    ParallelChildGroup::metadataPathForSequence($parentRun, $parentChildLink->sequence)
+                    ChildRunHistory::parallelGroupPathForSequence($parentRun, $parentChildLink->sequence)
                 )
                 : [];
 
@@ -2279,7 +2282,7 @@ final class WorkflowExecutor
                     'childLinks.childRun.historyEvents',
                 ]);
 
-                $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence(
+                $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence(
                     $parentRun,
                     $parentReference['parent_sequence'],
                 );
@@ -2292,6 +2295,31 @@ final class WorkflowExecutor
                         $parentRun,
                         $parallelMetadataPath,
                         $childStatus
+                    )
+                ) {
+                    RunSummaryProjector::project(
+                        $parentRun->fresh([
+                            'instance',
+                            'tasks',
+                            'activityExecutions',
+                            'timers',
+                            'failures',
+                            'historyEvents',
+                            'childLinks.childRun.instance.currentRun',
+                            'childLinks.childRun.failures',
+                            'childLinks.childRun.historyEvents',
+                        ])
+                    );
+
+                    continue;
+                }
+
+                if (
+                    $parallelMetadataPath !== []
+                    && ! $this->recordClosedParallelChildResolutions(
+                        $parentRun,
+                        $parallelMetadataPath,
+                        $parentReference['parent_sequence'],
                     )
                 ) {
                     RunSummaryProjector::project(
@@ -2386,6 +2414,70 @@ final class WorkflowExecutor
                 ])
             );
         }
+    }
+
+    /**
+     * @param list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }> $parallelMetadataPath
+     */
+    private function recordClosedParallelChildResolutions(
+        WorkflowRun $parentRun,
+        array $parallelMetadataPath,
+        int $closingSequence,
+    ): bool {
+        foreach ($parallelMetadataPath as $metadata) {
+            foreach (ParallelChildGroup::sequences($metadata) as $sequence) {
+                if ($sequence === $closingSequence) {
+                    continue;
+                }
+
+                if (ChildRunHistory::resolutionEventForSequence($parentRun, $sequence) !== null) {
+                    continue;
+                }
+
+                $childRun = ChildRunHistory::childRunForSequence($parentRun, $sequence);
+
+                if (! $childRun instanceof WorkflowRun) {
+                    continue;
+                }
+
+                $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
+
+                if (! $childStatus instanceof RunStatus || in_array($childStatus, [
+                    RunStatus::Pending,
+                    RunStatus::Running,
+                    RunStatus::Waiting,
+                ], true)) {
+                    continue;
+                }
+
+                try {
+                    WorkflowStepHistory::assertCompatible(
+                        $parentRun,
+                        $sequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
+                    WorkflowStepHistory::assertTypedHistoryRecorded(
+                        $parentRun,
+                        $sequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                    );
+                } catch (HistoryEventShapeMismatchException) {
+                    return false;
+                }
+
+                $this->recordChildResolution($parentRun, null, $sequence, $childRun);
+                $parentRun->unsetRelation('historyEvents');
+                $parentRun->load('historyEvents');
+            }
+        }
+
+        return true;
     }
 
     private function activityResult(WorkflowHistoryEvent $event): mixed
@@ -3091,5 +3183,20 @@ final class WorkflowExecutor
         }
 
         return null;
+    }
+
+    /**
+     * @param array<string, mixed>|null $parallelMetadata
+     * @return list<array<string, mixed>>|null
+     */
+    private static function parallelGroupPath(?array $parallelMetadata): ?array
+    {
+        if ($parallelMetadata === null) {
+            return null;
+        }
+
+        $path = ParallelChildGroup::metadataPathFromPayload($parallelMetadata);
+
+        return $path === [] ? null : $path;
     }
 }
