@@ -590,6 +590,9 @@ final class V2WorkflowTest extends TestCase
         );
         $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
         $this->assertSame(['no typed history'], $detail['tasks'][0]['replay_blocked_recorded_event_types']);
+        $this->assertFalse(collect($detail['tasks'])->contains(
+            static fn (array $row): bool => ($row['task_missing'] ?? false) === true
+        ));
     }
 
     public function testRowOnlyCancelledActivityWithoutTypedHistoryIsMarkedUnsupported(): void
@@ -659,6 +662,7 @@ final class V2WorkflowTest extends TestCase
             'terminal_activity_row_without_typed_history',
             $detail['waits'][0]['history_unsupported_reason'],
         );
+        $this->assertCount(0, $detail['tasks']);
     }
 
     public function testReplayBlocksFiredTimerProjectionWithoutTypedStepHistory(): void
@@ -769,6 +773,9 @@ final class V2WorkflowTest extends TestCase
             );
             $this->assertIsArray($replayBlockedTask);
             $this->assertSame(['no typed history'], $replayBlockedTask['replay_blocked_recorded_event_types']);
+            $this->assertFalse(collect($detail['tasks'])->contains(
+                static fn (array $row): bool => ($row['task_missing'] ?? false) === true
+            ));
         } finally {
             Carbon::setTestNow();
         }
@@ -863,6 +870,9 @@ final class V2WorkflowTest extends TestCase
         );
         $this->assertIsArray($replayBlockedTask);
         $this->assertSame(['no typed history'], $replayBlockedTask['replay_blocked_recorded_event_types']);
+        $this->assertFalse(collect($detail['tasks'])->contains(
+            static fn (array $row): bool => ($row['task_missing'] ?? false) === true
+        ));
     }
 
     public function testActivityRetriesBeforeResumingWorkflow(): void

@@ -197,6 +197,7 @@ final class RunTaskView
         $rows = [];
 
         $waits = RunWaitProjector::snapshotForRun($run)['waits'];
+        $hasUnsupportedWait = self::hasUnsupportedWait($waits);
 
         foreach ($waits as $wait) {
             if (($wait['status'] ?? null) !== 'open' || ($wait['task_backed'] ?? false) === true) {
@@ -280,6 +281,10 @@ final class RunTaskView
                     continue;
                 }
 
+                if (self::waitIsUnsupported($wait)) {
+                    continue;
+                }
+
                 if (self::stringValue($wait['status'] ?? null) === 'open') {
                     continue;
                 }
@@ -327,6 +332,8 @@ final class RunTaskView
             ! $run->status->isTerminal()
             && ! self::hasOpenWorkflowTask($run)
             && ! self::hasOpenWait($waits)
+            && ! $hasUnsupportedWait
+            && ! self::hasReplayBlockedWorkflowTask($run)
             && ! self::hasMissingWorkflowTaskRow($rows)
         ) {
             $rows[] = self::missingGenericWorkflowTaskRow($run);
@@ -1042,6 +1049,29 @@ final class RunTaskView
         return false;
     }
 
+    /**
+     * @param list<array<string, mixed>> $waits
+     */
+    private static function hasUnsupportedWait(array $waits): bool
+    {
+        foreach ($waits as $wait) {
+            if (self::waitIsUnsupported($wait)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $wait
+     */
+    private static function waitIsUnsupported(array $wait): bool
+    {
+        return self::stringValue($wait['status'] ?? null) === 'unsupported'
+            || self::stringValue($wait['history_unsupported_reason'] ?? null) !== null;
+    }
+
     private static function timestampToMilliseconds(mixed $timestamp): int
     {
         if ($timestamp instanceof \Carbon\CarbonInterface) {
@@ -1082,6 +1112,14 @@ final class RunTaskView
         return $run->tasks
             ->contains(static fn (WorkflowTask $task): bool => $task->task_type === TaskType::Workflow
                 && in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true));
+    }
+
+    private static function hasReplayBlockedWorkflowTask(WorkflowRun $run): bool
+    {
+        return $run->tasks
+            ->contains(static fn (WorkflowTask $task): bool => $task->task_type === TaskType::Workflow
+                && $task->status === TaskStatus::Failed
+                && ($task->payload['replay_blocked'] ?? false) === true);
     }
 
     private static function timestamp(mixed $value): ?\Carbon\CarbonInterface
