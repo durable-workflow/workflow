@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 
@@ -75,18 +76,29 @@ final class RunLineageProjector
     public static function snapshotForRun(WorkflowRun $run): array
     {
         $projected = self::projectedRows($run);
+        $parents = RunLineageView::parentsForRun($run);
+        $continuedWorkflows = RunLineageView::continuedWorkflowsForRun($run);
 
-        if ($projected->isNotEmpty() && self::projectionCoversSnapshot($run, $projected)) {
+        if ($projected->isEmpty() && $parents === [] && $continuedWorkflows === []) {
+            return [
+                'source' => 'workflow_run_lineage_entries',
+                'parents' => [],
+                'continued_workflows' => [],
+            ];
+        }
+
+        if ($projected->isNotEmpty() && self::projectionCoversSnapshot($projected, $parents, $continuedWorkflows)) {
             return [
                 'source' => 'workflow_run_lineage_entries',
                 ...self::payloadsFromProjected($projected),
             ];
         }
 
+        $reprojected = self::project($run, $parents, $continuedWorkflows);
+
         return [
-            'source' => 'live_fallback',
-            'parents' => RunLineageView::parentsForRun($run),
-            'continued_workflows' => RunLineageView::continuedWorkflowsForRun($run),
+            'source' => 'workflow_run_lineage_entries_rebuilt',
+            ...self::payloadsFromProjected(collect($reprojected)),
         ];
     }
 
@@ -181,13 +193,13 @@ final class RunLineageProjector
     }
 
     /**
-     * @param EloquentCollection<int, WorkflowRunLineageEntry> $entries
+     * @param Collection<int, WorkflowRunLineageEntry> $entries
      * @return array{
      *     parents: list<array<string, mixed>>,
      *     continued_workflows: list<array<string, mixed>>
      * }
      */
-    private static function payloadsFromProjected(EloquentCollection $entries): array
+    private static function payloadsFromProjected(Collection $entries): array
     {
         return [
             'parents' => $entries
@@ -207,14 +219,20 @@ final class RunLineageProjector
 
     /**
      * @param EloquentCollection<int, WorkflowRunLineageEntry> $entries
+     * @param list<array<string, mixed>> $parents
+     * @param list<array<string, mixed>> $continuedWorkflows
      */
-    private static function projectionCoversSnapshot(WorkflowRun $run, EloquentCollection $entries): bool
+    private static function projectionCoversSnapshot(
+        EloquentCollection $entries,
+        array $parents,
+        array $continuedWorkflows,
+    ): bool
     {
         $projected = self::payloadsFromProjected($entries);
 
-        return self::canonicalEntries($projected['parents']) === self::canonicalEntries(RunLineageView::parentsForRun($run))
+        return self::canonicalEntries($projected['parents']) === self::canonicalEntries($parents)
             && self::canonicalEntries($projected['continued_workflows']) === self::canonicalEntries(
-                RunLineageView::continuedWorkflowsForRun($run)
+                $continuedWorkflows
             );
     }
 

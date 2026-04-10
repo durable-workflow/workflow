@@ -87,8 +87,16 @@ final class RunWaitProjector
     public static function snapshotForRun(WorkflowRun $run): array
     {
         $projected = self::projectedRows($run);
+        $canonicalWaits = RunWaitView::forRun($run);
 
-        if ($projected->isNotEmpty()) {
+        if ($projected->isEmpty() && $canonicalWaits === []) {
+            return [
+                'source' => 'workflow_run_waits',
+                'waits' => [],
+            ];
+        }
+
+        if ($projected->isNotEmpty() && self::projectionMatchesSnapshot($projected, $canonicalWaits)) {
             return [
                 'source' => 'workflow_run_waits',
                 'waits' => $projected
@@ -98,9 +106,14 @@ final class RunWaitProjector
             ];
         }
 
+        $reprojected = self::project($run, $canonicalWaits);
+
         return [
-            'source' => 'live_fallback',
-            'waits' => RunWaitView::forRun($run),
+            'source' => 'workflow_run_waits_rebuilt',
+            'waits' => collect($reprojected)
+                ->map(static fn (WorkflowRunWait $wait): array => $wait->toWaitPayload())
+                ->values()
+                ->all(),
         ];
     }
 
@@ -140,6 +153,32 @@ final class RunWaitProjector
     }
 
     /**
+     * @param EloquentCollection<int, WorkflowRunWait> $projected
+     * @param list<array<string, mixed>> $canonical
+     */
+    private static function projectionMatchesSnapshot(EloquentCollection $projected, array $canonical): bool
+    {
+        return self::canonicalEntries(
+            $projected
+                ->map(static fn (WorkflowRunWait $wait): array => $wait->toWaitPayload())
+                ->values()
+                ->all()
+        ) === self::canonicalEntries($canonical);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $entries
+     * @return list<array<string, mixed>>
+     */
+    private static function canonicalEntries(array $entries): array
+    {
+        return array_map(
+            static fn (array $entry): array => self::canonicalizeValue(self::normalizedPayload($entry)),
+            $entries,
+        );
+    }
+
+    /**
      * @param array<string, mixed> $wait
      * @return array<string, mixed>
      */
@@ -156,6 +195,25 @@ final class RunWaitProjector
 
         if (is_array($value)) {
             return array_map(static fn (mixed $nested): mixed => self::normalizeValue($nested), $value);
+        }
+
+        return $value;
+    }
+
+    private static function canonicalizeValue(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(static fn (mixed $nested): mixed => self::canonicalizeValue($nested), $value);
+        }
+
+        ksort($value);
+
+        foreach ($value as $key => $nested) {
+            $value[$key] = self::canonicalizeValue($nested);
         }
 
         return $value;

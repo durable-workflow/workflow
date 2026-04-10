@@ -27,6 +27,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Models\WorkflowSignal;
@@ -488,10 +489,14 @@ final class HistoryExportTest extends TestCase
         RunSummaryProjector::project($parentRun->fresh());
         RunSummaryProjector::project($childRun->fresh());
 
+        WorkflowRunLineageEntry::query()
+            ->whereIn('workflow_run_id', [$parentRun->id, $childRun->id])
+            ->delete();
+
         $parentBundle = HistoryExport::forRun($parentRun->fresh(['historyEvents', 'childLinks']));
         $childBundle = HistoryExport::forRun($childRun->fresh(['historyEvents', 'parentLinks']));
 
-        $this->assertSame('workflow_run_lineage_entries', $parentBundle['links']['projection_source']);
+        $this->assertSame('workflow_run_lineage_entries_rebuilt', $parentBundle['links']['projection_source']);
         $this->assertCount(1, $parentBundle['links']['children']);
         $this->assertSame($childCallId, $parentBundle['links']['children'][0]['id']);
         $this->assertSame('child_workflow', $parentBundle['links']['children'][0]['type']);
@@ -503,7 +508,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame(1, $parentBundle['links']['children'][0]['sequence']);
         $this->assertTrue($parentBundle['links']['children'][0]['is_primary_parent']);
 
-        $this->assertSame('workflow_run_lineage_entries', $childBundle['links']['projection_source']);
+        $this->assertSame('workflow_run_lineage_entries_rebuilt', $childBundle['links']['projection_source']);
         $this->assertCount(1, $childBundle['links']['parents']);
         $this->assertSame($childCallId, $childBundle['links']['parents'][0]['id']);
         $this->assertSame('child_workflow', $childBundle['links']['parents'][0]['type']);

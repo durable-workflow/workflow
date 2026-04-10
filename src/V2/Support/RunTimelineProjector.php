@@ -7,7 +7,6 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
-use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 
@@ -82,8 +81,16 @@ final class RunTimelineProjector
     public static function snapshotForRun(WorkflowRun $run): array
     {
         $projected = self::projectedRows($run);
+        $canonicalTimeline = HistoryTimeline::fromHistory($run);
 
-        if ($projected->isNotEmpty() && self::projectionCoversHistory($run, $projected)) {
+        if ($projected->isEmpty() && $canonicalTimeline === []) {
+            return [
+                'source' => 'workflow_run_timeline_entries',
+                'timeline' => [],
+            ];
+        }
+
+        if ($projected->isNotEmpty() && self::projectionMatchesHistory($projected, $canonicalTimeline)) {
             return [
                 'source' => 'workflow_run_timeline_entries',
                 'timeline' => $projected
@@ -93,9 +100,14 @@ final class RunTimelineProjector
             ];
         }
 
+        $reprojected = self::project($run, $canonicalTimeline);
+
         return [
-            'source' => 'live_fallback',
-            'timeline' => HistoryTimeline::fromHistory($run),
+            'source' => 'workflow_run_timeline_entries_rebuilt',
+            'timeline' => collect($reprojected)
+                ->map(static fn (WorkflowTimelineEntry $entry): array => $entry->toTimelinePayload())
+                ->values()
+                ->all(),
         ];
     }
 
@@ -136,33 +148,28 @@ final class RunTimelineProjector
 
     /**
      * @param EloquentCollection<int, WorkflowTimelineEntry> $entries
+     * @param list<array<string, mixed>> $canonical
      */
-    private static function projectionCoversHistory(WorkflowRun $run, EloquentCollection $entries): bool
+    private static function projectionMatchesHistory(EloquentCollection $entries, array $canonical): bool
     {
-        $historyCount = self::historyEventCount($run);
-
-        if ($historyCount === 0) {
-            return true;
-        }
-
-        $maxSequence = (int) ($entries->max('sequence') ?? 0);
-
-        return $entries->count() >= $historyCount
-            && $maxSequence >= (int) $run->last_history_sequence;
+        return self::canonicalEntries(
+            $entries
+                ->map(static fn (WorkflowTimelineEntry $entry): array => $entry->toTimelinePayload())
+                ->values()
+                ->all()
+        ) === self::canonicalEntries($canonical);
     }
 
-    private static function historyEventCount(WorkflowRun $run): int
+    /**
+     * @param list<array<string, mixed>> $entries
+     * @return list<array<string, mixed>>
+     */
+    private static function canonicalEntries(array $entries): array
     {
-        if ($run->relationLoaded('historyEvents')) {
-            return $run->historyEvents->count();
-        }
-
-        /** @var class-string<WorkflowHistoryEvent> $model */
-        $model = config('workflows.v2.history_event_model', WorkflowHistoryEvent::class);
-
-        return $model::query()
-            ->where('workflow_run_id', $run->id)
-            ->count();
+        return array_map(
+            static fn (array $entry): array => self::canonicalizeValue(self::normalizedPayload($entry)),
+            $entries,
+        );
     }
 
     /**
@@ -182,6 +189,25 @@ final class RunTimelineProjector
 
         if (is_array($value)) {
             return array_map(static fn (mixed $nested): mixed => self::normalizeValue($nested), $value);
+        }
+
+        return $value;
+    }
+
+    private static function canonicalizeValue(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(static fn (mixed $nested): mixed => self::canonicalizeValue($nested), $value);
+        }
+
+        ksort($value);
+
+        foreach ($value as $key => $nested) {
+            $value[$key] = self::canonicalizeValue($nested);
         }
 
         return $value;

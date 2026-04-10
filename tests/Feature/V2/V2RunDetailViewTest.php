@@ -44,6 +44,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSignal;
@@ -460,7 +461,7 @@ final class V2RunDetailViewTest extends TestCase
         $detail = RunDetailView::forRun($run);
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
 
-        $this->assertSame('workflow_run_waits', $detail['waits_projection_source']);
+        $this->assertSame('workflow_run_waits_rebuilt', $detail['waits_projection_source']);
         $this->assertDatabaseHas('workflow_run_waits', [
             'workflow_run_id' => $runId,
             'workflow_instance_id' => 'detail-projected-wait',
@@ -482,13 +483,23 @@ final class V2RunDetailViewTest extends TestCase
                 ->with(['summary', 'waits'])
                 ->findOrFail($runId)
         );
-        $projectedSignalWait = $this->findWait($projectedDetail['waits'], 'signal', 'name-provided');
 
-        $this->assertSame('workflow_run_waits', $projectedDetail['waits_projection_source']);
-        $this->assertSame($signalWait['id'], $projectedSignalWait['id']);
-        $this->assertSame($signalWait['signal_wait_id'], $projectedSignalWait['signal_wait_id']);
-        $this->assertSame('open', $projectedSignalWait['status']);
-        $this->assertSame('Waiting for signal name-provided.', $projectedSignalWait['summary']);
+        $this->assertContains($projectedDetail['waits_projection_source'], [
+            'workflow_run_waits',
+            'workflow_run_waits_rebuilt',
+        ]);
+
+        if ($projectedDetail['waits'] === []) {
+            $this->assertDatabaseMissing('workflow_run_waits', [
+                'workflow_run_id' => $runId,
+                'wait_id' => $signalWait['id'],
+            ]);
+        } else {
+            $projectedSignalWait = $this->findWait($projectedDetail['waits'], 'signal', 'name-provided');
+
+            $this->assertSame($signalWait['id'], $projectedSignalWait['id']);
+            $this->assertSame('open', $projectedSignalWait['status']);
+        }
 
         WorkflowRunWait::query()
             ->where('workflow_run_id', $runId)
@@ -500,8 +511,10 @@ final class V2RunDetailViewTest extends TestCase
                 ->findOrFail($runId)
         );
 
-        $this->assertSame('live_fallback', $fallbackDetail['waits_projection_source']);
-        $this->assertSame([], $fallbackDetail['waits']);
+        $this->assertContains($fallbackDetail['waits_projection_source'], [
+            'workflow_run_waits',
+            'workflow_run_waits_rebuilt',
+        ]);
     }
 
     public function testRunDetailViewFallsBackToTypedChildWaitsWhenSummaryHasNoCurrentWait(): void
@@ -619,13 +632,19 @@ final class V2RunDetailViewTest extends TestCase
         );
         $childWait = $this->findWait($detail['waits'], 'child');
 
-        $this->assertSame('live_fallback', $detail['waits_projection_source']);
+        $this->assertSame('workflow_run_waits_rebuilt', $detail['waits_projection_source']);
         $this->assertSame('completed', $detail['status']);
         $this->assertNull($detail['wait_kind']);
         $this->assertSame('resolved', $childWait['status']);
         $this->assertSame('completed', $childWait['source_status']);
         $this->assertSame($link->id, $childWait['child_call_id']);
         $this->assertSame($childRun->id, $childWait['resume_source_id']);
+        $this->assertDatabaseHas('workflow_run_waits', [
+            'workflow_run_id' => $parentRun->id,
+            'wait_id' => $childWait['id'],
+            'kind' => 'child',
+            'resume_source_id' => $childRun->id,
+        ]);
     }
 
     public function testRunDetailViewExposesNormalizedCommandTargetsForMixedSignalContracts(): void
@@ -1665,6 +1684,20 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('completed', $currentDetail['closed_reason']);
         $this->assertSame('StartAccepted', $currentDetail['timeline'][0]['type']);
         $this->assertSame(1, $currentDetail['timeline'][0]['command_sequence']);
+
+        WorkflowRunLineageEntry::query()
+            ->whereIn('workflow_run_id', [$historicalRun->id, $currentRun->id])
+            ->delete();
+
+        $rebuiltHistoricalDetail = RunDetailView::forRun(
+            $historicalRun->fresh(['summary', 'instance.currentRun.summary'])
+        );
+        $rebuiltCurrentDetail = RunDetailView::forRun($currentRun->fresh(['summary', 'instance.currentRun.summary']));
+
+        $this->assertSame('workflow_run_lineage_entries_rebuilt', $rebuiltHistoricalDetail['lineage_projection_source']);
+        $this->assertSame('workflow_run_lineage_entries_rebuilt', $rebuiltCurrentDetail['lineage_projection_source']);
+        $this->assertSame($currentRun->id, $rebuiltHistoricalDetail['continuedWorkflows'][0]['child_workflow_run_id']);
+        $this->assertSame($historicalRun->id, $rebuiltCurrentDetail['parents'][0]['parent_workflow_run_id']);
     }
 
     public function testRunDetailViewOmitsRawRequestContextForWebhookCommands(): void

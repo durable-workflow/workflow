@@ -636,9 +636,7 @@ final class V2HistoryTimelineTest extends TestCase
 
         $fallbackDetail = RunDetailView::forRun($run->fresh());
 
-        $this->assertSame('live_fallback', $fallbackDetail['timeline_projection_source']);
-
-        RunSummaryProjector::project($run->fresh());
+        $this->assertSame('workflow_run_timeline_entries_rebuilt', $fallbackDetail['timeline_projection_source']);
 
         $this->assertSame(
             $run->historyEvents()->count(),
