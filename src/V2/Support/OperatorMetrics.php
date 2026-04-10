@@ -16,9 +16,12 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 
 final class OperatorMetrics
 {
@@ -221,7 +224,133 @@ final class OperatorMetrics
                 'oldest_updated_at' => self::jsonTimestamp($summaryModel::query()->min('updated_at')),
                 'newest_updated_at' => self::jsonTimestamp($summaryModel::query()->max('updated_at')),
             ],
+            'run_waits' => self::runWaitProjectionMetrics(),
+            'run_timeline_entries' => self::runTimelineProjectionMetrics(),
         ];
+    }
+
+    /**
+     * @return array<string, int|string|null>
+     */
+    private static function runWaitProjectionMetrics(): array
+    {
+        $summaryModel = self::summaryModel();
+        $waitModel = self::runWaitModel();
+        $summariesWithOpenWaits = self::summariesWithOpenWaits();
+        $missingCurrentOpenWaits = self::missingCurrentOpenWaitProjections();
+        $orphaned = self::projectionRowsMissingRun($waitModel);
+
+        return [
+            'runs' => self::runModel()::query()->count(),
+            'rows' => $waitModel::query()->count(),
+            'projected_runs' => $waitModel::query()->distinct()->count('workflow_run_id'),
+            'summaries_with_open_waits' => $summariesWithOpenWaits,
+            'projected_current_open_waits' => max(0, $summariesWithOpenWaits - $missingCurrentOpenWaits),
+            'missing_current_open_waits' => $missingCurrentOpenWaits,
+            'orphaned' => $orphaned,
+            'needs_rebuild' => $missingCurrentOpenWaits + $orphaned,
+            'oldest_updated_at' => self::jsonTimestamp($waitModel::query()->min('updated_at')),
+            'newest_updated_at' => self::jsonTimestamp($waitModel::query()->max('updated_at')),
+        ];
+    }
+
+    /**
+     * @return array<string, int|string|null>
+     */
+    private static function runTimelineProjectionMetrics(): array
+    {
+        $timelineModel = self::runTimelineEntryModel();
+        $missingHistoryEvents = self::missingTimelineEventProjections();
+        $orphaned = self::orphanedTimelineRows();
+
+        return [
+            'runs' => self::runModel()::query()->count(),
+            'history_events' => self::historyEventModel()::query()->count(),
+            'rows' => $timelineModel::query()->count(),
+            'projected_runs' => $timelineModel::query()->distinct()->count('workflow_run_id'),
+            'missing_history_events' => $missingHistoryEvents,
+            'orphaned' => $orphaned,
+            'needs_rebuild' => $missingHistoryEvents + $orphaned,
+            'oldest_updated_at' => self::jsonTimestamp($timelineModel::query()->min('updated_at')),
+            'newest_updated_at' => self::jsonTimestamp($timelineModel::query()->max('updated_at')),
+        ];
+    }
+
+    private static function summariesWithOpenWaits(): int
+    {
+        return self::summaryModel()::query()
+            ->whereNotNull('open_wait_id')
+            ->count();
+    }
+
+    private static function missingCurrentOpenWaitProjections(): int
+    {
+        $summaryModel = self::summaryModel();
+        $waitModel = self::runWaitModel();
+        $summaryTable = self::tableFor($summaryModel);
+        $waitTable = self::tableFor($waitModel);
+
+        return $summaryModel::query()
+            ->leftJoin($waitTable, static function ($join) use ($summaryTable, $waitTable): void {
+                $join->on($waitTable . '.workflow_run_id', '=', $summaryTable . '.id')
+                    ->on($waitTable . '.wait_id', '=', $summaryTable . '.open_wait_id');
+            })
+            ->whereNotNull($summaryTable . '.open_wait_id')
+            ->whereNull($waitTable . '.id')
+            ->count($summaryTable . '.id');
+    }
+
+    /**
+     * @param class-string<WorkflowRunWait|WorkflowTimelineEntry> $projectionModel
+     */
+    private static function projectionRowsMissingRun(string $projectionModel): int
+    {
+        $runModel = self::runModel();
+        $projectionTable = self::tableFor($projectionModel);
+        $runTable = self::tableFor($runModel);
+
+        return $projectionModel::query()
+            ->leftJoin($runTable, $projectionTable . '.workflow_run_id', '=', $runTable . '.id')
+            ->whereNull($runTable . '.id')
+            ->count($projectionTable . '.id');
+    }
+
+    private static function missingTimelineEventProjections(): int
+    {
+        $historyModel = self::historyEventModel();
+        $timelineModel = self::runTimelineEntryModel();
+        $historyTable = self::tableFor($historyModel);
+        $timelineTable = self::tableFor($timelineModel);
+
+        return $historyModel::query()
+            ->leftJoin($timelineTable, static function ($join) use ($historyTable, $timelineTable): void {
+                $join->on($timelineTable . '.workflow_run_id', '=', $historyTable . '.workflow_run_id')
+                    ->on($timelineTable . '.history_event_id', '=', $historyTable . '.id');
+            })
+            ->whereNull($timelineTable . '.id')
+            ->count($historyTable . '.id');
+    }
+
+    private static function orphanedTimelineRows(): int
+    {
+        $runModel = self::runModel();
+        $historyModel = self::historyEventModel();
+        $timelineModel = self::runTimelineEntryModel();
+        $runTable = self::tableFor($runModel);
+        $historyTable = self::tableFor($historyModel);
+        $timelineTable = self::tableFor($timelineModel);
+
+        return $timelineModel::query()
+            ->leftJoin($runTable, $timelineTable . '.workflow_run_id', '=', $runTable . '.id')
+            ->leftJoin($historyTable, static function ($join) use ($historyTable, $timelineTable): void {
+                $join->on($historyTable . '.workflow_run_id', '=', $timelineTable . '.workflow_run_id')
+                    ->on($historyTable . '.id', '=', $timelineTable . '.history_event_id');
+            })
+            ->where(static function ($query) use ($runTable, $historyTable): void {
+                $query->whereNull($runTable . '.id')
+                    ->orWhereNull($historyTable . '.id');
+            })
+            ->count($timelineTable . '.id');
     }
 
     private static function compatibilityBlockedRuns(): int
@@ -493,6 +622,39 @@ final class OperatorMetrics
     }
 
     /**
+     * @return class-string<WorkflowHistoryEvent>
+     */
+    private static function historyEventModel(): string
+    {
+        /** @var class-string<WorkflowHistoryEvent> $model */
+        $model = config('workflows.v2.history_event_model', WorkflowHistoryEvent::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<WorkflowRunWait>
+     */
+    private static function runWaitModel(): string
+    {
+        /** @var class-string<WorkflowRunWait> $model */
+        $model = config('workflows.v2.run_wait_model', WorkflowRunWait::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<WorkflowTimelineEntry>
+     */
+    private static function runTimelineEntryModel(): string
+    {
+        /** @var class-string<WorkflowTimelineEntry> $model */
+        $model = config('workflows.v2.run_timeline_entry_model', WorkflowTimelineEntry::class);
+
+        return $model;
+    }
+
+    /**
      * @return class-string<ActivityExecution>
      */
     private static function activityExecutionModel(): string
@@ -525,5 +687,13 @@ final class OperatorMetrics
         }
 
         return null;
+    }
+
+    /**
+     * @param class-string<\Illuminate\Database\Eloquent\Model> $model
+     */
+    private static function tableFor(string $model): string
+    {
+        return (new $model())->getTable();
     }
 }

@@ -9,13 +9,17 @@ use Tests\TestCase;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -265,6 +269,111 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['projections']['run_summaries']['orphaned']);
         $this->assertSame(1, $snapshot['projections']['run_summaries']['stale']);
         $this->assertSame(1, $snapshot['projections']['run_summaries']['needs_rebuild']);
+    }
+
+    public function testSnapshotCountsSelectedRunWaitAndTimelineProjectionDrift(): void
+    {
+        $missingWaitRun = $this->createRunWithSummary(
+            instanceId: 'metrics-wait-missing-instance',
+            runId: '01JMETRICSPROJWAITMISS01',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'waiting_for_signal',
+        );
+        $projectedWaitRun = $this->createRunWithSummary(
+            instanceId: 'metrics-wait-projected-instance',
+            runId: '01JMETRICSPROJWAITDONE01',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'waiting_for_signal',
+        );
+
+        WorkflowRunSummary::query()
+            ->whereKey($missingWaitRun->id)
+            ->update(['open_wait_id' => 'signal:missing']);
+        WorkflowRunSummary::query()
+            ->whereKey($projectedWaitRun->id)
+            ->update(['open_wait_id' => 'signal:projected']);
+
+        WorkflowRunWait::query()->create([
+            'id' => 'projection-wait-valid',
+            'workflow_run_id' => $projectedWaitRun->id,
+            'workflow_instance_id' => $projectedWaitRun->workflow_instance_id,
+            'wait_id' => 'signal:projected',
+            'position' => 0,
+            'kind' => 'signal',
+            'status' => 'open',
+            'source_status' => 'open',
+            'task_backed' => false,
+            'external_only' => true,
+        ]);
+        WorkflowRunWait::query()->create([
+            'id' => 'projection-wait-orphan',
+            'workflow_run_id' => '01JMETRICSPROJWAITGONE01',
+            'workflow_instance_id' => 'metrics-wait-orphan-instance',
+            'wait_id' => 'signal:orphan',
+            'position' => 0,
+            'kind' => 'signal',
+            'status' => 'open',
+            'source_status' => 'open',
+            'task_backed' => false,
+            'external_only' => true,
+        ]);
+
+        WorkflowHistoryEvent::record(
+            $missingWaitRun,
+            HistoryEventType::WorkflowStarted,
+            ['workflow_run_id' => $missingWaitRun->id],
+        );
+        $projectedTimelineEvent = WorkflowHistoryEvent::record(
+            $projectedWaitRun,
+            HistoryEventType::WorkflowStarted,
+            ['workflow_run_id' => $projectedWaitRun->id],
+        );
+
+        WorkflowTimelineEntry::query()->create([
+            'id' => 'projection-timeline-valid',
+            'workflow_run_id' => $projectedWaitRun->id,
+            'workflow_instance_id' => $projectedWaitRun->workflow_instance_id,
+            'history_event_id' => $projectedTimelineEvent->id,
+            'sequence' => $projectedTimelineEvent->sequence,
+            'type' => $projectedTimelineEvent->event_type->value,
+            'kind' => 'workflow',
+            'entry_kind' => 'point',
+            'summary' => 'Workflow run started.',
+            'recorded_at' => $projectedTimelineEvent->recorded_at,
+        ]);
+        WorkflowTimelineEntry::query()->create([
+            'id' => 'projection-timeline-orphan',
+            'workflow_run_id' => '01JMETRICSPROJTIMELINE01',
+            'workflow_instance_id' => 'metrics-timeline-orphan-instance',
+            'history_event_id' => '01JMETRICSPROJEVENTMISS1',
+            'sequence' => 1,
+            'type' => 'WorkflowStarted',
+            'kind' => 'workflow',
+            'entry_kind' => 'point',
+            'summary' => 'Orphaned timeline row.',
+            'recorded_at' => now(),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertSame(2, $snapshot['projections']['run_waits']['runs']);
+        $this->assertSame(2, $snapshot['projections']['run_waits']['rows']);
+        $this->assertSame(2, $snapshot['projections']['run_waits']['projected_runs']);
+        $this->assertSame(2, $snapshot['projections']['run_waits']['summaries_with_open_waits']);
+        $this->assertSame(1, $snapshot['projections']['run_waits']['projected_current_open_waits']);
+        $this->assertSame(1, $snapshot['projections']['run_waits']['missing_current_open_waits']);
+        $this->assertSame(1, $snapshot['projections']['run_waits']['orphaned']);
+        $this->assertSame(2, $snapshot['projections']['run_waits']['needs_rebuild']);
+
+        $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['runs']);
+        $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['history_events']);
+        $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['rows']);
+        $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['projected_runs']);
+        $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['missing_history_events']);
+        $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['orphaned']);
+        $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['needs_rebuild']);
     }
 
     public function testRepairCandidatesRespectDurableFailureBackoff(): void

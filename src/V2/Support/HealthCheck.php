@@ -18,6 +18,7 @@ final class HealthCheck
         $checks = [
             self::backendCheck($metrics['backend'] ?? []),
             self::runSummaryProjectionCheck($metrics['projections']['run_summaries'] ?? []),
+            self::selectedRunProjectionCheck($metrics['projections'] ?? []),
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
             self::durableResumePathCheck($metrics['backlog'] ?? [], $metrics['repair'] ?? []),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
@@ -82,6 +83,40 @@ final class HealthCheck
                 'missing' => self::integer($projection['missing'] ?? 0),
                 'orphaned' => self::integer($projection['orphaned'] ?? 0),
                 'stale' => self::integer($projection['stale'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $projections
+     * @return array<string, mixed>
+     */
+    private static function selectedRunProjectionCheck(array $projections): array
+    {
+        $waits = is_array($projections['run_waits'] ?? null) ? $projections['run_waits'] : [];
+        $timeline = is_array($projections['run_timeline_entries'] ?? null)
+            ? $projections['run_timeline_entries']
+            : [];
+        $waitNeedsRebuild = self::integer($waits['needs_rebuild'] ?? 0);
+        $timelineNeedsRebuild = self::integer($timeline['needs_rebuild'] ?? 0);
+        $needsRebuild = $waitNeedsRebuild + $timelineNeedsRebuild;
+
+        return self::check(
+            'selected_run_projections',
+            $needsRebuild === 0 ? 'ok' : 'warning',
+            $needsRebuild === 0
+                ? 'Selected-run wait and timeline projections are aligned with durable v2 detail.'
+                : 'Selected-run wait or timeline projections need rebuild before trusting Waterline detail.',
+            [
+                'needs_rebuild' => $needsRebuild,
+                'run_waits_needs_rebuild' => $waitNeedsRebuild,
+                'run_waits_missing_current_open_waits' => self::integer(
+                    $waits['missing_current_open_waits'] ?? 0
+                ),
+                'run_waits_orphaned' => self::integer($waits['orphaned'] ?? 0),
+                'timeline_needs_rebuild' => $timelineNeedsRebuild,
+                'timeline_missing_history_events' => self::integer($timeline['missing_history_events'] ?? 0),
+                'timeline_orphaned' => self::integer($timeline['orphaned'] ?? 0),
             ],
         );
     }

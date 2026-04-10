@@ -6,9 +6,13 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\HealthCheck;
 
 final class HealthCheckTest extends TestCase
@@ -135,6 +139,95 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(0, $projection['data']['missing']);
         $this->assertSame(0, $projection['data']['orphaned']);
         $this->assertSame(1, $projection['data']['stale']);
+    }
+
+    public function testSnapshotWarnsWhenSelectedRunProjectionsNeedRebuild(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'health-selected-projection',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'id' => '01JHEALTHSELECTPROJ00001',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'waiting',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSecond(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'waiting',
+            'status_bucket' => 'running',
+            'started_at' => now()->subMinute(),
+            'open_wait_id' => 'signal:missing',
+            'liveness_state' => 'waiting_for_signal',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now(),
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_run_id' => $run->id,
+        ]);
+        WorkflowRunWait::query()->create([
+            'id' => 'health-selected-wait-orphan',
+            'workflow_run_id' => '01JHEALTHSELECTMISS001',
+            'workflow_instance_id' => 'health-selected-missing-instance',
+            'wait_id' => 'signal:orphan',
+            'position' => 0,
+            'kind' => 'signal',
+            'status' => 'open',
+            'source_status' => 'open',
+            'task_backed' => false,
+            'external_only' => true,
+        ]);
+        WorkflowTimelineEntry::query()->create([
+            'id' => 'health-selected-timeline-orphan',
+            'workflow_run_id' => '01JHEALTHSELECTMISS001',
+            'workflow_instance_id' => 'health-selected-missing-instance',
+            'history_event_id' => '01JHEALTHSELECTEVENT01',
+            'sequence' => 1,
+            'type' => 'WorkflowStarted',
+            'kind' => 'workflow',
+            'entry_kind' => 'point',
+            'summary' => 'Orphaned timeline row.',
+            'recorded_at' => now(),
+        ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $projection = collect($snapshot['checks'])->firstWhere('name', 'selected_run_projections');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertSame('warning', $projection['status']);
+        $this->assertSame(4, $projection['data']['needs_rebuild']);
+        $this->assertSame(2, $projection['data']['run_waits_needs_rebuild']);
+        $this->assertSame(1, $projection['data']['run_waits_missing_current_open_waits']);
+        $this->assertSame(1, $projection['data']['run_waits_orphaned']);
+        $this->assertSame(2, $projection['data']['timeline_needs_rebuild']);
+        $this->assertSame(1, $projection['data']['timeline_missing_history_events']);
+        $this->assertSame(1, $projection['data']['timeline_orphaned']);
     }
 
     public function testSnapshotWarnsWhenOpenRunHasNoDurableResumePath(): void

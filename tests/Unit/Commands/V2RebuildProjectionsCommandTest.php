@@ -14,7 +14,10 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\RunSummaryProjector;
 
 final class V2RebuildProjectionsCommandTest extends TestCase
 {
@@ -51,11 +54,38 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->subMinutes(50),
         ]);
 
+        WorkflowRunWait::query()->create([
+            'id' => 'projection-command-stale-wait',
+            'workflow_run_id' => $staleRunId,
+            'workflow_instance_id' => $instance->id,
+            'wait_id' => 'signal:deleted',
+            'position' => 0,
+            'kind' => 'signal',
+            'status' => 'open',
+            'source_status' => 'open',
+            'task_backed' => false,
+            'external_only' => true,
+        ]);
+        WorkflowTimelineEntry::query()->create([
+            'id' => 'projection-command-stale-timeline',
+            'workflow_run_id' => $staleRunId,
+            'workflow_instance_id' => $instance->id,
+            'history_event_id' => (string) Str::ulid(),
+            'sequence' => 1,
+            'type' => HistoryEventType::WorkflowStarted->value,
+            'kind' => 'workflow',
+            'entry_kind' => 'point',
+            'summary' => 'Deleted run timeline row.',
+            'recorded_at' => now(),
+        ]);
+
         $this->artisan('workflow:v2:rebuild-projections', [
             '--prune-stale' => true,
         ])
             ->expectsOutput('Rebuilt 1 run-summary projection row(s).')
             ->expectsOutput('Pruned 1 stale run-summary projection row(s).')
+            ->expectsOutput('Pruned 1 stale wait projection row(s).')
+            ->expectsOutput('Pruned 1 stale timeline projection row(s).')
             ->assertSuccessful();
 
         $this->assertDatabaseHas('workflow_run_summaries', [
@@ -84,6 +114,12 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         $this->assertDatabaseMissing('workflow_run_summaries', [
             'id' => $staleRunId,
         ]);
+        $this->assertDatabaseMissing('workflow_run_waits', [
+            'id' => 'projection-command-stale-wait',
+        ]);
+        $this->assertDatabaseMissing('workflow_run_timeline_entries', [
+            'id' => 'projection-command-stale-timeline',
+        ]);
     }
 
     public function testDryRunReportsMatchedRowsWithoutMutatingProjectionTables(): void
@@ -97,6 +133,10 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'run_summaries_would_rebuild' => 1,
             'run_summaries_pruned' => 0,
             'run_summaries_would_prune' => 0,
+            'run_waits_pruned' => 0,
+            'run_waits_would_prune' => 0,
+            'run_timeline_entries_pruned' => 0,
+            'run_timeline_entries_would_prune' => 0,
             'failures' => [],
         ];
 
@@ -118,6 +158,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
     {
         [$missingInstance, $missingRun] = $this->createCompletedRun('projection-command-missing');
         [$staleInstance, $staleRun] = $this->createCompletedRun('projection-command-stale');
+        [, $timelineDriftRun] = $this->createCompletedRun('projection-command-timeline-drift');
+        [, $waitDriftRun] = $this->createWaitingRun('projection-command-wait-drift');
         [, $alignedRun] = $this->createCompletedRun('projection-command-aligned');
 
         WorkflowRunSummary::query()->create([
@@ -139,8 +181,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->subMinutes(4),
         ]);
         WorkflowRunSummary::query()->create([
-            'id' => $alignedRun->id,
-            'workflow_instance_id' => $alignedRun->workflow_instance_id,
+            'id' => $timelineDriftRun->id,
+            'workflow_instance_id' => $timelineDriftRun->workflow_instance_id,
             'run_number' => 1,
             'is_current_run' => true,
             'engine_source' => 'v2',
@@ -149,8 +191,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'status' => RunStatus::Completed->value,
             'status_bucket' => 'completed',
             'closed_reason' => 'completed',
-            'started_at' => $alignedRun->started_at,
-            'closed_at' => $alignedRun->closed_at,
+            'started_at' => $timelineDriftRun->started_at,
+            'closed_at' => $timelineDriftRun->closed_at,
             'duration_ms' => 240000,
             'exception_count' => 0,
             'history_event_count' => 2,
@@ -159,11 +201,31 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'updated_at' => now()
                 ->subMinute(),
         ]);
+        WorkflowRunSummary::query()->create([
+            'id' => $waitDriftRun->id,
+            'workflow_instance_id' => $waitDriftRun->workflow_instance_id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'App\\Workflows\\ProjectionWorkflow',
+            'workflow_type' => 'projection.workflow',
+            'status' => RunStatus::Waiting->value,
+            'status_bucket' => 'running',
+            'started_at' => $waitDriftRun->started_at,
+            'open_wait_id' => 'signal:missing',
+            'liveness_state' => 'waiting_for_signal',
+            'exception_count' => 0,
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinute(),
+        ]);
+        RunSummaryProjector::project($alignedRun);
 
         $this->artisan('workflow:v2:rebuild-projections', [
             '--needs-rebuild' => true,
         ])
-            ->expectsOutput('Rebuilt 2 run-summary projection row(s).')
+            ->expectsOutput('Rebuilt 4 run-summary projection row(s).')
             ->assertSuccessful();
 
         $this->assertDatabaseHas('workflow_run_summaries', [
@@ -178,6 +240,25 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'status' => RunStatus::Completed->value,
             'status_bucket' => 'completed',
             'closed_reason' => 'completed',
+        ]);
+        $this->assertDatabaseHas('workflow_run_summaries', [
+            'id' => $timelineDriftRun->id,
+            'workflow_instance_id' => $timelineDriftRun->workflow_instance_id,
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'closed_reason' => 'completed',
+        ]);
+        $this->assertDatabaseHas('workflow_run_timeline_entries', [
+            'workflow_run_id' => $timelineDriftRun->id,
+            'history_event_id' => WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $timelineDriftRun->id)
+                ->orderBy('sequence')
+                ->value('id'),
+        ]);
+        $this->assertDatabaseHas('workflow_run_summaries', [
+            'id' => $waitDriftRun->id,
+            'workflow_instance_id' => $waitDriftRun->workflow_instance_id,
+            'status' => RunStatus::Waiting->value,
         ]);
     }
 
@@ -474,6 +555,44 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 'result_available' => true,
             ],
         );
+
+        return [$instance->refresh(), $run->refresh()];
+    }
+
+    /**
+     * @return array{WorkflowInstance, WorkflowRun}
+     */
+    private function createWaitingRun(string $instanceId): array
+    {
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->create([
+            'id' => $instanceId,
+            'workflow_class' => 'App\\Workflows\\ProjectionWorkflow',
+            'workflow_type' => 'projection.workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\ProjectionWorkflow',
+            'workflow_type' => 'projection.workflow',
+            'status' => RunStatus::Waiting->value,
+            'started_at' => now()
+                ->subMinutes(5),
+            'last_progress_at' => now()
+                ->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         return [$instance->refresh(), $run->refresh()];
     }
