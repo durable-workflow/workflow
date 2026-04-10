@@ -571,6 +571,20 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
         $this->assertStringContainsString('history recorded [no typed history]', $detail['liveness_reason']);
+        $this->assertSame('unsupported', $detail['activities'][0]['status']);
+        $this->assertSame('unsupported_terminal_without_history', $detail['activities'][0]['history_authority']);
+        $this->assertSame(
+            'terminal_activity_row_without_typed_history',
+            $detail['activities'][0]['history_unsupported_reason'],
+        );
+        $this->assertSame('completed', $detail['activities'][0]['row_status']);
+        $this->assertNull(unserialize($detail['activities'][0]['result']));
+        $this->assertSame('unsupported', $detail['waits'][0]['status']);
+        $this->assertSame('completed', $detail['waits'][0]['source_status']);
+        $this->assertSame(
+            'terminal_activity_row_without_typed_history',
+            $detail['waits'][0]['history_unsupported_reason'],
+        );
         $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
         $this->assertSame(['no typed history'], $detail['tasks'][0]['replay_blocked_recorded_event_types']);
     }
@@ -739,9 +753,19 @@ final class V2WorkflowTest extends TestCase
         $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($parentRunId));
         $replayBlockedTask = collect($detail['tasks'])
             ->first(static fn (array $task): bool => ($task['transport_state'] ?? null) === 'replay_blocked');
+        $childWait = collect($detail['waits'])
+            ->first(static fn (array $wait): bool => ($wait['kind'] ?? null) === 'child');
 
         $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
         $this->assertStringContainsString('history recorded [no typed history]', $detail['liveness_reason']);
+        $this->assertIsArray($childWait);
+        $this->assertSame('unsupported', $childWait['status']);
+        $this->assertSame('completed', $childWait['source_status']);
+        $this->assertSame('unsupported_terminal_without_history', $childWait['history_authority']);
+        $this->assertSame(
+            'terminal_child_link_without_typed_parent_history',
+            $childWait['history_unsupported_reason'],
+        );
         $this->assertIsArray($replayBlockedTask);
         $this->assertSame(['no typed history'], $replayBlockedTask['replay_blocked_recorded_event_types']);
     }

@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
@@ -33,6 +34,7 @@ final class RunSummaryProjector
                     [ActivityStatus::Pending->value, ActivityStatus::Running->value],
                     true,
                 ));
+        $unsupportedActivity = $isTerminal ? null : self::unsupportedActivity($activities);
 
         $nextTask = $isTerminal
             ? null
@@ -86,6 +88,20 @@ final class RunSummaryProjector
             ? null
             : self::pendingChildResolutionWait($run, $openChildWait !== null);
 
+        $unsupportedChildWait = (
+            $isTerminal
+            || $openActivity !== null
+            || $openUpdateWait !== null
+            || $openSignalApplicationWait !== null
+            || $openConditionWait !== null
+            || $openTimer !== null
+            || $nextTask !== null
+            || $openChildWait !== null
+            || $pendingChildResolutionWait !== null
+        )
+            ? null
+            : self::unsupportedChildWait($run);
+
         $openSignalWait = (
             $isTerminal
             || $openActivity !== null
@@ -96,6 +112,7 @@ final class RunSummaryProjector
             || $nextTask !== null
             || $openChildWait !== null
             || $pendingChildResolutionWait !== null
+            || $unsupportedChildWait !== null
         )
             ? null
             : self::openSignalWait($run);
@@ -200,6 +217,7 @@ final class RunSummaryProjector
             $run,
             $isTerminal,
             $openActivity,
+            $unsupportedActivity,
             $openUpdateWait,
             $openUpdateTask,
             $openSignalApplicationWait,
@@ -209,6 +227,7 @@ final class RunSummaryProjector
             $replayBlockedTask,
             $openChildWait,
             $pendingChildResolutionWait,
+            $unsupportedChildWait,
             $openSignalWait,
         );
 
@@ -355,6 +374,7 @@ final class RunSummaryProjector
         WorkflowRun $run,
         bool $isTerminal,
         ?array $openActivity,
+        ?array $unsupportedActivity,
         ?array $openUpdateWait,
         ?WorkflowTask $openUpdateTask,
         ?array $openSignalApplicationWait,
@@ -364,6 +384,7 @@ final class RunSummaryProjector
         ?WorkflowTask $replayBlockedTask,
         ?array $openChildWait,
         ?array $pendingChildResolutionWait,
+        ?array $unsupportedChildWait,
         ?array $openSignalWait,
     ): array {
         if ($isTerminal) {
@@ -492,6 +513,16 @@ final class RunSummaryProjector
             return self::taskLiveness($nextTask, $run, 'Workflow');
         }
 
+        if ($unsupportedActivity !== null) {
+            return [
+                'workflow_replay_blocked',
+                sprintf(
+                    'Activity %s has terminal mutable activity state without typed activity history. Run a compatible build or treat this older preview data as unsupported.',
+                    self::activityType($unsupportedActivity),
+                ),
+            ];
+        }
+
         if ($pendingChildResolutionWait !== null) {
             return [
                 'repair_needed',
@@ -504,6 +535,16 @@ final class RunSummaryProjector
 
         if ($openChildWait !== null) {
             return ['waiting_for_child', sprintf('Waiting for child workflow %s.', $openChildWait['label'])];
+        }
+
+        if ($unsupportedChildWait !== null) {
+            return [
+                'workflow_replay_blocked',
+                sprintf(
+                    'Child workflow %s has terminal mutable child state without typed parent child history. Run a compatible build or treat this older preview data as unsupported.',
+                    $unsupportedChildWait['label'],
+                ),
+            ];
         }
 
         if ($openSignalWait !== null) {
@@ -759,6 +800,57 @@ final class RunSummaryProjector
             'resume_source_kind' => 'signal',
             'resume_source_id' => null,
         ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $activities
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function unsupportedActivity(array $activities): ?array
+    {
+        foreach ($activities as $activity) {
+            if (($activity['history_unsupported_reason'] ?? null) === RunActivityView::UNSUPPORTED_TERMINAL_REASON) {
+                return $activity;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{
+     *     id: string,
+     *     label: string,
+     *     opened_at: \Carbon\CarbonInterface|null,
+     *     resolved_at: \Carbon\CarbonInterface|null,
+     *     resume_source_kind: string,
+     *     resume_source_id: string|null
+     * }|null
+     */
+    private static function unsupportedChildWait(WorkflowRun $run): ?array
+    {
+        foreach (ChildRunHistory::knownSequences($run) as $sequence) {
+            $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
+
+            if (
+                $snapshot === null
+                || ($snapshot['history_unsupported_reason'] ?? null) !== ChildRunHistory::UNSUPPORTED_TERMINAL_REASON
+            ) {
+                continue;
+            }
+
+            return [
+                'id' => sprintf('child:%s', $snapshot['child_call_id'] ?? $sequence),
+                'label' => $snapshot['label'],
+                'opened_at' => $snapshot['opened_at'],
+                'resolved_at' => $snapshot['resolved_at'],
+                'resume_source_kind' => 'child_workflow_run',
+                'resume_source_id' => $snapshot['resume_source_id'],
+            ];
+        }
+
+        return null;
     }
 
     /**

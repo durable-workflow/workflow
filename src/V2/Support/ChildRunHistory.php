@@ -16,6 +16,14 @@ use Workflow\V2\Models\WorkflowRun;
 
 final class ChildRunHistory
 {
+    public const HISTORY_AUTHORITY_TYPED = 'typed_history';
+
+    public const HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK = 'mutable_open_fallback';
+
+    public const HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL = 'unsupported_terminal_without_history';
+
+    public const UNSUPPORTED_TERMINAL_REASON = 'terminal_child_link_without_typed_parent_history';
+
     /**
      * @return list<int>
      */
@@ -190,7 +198,9 @@ final class ChildRunHistory
      *     opened_at: ?\Carbon\CarbonInterface,
      *     resolved_at: ?\Carbon\CarbonInterface,
      *     status: string,
-     *     source_status: ?string
+     *     source_status: ?string,
+     *     history_authority: string,
+     *     history_unsupported_reason: ?string
      * }|null
      */
     public static function waitSnapshotForSequence(WorkflowRun $run, int $sequence): ?array
@@ -214,6 +224,12 @@ final class ChildRunHistory
         $childCallId = self::childCallIdForSequence($run, $sequence);
         $resolvedStatus = self::resolvedStatus($resolutionEvent, $childRun);
         $hasParentHistory = $scheduledEvent !== null || $startedEvent !== null || $resolutionEvent !== null;
+        $isTerminalChildWithoutParentHistory = ! $hasParentHistory && in_array($resolvedStatus, [
+            RunStatus::Completed,
+            RunStatus::Failed,
+            RunStatus::Cancelled,
+            RunStatus::Terminated,
+        ], true);
         $label = self::stringValue($resolutionEvent?->payload['child_workflow_type'] ?? null)
             ?? self::stringValue($startedEvent?->payload['child_workflow_type'] ?? null)
             ?? self::stringValue($scheduledEvent?->payload['child_workflow_type'] ?? null)
@@ -229,6 +245,7 @@ final class ChildRunHistory
             default => $childRun?->status?->value,
         };
         $status = match (true) {
+            $isTerminalChildWithoutParentHistory => 'unsupported',
             $resolutionEvent !== null => in_array(
                 $resolvedStatus,
                 [RunStatus::Cancelled, RunStatus::Terminated],
@@ -275,6 +292,12 @@ final class ChildRunHistory
                 ?? ($hasParentHistory ? null : $childRun?->closed_at),
             'status' => $status,
             'source_status' => $sourceStatus,
+            'history_authority' => $hasParentHistory
+                ? self::HISTORY_AUTHORITY_TYPED
+                : ($isTerminalChildWithoutParentHistory ? self::HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL : self::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK),
+            'history_unsupported_reason' => $isTerminalChildWithoutParentHistory
+                ? self::UNSUPPORTED_TERMINAL_REASON
+                : null,
         ];
     }
 

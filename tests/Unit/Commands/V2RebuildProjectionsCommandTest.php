@@ -218,6 +218,11 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->default('v2');
             $table->string('class');
             $table->string('workflow_type');
+            $table->string('business_key')
+                ->nullable()
+                ->index();
+            $table->json('visibility_labels')
+                ->nullable();
             $table->string('compatibility')
                 ->nullable();
             $table->string('status')

@@ -16,6 +16,14 @@ use Workflow\V2\Models\WorkflowRun;
 
 final class RunActivityView
 {
+    public const HISTORY_AUTHORITY_TYPED = 'typed_history';
+
+    public const HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK = 'mutable_open_fallback';
+
+    public const HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL = 'unsupported_terminal_without_history';
+
+    public const UNSUPPORTED_TERMINAL_REASON = 'terminal_activity_row_without_typed_history';
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -99,7 +107,16 @@ final class RunActivityView
                 continue;
             }
 
-            $state = $states[$activityId] ?? ['id' => $activityId];
+            $state = $states[$activityId] ?? [
+                'id' => $activityId,
+            ];
+            $eventTypes = is_array($state['history_event_types'] ?? null)
+                ? $state['history_event_types']
+                : [];
+            $eventTypes[] = $event->event_type->value;
+
+            $state['history_authority'] = self::HISTORY_AUTHORITY_TYPED;
+            $state['history_event_types'] = array_values(array_unique($eventTypes));
 
             $states[$activityId] = ActivitySnapshot::merge($state, $snapshot);
         }
@@ -109,7 +126,19 @@ final class RunActivityView
                 continue;
             }
 
-            $states[$execution->id] = ActivitySnapshot::fromExecution($execution);
+            $snapshot = ActivitySnapshot::fromExecution($execution);
+            $snapshot['history_event_types'] = [];
+            $snapshot['row_status'] = $execution->status?->value;
+
+            if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                $snapshot['history_authority'] = self::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK;
+            } else {
+                $snapshot['history_authority'] = self::HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL;
+                $snapshot['history_unsupported_reason'] = self::UNSUPPORTED_TERMINAL_REASON;
+                unset($snapshot['result'], $snapshot['closed_at'], $snapshot['exception']);
+            }
+
+            $states[$execution->id] = $snapshot;
         }
 
         $activities = [];
@@ -176,7 +205,10 @@ final class RunActivityView
         $attemptCount = is_int($state['attempt_count'] ?? null)
             ? $state['attempt_count']
             : (is_int($latestAttempt['attempt_number'] ?? null) ? $latestAttempt['attempt_number'] : 0);
-        $status = $state['status'] ?? 'pending';
+        $unsupportedReason = self::stringValue($state['history_unsupported_reason'] ?? null);
+        $status = $unsupportedReason === self::UNSUPPORTED_TERMINAL_REASON
+            ? 'unsupported'
+            : ($state['status'] ?? 'pending');
 
         return [
             'id' => $state['id'] ?? null,
@@ -184,6 +216,15 @@ final class RunActivityView
             'sequence' => $state['sequence'] ?? null,
             'type' => $state['type'] ?? null,
             'class' => $state['class'] ?? null,
+            'history_authority' => self::stringValue($state['history_authority'] ?? null),
+            'history_event_types' => is_array($state['history_event_types'] ?? null)
+                ? array_values(array_filter(
+                    $state['history_event_types'],
+                    static fn (mixed $eventType): bool => is_string($eventType) && $eventType !== '',
+                ))
+                : [],
+            'history_unsupported_reason' => $unsupportedReason,
+            'row_status' => self::stringValue($state['row_status'] ?? null),
             'parallel_group_kind' => $state['parallel_group_kind'] ?? null,
             'parallel_group_id' => $state['parallel_group_id'] ?? null,
             'parallel_group_base_sequence' => $state['parallel_group_base_sequence'] ?? null,
@@ -201,7 +242,10 @@ final class RunActivityView
             'started_at' => $state['started_at'] ?? ($latestAttempt['started_at'] ?? null),
             'closed_at' => self::activityClosedAt($status, $state, $latestAttempt),
             'arguments' => self::publicSerializedValue($state['arguments'] ?? null, []),
-            'result' => self::publicSerializedValue($state['result'] ?? null, null),
+            'result' => self::publicSerializedValue(
+                $unsupportedReason === null ? ($state['result'] ?? null) : null,
+                null,
+            ),
             'attempts' => $attempts,
         ];
     }
