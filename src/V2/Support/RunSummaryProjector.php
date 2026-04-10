@@ -38,6 +38,10 @@ final class RunSummaryProjector
             ? null
             : self::nextOpenTask($run);
 
+        $replayBlockedTask = $isTerminal
+            ? null
+            : self::replayBlockedTask($run);
+
         $openUpdateWait = $isTerminal || $openActivity !== null
             ? null
             : self::openUpdateWait($run);
@@ -170,6 +174,7 @@ final class RunSummaryProjector
             $openConditionWait,
             $openTimer,
             $nextTask,
+            $replayBlockedTask,
             $openChildWait,
             $openSignalWait,
         );
@@ -294,6 +299,21 @@ final class RunSummaryProjector
         return $task;
     }
 
+    private static function replayBlockedTask(WorkflowRun $run): ?WorkflowTask
+    {
+        /** @var WorkflowTask|null $task */
+        $task = $run->tasks
+            ->filter(static fn (WorkflowTask $task): bool => $task->task_type === TaskType::Workflow
+                && $task->status === TaskStatus::Failed
+                && ($task->payload['replay_blocked'] ?? false) === true)
+            ->sortByDesc(static fn (WorkflowTask $task): int => $task->updated_at?->getTimestampMs()
+                ?? $task->created_at?->getTimestampMs()
+                ?? 0)
+            ->first();
+
+        return $task;
+    }
+
     /**
      * @return array{0: string, 1: string}
      */
@@ -306,11 +326,16 @@ final class RunSummaryProjector
         ?array $openConditionWait,
         ?array $openTimer,
         ?WorkflowTask $nextTask,
+        ?WorkflowTask $replayBlockedTask,
         ?array $openChildWait,
         ?array $openSignalWait,
     ): array {
         if ($isTerminal) {
             return ['closed', sprintf('Run closed as %s.', $run->closed_reason ?? $run->status->value)];
+        }
+
+        if ($replayBlockedTask !== null) {
+            return self::replayBlockedLiveness($replayBlockedTask);
         }
 
         if ($openActivity !== null) {
@@ -429,6 +454,36 @@ final class RunSummaryProjector
         }
 
         return ['repair_needed', 'Run is non-terminal but has no durable next-resume source.'];
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private static function replayBlockedLiveness(WorkflowTask $task): array
+    {
+        if (($task->payload['replay_blocked_reason'] ?? null) === 'condition_wait_definition_mismatch') {
+            $sequence = self::intValue($task->payload['replay_blocked_workflow_sequence'] ?? null);
+            $recorded = self::nonEmptyString($task->payload['replay_blocked_recorded_condition_key'] ?? null)
+                ?? 'none';
+            $current = self::nonEmptyString($task->payload['replay_blocked_current_condition_key'] ?? null)
+                ?? 'none';
+            $step = $sequence === null ? 'a keyed condition wait' : sprintf('workflow sequence %d', $sequence);
+
+            return [
+                'workflow_replay_blocked',
+                sprintf(
+                    'Workflow replay is blocked at %s because recorded condition key [%s] does not match the current yielded key [%s]. Run this workflow on a compatible build, then repair it.',
+                    $step,
+                    $recorded,
+                    $current,
+                ),
+            ];
+        }
+
+        return [
+            'workflow_replay_blocked',
+            trim($task->last_error ?? 'Workflow replay is blocked.'),
+        ];
     }
 
     /**

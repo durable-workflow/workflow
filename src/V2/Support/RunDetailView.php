@@ -445,7 +445,7 @@ final class RunDetailView
             return $blockedReason;
         }
 
-        if ($livenessState === 'repair_needed') {
+        if (in_array($livenessState, ['repair_needed', 'workflow_replay_blocked'], true)) {
             return null;
         }
 

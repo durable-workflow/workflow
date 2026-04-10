@@ -1247,7 +1247,7 @@ final class WorkflowStub
 
             $summary = RunSummaryProjector::project($run);
 
-            if ($summary->liveness_state === 'repair_needed') {
+            if (in_array($summary->liveness_state, ['repair_needed', 'workflow_replay_blocked'], true)) {
                 $task = TaskRepair::repairRun($run, $summary);
             }
 

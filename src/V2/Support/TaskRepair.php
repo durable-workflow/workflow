@@ -81,6 +81,23 @@ final class TaskRepair
             return $task;
         }
 
+        if ($task->status === TaskStatus::Failed && self::replayBlocked($task)) {
+            $payload = self::clearReplayBlockedPayload($task);
+
+            $task->forceFill([
+                'status' => TaskStatus::Ready,
+                'payload' => $payload,
+                'leased_at' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'repair_count' => $task->repair_count + 1,
+                'repair_available_at' => null,
+                'last_error' => null,
+            ])->save();
+
+            return $task;
+        }
+
         return null;
     }
 
@@ -89,7 +106,8 @@ final class TaskRepair
         /** @var WorkflowTask|null $task */
         $task = $run->tasks
             ->filter(static fn (WorkflowTask $task): bool => TaskRepairPolicy::readyTaskNeedsRedispatch($task)
-                || TaskRepairPolicy::leaseExpired($task))
+                || TaskRepairPolicy::leaseExpired($task)
+                || self::replayBlocked($task))
             ->sort(static function (WorkflowTask $left, WorkflowTask $right): int {
                 $leftAvailableAt = $left->available_at?->getTimestampMs() ?? PHP_INT_MAX;
                 $rightAvailableAt = $right->available_at?->getTimestampMs() ?? PHP_INT_MAX;
@@ -110,6 +128,29 @@ final class TaskRepair
             ->first();
 
         return $task;
+    }
+
+    private static function replayBlocked(WorkflowTask $task): bool
+    {
+        return $task->task_type === TaskType::Workflow
+            && $task->status === TaskStatus::Failed
+            && ($task->payload['replay_blocked'] ?? false) === true;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function clearReplayBlockedPayload(WorkflowTask $task): array
+    {
+        $payload = is_array($task->payload) ? $task->payload : [];
+
+        foreach (array_keys($payload) as $key) {
+            if (is_string($key) && str_starts_with($key, 'replay_blocked')) {
+                unset($payload[$key]);
+            }
+        }
+
+        return $payload;
     }
 
     private static function createMissingTask(WorkflowRun $run, WorkflowRunSummary $summary): ?WorkflowTask

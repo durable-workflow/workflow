@@ -23,6 +23,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\ActivityExecution;
@@ -1833,6 +1834,12 @@ final class WorkflowExecutor
             return;
         }
 
+        if ($throwable instanceof ConditionWaitDefinitionMismatchException) {
+            $this->blockReplayUntilCompatibleConditionWaitDefinition($run, $task, $throwable);
+
+            return;
+        }
+
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create(array_merge(
             FailureFactory::make($throwable),
@@ -1883,6 +1890,34 @@ final class WorkflowExecutor
     ): void {
         $task->forceFill([
             'status' => TaskStatus::Failed,
+            'last_error' => $throwable->getMessage(),
+            'lease_expires_at' => null,
+        ])->save();
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
+    private function blockReplayUntilCompatibleConditionWaitDefinition(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ConditionWaitDefinitionMismatchException $throwable,
+    ): void {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $payload['replay_blocked'] = true;
+        $payload['replay_blocked_reason'] = 'condition_wait_definition_mismatch';
+        $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
+        $payload['replay_blocked_condition_wait_id'] = ConditionWaits::waitIdForSequence(
+            $run,
+            $throwable->workflowSequence,
+        );
+        $payload['replay_blocked_recorded_condition_key'] = $throwable->recordedConditionKey;
+        $payload['replay_blocked_current_condition_key'] = $throwable->currentConditionKey;
+
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'payload' => $payload,
             'last_error' => $throwable->getMessage(),
             'lease_expires_at' => null,
         ])->save();

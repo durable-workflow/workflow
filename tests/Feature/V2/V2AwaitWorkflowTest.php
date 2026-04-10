@@ -17,7 +17,6 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
-use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -202,7 +201,7 @@ final class V2AwaitWorkflowTest extends TestCase
         $workflow->refresh()->currentState();
     }
 
-    public function testWorkflowWorkerFailsRunWhenRecordedConditionKeyDoesNotMatchCurrentYield(): void
+    public function testWorkflowWorkerBlocksReplayWhenRecordedConditionKeyDoesNotMatchCurrentYield(): void
     {
         Queue::fake();
 
@@ -220,16 +219,51 @@ final class V2AwaitWorkflowTest extends TestCase
 
         $this->runReadyWorkflowTask($workflow->runId());
 
-        $this->assertTrue($workflow->refresh()->failed());
+        $this->assertFalse($workflow->refresh()->failed());
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::WorkflowFailed->value,
+        ]);
+        $this->assertDatabaseMissing('workflow_failures', [
+            'workflow_run_id' => $workflow->runId(),
+        ]);
 
-        /** @var WorkflowFailure $failure */
-        $failure = WorkflowFailure::query()
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
             ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
             ->firstOrFail();
 
-        $this->assertSame(ConditionWaitDefinitionMismatchException::class, $failure->exception_class);
-        $this->assertStringContainsString('recorded with condition key [approval.changed]', $failure->message);
-        $this->assertStringContainsString('current workflow yielded [approval.ready]', $failure->message);
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertTrue($task->payload['replay_blocked'] ?? false);
+        $this->assertSame('condition_wait_definition_mismatch', $task->payload['replay_blocked_reason'] ?? null);
+        $this->assertSame('approval.changed', $task->payload['replay_blocked_recorded_condition_key'] ?? null);
+        $this->assertSame('approval.ready', $task->payload['replay_blocked_current_condition_key'] ?? null);
+        $this->assertStringContainsString('recorded with condition key [approval.changed]', (string) $task->last_error);
+        $this->assertStringContainsString('current workflow yielded [approval.ready]', (string) $task->last_error);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertStringContainsString('Run this workflow on a compatible build', $detail['liveness_reason']);
+        $this->assertTrue($detail['can_repair']);
+        $this->assertSame('replay_blocked', $detail['tasks'][0]['transport_state']);
+        $this->assertTrue($detail['tasks'][0]['replay_blocked']);
+        $this->assertSame('condition:1', $detail['tasks'][0]['replay_blocked_condition_wait_id']);
+        $this->assertSame('approval.changed', $detail['tasks'][0]['replay_blocked_recorded_condition_key']);
+        $this->assertSame('approval.ready', $detail['tasks'][0]['replay_blocked_current_condition_key']);
+
+        $repair = $workflow->refresh()->attemptRepair();
+
+        $this->assertTrue($repair->accepted());
+        $this->assertSame('repair_dispatched', $repair->outcome());
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertFalse($task->payload['replay_blocked'] ?? false);
+        $this->assertNull($task->last_error);
+        $this->assertSame(1, $task->repair_count);
     }
 
     public function testAwaitWorkflowCanApplySubmittedUpdateOnWorkflowWorker(): void
@@ -648,7 +682,12 @@ final class V2AwaitWorkflowTest extends TestCase
             $this->assertFalse($conditionWait['task_backed']);
             $this->assertSame($timerId, $conditionWait['resume_source_id']);
             $this->assertSame($deadlineAt, $conditionWait['deadline_at']?->toJSON());
-            $this->assertNull($this->findTaskOrNull($detail['tasks'], 'timer'));
+            $missingTimerTask = $this->findTask($detail['tasks'], 'timer');
+
+            $this->assertSame('missing', $missingTimerTask['status']);
+            $this->assertSame('missing', $missingTimerTask['transport_state']);
+            $this->assertTrue($missingTimerTask['task_missing']);
+            $this->assertSame($timerId, $missingTimerTask['timer_id']);
 
             $result = WorkflowStub::loadRun($runId)->attemptRepair();
 

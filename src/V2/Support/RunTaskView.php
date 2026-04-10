@@ -65,6 +65,7 @@ final class RunTaskView
                     $workflowWaitKind = self::stringValue($task->payload['workflow_wait_kind'] ?? null);
                     $workflowResumeSourceKind = self::stringValue($task->payload['resume_source_kind'] ?? null);
                     $workflowResumeSourceId = self::stringValue($task->payload['resume_source_id'] ?? null);
+                    $replayBlocked = ($task->payload['replay_blocked'] ?? false) === true;
                     $compatibility = TaskCompatibility::resolve($task, $run);
 
                     /** @var array<string, mixed>|null $activity */
@@ -128,6 +129,22 @@ final class RunTaskView
                         'workflow_update_id' => self::stringValue($task->payload['workflow_update_id'] ?? null),
                         'workflow_signal_id' => self::stringValue($task->payload['workflow_signal_id'] ?? null),
                         'workflow_command_id' => self::stringValue($task->payload['workflow_command_id'] ?? null),
+                        'replay_blocked' => $replayBlocked,
+                        'replay_blocked_reason' => $replayBlocked
+                            ? self::stringValue($task->payload['replay_blocked_reason'] ?? null)
+                            : null,
+                        'replay_blocked_workflow_sequence' => $replayBlocked
+                            ? self::intValue($task->payload['replay_blocked_workflow_sequence'] ?? null)
+                            : null,
+                        'replay_blocked_condition_wait_id' => $replayBlocked
+                            ? self::stringValue($task->payload['replay_blocked_condition_wait_id'] ?? null)
+                            : null,
+                        'replay_blocked_recorded_condition_key' => $replayBlocked
+                            ? self::stringValue($task->payload['replay_blocked_recorded_condition_key'] ?? null)
+                            : null,
+                        'replay_blocked_current_condition_key' => $replayBlocked
+                            ? self::stringValue($task->payload['replay_blocked_current_condition_key'] ?? null)
+                            : null,
                         'created_at' => $task->created_at,
                         'updated_at' => $task->updated_at,
                     ];
@@ -452,6 +469,12 @@ final class RunTaskView
             'workflow_update_id' => null,
             'workflow_signal_id' => null,
             'workflow_command_id' => null,
+            'replay_blocked' => false,
+            'replay_blocked_reason' => null,
+            'replay_blocked_workflow_sequence' => null,
+            'replay_blocked_condition_wait_id' => null,
+            'replay_blocked_recorded_condition_key' => null,
+            'replay_blocked_current_condition_key' => null,
             'created_at' => null,
             'updated_at' => null,
         ];
@@ -463,6 +486,14 @@ final class RunTaskView
         ?array $timer,
         ?string $compatibility,
     ): string {
+        if (($task->payload['replay_blocked'] ?? false) === true) {
+            $reason = self::stringValue($task->payload['replay_blocked_reason'] ?? null);
+
+            return $reason === 'condition_wait_definition_mismatch'
+                ? 'Workflow replay blocked by condition wait definition drift.'
+                : 'Workflow replay blocked.';
+        }
+
         if (self::taskWaitingForCompatibleWorker($task, $compatibility)) {
             return match ($task->task_type) {
                 TaskType::Workflow => match (true) {
@@ -675,6 +706,10 @@ final class RunTaskView
 
     private static function transportState(WorkflowTask $task): string
     {
+        if ($task->status === TaskStatus::Failed && ($task->payload['replay_blocked'] ?? false) === true) {
+            return 'replay_blocked';
+        }
+
         if ($task->status === TaskStatus::Leased) {
             return TaskRepairPolicy::leaseExpired($task)
                 ? 'lease_expired'
