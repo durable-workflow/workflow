@@ -356,7 +356,6 @@ final class FailureSnapshots
             : null;
     }
 
-    /**
     private static function timestampToMilliseconds(mixed $timestamp): int
     {
         if ($timestamp instanceof CarbonInterface) {

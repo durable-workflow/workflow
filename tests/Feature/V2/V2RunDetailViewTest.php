@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
+use Tests\Fixtures\V2\TestAbstractReplayedException;
 use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -40,6 +42,7 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\WorkflowDefinition;
@@ -47,6 +50,85 @@ use Workflow\V2\WorkflowStub;
 
 final class V2RunDetailViewTest extends TestCase
 {
+    public function testMultipleReplayBlockedFailuresStayOrderedAcrossDetailAndExport(): void
+    {
+        $instance = WorkflowInstance::create([
+            'id' => (string) Str::ulid(),
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+        $run = WorkflowRun::create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => RunStatus::Failed->value,
+            'closed_reason' => RunStatus::Failed->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinutes(10),
+            'closed_at' => now()->subMinutes(2),
+            'last_progress_at' => now()->subMinutes(2),
+        ]);
+
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
+
+        $earlierFailureId = (string) Str::ulid();
+        $laterFailureId = (string) Str::ulid();
+
+        WorkflowFailure::create([
+            'id' => $earlierFailureId,
+            'workflow_run_id' => $run->id,
+            'source_kind' => 'activity_execution',
+            'source_id' => 'activity-earlier',
+            'propagation_kind' => 'activity',
+            'handled' => false,
+            'exception_class' => 'App\\Legacy\\EarlierFailure',
+            'message' => 'earlier replay-blocked failure',
+            'file' => __FILE__,
+            'line' => 42,
+            'trace_preview' => 'earlier trace',
+            'created_at' => now()->subMinutes(8),
+            'updated_at' => now()->subMinutes(8),
+        ]);
+        WorkflowFailure::create([
+            'id' => $laterFailureId,
+            'workflow_run_id' => $run->id,
+            'source_kind' => 'activity_execution',
+            'source_id' => 'activity-later',
+            'propagation_kind' => 'activity',
+            'handled' => false,
+            'exception_class' => TestAbstractReplayedException::class,
+            'message' => 'later replay-blocked failure',
+            'file' => __FILE__,
+            'line' => 84,
+            'trace_preview' => 'later trace',
+            'created_at' => now()->subMinutes(6),
+            'updated_at' => now()->subMinutes(6),
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $export = HistoryExport::forRun($run->fresh());
+
+        $this->assertSame(2, $detail['exception_count']);
+        $this->assertSame([$earlierFailureId, $laterFailureId], collect($detail['exceptions'])->pluck('id')->all());
+        $this->assertSame(['unresolved', 'unrestorable'], collect($detail['exceptions'])->pluck('exception_resolution_source')->all());
+        $this->assertSame([true, true], collect($detail['exceptions'])->pluck('exception_replay_blocked')->all());
+
+        $this->assertSame([$earlierFailureId, $laterFailureId], collect($export['failures'])->pluck('id')->all());
+        $this->assertSame(['unresolved', 'unrestorable'], collect($export['failures'])->pluck('exception_resolution_source')->all());
+        $this->assertSame([true, true], collect($export['failures'])->pluck('exception_replay_blocked')->all());
+    }
+
     public function testRunDetailViewIncludesWorkflowDeterminismDiagnostics(): void
     {
         $instance = WorkflowInstance::create([
