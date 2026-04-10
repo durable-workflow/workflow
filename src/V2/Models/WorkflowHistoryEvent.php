@@ -128,6 +128,8 @@ class WorkflowHistoryEvent extends Model
      */
     private static function commandSnapshot(WorkflowCommand $command): array
     {
+        $publicContext = $command->publicContext();
+
         return array_filter([
             'id' => $command->id,
             'sequence' => $command->command_sequence,
@@ -139,6 +141,7 @@ class WorkflowHistoryEvent extends Model
             'payload_codec' => $command->payload_codec,
             'payload' => $command->payload,
             'source' => $command->source,
+            'context' => $publicContext === [] ? null : $publicContext,
             'caller_label' => $command->callerLabel(),
             'auth_status' => $command->authStatus(),
             'auth_method' => $command->authMethod(),

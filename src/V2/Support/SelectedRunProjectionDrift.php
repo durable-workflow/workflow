@@ -32,7 +32,7 @@ final class SelectedRunProjectionDrift
                 'childLinks.childRun.failures',
                 'childLinks.childRun.historyEvents',
             ], $runIds, $instanceId),
-            static fn (WorkflowRun $run): array => RunWaitProjector::driftStatusForRun($run),
+            static fn (WorkflowRun $run): array => SelectedRunSnapshot::waitDriftStatus($run),
         );
 
         return [
@@ -63,7 +63,7 @@ final class SelectedRunProjectionDrift
                     'childLinks.childRun.failures',
                     'childLinks.childRun.historyEvents',
                 ], $runIds, $instanceId),
-                static fn (WorkflowRun $run): array => RunWaitProjector::driftStatusForRun($run),
+                static fn (WorkflowRun $run): array => SelectedRunSnapshot::waitDriftStatus($run),
             ),
         );
     }
@@ -89,7 +89,7 @@ final class SelectedRunProjectionDrift
                 'timers',
                 'failures',
             ], $runIds, $instanceId),
-            static fn (WorkflowRun $run): array => RunTimelineProjector::driftStatusForRun($run),
+            static fn (WorkflowRun $run): array => SelectedRunSnapshot::timelineDriftStatus($run),
         );
 
         return [
@@ -117,7 +117,7 @@ final class SelectedRunProjectionDrift
                     'timers',
                     'failures',
                 ], $runIds, $instanceId),
-                static fn (WorkflowRun $run): array => RunTimelineProjector::driftStatusForRun($run),
+                static fn (WorkflowRun $run): array => SelectedRunSnapshot::timelineDriftStatus($run),
             ),
         );
     }
@@ -142,7 +142,7 @@ final class SelectedRunProjectionDrift
                 'childLinks.childRun.instance.currentRun.summary',
                 'instance.runs.summary',
             ], $runIds, $instanceId),
-            static fn (WorkflowRun $run): array => RunLineageProjector::driftStatusForRun($run),
+            static fn (WorkflowRun $run): array => SelectedRunSnapshot::lineageDriftStatus($run),
         );
 
         return [
@@ -169,7 +169,7 @@ final class SelectedRunProjectionDrift
                     'childLinks.childRun.instance.currentRun.summary',
                     'instance.runs.summary',
                 ], $runIds, $instanceId),
-                static fn (WorkflowRun $run): array => RunLineageProjector::driftStatusForRun($run),
+                static fn (WorkflowRun $run): array => SelectedRunSnapshot::lineageDriftStatus($run),
             ),
         );
     }

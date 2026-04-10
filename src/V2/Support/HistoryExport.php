@@ -55,12 +55,13 @@ final class HistoryExport
             'childLinks',
         ]);
 
-        $currentRunResolution = $run->instance === null
-            ? ['run' => null, 'source' => null]
-            : CurrentRunResolver::resolutionForInstance($run->instance, ['summary']);
-        $currentRun = $currentRunResolution['run'];
         $summary = $run->summary;
-        $lineageSnapshot = RunLineageProjector::snapshotForRun($run);
+        $selectedRun = SelectedRunSnapshot::forRun($run);
+        $currentRunResolution = $selectedRun['current_run'];
+        $currentRun = $currentRunResolution['run'];
+        $waitSnapshot = $selectedRun['waits'];
+        $timelineSnapshot = $selectedRun['timeline'];
+        $lineageSnapshot = $selectedRun['lineage'];
 
         $bundle = [
             'schema' => self::SCHEMA,
@@ -105,10 +106,17 @@ final class HistoryExport
                 ],
             ],
             'summary' => self::summary($summary),
+            'selected_run' => [
+                'waits_projection_source' => $waitSnapshot['source'],
+                'timeline_projection_source' => $timelineSnapshot['source'],
+                'lineage_projection_source' => $lineageSnapshot['source'],
+            ],
             'history_events' => $run->historyEvents
                 ->map(static fn (WorkflowHistoryEvent $event): array => self::historyEvent($event))
                 ->values()
                 ->all(),
+            'waits' => $waitSnapshot['waits'],
+            'timeline' => $timelineSnapshot['timeline'],
             'commands' => $run->commands
                 ->map(static fn (WorkflowCommand $command): array => self::command($command))
                 ->values()
@@ -240,6 +248,70 @@ final class HistoryExport
             }
 
             unset($event);
+        }
+
+        if (isset($bundle['timeline']) && is_array($bundle['timeline'])) {
+            foreach ($bundle['timeline'] as $index => &$entry) {
+                if (! is_array($entry)) {
+                    continue;
+                }
+
+                if (isset($entry['command']) && is_array($entry['command'])) {
+                    self::redactField(
+                        $entry['command'],
+                        'payload',
+                        $callback,
+                        self::redactionContext($run, "timeline.{$index}.command.payload", 'command_payload', [
+                            'history_event_id' => $entry['id'] ?? null,
+                            'history_event_type' => $entry['type'] ?? null,
+                            'command_id' => $entry['command']['id'] ?? null,
+                            'command_type' => $entry['command']['type'] ?? null,
+                            'sequence' => $entry['sequence'] ?? null,
+                        ]),
+                        $paths,
+                    );
+
+                    self::redactField(
+                        $entry['command'],
+                        'context',
+                        $callback,
+                        self::redactionContext($run, "timeline.{$index}.command.context", 'command_context', [
+                            'history_event_id' => $entry['id'] ?? null,
+                            'history_event_type' => $entry['type'] ?? null,
+                            'command_id' => $entry['command']['id'] ?? null,
+                            'command_type' => $entry['command']['type'] ?? null,
+                            'sequence' => $entry['sequence'] ?? null,
+                        ]),
+                        $paths,
+                    );
+                }
+
+                if (isset($entry['failure']) && is_array($entry['failure'])) {
+                    foreach (['message', 'file'] as $field) {
+                        self::redactField(
+                            $entry['failure'],
+                            $field,
+                            $callback,
+                            self::redactionContext(
+                                $run,
+                                "timeline.{$index}.failure.{$field}",
+                                'failure_diagnostic',
+                                [
+                                    'history_event_id' => $entry['id'] ?? null,
+                                    'history_event_type' => $entry['type'] ?? null,
+                                    'failure_id' => $entry['failure']['id'] ?? null,
+                                    'source_kind' => $entry['failure']['source_kind'] ?? null,
+                                    'source_id' => $entry['failure']['source_id'] ?? null,
+                                    'field' => $field,
+                                ],
+                            ),
+                            $paths,
+                        );
+                    }
+                }
+            }
+
+            unset($entry);
         }
 
         if (isset($bundle['commands']) && is_array($bundle['commands'])) {

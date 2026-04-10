@@ -270,6 +270,17 @@ final class HistoryExportTest extends TestCase
         unset($unsignedBundle['integrity']);
         $this->assertSame(hash('sha256', self::canonicalJson($unsignedBundle)), $bundle['integrity']['checksum']);
         $this->assertSame(2, $bundle['summary']['history_event_count']);
+        $this->assertSame('workflow_run_waits_rebuilt', $bundle['selected_run']['waits_projection_source']);
+        $this->assertSame('workflow_run_timeline_entries_rebuilt', $bundle['selected_run']['timeline_projection_source']);
+        $this->assertSame('workflow_run_lineage_entries_rebuilt', $bundle['selected_run']['lineage_projection_source']);
+        $this->assertSame(['activity', 'child'], array_column($bundle['waits'], 'kind'));
+        $this->assertSame(['unsupported', 'unsupported'], array_column($bundle['waits'], 'status'));
+        $this->assertSame('terminal_activity_row_without_typed_history', $bundle['waits'][0]['history_unsupported_reason']);
+        $this->assertSame(
+            'terminal_child_link_without_typed_parent_history',
+            $bundle['waits'][1]['history_unsupported_reason']
+        );
+        $this->assertSame(['StartAccepted', 'WorkflowCompleted'], array_column($bundle['timeline'], 'type'));
         $this->assertSame(['StartAccepted', 'WorkflowCompleted'], array_column($bundle['history_events'], 'type'));
         $this->assertSame($command->id, $bundle['commands'][0]['id']);
         $this->assertSame('started_new', $bundle['commands'][0]['outcome']);
@@ -1019,6 +1030,8 @@ final class HistoryExportTest extends TestCase
         $this->assertIsString($bundle['redaction']['policy']);
         $this->assertContains('payloads.arguments.data', $bundle['redaction']['paths']);
         $this->assertContains('history_events.0.payload', $bundle['redaction']['paths']);
+        $this->assertContains('timeline.0.command.payload', $bundle['redaction']['paths']);
+        $this->assertContains('timeline.0.command.context', $bundle['redaction']['paths']);
         $this->assertContains('commands.0.payload', $bundle['redaction']['paths']);
         $this->assertContains('commands.0.context', $bundle['redaction']['paths']);
         $this->assertContains('signals.0.arguments', $bundle['redaction']['paths']);
@@ -1028,6 +1041,8 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('payloads.arguments.data', $bundle['payloads']['arguments']['data']['path']);
         $this->assertSame('workflow_payload', $bundle['payloads']['arguments']['data']['category']);
         $this->assertSame('history_events.0.payload', $bundle['history_events'][0]['payload']['path']);
+        $this->assertSame('timeline.0.command.payload', $bundle['timeline'][0]['command']['payload']['path']);
+        $this->assertSame('timeline.0.command.context', $bundle['timeline'][0]['command']['context']['path']);
         $this->assertSame('failure_diagnostic', $bundle['failures'][0]['message']['category']);
 
         $stubBundle = WorkflowStub::loadRun($run->id)->historyExport(new class() implements HistoryExportRedactor {

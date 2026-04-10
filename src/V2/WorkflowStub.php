@@ -13,6 +13,7 @@ use ReflectionMethod;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryExportRedactor;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
@@ -42,7 +43,6 @@ use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\CurrentRunResolver;
-use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
@@ -331,7 +331,10 @@ final class WorkflowStub
             throw new LogicException(sprintf('Workflow instance [%s] has not started yet.', $this->instance->id));
         }
 
-        return HistoryExport::forRun($this->run, redactor: $redactor);
+        /** @var OperatorObservabilityRepository $repository */
+        $repository = app(OperatorObservabilityRepository::class);
+
+        return $repository->runHistoryExport($this->run, redactor: $redactor);
     }
 
     public function refresh(): self

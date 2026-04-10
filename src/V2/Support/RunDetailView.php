@@ -37,11 +37,10 @@ final class RunDetailView
         ]);
 
         $summary = $run->summary;
-        $currentRunResolution = $run->instance === null
-            ? ['run' => null, 'source' => null]
-            : CurrentRunResolver::resolutionForInstance($run->instance, ['summary']);
+        $selectedRun = SelectedRunSnapshot::forRun($run);
+        $currentRunResolution = $selectedRun['current_run'];
         $currentRun = $currentRunResolution['run'];
-        $currentSummary = $currentRun?->summary;
+        $currentSummary = $currentRunResolution['summary'];
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
         $commandContract = RunCommandContract::forRun($run);
         $cancelBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
@@ -77,7 +76,7 @@ final class RunDetailView
             ->keyBy('command_id');
         $failureSnapshots = FailureSnapshots::forRun($run);
         $tasks = RunTaskView::forRun($run);
-        $waitSnapshot = RunWaitProjector::snapshotForRun($run);
+        $waitSnapshot = $selectedRun['waits'];
         $waits = $waitSnapshot['waits'];
         $openWaitCount = collect($waits)
             ->filter(static fn (array $wait): bool => ($wait['status'] ?? null) === 'open')
@@ -107,8 +106,8 @@ final class RunDetailView
                 'history_size_bytes' => (int) $summary->history_size_bytes,
                 'continue_as_new_recommended' => (bool) $summary->continue_as_new_recommended,
             ];
-        $timelineSnapshot = RunTimelineProjector::snapshotForRun($run);
-        $lineageSnapshot = RunLineageProjector::snapshotForRun($run);
+        $timelineSnapshot = $selectedRun['timeline'];
+        $lineageSnapshot = $selectedRun['lineage'];
 
         return [
             'id' => $run->id,
