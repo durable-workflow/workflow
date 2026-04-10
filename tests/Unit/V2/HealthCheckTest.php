@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\HealthCheck;
 
 final class HealthCheckTest extends TestCase
@@ -75,5 +76,75 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(1, $projection['data']['needs_rebuild']);
         $this->assertSame(1, $projection['data']['missing']);
         $this->assertSame(0, $projection['data']['orphaned']);
+    }
+
+    public function testSnapshotWarnsWhenOpenRunHasNoDurableResumePath(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'health-repair-needed-instance',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'id' => '01JHEALTHREPAIRRUN00000000',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'waiting',
+            'started_at' => now()->subMinutes(10),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'waiting',
+            'status_bucket' => 'running',
+            'started_at' => now()->subMinutes(10),
+            'wait_started_at' => now()->subMinutes(5),
+            'liveness_state' => 'repair_needed',
+            'liveness_reason' => 'Run is non-terminal but has no durable next-resume source.',
+            'created_at' => now()->subMinutes(10),
+            'updated_at' => now(),
+        ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $taskTransport = collect($snapshot['checks'])->firstWhere('name', 'task_transport');
+        $resumePaths = collect($snapshot['checks'])->firstWhere('name', 'durable_resume_paths');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertTrue($snapshot['healthy']);
+        $this->assertSame(200, HealthCheck::httpStatus($snapshot));
+        $this->assertSame('ok', $taskTransport['status']);
+        $this->assertSame(0, $taskTransport['data']['unhealthy_tasks']);
+        $this->assertSame(1, $taskTransport['data']['repair_needed_runs']);
+        $this->assertSame('warning', $resumePaths['status']);
+        $this->assertSame(1, $resumePaths['data']['repair_needed_runs']);
+        $this->assertSame(1, $resumePaths['data']['missing_task_candidates']);
+        $this->assertSame(1, $resumePaths['data']['selected_missing_task_candidates']);
+        $this->assertSame('2026-04-09T11:55:00.000000Z', $resumePaths['data']['oldest_missing_run_started_at']);
+        $this->assertSame(300000, $resumePaths['data']['max_missing_run_age_ms']);
     }
 }

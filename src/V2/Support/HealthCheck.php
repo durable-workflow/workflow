@@ -19,6 +19,7 @@ final class HealthCheck
             self::backendCheck($metrics['backend'] ?? []),
             self::runSummaryProjectionCheck($metrics['projections']['run_summaries'] ?? []),
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
+            self::durableResumePathCheck($metrics['backlog'] ?? [], $metrics['repair'] ?? []),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
         ];
         $status = self::status($checks);
@@ -104,6 +105,33 @@ final class HealthCheck
                 'repair_needed_runs' => self::integer($backlog['repair_needed_runs'] ?? 0),
                 'claim_failed_runs' => self::integer($backlog['claim_failed_runs'] ?? 0),
                 'compatibility_blocked_runs' => self::integer($backlog['compatibility_blocked_runs'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $backlog
+     * @param array<string, mixed> $repair
+     * @return array<string, mixed>
+     */
+    private static function durableResumePathCheck(array $backlog, array $repair): array
+    {
+        $repairNeededRuns = self::integer($backlog['repair_needed_runs'] ?? 0);
+
+        return self::check(
+            'durable_resume_paths',
+            $repairNeededRuns === 0 ? 'ok' : 'warning',
+            $repairNeededRuns === 0
+                ? 'Every open v2 run has a projected durable resume path.'
+                : 'One or more open v2 runs are missing their durable next-resume source and need repair.',
+            [
+                'repair_needed_runs' => $repairNeededRuns,
+                'missing_task_candidates' => self::integer($repair['missing_task_candidates'] ?? 0),
+                'selected_missing_task_candidates' => self::integer($repair['selected_missing_task_candidates'] ?? 0),
+                'oldest_missing_run_started_at' => is_string($repair['oldest_missing_run_started_at'] ?? null)
+                    ? $repair['oldest_missing_run_started_at']
+                    : null,
+                'max_missing_run_age_ms' => self::integer($repair['max_missing_run_age_ms'] ?? 0),
             ],
         );
     }
