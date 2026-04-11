@@ -55,4 +55,26 @@ final class WorkflowFiberContext
 
         return Fiber::suspend($call);
     }
+
+    public static function whileInactive(callable $callback): mixed
+    {
+        $fiber = Fiber::getCurrent();
+
+        if (! $fiber instanceof Fiber) {
+            return $callback();
+        }
+
+        $fiberId = spl_object_id($fiber);
+        $wasActive = isset(self::$activeFibers[$fiberId]);
+
+        unset(self::$activeFibers[$fiberId]);
+
+        try {
+            return $callback();
+        } finally {
+            if ($wasActive) {
+                self::$activeFibers[$fiberId] = true;
+            }
+        }
+    }
 }

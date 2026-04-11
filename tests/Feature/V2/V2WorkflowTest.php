@@ -5,15 +5,16 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use LogicException;
 use ReflectionException;
+use Tests\Fixtures\V2\TestAsyncGeneratorCallbackWorkflow;
 use Tests\Fixtures\V2\TestAsyncWorkflow;
 use Tests\Fixtures\V2\TestBroadFailureCatchWorkflow;
-use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredContinueSignalWorkflow;
+use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
@@ -21,31 +22,32 @@ use Tests\Fixtures\V2\TestFiberParallelWorkflow;
 use Tests\Fixtures\V2\TestFiberSignalWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestHandledFailureWorkflow;
 use Tests\Fixtures\V2\TestHeartbeatActivity;
 use Tests\Fixtures\V2\TestHeartbeatWorkflow;
-use Tests\Fixtures\V2\TestHandledFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelFailureWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelWorkflow;
 use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
-use Tests\Fixtures\V2\TestParentChildWorkflow;
-use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
-use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
-use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
+use Tests\Fixtures\V2\TestParentChildWorkflow;
+use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestReclaimDuringExecutionActivity;
 use Tests\Fixtures\V2\TestRetryWorkflow;
-use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
 use Tests\Fixtures\V2\TestSignalOrderingWorkflow;
+use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\ActivityTaskBridge;
 use Workflow\V2\AsyncWorkflow;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -53,7 +55,6 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
-use Workflow\V2\ActivityTaskBridge;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
@@ -77,10 +78,10 @@ use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
-use Workflow\V2\Support\SelectedRunLocator;
-use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunSummarySortKey;
+use Workflow\V2\Support\SelectedRunLocator;
+use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
@@ -89,7 +90,8 @@ final class V2WorkflowTest extends TestCase
     public function testFiberWorkflowUsesStraightLineHelpersAndStillSupportsQueryReplay(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestFiberSignalWorkflow::class, 'fiber-straight-line');
@@ -122,7 +124,8 @@ final class V2WorkflowTest extends TestCase
     public function testFiberWorkflowCanAwaitParallelBuilders(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestFiberParallelWorkflow::class, 'fiber-parallel-builders');
@@ -161,14 +164,17 @@ final class V2WorkflowTest extends TestCase
             'timer_id' => 'timer-from-older-definition',
             'sequence' => 1,
             'delay_seconds' => 60,
-            'fire_at' => now()->addMinute()->toJSON(),
+            'fire_at' => now()
+                ->addMinute()
+                ->toJSON(),
         ]);
 
         $this->expectException(HistoryEventShapeMismatchException::class);
         $this->expectExceptionMessage('recorded [TimerScheduled]');
         $this->expectExceptionMessage('current workflow yielded activity');
 
-        $workflow->refresh()->currentState();
+        $workflow->refresh()
+            ->currentState();
     }
 
     public function testWorkflowWorkerBlocksReplayWhenActivityHistoryShapeDrifts(): void
@@ -403,7 +409,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame(1, $activityStarted->payload['activity']['attempt_count'] ?? null);
         $this->assertSame($execution->current_attempt_id, $activityStarted->payload['activity']['attempt_id'] ?? null);
         $this->assertSame(1, $activityCompleted->payload['activity']['attempt_count'] ?? null);
-        $this->assertSame($execution->current_attempt_id, $activityCompleted->payload['activity']['attempt_id'] ?? null);
+        $this->assertSame(
+            $execution->current_attempt_id,
+            $activityCompleted->payload['activity']['attempt_id'] ?? null
+        );
 
         $this->assertSame([
             'StartAccepted',
@@ -456,7 +465,13 @@ final class V2WorkflowTest extends TestCase
         $this->drainReadyTasks();
         $workflow->refresh();
 
-        $this->assertTrue($workflow->completed());
+        $this->assertTrue(
+            $workflow->completed(),
+            json_encode([
+                'status' => $workflow->status(),
+                'output' => $workflow->output(),
+            ], JSON_THROW_ON_ERROR),
+        );
 
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()
@@ -471,7 +486,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($execution->current_attempt_id, $attempt->id);
         $this->assertSame(1, $attempt->attempt_number);
         $this->assertSame('completed', $attempt->status->value);
-        $this->assertSame($execution->last_heartbeat_at?->jsonSerialize(), $attempt->last_heartbeat_at?->jsonSerialize());
+        $this->assertSame(
+            $execution->last_heartbeat_at?->jsonSerialize(),
+            $attempt->last_heartbeat_at?->jsonSerialize()
+        );
         $this->assertNotNull($attempt->closed_at);
         $this->assertSame([
             'workflow_id' => $workflow->id(),
@@ -490,7 +508,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($execution->id, $heartbeat->payload['activity_execution_id'] ?? null);
         $this->assertSame($attempt->id, $heartbeat->payload['activity_attempt_id'] ?? null);
         $this->assertSame($execution->last_heartbeat_at?->toJSON(), $heartbeat->payload['heartbeat_at'] ?? null);
-        $this->assertSame($execution->last_heartbeat_at?->toJSON(), $heartbeat->payload['activity']['last_heartbeat_at'] ?? null);
+        $this->assertSame(
+            $execution->last_heartbeat_at?->toJSON(),
+            $heartbeat->payload['activity']['last_heartbeat_at'] ?? null
+        );
 
         $this->assertSame([
             'StartAccepted',
@@ -511,7 +532,8 @@ final class V2WorkflowTest extends TestCase
     public function testTypedActivityHistoryBlocksMutableCompletedExecutionWithoutTerminalHistory(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         Queue::fake();
 
@@ -575,7 +597,8 @@ final class V2WorkflowTest extends TestCase
     public function testReplayBlocksTerminalActivityProjectionWithoutTypedStepHistory(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         Queue::fake();
 
@@ -745,15 +768,22 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($detail['activities'][0]['attempt_id'], $export['activities'][0]['current_attempt_id']);
         $this->assertCount(1, $export['activities'][0]['attempts']);
         $this->assertSame($detail['activities'][0]['attempts'][0]['id'], $export['activities'][0]['attempts'][0]['id']);
-        $this->assertSame($detail['activities'][0]['attempts'][0]['status'], $export['activities'][0]['attempts'][0]['status']);
-        $this->assertSame($run->activityExecutions()->firstOrFail()->id, $export['activities'][0]['attempts'][0]['activity_execution_id']);
+        $this->assertSame(
+            $detail['activities'][0]['attempts'][0]['status'],
+            $export['activities'][0]['attempts'][0]['status']
+        );
+        $this->assertSame(
+            $run->activityExecutions()->firstOrFail()->id,
+            $export['activities'][0]['attempts'][0]['activity_execution_id']
+        );
         $this->assertNull($export['activities'][0]['closed_at']);
     }
 
     public function testReplayBlocksFiredTimerProjectionWithoutTypedStepHistory(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         Queue::fake();
 
@@ -784,7 +814,8 @@ final class V2WorkflowTest extends TestCase
 
             $timer->forceFill([
                 'status' => TimerStatus::Fired->value,
-                'fired_at' => now()->addSeconds(5),
+                'fired_at' => now()
+                    ->addSeconds(5),
             ])->save();
 
             /** @var WorkflowRun $run */
@@ -794,7 +825,8 @@ final class V2WorkflowTest extends TestCase
                 'workflow_run_id' => $runId,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
-                'available_at' => now()->addSeconds(5),
+                'available_at' => now()
+                    ->addSeconds(5),
                 'payload' => [],
                 'connection' => $run->connection,
                 'queue' => $run->queue,
@@ -869,7 +901,8 @@ final class V2WorkflowTest extends TestCase
     public function testReplayBlocksTerminalChildProjectionWithoutTypedParentStepHistory(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         Queue::fake();
 
@@ -1192,7 +1225,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('running', $startedAttempt->status->value);
         $this->assertSame($task->id, $startedAttempt->workflow_task_id);
         $this->assertSame('external-worker-1', $startedAttempt->lease_owner);
-        $this->assertSame($task->lease_expires_at?->jsonSerialize(), $startedAttempt->lease_expires_at?->jsonSerialize());
+        $this->assertSame(
+            $task->lease_expires_at?->jsonSerialize(),
+            $startedAttempt->lease_expires_at?->jsonSerialize()
+        );
 
         $this->assertTrue(ActivityTaskBridge::heartbeat($claim['activity_attempt_id']));
 
@@ -1238,7 +1274,13 @@ final class V2WorkflowTest extends TestCase
 
         $workflow->refresh();
 
-        $this->assertTrue($workflow->completed());
+        $this->assertTrue(
+            $workflow->completed(),
+            json_encode([
+                'status' => $workflow->status(),
+                'output' => $workflow->output(),
+            ], JSON_THROW_ON_ERROR),
+        );
         $this->assertSame([
             'greeting' => 'Hello from bridge!',
             'workflow_id' => 'activity-bridge-complete',
@@ -1296,7 +1338,10 @@ final class V2WorkflowTest extends TestCase
                 'backoff_seconds' => [5],
             ], $execution->retry_policy);
             $this->assertSame($execution->id, $retryTask->payload['activity_execution_id'] ?? null);
-            $this->assertSame($firstClaim['activity_attempt_id'], $retryTask->payload['retry_after_attempt_id'] ?? null);
+            $this->assertSame(
+                $firstClaim['activity_attempt_id'],
+                $retryTask->payload['retry_after_attempt_id'] ?? null
+            );
             $this->assertSame(1, $retryTask->payload['retry_after_attempt'] ?? null);
             $this->assertSame(5, $retryTask->payload['retry_backoff_seconds'] ?? null);
             $this->assertSame(2, $retryTask->payload['max_attempts'] ?? null);
@@ -1474,7 +1519,8 @@ final class V2WorkflowTest extends TestCase
 
         ActivityCancellation::record($run, $execution, $activityTask);
 
-        $state = $workflow->refresh()->currentState();
+        $state = $workflow->refresh()
+            ->currentState();
 
         $this->assertSame('waiting-for-resume', $state['stage']);
         $this->assertSame(\RuntimeException::class, $state['caught']['class']);
@@ -1597,8 +1643,10 @@ final class V2WorkflowTest extends TestCase
                 'historyEvents',
             ]));
 
-            $heartbeatAt = $startedAt->copy()->addMinutes(2);
-            $leaseExpiresAt = $heartbeatAt->copy()->addMinutes(ActivityLease::DURATION_MINUTES);
+            $heartbeatAt = $startedAt->copy()
+                ->addMinutes(2);
+            $leaseExpiresAt = $heartbeatAt->copy()
+                ->addMinutes(ActivityLease::DURATION_MINUTES);
             Carbon::setTestNow($heartbeatAt);
 
             $activity = new TestHeartbeatActivity($execution->fresh(), $run->fresh(), $task->id);
@@ -1722,7 +1770,8 @@ final class V2WorkflowTest extends TestCase
 
             $activity = new TestHeartbeatActivity($execution->fresh(), $run->fresh(), $oldTask->id);
 
-            $reclaimedAt = $startedAt->copy()->addMinutes(6);
+            $reclaimedAt = $startedAt->copy()
+                ->addMinutes(6);
             Carbon::setTestNow($reclaimedAt);
 
             ActivityAttempt::query()
@@ -1773,7 +1822,8 @@ final class V2WorkflowTest extends TestCase
                 'attempt_count' => 2,
             ]);
 
-            $lateHeartbeatAt = $reclaimedAt->copy()->addMinute();
+            $lateHeartbeatAt = $reclaimedAt->copy()
+                ->addMinute();
             Carbon::setTestNow($lateHeartbeatAt);
 
             $activity->heartbeat();
@@ -1870,8 +1920,10 @@ final class V2WorkflowTest extends TestCase
                 'historyEvents',
             ]));
 
-            $heartbeatAt = $startedAt->copy()->addMinutes(2);
-            $leaseExpiresAt = $heartbeatAt->copy()->addMinutes(ActivityLease::DURATION_MINUTES);
+            $heartbeatAt = $startedAt->copy()
+                ->addMinutes(2);
+            $leaseExpiresAt = $heartbeatAt->copy()
+                ->addMinutes(ActivityLease::DURATION_MINUTES);
             Carbon::setTestNow($heartbeatAt);
 
             $activity = new TestHeartbeatActivity($execution->fresh(), $run->fresh(), $task->id);
@@ -1922,15 +1974,14 @@ final class V2WorkflowTest extends TestCase
     public function testParentCompletesAfterChildContinuesAsNewWithoutWorkflowLinks(): void
     {
         Queue::fake();
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $instanceId = 'child-continue-history';
 
-        $workflow = WorkflowStub::make(
-            TestParentWaitingOnContinuingChildWorkflow::class,
-            $instanceId
-        );
+        $workflow = WorkflowStub::make(TestParentWaitingOnContinuingChildWorkflow::class, $instanceId);
         $workflow->start(0, 1);
 
         $parentRunId = $workflow->runId();
@@ -1976,9 +2027,7 @@ final class V2WorkflowTest extends TestCase
         $workflow->refresh();
 
         $this->assertTrue($workflow->completed());
-        $this->assertSame(2, WorkflowRun::query()
-            ->where('workflow_instance_id', $childInstanceId)
-            ->count());
+        $this->assertSame(2, WorkflowRun::query() ->where('workflow_instance_id', $childInstanceId) ->count());
         $this->assertSame([
             'parent_workflow_id' => $instanceId,
             'parent_run_id' => $parentRunId,
@@ -2021,8 +2070,10 @@ final class V2WorkflowTest extends TestCase
     public function testLoadSelectionCanPinHistoricalRunWithinOneInstance(): void
     {
         Queue::fake();
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'selection-instance');
         $workflow->start(0, 1);
@@ -2059,25 +2110,18 @@ final class V2WorkflowTest extends TestCase
             $historicalRun->id,
             SelectedRunLocator::forInstanceIdOrFail('selection-instance', $historicalRun->id)->id,
         );
-        $this->assertSame(
-            $currentRun->id,
-            SelectedRunLocator::forInstanceIdOrFail('selection-instance')->id,
-        );
-        $this->assertSame(
-            $currentRun->id,
-            SelectedRunLocator::forIdOrFail('selection-instance')->id,
-        );
-        $this->assertSame(
-            $historicalRun->id,
-            SelectedRunLocator::forIdOrFail($historicalRun->id)->id,
-        );
+        $this->assertSame($currentRun->id, SelectedRunLocator::forInstanceIdOrFail('selection-instance')->id);
+        $this->assertSame($currentRun->id, SelectedRunLocator::forIdOrFail('selection-instance')->id);
+        $this->assertSame($historicalRun->id, SelectedRunLocator::forIdOrFail($historicalRun->id)->id);
     }
 
     public function testSelectedRunLocatorPrefersContinueAsNewLineageWhenCurrentRunPointerIsMissing(): void
     {
         Queue::fake();
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'selection-locator-lineage');
         $workflow->start(0, 1);
@@ -2104,8 +2148,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([999, 1000]),
             'connection' => $continuedRun->connection,
             'queue' => $continuedRun->queue,
-            'started_at' => now()->addMinute(),
-            'last_progress_at' => now()->addMinute(),
+            'started_at' => now()
+                ->addMinute(),
+            'last_progress_at' => now()
+                ->addMinute(),
         ]);
 
         WorkflowInstance::query()
@@ -2226,7 +2272,10 @@ final class V2WorkflowTest extends TestCase
             'Taylor',
             StartOptions::withVisibility(
                 businessKey: 'order-123',
-                labels: ['region' => 'us-east', 'tenant' => 'acme'],
+                labels: [
+                    'region' => 'us-east',
+                    'tenant' => 'acme',
+                ],
             ),
         );
 
@@ -2235,7 +2284,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertTrue($result->accepted());
         $this->assertIsString($runId);
         $this->assertSame('order-123', $workflow->businessKey());
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $workflow->visibilityLabels());
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $workflow->visibilityLabels());
 
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()->findOrFail('visible-order');
@@ -2250,23 +2302,44 @@ final class V2WorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('order-123', $instance->business_key);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $instance->visibility_labels);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $instance->visibility_labels);
         $this->assertSame('order-123', $run->business_key);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $run->visibility_labels);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $run->visibility_labels);
         $this->assertSame('order-123', $summary->business_key);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $summary->visibility_labels);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $summary->visibility_labels);
         $this->assertSame('order-123', $started->payload['business_key'] ?? null);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $started->payload['visibility_labels'] ?? null);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $started->payload['visibility_labels'] ?? null);
 
         $detail = RunDetailView::forRun($run->fresh(['summary', 'instance.runs.summary']));
         $export = $workflow->historyExport();
 
         $this->assertSame('order-123', $detail['business_key']);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $detail['visibility_labels']);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $detail['visibility_labels']);
         $this->assertSame('order-123', $export['workflow']['business_key']);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $export['workflow']['visibility_labels']);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $export['workflow']['visibility_labels']);
         $this->assertSame('order-123', $export['summary']['business_key']);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $export['summary']['visibility_labels']);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $export['summary']['visibility_labels']);
     }
 
     public function testMakeRejectsBlankCallerSuppliedInstanceId(): void
@@ -2365,10 +2438,9 @@ final class V2WorkflowTest extends TestCase
         $started = $workflow->start(
             0,
             2,
-            StartOptions::withVisibility(
-                businessKey: 'order-continue',
-                labels: ['tenant' => 'acme'],
-            ),
+            StartOptions::withVisibility(businessKey: 'order-continue', labels: [
+                    'tenant' => 'acme',
+                ],),
         );
         $firstRunId = $started->runId();
 
@@ -2398,10 +2470,17 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame([1, 2, 3], $runs->pluck('run_number')->all());
         $this->assertSame(['order-continue', 'order-continue', 'order-continue'], $runs->pluck('business_key')->all());
         $this->assertSame([
-            ['tenant' => 'acme'],
-            ['tenant' => 'acme'],
-            ['tenant' => 'acme'],
-        ], $runs->map(static fn (WorkflowRun $run): ?array => $run->visibility_labels)->all());
+            [
+                'tenant' => 'acme',
+            ],
+            [
+                'tenant' => 'acme',
+            ],
+            [
+                'tenant' => 'acme',
+            ],
+        ], $runs->map(static fn (WorkflowRun $run): ?array => $run->visibility_labels)
+            ->all());
         $this->assertSame(['completed', 'completed', 'completed'], $runs->pluck('status')->map(
             static fn (RunStatus $status): string => $status->value
         )->all());
@@ -2467,7 +2546,9 @@ final class V2WorkflowTest extends TestCase
             ->sole();
 
         $this->assertSame('order-continue', $thirdRunStarted->payload['business_key'] ?? null);
-        $this->assertSame(['tenant' => 'acme'], $thirdRunStarted->payload['visibility_labels'] ?? null);
+        $this->assertSame([
+            'tenant' => 'acme',
+        ], $thirdRunStarted->payload['visibility_labels'] ?? null);
 
         $this->assertSame([
             'StartAccepted',
@@ -2656,8 +2737,10 @@ final class V2WorkflowTest extends TestCase
     public function testRepairRecreatesMissingParentResumeTaskFromChildResolutionHistory(): void
     {
         Queue::fake();
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'parent-child-resolution-repair');
         $workflow->start('Taylor');
@@ -2933,7 +3016,9 @@ final class V2WorkflowTest extends TestCase
                 HistoryEventType::ChildRunStarted->value,
             ])
             ->get()
-            ->filter(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['parallel_group_path'] ?? null) !== null)
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => ($event->payload['parallel_group_path'] ?? null) !== null
+            )
             ->count());
 
         $firstChildRunId = $links[0]->child_workflow_run_id;
@@ -2979,7 +3064,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('parallel-children:1:2', $firstChildCompleted->payload['parallel_group_id'] ?? null);
         $this->assertSame($links[0]->parallel_group_path, $firstChildCompleted->payload['parallel_group_path'] ?? null);
         $this->assertSame('parallel-children:1:2', $secondChildCompleted->payload['parallel_group_id'] ?? null);
-        $this->assertSame($links[1]->parallel_group_path, $secondChildCompleted->payload['parallel_group_path'] ?? null);
+        $this->assertSame(
+            $links[1]->parallel_group_path,
+            $secondChildCompleted->payload['parallel_group_path'] ?? null
+        );
 
         $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
 
@@ -3099,10 +3187,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('activity', $firstActivityCompleted->payload['parallel_group_kind'] ?? null);
         $this->assertSame(0, $firstActivityCompleted->payload['parallel_group_index'] ?? null);
         $this->assertSame('completed', $workflow->output()['stage'] ?? null);
-        $this->assertSame([
-            'Hello, Taylor!',
-            'Hello, Abigail!',
-        ], $workflow->output()['results'] ?? null);
+        $this->assertSame(['Hello, Taylor!', 'Hello, Abigail!'], $workflow->output()['results'] ?? null);
     }
 
     public function testParallelGroupMetadataBackfillStampsActivityHistoryBeforeLaterEvents(): void
@@ -3110,7 +3195,10 @@ final class V2WorkflowTest extends TestCase
         config()->set('queue.default', 'redis');
         Queue::fake();
 
-        $workflow = WorkflowStub::make(TestParallelActivityWorkflow::class, 'parallel-activity-execution-group-snapshot');
+        $workflow = WorkflowStub::make(
+            TestParallelActivityWorkflow::class,
+            'parallel-activity-execution-group-snapshot'
+        );
         $workflow->start('Taylor', 'Abigail');
         $parentRunId = $workflow->runId();
 
@@ -3168,9 +3256,15 @@ final class V2WorkflowTest extends TestCase
             ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 1);
 
         $this->assertSame('parallel-activities:1:2', $firstActivityStarted->payload['parallel_group_id'] ?? null);
-        $this->assertSame($firstExecution->parallel_group_path, $firstActivityStarted->payload['parallel_group_path'] ?? null);
+        $this->assertSame(
+            $firstExecution->parallel_group_path,
+            $firstActivityStarted->payload['parallel_group_path'] ?? null
+        );
         $this->assertSame('parallel-activities:1:2', $firstActivityCompleted->payload['parallel_group_id'] ?? null);
-        $this->assertSame($firstExecution->parallel_group_path, $firstActivityCompleted->payload['parallel_group_path'] ?? null);
+        $this->assertSame(
+            $firstExecution->parallel_group_path,
+            $firstActivityCompleted->payload['parallel_group_path'] ?? null
+        );
 
         $this->assertSame(0, WorkflowTask::query()
             ->where('workflow_run_id', $parentRunId)
@@ -3301,14 +3395,14 @@ final class V2WorkflowTest extends TestCase
             ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 2);
 
         $this->assertSame('parallel-activities:2:2', $secondActivityCompleted->payload['parallel_group_id'] ?? null);
-        $this->assertSame($secondActivityScheduled->payload['parallel_group_path'] ?? null, $secondActivityCompleted->payload['parallel_group_path'] ?? null);
+        $this->assertSame(
+            $secondActivityScheduled->payload['parallel_group_path'] ?? null,
+            $secondActivityCompleted->payload['parallel_group_path'] ?? null
+        );
         $this->assertSame('completed', $workflow->output()['stage'] ?? null);
         $this->assertSame([
             'Hello, Taylor!',
-            [
-                'Hello, Abigail!',
-                'Hello, Selena!',
-            ],
+            ['Hello, Abigail!', 'Hello, Selena!'],
         ], $workflow->output()['results'] ?? null);
     }
 
@@ -3376,8 +3470,11 @@ final class V2WorkflowTest extends TestCase
         }
     }
 
-    public function testAsyncHelperRunsClosureAsDurableChildWorkflow(): void
+    public function testAsyncHelperRunsStraightLineClosureAsDurableChildWorkflow(): void
     {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestAsyncWorkflow::class, 'async-child-workflow');
@@ -3435,6 +3532,45 @@ final class V2WorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+    }
+
+    public function testAsyncHelperStillSupportsGeneratorCallbacksAsCompatibilityBridge(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestAsyncGeneratorCallbackWorkflow::class, 'async-generator-callback');
+        $workflow->start('Taylor');
+
+        $this->drainReadyTasks();
+        $workflow->refresh();
+        $this->assertTrue($workflow->completed());
+        $this->assertSame([
+            'workflow_id' => 'async-generator-callback',
+            'run_id' => $workflow->runId(),
+            'async' => [
+                'greeting' => 'Hello, Taylor!',
+                'compatibility' => 'generator-callback',
+            ],
+        ], $workflow->output());
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        /** @var WorkflowRun $asyncRun */
+        $asyncRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $this->assertSame(AsyncWorkflow::class, $asyncRun->workflow_class);
+        $this->assertSame('durable-workflow.async', $asyncRun->workflow_type);
+        $this->assertSame(RunStatus::Completed, $asyncRun->status);
     }
 
     public function testMixedAllWaitsForChildWhenActivityCompletesFirst(): void
@@ -3668,7 +3804,9 @@ final class V2WorkflowTest extends TestCase
         try {
             WorkflowStub::load($instance->id)->attemptStart('Taylor');
         } catch (ReflectionException $exception) {
-            $this->fail('Starting a reserved configured-type workflow should not reflect the stale class: ' . $exception->getMessage());
+            $this->fail(
+                'Starting a reserved configured-type workflow should not reflect the stale class: ' . $exception->getMessage()
+            );
         }
 
         /** @var WorkflowRun $run */
@@ -4383,7 +4521,10 @@ final class V2WorkflowTest extends TestCase
             ]);
 
         $this->assertSame([$first->commandId(), $second->commandId()], $receivedWaitIds->keys()->all());
-        $this->assertCount(2, array_filter($receivedWaitIds->all(), static fn (?string $waitId): bool => is_string($waitId)));
+        $this->assertCount(
+            2,
+            array_filter($receivedWaitIds->all(), static fn (?string $waitId): bool => is_string($waitId))
+        );
         $this->assertNotSame($receivedWaitIds[$first->commandId()], $receivedWaitIds[$second->commandId()]);
 
         $this->drainReadyTasks();
@@ -4994,7 +5135,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('workflow_signal', $summary->resume_source_kind);
         $this->assertSame($signalRecord->id, $summary->resume_source_id);
         $this->assertSame('repair_needed', $summary->liveness_state);
-        $this->assertSame('Accepted signal name-provided is received without an open workflow task.', $summary->liveness_reason);
+        $this->assertSame(
+            'Accepted signal name-provided is received without an open workflow task.',
+            $summary->liveness_reason
+        );
 
         $result = WorkflowStub::loadRun($runId)->attemptRepair();
 
@@ -5111,7 +5255,8 @@ final class V2WorkflowTest extends TestCase
     {
         Queue::fake();
 
-        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 60);
+        config()
+            ->set('workflows.v2.task_repair.redispatch_after_seconds', 60);
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'repair-dispatch-failed-wf-task',
@@ -5600,8 +5745,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -5614,8 +5761,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -5640,7 +5789,8 @@ final class V2WorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [
                 'activity_execution_id' => $execution->id,
             ],
@@ -5654,9 +5804,11 @@ final class V2WorkflowTest extends TestCase
                 ->update([
                     'status' => TaskStatus::Leased->value,
                     'attempt_count' => 2,
-                    'leased_at' => now()->subSecond(),
+                    'leased_at' => now()
+                        ->subSecond(),
                     'lease_owner' => 'worker-newer',
-                    'lease_expires_at' => now()->addMinutes(5),
+                    'lease_expires_at' => now()
+                        ->addMinutes(5),
                 ]);
 
             ActivityExecution::query()
@@ -5665,7 +5817,8 @@ final class V2WorkflowTest extends TestCase
                     'status' => ActivityStatus::Running->value,
                     'attempt_count' => 2,
                     'current_attempt_id' => '01JTESTATTEMPT000000000002',
-                    'started_at' => now()->subSecond(),
+                    'started_at' => now()
+                        ->subSecond(),
                 ]);
         });
 
@@ -6099,8 +6252,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 2,
-            'reserved_at' => now()->subMinutes(10),
-            'started_at' => now()->subMinutes(10),
+            'reserved_at' => now()
+                ->subMinutes(10),
+            'started_at' => now()
+                ->subMinutes(10),
         ]);
 
         /** @var WorkflowRun $historicalRun */
@@ -6114,9 +6269,12 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([1]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(10),
-            'closed_at' => now()->subMinutes(9),
-            'last_progress_at' => now()->subMinutes(9),
+            'started_at' => now()
+                ->subMinutes(10),
+            'closed_at' => now()
+                ->subMinutes(9),
+            'last_progress_at' => now()
+                ->subMinutes(9),
         ]);
 
         /** @var WorkflowRun $currentRun */
@@ -6129,8 +6287,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([30]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -6523,12 +6683,30 @@ final class V2WorkflowTest extends TestCase
 
             $this->assertNotSame($originalRetryTaskId, $repairedRetryTask->id);
             $this->assertSame($execution->id, $repairedRetryTask->payload['activity_execution_id'] ?? null);
-            $this->assertSame($originalRetryPayload['retry_of_task_id'], $repairedRetryTask->payload['retry_of_task_id'] ?? null);
-            $this->assertSame($originalRetryPayload['retry_after_attempt_id'], $repairedRetryTask->payload['retry_after_attempt_id'] ?? null);
-            $this->assertSame($originalRetryPayload['retry_after_attempt'], $repairedRetryTask->payload['retry_after_attempt'] ?? null);
-            $this->assertSame($originalRetryPayload['retry_backoff_seconds'], $repairedRetryTask->payload['retry_backoff_seconds'] ?? null);
-            $this->assertSame($originalRetryPayload['max_attempts'], $repairedRetryTask->payload['max_attempts'] ?? null);
-            $this->assertSame($originalRetryPayload['retry_policy'], $repairedRetryTask->payload['retry_policy'] ?? null);
+            $this->assertSame(
+                $originalRetryPayload['retry_of_task_id'],
+                $repairedRetryTask->payload['retry_of_task_id'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['retry_after_attempt_id'],
+                $repairedRetryTask->payload['retry_after_attempt_id'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['retry_after_attempt'],
+                $repairedRetryTask->payload['retry_after_attempt'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['retry_backoff_seconds'],
+                $repairedRetryTask->payload['retry_backoff_seconds'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['max_attempts'],
+                $repairedRetryTask->payload['max_attempts'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['retry_policy'],
+                $repairedRetryTask->payload['retry_policy'] ?? null
+            );
             $this->assertSame($originalRetryAvailableAt, $repairedRetryTask->available_at?->toJSON());
             $this->assertSame(1, $repairedRetryTask->attempt_count);
             $this->assertSame(1, $repairedRetryTask->repair_count);
@@ -6753,7 +6931,9 @@ final class V2WorkflowTest extends TestCase
             ->where('task_type', TaskType::Activity->value)
             ->where('status', TaskStatus::Ready->value)
             ->get()
-            ->sole(static fn (WorkflowTask $task): bool => ($task->payload['activity_execution_id'] ?? null) === $execution->id);
+            ->sole(
+                static fn (WorkflowTask $task): bool => ($task->payload['activity_execution_id'] ?? null) === $execution->id
+            );
 
         $this->app->call([new RunActivityTask($task->id), 'handle']);
     }
@@ -6811,7 +6991,9 @@ final class V2WorkflowTest extends TestCase
                     $payload['parallel_group_path'],
                 );
 
-                $event->forceFill(['payload' => $payload])->save();
+                $event->forceFill([
+                    'payload' => $payload,
+                ])->save();
             });
     }
 
@@ -6844,7 +7026,9 @@ final class V2WorkflowTest extends TestCase
                     $payload['parallel_group_path'],
                 );
 
-                $event->forceFill(['payload' => $payload])->save();
+                $event->forceFill([
+                    'payload' => $payload,
+                ])->save();
             });
     }
 

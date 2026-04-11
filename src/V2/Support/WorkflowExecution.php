@@ -24,11 +24,19 @@ final class WorkflowExecution
      */
     public static function start(Workflow $workflow, array $arguments): self
     {
-        $fiber = new Fiber(function () use ($workflow, $arguments): mixed {
+        return self::startCallback(static fn (): mixed => $workflow->execute(...$arguments));
+    }
+
+    /**
+     * @param array<int|string, mixed> $arguments
+     */
+    public static function startCallback(callable $callback, array $arguments = []): self
+    {
+        $fiber = new Fiber(static function () use ($callback, $arguments): mixed {
             WorkflowFiberContext::enter();
 
             try {
-                return $workflow->execute(...$arguments);
+                return $callback(...$arguments);
             } finally {
                 WorkflowFiberContext::leave();
             }
@@ -37,10 +45,7 @@ final class WorkflowExecution
         $current = $fiber->start();
 
         if ($fiber->isSuspended()) {
-            return new self(
-                fiber: $fiber,
-                current: $current,
-            );
+            return new self(fiber: $fiber, current: $current);
         }
 
         $result = $fiber->getReturn();
@@ -52,10 +57,7 @@ final class WorkflowExecution
                 return new self(return: $result->getReturn());
             }
 
-            return new self(
-                generator: $result,
-                current: $current,
-            );
+            return new self(generator: $result, current: $current);
         }
 
         return new self(return: $result);
