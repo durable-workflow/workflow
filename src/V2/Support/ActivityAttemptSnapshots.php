@@ -150,6 +150,8 @@ final class ActivityAttemptSnapshots
             'last_heartbeat_at' => self::timestamp($payload['heartbeat_at'] ?? null)
                 ?? self::timestamp($attempt['last_heartbeat_at'] ?? null)
                 ?? self::timestamp($activity['last_heartbeat_at'] ?? null),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored($payload['progress'] ?? null)
+                ?? HeartbeatProgress::fromStored($attempt['last_heartbeat_progress'] ?? null),
             'lease_expires_at' => $terminalEvent
                 ? null
                 : (self::timestamp($payload['lease_expires_at'] ?? null)

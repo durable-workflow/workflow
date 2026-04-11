@@ -3468,6 +3468,15 @@ final class V2RunDetailViewTest extends TestCase
             ->subSeconds(10);
         $leaseExpiresAt = now()
             ->addMinutes(5);
+        $progress = [
+            'message' => 'Downloading chunk',
+            'current' => 2,
+            'total' => 4,
+            'unit' => 'chunks',
+            'details' => [
+                'phase' => 'stream',
+            ],
+        ];
 
         $execution->forceFill([
             'status' => \Workflow\V2\Enums\ActivityStatus::Running->value,
@@ -3497,6 +3506,7 @@ final class V2RunDetailViewTest extends TestCase
             'attempt_number' => 2,
             'heartbeat_at' => $heartbeatAt->toJSON(),
             'lease_expires_at' => $leaseExpiresAt->toJSON(),
+            'progress' => $progress,
             'activity' => ActivitySnapshot::fromExecution($execution),
             'activity_attempt' => [
                 'id' => $secondAttemptId,
@@ -3548,6 +3558,8 @@ final class V2RunDetailViewTest extends TestCase
             $heartbeatAt->toJSON(),
             $detail['activities'][0]['attempts'][1]['last_heartbeat_at']?->toJSON()
         );
+        $this->assertSame($progress, $detail['activities'][0]['last_heartbeat_progress']);
+        $this->assertSame($progress, $detail['activities'][0]['attempts'][1]['last_heartbeat_progress']);
         $this->assertSame(
             $leaseExpiresAt->toJSON(),
             $detail['activities'][0]['attempts'][1]['lease_expires_at']?->toJSON()
@@ -3562,6 +3574,7 @@ final class V2RunDetailViewTest extends TestCase
             ],
             array_column($detail['timeline'], 'type')
         );
+        $this->assertSame($progress, $detail['timeline'][4]['activity']['last_heartbeat_progress']);
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
     }
 

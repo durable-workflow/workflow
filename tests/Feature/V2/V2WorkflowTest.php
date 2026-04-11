@@ -501,6 +501,17 @@ final class V2WorkflowTest extends TestCase
     {
         Queue::fake();
 
+        $expectedProgress = [
+            'message' => 'Polling remote job',
+            'current' => 1,
+            'total' => 3,
+            'unit' => 'steps',
+            'details' => [
+                'phase' => 'poll',
+                'remote_state' => 'running',
+            ],
+        ];
+
         $workflow = WorkflowStub::make(TestHeartbeatWorkflow::class, 'heartbeat-runtime');
         $workflow->start();
 
@@ -550,10 +561,16 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($execution->id, $heartbeat->payload['activity_execution_id'] ?? null);
         $this->assertSame($attempt->id, $heartbeat->payload['activity_attempt_id'] ?? null);
         $this->assertSame($execution->last_heartbeat_at?->toJSON(), $heartbeat->payload['heartbeat_at'] ?? null);
+        $this->assertSame($expectedProgress, $heartbeat->payload['progress'] ?? null);
         $this->assertSame(
             $execution->last_heartbeat_at?->toJSON(),
             $heartbeat->payload['activity']['last_heartbeat_at'] ?? null
         );
+
+        $export = $workflow->historyExport();
+
+        $this->assertSame($expectedProgress, $export['activities'][0]['last_heartbeat_progress'] ?? null);
+        $this->assertSame($expectedProgress, $export['activities'][0]['attempts'][0]['last_heartbeat_progress'] ?? null);
 
         $this->assertSame([
             'StartAccepted',
@@ -1291,7 +1308,17 @@ final class V2WorkflowTest extends TestCase
             $startedAttempt->lease_expires_at?->jsonSerialize()
         );
 
-        $this->assertTrue(ActivityTaskBridge::heartbeat($claim['activity_attempt_id']));
+        $progress = [
+            'message' => 'Streaming response',
+            'current' => 2,
+            'total' => 5,
+            'unit' => 'chunks',
+            'details' => [
+                'phase' => 'download',
+            ],
+        ];
+
+        $this->assertTrue(ActivityTaskBridge::heartbeat($claim['activity_attempt_id'], $progress));
 
         $outcome = ActivityTaskBridge::complete($claim['activity_attempt_id'], 'Hello from bridge!');
 
@@ -1328,6 +1355,15 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame(1, $started->payload['attempt_number'] ?? null);
         $this->assertSame($claim['activity_attempt_id'], $started->payload['activity']['attempt_id'] ?? null);
         $this->assertSame(1, $started->payload['activity']['attempt_count'] ?? null);
+
+        /** @var WorkflowHistoryEvent $heartbeat */
+        $heartbeat = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded->value)
+            ->sole();
+
+        $this->assertSame($progress, $heartbeat->payload['progress'] ?? null);
+
         $this->assertSame($claim['activity_attempt_id'], $completed->payload['activity_attempt_id'] ?? null);
         $this->assertSame(1, $completed->payload['attempt_number'] ?? null);
 
@@ -1710,8 +1746,19 @@ final class V2WorkflowTest extends TestCase
                 ->addMinutes(ActivityLease::DURATION_MINUTES);
             Carbon::setTestNow($heartbeatAt);
 
+            $expectedProgress = [
+                'message' => 'Polling remote job',
+                'current' => 1,
+                'total' => 3,
+                'unit' => 'steps',
+                'details' => [
+                    'phase' => 'poll',
+                    'remote_state' => 'running',
+                ],
+            ];
+
             $activity = new TestHeartbeatActivity($execution->fresh(), $run->fresh(), $task->id);
-            $activity->heartbeat();
+            $activity->heartbeat($expectedProgress);
 
             $this->assertSame($attemptId, $activity->attemptId());
             $this->assertSame(1, $activity->attemptCount());
@@ -1739,6 +1786,7 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame($attempt->id, $heartbeat->payload['activity_attempt_id'] ?? null);
             $this->assertSame($heartbeatAt->toJSON(), $heartbeat->payload['heartbeat_at'] ?? null);
             $this->assertSame($leaseExpiresAt->toJSON(), $heartbeat->payload['lease_expires_at'] ?? null);
+            $this->assertSame($expectedProgress, $heartbeat->payload['progress'] ?? null);
             $this->assertSame($heartbeatAt->toJSON(), $heartbeat->payload['activity']['last_heartbeat_at'] ?? null);
             $this->assertSame($task->id, $heartbeat->workflow_task_id);
         } finally {

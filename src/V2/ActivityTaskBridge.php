@@ -24,6 +24,7 @@ use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\FailureFactory;
+use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
 
@@ -147,14 +148,20 @@ final class ActivityTaskBridge
      *     last_heartbeat_at: string|null
      * }
      */
-    public static function heartbeatStatus(string $attemptId): array
+    /**
+     * @param array<string, mixed> $progress
+     */
+    public static function heartbeatStatus(string $attemptId, array $progress = []): array
     {
-        return self::observeAttempt($attemptId, true);
+        return self::observeAttempt($attemptId, true, HeartbeatProgress::normalizeForWrite($progress));
     }
 
-    public static function heartbeat(string $attemptId): bool
+    /**
+     * @param array<string, mixed> $progress
+     */
+    public static function heartbeat(string $attemptId, array $progress = []): bool
     {
-        return self::heartbeatStatus($attemptId)['can_continue'];
+        return self::heartbeatStatus($attemptId, $progress)['can_continue'];
     }
 
     /**
@@ -178,9 +185,9 @@ final class ActivityTaskBridge
      *     last_heartbeat_at: string|null
      * }
      */
-    private static function observeAttempt(string $attemptId, bool $renewLease): array
+    private static function observeAttempt(string $attemptId, bool $renewLease, ?array $progress = null): array
     {
-        return DB::transaction(static function () use ($attemptId, $renewLease): array {
+        return DB::transaction(static function () use ($attemptId, $renewLease, $progress): array {
             /** @var ActivityAttempt|null $attempt */
             $attempt = ActivityAttempt::query()
                 ->lockForUpdate()
@@ -306,7 +313,7 @@ final class ActivityTaskBridge
                     'next_task_lease_expires_at' => $leaseExpiresAt,
                 ]);
 
-            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, [
+            $payload = [
                 'activity_execution_id' => $execution->id,
                 'activity_attempt_id' => $attempt->id,
                 'activity_class' => $execution->activity_class,
@@ -326,7 +333,13 @@ final class ActivityTaskBridge
                     'lease_expires_at' => $leaseExpiresAt->toJSON(),
                     'started_at' => $attempt->started_at?->toJSON(),
                 ],
-            ], $task);
+            ];
+
+            if ($progress !== null) {
+                $payload['progress'] = $progress;
+            }
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, $payload, $task);
 
             return self::attemptStatus(
                 $attemptId,

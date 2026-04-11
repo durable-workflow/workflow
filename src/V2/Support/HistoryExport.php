@@ -1001,6 +1001,9 @@ final class HistoryExport
             'last_heartbeat_at' => self::timestamp(
                 $activity['last_heartbeat_at'] ?? ($state['last_heartbeat_at'] ?? null)
             ),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored(
+                $activity['last_heartbeat_progress'] ?? ($state['last_heartbeat_progress'] ?? null),
+            ),
             'closed_at' => $unsupportedReason === RunActivityView::UNSUPPORTED_TERMINAL_REASON
                 ? null
                 : self::timestamp($activity['closed_at'] ?? ($state['closed_at'] ?? null)),
@@ -1055,6 +1058,7 @@ final class HistoryExport
                 'lease_owner' => $attempt['lease_owner'] ?? null,
                 'started_at' => self::timestamp($attempt['started_at'] ?? null),
                 'last_heartbeat_at' => self::timestamp($attempt['last_heartbeat_at'] ?? null),
+                'last_heartbeat_progress' => HeartbeatProgress::fromStored($attempt['last_heartbeat_progress'] ?? null),
                 'lease_expires_at' => self::timestamp($attempt['lease_expires_at'] ?? null),
                 'closed_at' => self::timestamp($attempt['closed_at'] ?? null),
             ];
@@ -1101,6 +1105,7 @@ final class HistoryExport
             'created_at' => self::timestamp($activity['created_at'] ?? null),
             'started_at' => self::timestamp($activity['started_at'] ?? null),
             'last_heartbeat_at' => self::timestamp($activity['last_heartbeat_at'] ?? null),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored($activity['last_heartbeat_progress'] ?? null),
             'closed_at' => self::timestamp($activity['closed_at'] ?? null),
             'attempts' => is_array($activity['attempts'] ?? null) ? $activity['attempts'] : [],
         ];

@@ -672,6 +672,9 @@ final class HistoryTimeline
                 : null,
             'last_heartbeat_at' => self::timestamp(self::stringValue($snapshot['last_heartbeat_at'] ?? null))
                 ?? self::timestamp($activity?->last_heartbeat_at),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored(
+                $snapshot['last_heartbeat_progress'] ?? ($payload['progress'] ?? null),
+            ),
         ];
     }
 

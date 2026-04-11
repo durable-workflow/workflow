@@ -174,6 +174,16 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame($activity->current_attempt_id, $heartbeat['activity']['attempt_id']);
         $this->assertSame(1, $heartbeat['activity']['attempt_count']);
         $this->assertSame($activity->last_heartbeat_at?->toJSON(), $heartbeat['activity']['last_heartbeat_at']);
+        $this->assertSame([
+            'message' => 'Polling remote job',
+            'current' => 1,
+            'total' => 3,
+            'unit' => 'steps',
+            'details' => [
+                'phase' => 'poll',
+                'remote_state' => 'running',
+            ],
+        ], $heartbeat['activity']['last_heartbeat_progress']);
     }
 
     public function testTimelineIncludesNestedParallelActivityPathMetadata(): void

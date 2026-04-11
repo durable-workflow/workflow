@@ -260,6 +260,9 @@ final class RunActivityView
             'connection' => $state['connection'] ?? null,
             'queue' => $state['queue'] ?? null,
             'last_heartbeat_at' => $state['last_heartbeat_at'] ?? ($latestAttempt['last_heartbeat_at'] ?? null),
+            'last_heartbeat_progress' => self::progressValue(
+                $state['last_heartbeat_progress'] ?? ($latestAttempt['last_heartbeat_progress'] ?? null),
+            ),
             'created_at' => $state['created_at'] ?? null,
             'started_at' => $state['started_at'] ?? ($latestAttempt['started_at'] ?? null),
             'closed_at' => self::activityClosedAt($status, $state, $latestAttempt),
@@ -350,6 +353,7 @@ final class RunActivityView
             'lease_expires_at' => self::timestamp($attempt['lease_expires_at'] ?? null),
             'started_at' => self::timestamp($attempt['started_at'] ?? null),
             'last_heartbeat_at' => self::timestamp($attempt['last_heartbeat_at'] ?? null),
+            'last_heartbeat_progress' => self::progressValue($attempt['last_heartbeat_progress'] ?? null),
             'closed_at' => self::timestamp($attempt['closed_at'] ?? null),
             'can_continue' => self::attemptStateCanContinue($attempt, $execution),
             'cancel_requested' => self::attemptStateCancelRequested($attempt, $execution),
@@ -382,6 +386,7 @@ final class RunActivityView
             'lease_expires_at' => null,
             'started_at' => $state['started_at'] ?? $execution?->started_at,
             'last_heartbeat_at' => $state['last_heartbeat_at'] ?? $execution?->last_heartbeat_at,
+            'last_heartbeat_progress' => self::progressValue($state['last_heartbeat_progress'] ?? null),
             'closed_at' => $state['closed_at'] ?? $execution?->closed_at,
             'can_continue' => self::syntheticAttemptCanContinue($state, $execution),
             'cancel_requested' => self::syntheticAttemptCancelRequested($state, $execution),
@@ -552,6 +557,14 @@ final class RunActivityView
         return is_string($value) && $value !== ''
             ? Carbon::parse($value)
             : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function progressValue(mixed $value): ?array
+    {
+        return HeartbeatProgress::fromStored($value);
     }
 
     private static function executionAttemptCount(?ActivityExecution $execution): ?int

@@ -18,6 +18,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityAttemptNormalizer;
 use Workflow\V2\Support\ActivityLease;
+use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\ActivitySnapshot;
 
 abstract class Activity
@@ -74,9 +75,14 @@ abstract class Activity
         return [1, 2, 5, 10, 15, 30, 60, 120];
     }
 
-    public function heartbeat(): void
+    /**
+     * @param array<string, mixed> $progress
+     */
+    public function heartbeat(array $progress = []): void
     {
-        DB::transaction(function (): void {
+        $normalizedProgress = HeartbeatProgress::normalizeForWrite($progress);
+
+        DB::transaction(function () use ($normalizedProgress): void {
             /** @var ActivityExecution $execution */
             $execution = ActivityExecution::query()
                 ->lockForUpdate()
@@ -139,7 +145,7 @@ abstract class Activity
             ]);
 
             if (! $task instanceof WorkflowTask) {
-                $this->recordHeartbeat($run, $execution, $attempt, null, $heartbeatAt, null);
+                $this->recordHeartbeat($run, $execution, $attempt, null, $heartbeatAt, null, $normalizedProgress);
 
                 return;
             }
@@ -174,7 +180,7 @@ abstract class Activity
                     'next_task_lease_expires_at' => $leaseExpiresAt,
                 ]);
 
-            $this->recordHeartbeat($run, $execution, $attempt, $task, $heartbeatAt, $leaseExpiresAt);
+            $this->recordHeartbeat($run, $execution, $attempt, $task, $heartbeatAt, $leaseExpiresAt, $normalizedProgress);
         });
     }
 
@@ -234,8 +240,9 @@ abstract class Activity
         ?WorkflowTask $task,
         mixed $heartbeatAt,
         mixed $leaseExpiresAt,
+        ?array $progress,
     ): void {
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, [
+        $payload = [
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt->id,
             'activity_class' => $execution->activity_class,
@@ -246,7 +253,13 @@ abstract class Activity
             'lease_expires_at' => self::timestamp($leaseExpiresAt),
             'activity' => ActivitySnapshot::fromExecution($execution),
             'activity_attempt' => self::attemptSnapshot($attempt),
-        ], $task);
+        ];
+
+        if ($progress !== null) {
+            $payload['progress'] = $progress;
+        }
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, $payload, $task);
     }
 
     /**

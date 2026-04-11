@@ -79,6 +79,7 @@ final class ActivitySnapshot
             'parallel_group_path' => self::parallelGroupPath($payload),
             'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
             'result' => self::stringValue($payload['result'] ?? null),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored($payload['progress'] ?? null),
             'created_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? self::timestamp($event->recorded_at)
                 : null,
@@ -150,6 +151,7 @@ final class ActivitySnapshot
             'arguments' => self::stringValue($snapshot['arguments'] ?? null),
             'result' => self::stringValue($snapshot['result'] ?? null),
             'exception' => self::stringValue($snapshot['exception'] ?? null),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored($snapshot['last_heartbeat_progress'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);
     }
 

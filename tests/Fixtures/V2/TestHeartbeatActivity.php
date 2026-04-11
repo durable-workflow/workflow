@@ -13,7 +13,16 @@ final class TestHeartbeatActivity extends Activity
         \Illuminate\Support\Carbon::setTestNow(now()->addMinutes(2));
 
         try {
-            $this->heartbeat();
+            $this->heartbeat([
+                'message' => 'Polling remote job',
+                'current' => 1,
+                'total' => 3,
+                'unit' => 'steps',
+                'details' => [
+                    'phase' => 'poll',
+                    'remote_state' => 'running',
+                ],
+            ]);
         } finally {
             \Illuminate\Support\Carbon::setTestNow();
         }
