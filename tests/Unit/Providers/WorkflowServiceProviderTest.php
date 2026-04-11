@@ -119,6 +119,7 @@ final class WorkflowServiceProviderTest extends TestCase
             'workflow:v2:backfill-command-lifecycles',
             'workflow:v2:doctor',
             'workflow:v2:history-export',
+            'workflow:v2:repair-pass',
             'workflow:v2:rebuild-projections',
         ];
 

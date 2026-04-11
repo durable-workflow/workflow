@@ -15,6 +15,7 @@ use Workflow\Commands\V2BackfillFailureTypesCommand;
 use Workflow\Commands\V2BackfillParallelGroupMetadataCommand;
 use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
+use Workflow\Commands\V2RepairPassCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
@@ -57,6 +58,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             V2BackfillParallelGroupMetadataCommand::class,
             V2DoctorCommand::class,
             V2HistoryExportCommand::class,
+            V2RepairPassCommand::class,
             V2RebuildProjectionsCommand::class,
         ]);
 

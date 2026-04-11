@@ -23,22 +23,86 @@ final class TaskWatchdog
 
     public static function wake(?string $connection = null, ?string $queue = null): void
     {
-        WorkerCompatibilityFleet::heartbeat($connection, $queue);
-
-        if (! Cache::add(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds())) {
-            return;
-        }
-
-        foreach (TaskRepairCandidates::taskIds() as $candidateId) {
-            self::recoverExistingTask($candidateId);
-        }
-
-        foreach (TaskRepairCandidates::runIds() as $runId) {
-            self::recoverMissingTask($runId);
-        }
+        self::runPass($connection, $queue, respectThrottle: true);
     }
 
-    private static function recoverExistingTask(string $candidateId): void
+    /**
+     * @return array{
+     *     connection: string|null,
+     *     queue: string|null,
+     *     respect_throttle: bool,
+     *     throttled: bool,
+     *     selected_existing_task_candidates: int,
+     *     selected_missing_task_candidates: int,
+     *     selected_total_candidates: int,
+     *     repaired_existing_tasks: int,
+     *     repaired_missing_tasks: int,
+     *     dispatched_tasks: int,
+     *     existing_task_failures: list<array{candidate_id: string, message: string}>,
+     *     missing_run_failures: list<array{run_id: string, message: string}>
+     * }
+     */
+    public static function runPass(
+        ?string $connection = null,
+        ?string $queue = null,
+        bool $respectThrottle = false,
+    ): array {
+        WorkerCompatibilityFleet::heartbeat($connection, $queue);
+
+        if ($respectThrottle) {
+            if (! Cache::add(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds())) {
+                return self::emptyReport($connection, $queue, $respectThrottle, throttled: true);
+            }
+        } else {
+            Cache::put(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds());
+        }
+
+        $existingTaskCandidateIds = TaskRepairCandidates::taskIds();
+        $missingRunIds = TaskRepairCandidates::runIds();
+        $report = self::emptyReport($connection, $queue, $respectThrottle);
+        $report['selected_existing_task_candidates'] = count($existingTaskCandidateIds);
+        $report['selected_missing_task_candidates'] = count($missingRunIds);
+        $report['selected_total_candidates'] = count($existingTaskCandidateIds) + count($missingRunIds);
+
+        foreach ($existingTaskCandidateIds as $candidateId) {
+            $result = self::recoverExistingTask($candidateId);
+
+            if ($result['task'] instanceof WorkflowTask) {
+                $report['repaired_existing_tasks']++;
+                $report['dispatched_tasks']++;
+            }
+
+            if ($result['error'] !== null) {
+                $report['existing_task_failures'][] = [
+                    'candidate_id' => $candidateId,
+                    'message' => $result['error'],
+                ];
+            }
+        }
+
+        foreach ($missingRunIds as $runId) {
+            $result = self::recoverMissingTask($runId);
+
+            if ($result['task'] instanceof WorkflowTask) {
+                $report['repaired_missing_tasks']++;
+                $report['dispatched_tasks']++;
+            }
+
+            if ($result['error'] !== null) {
+                $report['missing_run_failures'][] = [
+                    'run_id' => $runId,
+                    'message' => $result['error'],
+                ];
+            }
+        }
+
+        return $report;
+    }
+
+    /**
+     * @return array{task: WorkflowTask|null, error: string|null}
+     */
+    private static function recoverExistingTask(string $candidateId): array
     {
         try {
             $task = DB::transaction(static function () use ($candidateId): ?WorkflowTask {
@@ -82,10 +146,23 @@ final class TaskWatchdog
                 ->update([
                     'last_error' => $throwable->getMessage(),
                 ]);
+
+            return [
+                'task' => null,
+                'error' => $throwable->getMessage(),
+            ];
         }
+
+        return [
+            'task' => $task,
+            'error' => null,
+        ];
     }
 
-    private static function recoverMissingTask(string $runId): void
+    /**
+     * @return array{task: WorkflowTask|null, error: string|null}
+     */
+    private static function recoverMissingTask(string $runId): array
     {
         try {
             $task = DB::transaction(static function () use ($runId): ?WorkflowTask {
@@ -115,7 +192,54 @@ final class TaskWatchdog
             }
         } catch (Throwable) {
             // A later worker loop will retry the same durable run summary candidate.
+
+            return [
+                'task' => null,
+                'error' => null,
+            ];
         }
+
+        return [
+            'task' => $task,
+            'error' => null,
+        ];
     }
 
+    /**
+     * @return array{
+     *     connection: string|null,
+     *     queue: string|null,
+     *     respect_throttle: bool,
+     *     throttled: bool,
+     *     selected_existing_task_candidates: int,
+     *     selected_missing_task_candidates: int,
+     *     selected_total_candidates: int,
+     *     repaired_existing_tasks: int,
+     *     repaired_missing_tasks: int,
+     *     dispatched_tasks: int,
+     *     existing_task_failures: list<array{candidate_id: string, message: string}>,
+     *     missing_run_failures: list<array{run_id: string, message: string}>
+     * }
+     */
+    private static function emptyReport(
+        ?string $connection,
+        ?string $queue,
+        bool $respectThrottle,
+        bool $throttled = false,
+    ): array {
+        return [
+            'connection' => $connection,
+            'queue' => $queue,
+            'respect_throttle' => $respectThrottle,
+            'throttled' => $throttled,
+            'selected_existing_task_candidates' => 0,
+            'selected_missing_task_candidates' => 0,
+            'selected_total_candidates' => 0,
+            'repaired_existing_tasks' => 0,
+            'repaired_missing_tasks' => 0,
+            'dispatched_tasks' => 0,
+            'existing_task_failures' => [],
+            'missing_run_failures' => [],
+        ];
+    }
 }
