@@ -1119,7 +1119,7 @@ final class HistoryExportTest extends TestCase
         $this->assertNull($bundle['timers'][0]['fired_at']);
     }
 
-    public function testItBackfillsOlderProjectedTimerRowsWithoutRowStatusInExports(): void
+    public function testItRebuildsLegacyProjectedTimerRowsWithoutRowStatusInExports(): void
     {
         Carbon::setTestNow('2026-04-09 12:25:00');
         $this->beforeApplicationDestroyed(static function (): void {
@@ -1153,12 +1153,13 @@ final class HistoryExportTest extends TestCase
         unset($payload['row_status']);
 
         $entry->forceFill([
+            'schema_version' => WorkflowRunTimerEntry::LEGACY_SCHEMA_VERSION,
             'payload' => $payload,
         ])->save();
 
         $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'timers', 'timerEntries']));
 
-        $this->assertSame('workflow_run_timer_entries', $bundle['selected_run']['timers_projection_source']);
+        $this->assertSame('workflow_run_timer_entries_rebuilt', $bundle['selected_run']['timers_projection_source']);
         $this->assertCount(1, $bundle['timers']);
         $this->assertSame($timer->id, $bundle['timers'][0]['id']);
         $this->assertSame('unsupported', $bundle['timers'][0]['status']);
@@ -1171,6 +1172,12 @@ final class HistoryExportTest extends TestCase
             $initialBundle['timers'][0],
             $bundle['timers'][0],
         );
+
+        $this->assertDatabaseHas('workflow_run_timer_entries', [
+            'workflow_run_id' => $run->id,
+            'timer_id' => $timer->id,
+            'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION,
+        ]);
     }
 
     public function testItLabelsTerminalActivityRowsWithoutTypedHistoryAsUnsupportedInExports(): void

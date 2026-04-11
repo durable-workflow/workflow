@@ -715,7 +715,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
     }
 
-    public function testRunDetailViewBackfillsOlderProjectedTimerRowsWithoutRowStatus(): void
+    public function testRunDetailViewRebuildsLegacyProjectedTimerRowsWithoutRowStatus(): void
     {
         $instance = WorkflowInstance::query()->create([
             'id' => 'detail-projected-timer-compat',
@@ -777,6 +777,7 @@ final class V2RunDetailViewTest extends TestCase
                 'workflow_run_id' => $run->id,
                 'workflow_instance_id' => $instance->id,
                 'timer_id' => $timer->id,
+                'schema_version' => WorkflowRunTimerEntry::LEGACY_SCHEMA_VERSION,
                 'position' => 0,
                 'sequence' => 1,
                 'status' => 'pending',
@@ -795,13 +796,18 @@ final class V2RunDetailViewTest extends TestCase
 
         $detail = RunDetailView::forRun($run->fresh(['summary', 'timerEntries']));
 
-        $this->assertSame('workflow_run_timer_entries', $detail['timers_projection_source']);
+        $this->assertSame('workflow_run_timer_entries_rebuilt', $detail['timers_projection_source']);
         $this->assertCount(1, $detail['timers']);
         $this->assertSame('pending', $detail['timers'][0]['status']);
         $this->assertSame('pending', $detail['timers'][0]['source_status']);
         $this->assertSame('pending', $detail['timers'][0]['row_status']);
         $this->assertTrue($detail['timers'][0]['diagnostic_only']);
         $this->assertSame('mutable_open_fallback', $detail['timers'][0]['history_authority']);
+        $this->assertDatabaseHas('workflow_run_timer_entries', [
+            'workflow_run_id' => $run->id,
+            'timer_id' => $timer->id,
+            'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION,
+        ]);
     }
 
     public function testRunDetailViewFallsBackToTypedChildWaitsWhenSummaryHasNoCurrentWait(): void

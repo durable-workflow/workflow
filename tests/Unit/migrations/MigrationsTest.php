@@ -28,6 +28,7 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_timestamp'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_key'));
+        $this->assertTrue(Schema::hasColumn('workflow_run_timer_entries', 'schema_version'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'open_wait_id'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'resume_source_kind'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'resume_source_id'));

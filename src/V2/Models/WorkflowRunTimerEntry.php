@@ -12,6 +12,10 @@ use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowRunTimerEntry extends Model
 {
+    public const LEGACY_SCHEMA_VERSION = 0;
+
+    public const CURRENT_SCHEMA_VERSION = 1;
+
     public $incrementing = false;
 
     protected $table = 'workflow_run_timer_entries';
@@ -23,6 +27,7 @@ class WorkflowRunTimerEntry extends Model
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
     protected $casts = [
+        'schema_version' => 'integer',
         'position' => 'integer',
         'sequence' => 'integer',
         'delay_seconds' => 'integer',
@@ -47,6 +52,7 @@ class WorkflowRunTimerEntry extends Model
     public function toTimerPayload(): array
     {
         $payload = is_array($this->payload) ? $this->payload : [];
+        $schemaVersion = $this->schemaVersion();
         $status = self::stringValue($payload['status'] ?? $this->status);
         $sourceStatus = self::stringValue($payload['source_status'] ?? $this->source_status)
             ?? $status;
@@ -69,11 +75,28 @@ class WorkflowRunTimerEntry extends Model
         $payload['condition_definition_fingerprint'] = $this->condition_definition_fingerprint;
         $payload['history_authority'] = $historyAuthority;
         $payload['history_unsupported_reason'] = $historyUnsupportedReason;
-        $payload['row_status'] = self::rowStatus($payload['row_status'] ?? null, $historyAuthority, $sourceStatus);
+        $payload['row_status'] = self::rowStatus(
+            $payload['row_status'] ?? null,
+            $historyAuthority,
+            $sourceStatus,
+            $schemaVersion,
+        );
         $payload['diagnostic_only'] = self::diagnosticOnly($historyAuthority);
         $payload['created_at'] = self::timestamp($payload['created_at'] ?? null);
 
         return $payload;
+    }
+
+    public function schemaVersion(): int
+    {
+        return is_int($this->schema_version)
+            ? $this->schema_version
+            : self::LEGACY_SCHEMA_VERSION;
+    }
+
+    public function usesCurrentSchema(): bool
+    {
+        return $this->schemaVersion() === self::CURRENT_SCHEMA_VERSION;
     }
 
     private static function timestamp(mixed $value): ?CarbonInterface
@@ -94,11 +117,15 @@ class WorkflowRunTimerEntry extends Model
             && $historyAuthority !== 'typed_history';
     }
 
-    private static function rowStatus(mixed $value, ?string $historyAuthority, ?string $sourceStatus): ?string
-    {
+    private static function rowStatus(
+        mixed $value,
+        ?string $historyAuthority,
+        ?string $sourceStatus,
+        int $schemaVersion,
+    ): ?string {
         $rowStatus = self::stringValue($value);
 
-        if ($rowStatus !== null) {
+        if ($rowStatus !== null || $schemaVersion !== self::LEGACY_SCHEMA_VERSION) {
             return $rowStatus;
         }
 

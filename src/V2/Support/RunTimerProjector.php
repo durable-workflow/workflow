@@ -42,6 +42,7 @@ final class RunTimerProjector
                     'workflow_run_id' => $run->id,
                     'workflow_instance_id' => $run->workflow_instance_id,
                     'timer_id' => $timerId,
+                    'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION,
                     'position' => $position,
                     'sequence' => self::intValue($timer['sequence'] ?? null),
                     'status' => self::stringValue($timer['status'] ?? null) ?? 'unknown',
@@ -95,7 +96,11 @@ final class RunTimerProjector
             ];
         }
 
-        if ($projected->isNotEmpty() && self::projectionMatchesSnapshot($projected, $canonicalTimers)) {
+        if (
+            $projected->isNotEmpty()
+            && self::projectedRowsUseCurrentSchema($projected)
+            && self::projectionMatchesSnapshot($projected, $canonicalTimers)
+        ) {
             return [
                 'source' => 'workflow_run_timer_entries',
                 'timers' => $projected
@@ -135,7 +140,11 @@ final class RunTimerProjector
             'has_projection' => $hasProjection,
             'has_canonical' => $hasCanonical,
             'missing' => $hasCanonical && ! $hasProjection,
-            'stale' => $hasProjection && ! self::projectionMatchesSnapshot($projected, $canonicalTimers),
+            'stale' => $hasProjection
+                && (
+                    ! self::projectedRowsUseCurrentSchema($projected)
+                    || ! self::projectionMatchesSnapshot($projected, $canonicalTimers)
+                ),
         ];
     }
 
@@ -186,6 +195,14 @@ final class RunTimerProjector
                 ->values()
                 ->all()
         ) === self::canonicalEntries($canonical);
+    }
+
+    /**
+     * @param EloquentCollection<int, WorkflowRunTimerEntry> $projected
+     */
+    private static function projectedRowsUseCurrentSchema(EloquentCollection $projected): bool
+    {
+        return $projected->every(static fn (WorkflowRunTimerEntry $entry): bool => $entry->usesCurrentSchema());
     }
 
     /**
