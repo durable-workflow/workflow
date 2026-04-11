@@ -25,6 +25,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Webhooks;
@@ -817,6 +818,33 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('result.approved', true)
             ->assertJsonPath('result.events.0', 'started')
             ->assertJsonPath('result.events.1', 'approved:yes:webhook-inspect');
+    }
+
+    public function testUpdateWebhookRejectsLookupOnlyWaitForModeOnWriteRequests(): void
+    {
+        config()->set('queue.default', 'redis');
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-invalid-wait-for');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $response = $this->postJson('/webhooks/instances/order-update-webhook-invalid-wait-for/updates/approve', [
+            'wait_for' => 'status',
+            'arguments' => [true, 'webhook-invalid'],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['wait_for'])
+            ->assertJsonPath('errors.wait_for.0', 'The wait_for field must be one of: accepted, completed.');
+
+        $this->assertSame(1, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'order-update-webhook-invalid-wait-for')
+            ->count());
+        $this->assertSame(0, WorkflowUpdate::query()
+            ->where('workflow_instance_id', 'order-update-webhook-invalid-wait-for')
+            ->count());
     }
 
     public function testUpdateWebhookRejectsLaterUpdateWhileAnEarlierSignalIsStillPending(): void

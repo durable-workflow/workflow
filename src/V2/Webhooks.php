@@ -507,7 +507,7 @@ final class Webhooks
      */
     private static function shouldSubmitUpdate(array $payload): bool
     {
-        return ($payload['wait_for'] ?? null) === 'accepted';
+        return UpdateWaitPolicy::shouldSubmitAcceptedOnly($payload['wait_for'] ?? null);
     }
 
     private static function resolveUpdateWaitTimeout(array $payload): ?int

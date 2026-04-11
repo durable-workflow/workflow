@@ -12,6 +12,12 @@ final class UpdateWaitPolicy
 
     public const POLL_INTERVAL_MILLISECONDS = 50;
 
+    public const WAIT_FOR_ACCEPTED = 'accepted';
+
+    public const WAIT_FOR_COMPLETED = 'completed';
+
+    public const WAIT_FOR_STATUS = 'status';
+
     public static function completionTimeoutSeconds(): int
     {
         return self::configuredPositiveInt(
@@ -37,6 +43,34 @@ final class UpdateWaitPolicy
             'completion_timeout_seconds' => self::completionTimeoutSeconds(),
             'poll_interval_milliseconds' => self::pollIntervalMilliseconds(),
         ];
+    }
+
+    public static function requestedWaitFor(mixed $value): string
+    {
+        if ($value === null) {
+            return self::WAIT_FOR_COMPLETED;
+        }
+
+        if (is_string($value)) {
+            $value = trim($value);
+
+            if ($value === '') {
+                return self::WAIT_FOR_COMPLETED;
+            }
+        }
+
+        if (in_array($value, [self::WAIT_FOR_ACCEPTED, self::WAIT_FOR_COMPLETED], true)) {
+            return $value;
+        }
+
+        throw ValidationException::withMessages([
+            'wait_for' => ['The wait_for field must be one of: accepted, completed.'],
+        ]);
+    }
+
+    public static function shouldSubmitAcceptedOnly(mixed $value): bool
+    {
+        return self::requestedWaitFor($value) === self::WAIT_FOR_ACCEPTED;
     }
 
     public static function requestedTimeoutSeconds(mixed $value): ?int
