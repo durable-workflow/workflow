@@ -26,6 +26,7 @@ class WorkflowInstance extends Model
 
     protected $casts = [
         'visibility_labels' => 'array',
+        'memo' => 'array',
     ];
 
     public function currentRun(): BelongsTo

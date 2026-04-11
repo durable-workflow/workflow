@@ -1760,6 +1760,7 @@ final class WorkflowExecutor
             'workflow_type' => $run->workflow_type,
             'business_key' => $run->business_key,
             'visibility_labels' => $run->visibility_labels,
+            'memo' => $run->memo,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,
@@ -1898,6 +1899,7 @@ final class WorkflowExecutor
             'workflow_type' => $continuedRun->workflow_type,
             'business_key' => $continuedRun->business_key,
             'visibility_labels' => $continuedRun->visibility_labels,
+            'memo' => $continuedRun->memo,
             'outcome' => $startCommand->outcome?->value,
         ], null, $startCommand);
 
@@ -1909,6 +1911,7 @@ final class WorkflowExecutor
             'workflow_command_id' => $startCommand->id,
             'business_key' => $continuedRun->business_key,
             'visibility_labels' => $continuedRun->visibility_labels,
+            'memo' => $continuedRun->memo,
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($continuedRun->workflow_class),
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,

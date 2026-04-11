@@ -83,6 +83,7 @@ final class HistoryExport
                 'workflow_class' => $run->workflow_class,
                 'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,
                 'visibility_labels' => $summary?->visibility_labels ?? $run->visibility_labels ?? $run->instance?->visibility_labels ?? [],
+                'memo' => $run->memo ?? $run->instance?->memo ?? [],
                 'status' => $run->status->value,
                 'status_bucket' => $run->status->statusBucket()
 ->value,

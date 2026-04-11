@@ -141,6 +141,7 @@ final class RunDetailView
             'workflow_type' => $run->workflow_type,
             'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,
             'visibility_labels' => $summary?->visibility_labels ?? $run->visibility_labels ?? $run->instance?->visibility_labels ?? [],
+            'memo' => $run->memo ?? $run->instance?->memo ?? [],
             'workflow_definition_fingerprint' => $recordedDefinitionFingerprint,
             'workflow_definition_current_fingerprint' => $currentDefinitionFingerprint,
             'workflow_definition_matches_current' => $definitionMatchesCurrent,

@@ -395,6 +395,7 @@ final class V2WebhookWorkflowTest extends TestCase
 
     public function testStartWebhookAcceptsVisibilityMetadata(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $response = $this->postJson('/webhooks/start/test-greeting-workflow', [
@@ -405,6 +406,12 @@ final class V2WebhookWorkflowTest extends TestCase
                 'labels' => [
                     'region' => 'us-east',
                     'tenant' => 'acme',
+                ],
+                'memo' => [
+                    'customer' => [
+                        'name' => 'Taylor',
+                        'vip' => true,
+                    ],
                 ],
             ],
         ]);
@@ -426,6 +433,18 @@ final class V2WebhookWorkflowTest extends TestCase
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $run->visibility_labels);
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'vip' => true,
+            ],
+        ], $instance->memo);
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'vip' => true,
+            ],
+        ], $run->memo);
     }
 
     public function testWebhookCommandsPersistDurableIngressMetadata(): void

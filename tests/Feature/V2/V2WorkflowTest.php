@@ -2372,6 +2372,7 @@ final class V2WorkflowTest extends TestCase
 
     public function testStartOptionsPersistVisibilityFieldsOnRunSummaryAndStartHistory(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'visible-order');
@@ -2383,7 +2384,13 @@ final class V2WorkflowTest extends TestCase
                     'region' => 'us-east',
                     'tenant' => 'acme',
                 ],
-            ),
+            )->withMemo([
+                'customer' => [
+                    'name' => 'Taylor',
+                    'vip' => true,
+                ],
+                'line_items' => [123, 456],
+            ]),
         );
 
         $runId = $workflow->runId();
@@ -2395,6 +2402,13 @@ final class V2WorkflowTest extends TestCase
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $workflow->visibilityLabels());
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'vip' => true,
+            ],
+            'line_items' => [123, 456],
+        ], $workflow->memo());
 
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()->findOrFail('visible-order');
@@ -2413,11 +2427,25 @@ final class V2WorkflowTest extends TestCase
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $instance->visibility_labels);
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'vip' => true,
+            ],
+            'line_items' => [123, 456],
+        ], $instance->memo);
         $this->assertSame('order-123', $run->business_key);
         $this->assertSame([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $run->visibility_labels);
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'vip' => true,
+            ],
+            'line_items' => [123, 456],
+        ], $run->memo);
         $this->assertSame('order-123', $summary->business_key);
         $this->assertSame([
             'region' => 'us-east',
@@ -2428,6 +2456,13 @@ final class V2WorkflowTest extends TestCase
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $started->payload['visibility_labels'] ?? null);
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'vip' => true,
+            ],
+            'line_items' => [123, 456],
+        ], $started->payload['memo'] ?? null);
 
         $detail = RunDetailView::forRun($run->fresh(['summary', 'instance.runs.summary']));
         $export = $workflow->historyExport();
@@ -2437,11 +2472,25 @@ final class V2WorkflowTest extends TestCase
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $detail['visibility_labels']);
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'vip' => true,
+            ],
+            'line_items' => [123, 456],
+        ], $detail['memo']);
         $this->assertSame('order-123', $export['workflow']['business_key']);
         $this->assertSame([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $export['workflow']['visibility_labels']);
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'vip' => true,
+            ],
+            'line_items' => [123, 456],
+        ], $export['workflow']['memo']);
         $this->assertSame('order-123', $export['summary']['business_key']);
         $this->assertSame([
             'region' => 'us-east',
@@ -2539,6 +2588,7 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanContinueAsNewAcrossRuns(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'continue-instance');
@@ -2547,7 +2597,12 @@ final class V2WorkflowTest extends TestCase
             2,
             StartOptions::withVisibility(businessKey: 'order-continue', labels: [
                 'tenant' => 'acme',
-            ],),
+            ],)->withMemo([
+                'customer' => [
+                    'name' => 'Taylor',
+                    'tier' => 'gold',
+                ],
+            ]),
         );
         $firstRunId = $started->runId();
 
@@ -2588,6 +2643,26 @@ final class V2WorkflowTest extends TestCase
             ],
         ], $runs->map(static fn (WorkflowRun $run): ?array => $run->visibility_labels)
             ->all());
+        $this->assertSame([
+            [
+                'customer' => [
+                    'name' => 'Taylor',
+                    'tier' => 'gold',
+                ],
+            ],
+            [
+                'customer' => [
+                    'name' => 'Taylor',
+                    'tier' => 'gold',
+                ],
+            ],
+            [
+                'customer' => [
+                    'name' => 'Taylor',
+                    'tier' => 'gold',
+                ],
+            ],
+        ], $runs->map(static fn (WorkflowRun $run): ?array => $run->memo)->all());
         $this->assertSame(['completed', 'completed', 'completed'], $runs->pluck('status')->map(
             static fn (RunStatus $status): string => $status->value
         )->all());
@@ -2656,6 +2731,12 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame([
             'tenant' => 'acme',
         ], $thirdRunStarted->payload['visibility_labels'] ?? null);
+        $this->assertSame([
+            'customer' => [
+                'name' => 'Taylor',
+                'tier' => 'gold',
+            ],
+        ], $thirdRunStarted->payload['memo'] ?? null);
 
         $this->assertSame([
             'StartAccepted',

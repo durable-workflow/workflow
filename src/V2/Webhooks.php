@@ -436,6 +436,7 @@ final class Webhooks
 
         $businessKey = $visibility['business_key'] ?? null;
         $labels = $visibility['labels'] ?? [];
+        $memo = $visibility['memo'] ?? [];
 
         if ($businessKey !== null && ! is_string($businessKey)) {
             throw ValidationException::withMessages([
@@ -449,8 +450,14 @@ final class Webhooks
             ]);
         }
 
+        if (! is_array($memo)) {
+            throw ValidationException::withMessages([
+                'visibility.memo' => ['The visibility.memo field must be an object.'],
+            ]);
+        }
+
         try {
-            $startOptions = new StartOptions($duplicateStartPolicy, $businessKey, $labels);
+            $startOptions = new StartOptions($duplicateStartPolicy, $businessKey, $labels, $memo);
         } catch (LogicException $exception) {
             throw ValidationException::withMessages([
                 'visibility' => [$exception->getMessage()],

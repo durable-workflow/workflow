@@ -30,6 +30,7 @@ class WorkflowRun extends Model
     protected $casts = [
         'status' => RunStatus::class,
         'visibility_labels' => 'array',
+        'memo' => 'array',
         'last_command_sequence' => 'integer',
         'started_at' => 'datetime',
         'closed_at' => 'datetime',
