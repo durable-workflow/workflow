@@ -110,6 +110,7 @@ final class RunWaitView
             ?? self::stringValue($activity['class'] ?? null)
             ?? 'activity';
         $unsupportedReason = self::stringValue($activity['history_unsupported_reason'] ?? null);
+        $diagnosticOnly = $unsupportedReason !== null;
         $sourceStatus = $unsupportedReason === RunActivityView::UNSUPPORTED_TERMINAL_REASON
             ? (self::stringValue($activity['row_status'] ?? null) ?? self::stringValue(
                 $activity['status'] ?? null
@@ -146,10 +147,11 @@ final class RunWaitView
             'resolved_at' => self::timestamp($activity['closed_at'] ?? null),
             'target_name' => null,
             'target_type' => $activityType,
+            'diagnostic_only' => $diagnosticOnly,
             'task_backed' => self::isOpenTask($task),
             'external_only' => false,
-            'resume_source_kind' => 'activity_execution',
-            'resume_source_id' => $activityId,
+            'resume_source_kind' => $diagnosticOnly ? null : 'activity_execution',
+            'resume_source_id' => $diagnosticOnly ? null : $activityId,
             'task_id' => $task?->id,
             'task_type' => $task?->task_type?->value,
             'task_status' => $task?->status?->value,
@@ -175,6 +177,7 @@ final class RunWaitView
     private static function timerWait(array $timer, ?WorkflowTask $task): array
     {
         $unsupportedReason = self::stringValue($timer['history_unsupported_reason'] ?? null);
+        $diagnosticOnly = $unsupportedReason !== null;
         $sourceStatus = self::stringValue($timer['source_status'] ?? null)
             ?? self::stringValue($timer['status'] ?? null)
             ?? 'pending';
@@ -204,10 +207,11 @@ final class RunWaitView
             'resolved_at' => $timer['fired_at'] ?? null,
             'target_name' => null,
             'target_type' => 'timer',
+            'diagnostic_only' => $diagnosticOnly,
             'task_backed' => self::isOpenTask($task),
             'external_only' => false,
-            'resume_source_kind' => 'timer',
-            'resume_source_id' => $timerId,
+            'resume_source_kind' => $diagnosticOnly ? null : 'timer',
+            'resume_source_id' => $diagnosticOnly ? null : $timerId,
             'task_id' => $task?->id,
             'task_type' => $task?->task_type?->value,
             'task_status' => $task?->status?->value,
@@ -375,6 +379,7 @@ final class RunWaitView
             $childCallId = self::stringValue($snapshot['child_call_id'] ?? null);
             $resumeSourceId = self::stringValue($snapshot['resume_source_id'] ?? null);
             $unsupportedReason = self::stringValue($snapshot['history_unsupported_reason'] ?? null);
+            $diagnosticOnly = $unsupportedReason !== null;
             $task = ($childCallId === null ? null : ($taskByChildCallId[$childCallId] ?? null))
                 ?? ($resumeSourceId === null ? null : ($taskByChildRunId[$resumeSourceId] ?? null));
 
@@ -413,10 +418,12 @@ final class RunWaitView
                 'resolved_at' => $snapshot['resolved_at'],
                 'target_name' => $snapshot['target_name'],
                 'target_type' => $snapshot['label'],
+                'child_workflow_run_id' => $resumeSourceId,
+                'diagnostic_only' => $diagnosticOnly,
                 'task_backed' => self::isOpenTask($task),
                 'external_only' => false,
-                'resume_source_kind' => 'child_workflow_run',
-                'resume_source_id' => $resumeSourceId,
+                'resume_source_kind' => $diagnosticOnly ? null : 'child_workflow_run',
+                'resume_source_id' => $diagnosticOnly ? null : $resumeSourceId,
                 'task_id' => $task?->id,
                 'task_type' => $task?->task_type?->value,
                 'task_status' => $task?->status?->value,

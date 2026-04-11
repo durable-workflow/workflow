@@ -670,6 +670,9 @@ final class V2WorkflowTest extends TestCase
         $this->assertNull(unserialize($detail['activities'][0]['result']));
         $this->assertSame('unsupported', $detail['waits'][0]['status']);
         $this->assertSame('completed', $detail['waits'][0]['source_status']);
+        $this->assertTrue($detail['waits'][0]['diagnostic_only']);
+        $this->assertNull($detail['waits'][0]['resume_source_kind']);
+        $this->assertNull($detail['waits'][0]['resume_source_id']);
         $this->assertSame(
             'terminal_activity_row_without_typed_history',
             $detail['waits'][0]['history_unsupported_reason'],
@@ -752,6 +755,9 @@ final class V2WorkflowTest extends TestCase
         $this->assertNull(unserialize($detail['activities'][0]['result']));
         $this->assertSame('unsupported', $detail['waits'][0]['status']);
         $this->assertSame('cancelled', $detail['waits'][0]['source_status']);
+        $this->assertTrue($detail['waits'][0]['diagnostic_only']);
+        $this->assertNull($detail['waits'][0]['resume_source_kind']);
+        $this->assertNull($detail['waits'][0]['resume_source_id']);
         $this->assertSame(
             'terminal_activity_row_without_typed_history',
             $detail['waits'][0]['history_unsupported_reason'],
@@ -777,6 +783,9 @@ final class V2WorkflowTest extends TestCase
             $export['activities'][0]['attempts'][0]['activity_execution_id']
         );
         $this->assertNull($export['activities'][0]['closed_at']);
+        $this->assertTrue($export['waits'][0]['diagnostic_only']);
+        $this->assertNull($export['waits'][0]['resume_source_kind']);
+        $this->assertNull($export['waits'][0]['resume_source_id']);
     }
 
     public function testReplayBlocksFiredTimerProjectionWithoutTypedStepHistory(): void
@@ -884,6 +893,9 @@ final class V2WorkflowTest extends TestCase
             $this->assertIsArray($timerWait);
             $this->assertSame('unsupported', $timerWait['status']);
             $this->assertSame('fired', $timerWait['source_status']);
+            $this->assertTrue($timerWait['diagnostic_only']);
+            $this->assertNull($timerWait['resume_source_kind']);
+            $this->assertNull($timerWait['resume_source_id']);
             $this->assertSame(
                 'terminal_timer_row_without_typed_history',
                 $timerWait['history_unsupported_reason'],
@@ -981,6 +993,10 @@ final class V2WorkflowTest extends TestCase
         $this->assertIsArray($childWait);
         $this->assertSame('unsupported', $childWait['status']);
         $this->assertSame('completed', $childWait['source_status']);
+        $this->assertTrue($childWait['diagnostic_only']);
+        $this->assertNull($childWait['resume_source_kind']);
+        $this->assertNull($childWait['resume_source_id']);
+        $this->assertSame($childRunId, $childWait['child_workflow_run_id']);
         $this->assertSame('unsupported_terminal_without_history', $childWait['history_authority']);
         $this->assertSame(
             'terminal_child_link_without_typed_parent_history',
