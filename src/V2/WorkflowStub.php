@@ -272,6 +272,8 @@ final class WorkflowStub
             throw new LogicException(sprintf('Workflow instance [%s] has not started yet.', $this->instance->id));
         }
 
+        $this->backfillRunCommandContracts($this->run);
+
         $resolvedTarget = $this->resolveQueryTargetForRun($this->run, $method);
 
         if ($resolvedTarget === null) {
@@ -838,6 +840,7 @@ final class WorkflowStub
             }
 
             $this->loadLockedRunRelations($run, $instance);
+            $this->backfillRunCommandContracts($run);
 
             if (! RunCommandContract::hasUpdateMethod($run, $updateName)) {
                 [$command, $update] = $this->rejectUpdateCommand(
@@ -1552,6 +1555,7 @@ final class WorkflowStub
             }
 
             $this->loadLockedRunRelations($run, $instance);
+            $this->backfillRunCommandContracts($run);
 
             if (! RunCommandContract::hasSignal($run, $name)) {
                 $command = $this->rejectCommand(
@@ -2791,6 +2795,11 @@ final class WorkflowStub
 
         return SignalWaits::openWaitIdForName($run, $name)
             ?? SignalWaits::bufferedWaitIdForCommandId($commandId);
+    }
+
+    private function backfillRunCommandContracts(WorkflowRun $run): void
+    {
+        RunCommandContract::ensureHistoryBackfilled($run);
     }
 
     private function commandTargetScope(): string

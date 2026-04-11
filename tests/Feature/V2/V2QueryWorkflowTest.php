@@ -31,6 +31,7 @@ use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestReplayedDomainException;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
@@ -111,6 +112,55 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame('events-starting-with', $contracts->get('events-starting-with')['name'] ?? null);
         $this->assertSame('prefix', $contracts->get('events-starting-with')['parameters'][0]['name'] ?? null);
         $this->assertSame('string', $contracts->get('events-starting-with')['parameters'][0]['type'] ?? null);
+    }
+
+    public function testQueriesBackfillLegacyCommandContractsWhenWorkflowDefinitionIsLoadable(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'query-legacy-command-contract');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $started->forceFill([
+            'payload' => [
+                'workflow_class' => TestUpdateWorkflow::class,
+                'workflow_type' => 'test-update-workflow',
+                'workflow_instance_id' => $workflow->id(),
+                'workflow_run_id' => $workflow->runId(),
+            ],
+        ])->save();
+
+        $this->assertSame([
+            'stage' => 'waiting-for-name',
+            'approved' => false,
+            'events' => ['started'],
+        ], $workflow->currentState());
+
+        $started = $started->fresh();
+        $this->assertSame(['currentState'], $started->payload['declared_queries'] ?? null);
+        $this->assertSame('currentState', $started->payload['declared_query_contracts'][0]['name'] ?? null);
+        $this->assertSame(['name-provided'], $started->payload['declared_signals'] ?? null);
+        $this->assertSame('name-provided', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
+        $this->assertSame(['approve', 'explode'], $started->payload['declared_updates'] ?? null);
+        $this->assertSame('approve', $started->payload['declared_update_contracts'][0]['name'] ?? null);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId())->fresh());
+
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertFalse($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
     }
 
     public function testQueriesThrowExplicitExecutionUnavailableWhenWorkflowDefinitionCannotBeResolved(): void

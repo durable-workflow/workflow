@@ -24,6 +24,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
@@ -1020,7 +1021,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame(3, $updateRejected['command_sequence']);
     }
 
-    public function testAttemptSignalUsesLiveCommandContractWithoutBackfillingWorkflowStartedHistory(): void
+    public function testAttemptSignalBackfillsLegacyCommandContractsWhenWorkflowDefinitionIsLoadable(): void
     {
         Queue::fake();
 
@@ -1083,6 +1084,11 @@ final class V2UpdateWorkflowTest extends TestCase
                 ->subSeconds(18),
         ]);
 
+        $snapshot = OperatorMetrics::snapshot();
+        $this->assertSame(1, $snapshot['command_contracts']['backfill_needed_runs']);
+        $this->assertSame(1, $snapshot['command_contracts']['backfill_available_runs']);
+        $this->assertSame(0, $snapshot['command_contracts']['backfill_unavailable_runs']);
+
         $result = WorkflowStub::load($instance->id)->attemptSignal('name-provided', 'Taylor');
 
         $this->assertTrue($result->accepted());
@@ -1094,12 +1100,12 @@ final class V2UpdateWorkflowTest extends TestCase
             ->where('event_type', 'WorkflowStarted')
             ->sole();
 
-        $this->assertArrayNotHasKey('declared_queries', $started->payload);
-        $this->assertArrayNotHasKey('declared_query_contracts', $started->payload);
-        $this->assertArrayNotHasKey('declared_signals', $started->payload);
-        $this->assertArrayNotHasKey('declared_signal_contracts', $started->payload);
-        $this->assertArrayNotHasKey('declared_updates', $started->payload);
-        $this->assertArrayNotHasKey('declared_update_contracts', $started->payload);
+        $this->assertSame(['currentState'], $started->payload['declared_queries'] ?? null);
+        $this->assertSame('currentState', $started->payload['declared_query_contracts'][0]['name'] ?? null);
+        $this->assertSame(['name-provided'], $started->payload['declared_signals'] ?? null);
+        $this->assertSame('name-provided', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
+        $this->assertSame(['approve', 'explode'], $started->payload['declared_updates'] ?? null);
+        $this->assertSame('approve', $started->payload['declared_update_contracts'][0]['name'] ?? null);
 
         $detail = RunDetailView::forRun($run->fresh());
 
@@ -1107,12 +1113,17 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame(['name-provided'], $detail['declared_signals']);
         $this->assertSame('name-provided', $detail['declared_signal_contracts'][0]['name']);
         $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
-        $this->assertSame('live_definition', $detail['declared_contract_source']);
-        $this->assertTrue($detail['declared_contract_backfill_needed']);
-        $this->assertTrue($detail['declared_contract_backfill_available']);
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertFalse($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
+
+        $snapshot = OperatorMetrics::snapshot();
+        $this->assertSame(0, $snapshot['command_contracts']['backfill_needed_runs']);
+        $this->assertSame(0, $snapshot['command_contracts']['backfill_available_runs']);
+        $this->assertSame(0, $snapshot['command_contracts']['backfill_unavailable_runs']);
     }
 
-    public function testNamedUpdateValidationUsesLiveCommandContractWhenWorkflowStartedSnapshotIsPartial(): void
+    public function testNamedUpdateValidationBackfillsPartialCommandContractsWhenWorkflowDefinitionIsLoadable(): void
     {
         config()->set('queue.default', 'redis');
         config()->set('queue.connections.redis.driver', 'redis');
@@ -1152,10 +1163,10 @@ final class V2UpdateWorkflowTest extends TestCase
 
         $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId())->fresh());
 
-        $this->assertSame('live_definition', $detail['declared_contract_source']);
-        $this->assertTrue($detail['declared_contract_backfill_needed']);
-        $this->assertTrue($detail['declared_contract_backfill_available']);
-        $this->assertSame([], $started->fresh()->payload['declared_update_contracts'] ?? null);
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertFalse($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
+        $this->assertSame('approve', $started->fresh()->payload['declared_update_contracts'][0]['name'] ?? null);
         $this->assertSame('approve', $detail['commands'][1]['target_name']);
         $this->assertSame('invalid_update_arguments', $detail['commands'][1]['rejection_reason']);
         $this->assertSame([

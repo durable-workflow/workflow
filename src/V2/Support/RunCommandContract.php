@@ -172,13 +172,25 @@ final class RunCommandContract
 
     public static function backfillHistory(WorkflowRun $run): bool
     {
-        $event = self::workflowStartedEvent($run);
+        return self::ensureHistoryBackfilled($run);
+    }
 
-        if (! $event instanceof WorkflowHistoryEvent || ! self::historyBackfillNeeded($run)) {
+    public static function ensureHistoryBackfilled(WorkflowRun $run): bool
+    {
+        $event = self::workflowStartedEvent($run);
+        $state = self::historySnapshotState($run);
+
+        if (
+            ! $event instanceof WorkflowHistoryEvent
+            || ! $state['needs_backfill']
+            || $state['live_definition'] === null
+        ) {
             return false;
         }
 
-        return self::backfillContractFromDefinition($run, $event) !== null;
+        self::persistSnapshot($event, $state['live_definition']);
+
+        return true;
     }
 
     /**
@@ -302,6 +314,23 @@ final class RunCommandContract
         }
 
         $snapshot = WorkflowDefinition::commandContract($resolvedClass);
+        self::persistSnapshot($event, $snapshot);
+
+        return $snapshot;
+    }
+
+    /**
+     * @param array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * } $snapshot
+     */
+    private static function persistSnapshot(WorkflowHistoryEvent $event, array $snapshot): void
+    {
         $payload = is_array($event->payload) ? $event->payload : [];
 
         $payload['declared_queries'] = $snapshot['queries'];
@@ -314,8 +343,6 @@ final class RunCommandContract
         $event->forceFill([
             'payload' => $payload,
         ])->save();
-
-        return $snapshot;
     }
 
     private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent
