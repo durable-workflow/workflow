@@ -18,6 +18,7 @@ use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Support\CommandResponse;
 use Workflow\V2\Support\EntryMethod;
+use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\QueryResponse;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateWaitPolicy;
@@ -49,6 +50,60 @@ final class Webhooks
                 }, TypeRegistry::for($workflow));
             })->name("workflows.v2.start.{$alias}");
         }
+
+        Route::post("{$basePath}/activity-tasks/{taskId}/claim", static function (
+            Request $request,
+            string $taskId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::activityTaskClaimResponse($taskId, self::resolveActivityLeaseOwner($request->all()));
+        })->name('workflows.v2.activity-tasks.claim');
+
+        Route::get("{$basePath}/activity-attempts/{attemptId}", static function (
+            Request $request,
+            string $attemptId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::activityAttemptStatusResponse(ActivityTaskBridge::status($attemptId));
+        })->name('workflows.v2.activity-attempts.status');
+
+        Route::post("{$basePath}/activity-attempts/{attemptId}/heartbeat", static function (
+            Request $request,
+            string $attemptId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::activityAttemptStatusResponse(
+                ActivityTaskBridge::heartbeatStatus(
+                    $attemptId,
+                    self::resolveActivityHeartbeatProgress($request->all()),
+                )
+            );
+        })->name('workflows.v2.activity-attempts.heartbeat');
+
+        Route::post("{$basePath}/activity-attempts/{attemptId}/complete", static function (
+            Request $request,
+            string $attemptId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::activityAttemptOutcomeResponse(
+                ActivityTaskBridge::complete($attemptId, self::resolveActivityResult($request->all())),
+            );
+        })->name('workflows.v2.activity-attempts.complete');
+
+        Route::post("{$basePath}/activity-attempts/{attemptId}/fail", static function (
+            Request $request,
+            string $attemptId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::activityAttemptOutcomeResponse(
+                ActivityTaskBridge::fail($attemptId, self::resolveActivityFailure($request->all())),
+            );
+        })->name('workflows.v2.activity-attempts.fail');
 
         Route::post("{$basePath}/instances/{workflowId}/runs/{runId}/queries/{query}", static function (
             Request $request,
@@ -526,6 +581,92 @@ final class Webhooks
         return UpdateWaitPolicy::requestedTimeoutSeconds($payload['wait_timeout_seconds'] ?? null);
     }
 
+    private static function resolveActivityLeaseOwner(array $payload): ?string
+    {
+        if (! array_key_exists('lease_owner', $payload)) {
+            return null;
+        }
+
+        $leaseOwner = $payload['lease_owner'];
+
+        if (! is_string($leaseOwner)) {
+            throw ValidationException::withMessages([
+                'lease_owner' => ['The lease_owner field must be a non-empty string up to 255 characters.'],
+            ]);
+        }
+
+        $leaseOwner = trim($leaseOwner);
+
+        if ($leaseOwner === '' || mb_strlen($leaseOwner) > 255) {
+            throw ValidationException::withMessages([
+                'lease_owner' => ['The lease_owner field must be a non-empty string up to 255 characters.'],
+            ]);
+        }
+
+        return $leaseOwner;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private static function resolveActivityHeartbeatProgress(array $payload): array
+    {
+        if (! array_key_exists('progress', $payload)) {
+            return [];
+        }
+
+        $progress = $payload['progress'];
+
+        if (! is_array($progress) || ($progress !== [] && array_is_list($progress))) {
+            throw ValidationException::withMessages([
+                'progress' => ['The progress field must be an object.'],
+            ]);
+        }
+
+        try {
+            HeartbeatProgress::normalizeForWrite($progress);
+        } catch (LogicException $exception) {
+            throw ValidationException::withMessages([
+                'progress' => [$exception->getMessage()],
+            ]);
+        }
+
+        return $progress;
+    }
+
+    private static function resolveActivityResult(array $payload): mixed
+    {
+        return $payload['result'] ?? null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>|string
+     */
+    private static function resolveActivityFailure(array $payload): array|string
+    {
+        if (! array_key_exists('failure', $payload)) {
+            throw ValidationException::withMessages([
+                'failure' => ['The failure field is required and must be a string or object.'],
+            ]);
+        }
+
+        $failure = $payload['failure'];
+
+        if (is_string($failure)) {
+            return $failure;
+        }
+
+        if (! is_array($failure) || ($failure !== [] && array_is_list($failure))) {
+            throw ValidationException::withMessages([
+                'failure' => ['The failure field must be a string or object.'],
+            ]);
+        }
+
+        return $failure;
+    }
+
     /**
      * @param class-string<Workflow> $workflow
      */
@@ -591,5 +732,49 @@ final class Webhooks
             CommandResponse::payload($result),
             $result->updateStatus() === 'accepted' ? 202 : 200,
         );
+    }
+
+    private static function activityTaskClaimResponse(string $taskId, ?string $leaseOwner)
+    {
+        $payload = ActivityTaskBridge::claimStatus($taskId, $leaseOwner);
+        $status = match ($payload['reason']) {
+            null => 200,
+            'task_not_found' => 404,
+            default => 409,
+        };
+
+        $response = response()->json($payload, $status);
+
+        if (is_int($payload['retry_after_seconds'] ?? null)) {
+            $response->header('Retry-After', (string) $payload['retry_after_seconds']);
+        }
+
+        return $response;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function activityAttemptStatusResponse(array $payload)
+    {
+        $status = ($payload['reason'] ?? null) === 'attempt_not_found'
+            ? 404
+            : 200;
+
+        return response()->json($payload, $status);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function activityAttemptOutcomeResponse(array $payload)
+    {
+        $status = match ($payload['reason'] ?? null) {
+            null => 200,
+            'attempt_not_found' => 404,
+            default => 409,
+        };
+
+        return response()->json($payload, $status);
     }
 }

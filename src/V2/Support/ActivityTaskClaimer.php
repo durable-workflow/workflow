@@ -27,48 +27,93 @@ final class ActivityTaskClaimer
         ?string $leaseOwner = null,
         bool $releaseFutureTasks = false,
     ): array {
+        $result = self::claimDetailed($taskId, $leaseOwner, $releaseFutureTasks);
+
+        return [$result['claim'], $result['retry_after_seconds']];
+    }
+
+    /**
+     * @return array{
+     *     claim: ActivityTaskClaim|null,
+     *     retry_after_seconds: int|null,
+     *     reason: string|null,
+     *     backend_error: string|null,
+     *     compatibility_reason: string|null
+     * }
+     */
+    public static function claimDetailed(
+        string $taskId,
+        ?string $leaseOwner = null,
+        bool $releaseFutureTasks = false,
+    ): array {
         return DB::transaction(static function () use ($taskId, $leaseOwner, $releaseFutureTasks): array {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()
                 ->find($taskId);
 
-            if ($task === null || $task->task_type !== TaskType::Activity || $task->status !== TaskStatus::Ready) {
-                return [null, null];
+            if ($task === null) {
+                return self::claimFailure('task_not_found');
+            }
+
+            if ($task->task_type !== TaskType::Activity) {
+                return self::claimFailure('task_not_activity');
+            }
+
+            if ($task->status !== TaskStatus::Ready) {
+                return self::claimFailure('task_not_ready');
             }
 
             if ($task->available_at !== null && $task->available_at->isFuture()) {
-                return [null, $releaseFutureTasks ? self::releaseDelaySeconds($task) : null];
+                return self::claimFailure(
+                    'task_not_due',
+                    $releaseFutureTasks ? self::releaseDelaySeconds($task) : null,
+                );
             }
 
             $activityExecutionId = $task->payload['activity_execution_id'] ?? null;
 
             if (! is_string($activityExecutionId) || $activityExecutionId === '') {
-                return [null, null];
+                return self::claimFailure('activity_execution_missing');
             }
 
-            /** @var ActivityExecution $execution */
+            /** @var ActivityExecution|null $execution */
             $execution = ActivityExecution::query()
                 ->lockForUpdate()
-                ->findOrFail($activityExecutionId);
+                ->find($activityExecutionId);
 
-            /** @var WorkflowRun $run */
+            if (! $execution instanceof ActivityExecution) {
+                return self::claimFailure('activity_execution_not_found');
+            }
+
+            /** @var WorkflowRun|null $run */
             $run = WorkflowRun::query()
                 ->lockForUpdate()
-                ->findOrFail($execution->workflow_run_id);
+                ->find($execution->workflow_run_id);
+
+            if (! $run instanceof WorkflowRun) {
+                return self::claimFailure('workflow_run_missing');
+            }
 
             TaskCompatibility::sync($task, $run);
 
-            if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
+            $backendError = TaskBackendCapabilities::recordClaimFailureIfUnsupported($task);
+
+            if ($backendError !== null) {
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return [null, null];
+                return self::claimFailure('backend_unsupported', null, $backendError);
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return [null, null];
+                return self::claimFailure(
+                    'compatibility_unsupported',
+                    null,
+                    null,
+                    TaskCompatibility::mismatchReason($task, $run),
+                );
             }
 
             $now = now();
@@ -121,8 +166,52 @@ final class ActivityTaskClaimer
 
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-            return [new ActivityTaskClaim($task, $run, $execution, $attempt), null];
+            return self::claimSuccess(new ActivityTaskClaim($task, $run, $execution, $attempt));
         });
+    }
+
+    /**
+     * @return array{
+     *     claim: ActivityTaskClaim|null,
+     *     retry_after_seconds: int|null,
+     *     reason: string|null,
+     *     backend_error: string|null,
+     *     compatibility_reason: string|null
+     * }
+     */
+    private static function claimSuccess(ActivityTaskClaim $claim): array
+    {
+        return [
+            'claim' => $claim,
+            'retry_after_seconds' => null,
+            'reason' => null,
+            'backend_error' => null,
+            'compatibility_reason' => null,
+        ];
+    }
+
+    /**
+     * @return array{
+     *     claim: ActivityTaskClaim|null,
+     *     retry_after_seconds: int|null,
+     *     reason: string|null,
+     *     backend_error: string|null,
+     *     compatibility_reason: string|null
+     * }
+     */
+    private static function claimFailure(
+        string $reason,
+        ?int $retryAfterSeconds = null,
+        ?string $backendError = null,
+        ?string $compatibilityReason = null,
+    ): array {
+        return [
+            'claim' => null,
+            'retry_after_seconds' => $retryAfterSeconds,
+            'reason' => $reason,
+            'backend_error' => $backendError,
+            'compatibility_reason' => $compatibilityReason,
+        ];
     }
 
     private static function releaseDelaySeconds(WorkflowTask $task): int

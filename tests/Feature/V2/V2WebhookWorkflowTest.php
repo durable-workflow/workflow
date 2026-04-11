@@ -118,6 +118,245 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testActivityTaskClaimWebhookReturnsStructuredClaimPayload(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-claim-webhook');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+
+        $response = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim", [
+            'lease_owner' => 'payments-worker-1',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('claimed', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('workflow_instance_id', 'activity-task-claim-webhook')
+            ->assertJsonPath('workflow_run_id', $workflow->runId())
+            ->assertJsonPath('lease_owner', 'payments-worker-1')
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('retry_after_seconds', null)
+            ->assertJsonPath('backend_error', null)
+            ->assertJsonPath('compatibility_reason', null);
+
+        $attemptId = $response->json('activity_attempt_id');
+
+        $this->assertIsString($attemptId);
+        $this->assertDatabaseHas('workflow_tasks', [
+            'id' => $task->id,
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => 'payments-worker-1',
+        ]);
+        $this->assertDatabaseHas('activity_attempts', [
+            'id' => $attemptId,
+            'workflow_task_id' => $task->id,
+            'attempt_number' => 1,
+            'status' => 'running',
+            'lease_owner' => 'payments-worker-1',
+        ]);
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'ActivityStarted',
+        ]);
+    }
+
+    public function testActivityTaskClaimWebhookReturnsRetryAfterForFutureTask(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-claim-future');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+        $task->forceFill([
+            'available_at' => now()->addSeconds(30),
+        ])->save();
+
+        $response = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim");
+
+        $response
+            ->assertStatus(409)
+            ->assertHeader('Retry-After')
+            ->assertJsonPath('claimed', false)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', 'task_not_due');
+
+        $retryAfter = $response->json('retry_after_seconds');
+
+        $this->assertIsInt($retryAfter);
+        $this->assertGreaterThanOrEqual(1, $retryAfter);
+        $this->assertSame((string) $retryAfter, $response->headers->get('Retry-After'));
+        $this->assertDatabaseHas('workflow_tasks', [
+            'id' => $task->id,
+            'status' => TaskStatus::Ready->value,
+        ]);
+    }
+
+    public function testActivityAttemptHeartbeatWebhookValidatesProgressPayload(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-heartbeat-invalid');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+        $claim = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim")->assertOk();
+
+        $attemptId = $claim->json('activity_attempt_id');
+
+        $this->postJson("/webhooks/activity-attempts/{$attemptId}/heartbeat", [
+            'progress' => [
+                'unexpected' => 'value',
+            ],
+        ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['progress'])
+            ->assertJsonPath(
+                'errors.progress.0',
+                'Heartbeat progress only supports [message, current, total, unit, details]; unknown keys: [unexpected].'
+            );
+
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'ActivityHeartbeatRecorded',
+        ]);
+    }
+
+    public function testActivityAttemptHeartbeatAndCompleteWebhooksDriveTheBridgeContract(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-complete-webhook');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+        $claim = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim", [
+            'lease_owner' => 'bridge-complete-worker',
+        ])->assertOk();
+
+        $attemptId = $claim->json('activity_attempt_id');
+
+        $heartbeat = $this->postJson("/webhooks/activity-attempts/{$attemptId}/heartbeat", [
+            'progress' => [
+                'message' => 'Running remote work',
+                'current' => 2,
+                'total' => 4,
+                'unit' => 'steps',
+                'details' => [
+                    'remote_state' => 'running',
+                ],
+            ],
+        ]);
+
+        $heartbeat
+            ->assertOk()
+            ->assertJsonPath('can_continue', true)
+            ->assertJsonPath('cancel_requested', false)
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('heartbeat_recorded', true)
+            ->assertJsonPath('workflow_task_id', $task->id)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('lease_owner', 'bridge-complete-worker');
+
+        /** @var WorkflowHistoryEvent $heartbeatEvent */
+        $heartbeatEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'ActivityHeartbeatRecorded')
+            ->latest('sequence')
+            ->firstOrFail();
+
+        $this->assertSame('Running remote work', $heartbeatEvent->payload['progress']['message'] ?? null);
+        $this->assertSame('running', $heartbeatEvent->payload['progress']['details']['remote_state'] ?? null);
+
+        $complete = $this->postJson("/webhooks/activity-attempts/{$attemptId}/complete", [
+            'result' => 'Hello from webhook bridge!',
+        ]);
+
+        $complete
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+
+        $nextTaskId = $complete->json('next_task_id');
+
+        $this->assertIsString($nextTaskId);
+        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $nextTaskId);
+
+        $this->assertDatabaseHas('activity_attempts', [
+            'id' => $attemptId,
+            'status' => 'completed',
+        ]);
+        $this->assertDatabaseHas('activity_executions', [
+            'id' => $claim->json('activity_execution_id'),
+            'status' => 'completed',
+        ]);
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'ActivityCompleted',
+        ]);
+
+        $this->app->call([new RunWorkflowTask($nextTaskId), 'handle']);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed());
+        $this->assertSame([
+            'greeting' => 'Hello from webhook bridge!',
+            'workflow_id' => 'activity-task-complete-webhook',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+    }
+
+    public function testActivityAttemptFailWebhookAcceptsStructuredFailurePayloads(): void
+    {
+        config()->set('workflows.v2.types.exceptions', [
+            'payments.gateway-timeout' => \RuntimeException::class,
+        ]);
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-fail-webhook');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+        $claim = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim", [
+            'lease_owner' => 'bridge-fail-worker',
+        ])->assertOk();
+
+        $attemptId = $claim->json('activity_attempt_id');
+
+        $failed = $this->postJson("/webhooks/activity-attempts/{$attemptId}/fail", [
+            'failure' => [
+                'type' => 'payments.gateway-timeout',
+                'class' => \RuntimeException::class,
+                'message' => 'Gateway timeout',
+                'code' => 503,
+            ],
+        ]);
+
+        $failed
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+
+        $nextTaskId = $failed->json('next_task_id');
+
+        $this->assertIsString($nextTaskId);
+        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $nextTaskId);
+
+        /** @var WorkflowHistoryEvent $failedEvent */
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'ActivityFailed')
+            ->latest('sequence')
+            ->firstOrFail();
+
+        $this->assertSame('payments.gateway-timeout', $failedEvent->payload['exception_type'] ?? null);
+        $this->assertSame('Gateway timeout', $failedEvent->payload['message'] ?? null);
+        $this->assertDatabaseHas('activity_attempts', [
+            'id' => $attemptId,
+            'status' => 'failed',
+        ]);
+        $this->assertDatabaseHas('workflow_failures', [
+            'workflow_run_id' => $workflow->runId(),
+            'message' => 'Gateway timeout',
+        ]);
+    }
+
     public function testUpdateWebhookReturnsAcceptedLifecycleWhenCompletionWaitTimesOut(): void
     {
         config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
@@ -1868,6 +2107,29 @@ final class V2WebhookWorkflowTest extends TestCase
         }
 
         $this->fail('Timed out waiting for workflow to settle.');
+    }
+
+    private function stageFirstActivityTask(WorkflowStub $workflow): WorkflowTask
+    {
+        /** @var WorkflowTask $workflowTask */
+        $workflowTask = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->firstOrFail();
+
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+
+        /** @var WorkflowTask $activityTask */
+        $activityTask = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->firstOrFail();
+
+        return $activityTask;
     }
 
     private function drainReadyTasks(): void

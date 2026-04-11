@@ -22,6 +22,7 @@ use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\ActivityTaskClaim;
 use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\HeartbeatProgress;
@@ -30,6 +31,91 @@ use Workflow\V2\Support\TaskDispatcher;
 
 final class ActivityTaskBridge
 {
+    /**
+     * @return array{
+     *     claimed: bool,
+     *     task_id: string,
+     *     workflow_instance_id: string|null,
+     *     workflow_run_id: string|null,
+     *     activity_execution_id: string|null,
+     *     activity_attempt_id: string|null,
+     *     attempt_number: int|null,
+     *     activity_type: string|null,
+     *     activity_class: string|null,
+     *     idempotency_key: string|null,
+     *     payload_codec: string|null,
+     *     arguments: string|null,
+     *     retry_policy: array<string, mixed>|null,
+     *     connection: string|null,
+     *     queue: string|null,
+     *     lease_owner: string|null,
+     *     lease_expires_at: string|null,
+     *     reason: string|null,
+     *     retry_after_seconds: int|null,
+     *     backend_error: string|null,
+     *     compatibility_reason: string|null
+     * }
+     */
+    public static function claimStatus(string $taskId, ?string $leaseOwner = null): array
+    {
+        $result = ActivityTaskClaimer::claimDetailed($taskId, $leaseOwner, true);
+        $claim = $result['claim'];
+
+        if (! $claim instanceof ActivityTaskClaim) {
+            return [
+                'claimed' => false,
+                'task_id' => $taskId,
+                'workflow_instance_id' => null,
+                'workflow_run_id' => null,
+                'activity_execution_id' => null,
+                'activity_attempt_id' => null,
+                'attempt_number' => null,
+                'activity_type' => null,
+                'activity_class' => null,
+                'idempotency_key' => null,
+                'payload_codec' => null,
+                'arguments' => null,
+                'retry_policy' => null,
+                'connection' => null,
+                'queue' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'reason' => $result['reason'],
+                'retry_after_seconds' => $result['retry_after_seconds'],
+                'backend_error' => $result['backend_error'],
+                'compatibility_reason' => $result['compatibility_reason'],
+            ];
+        }
+
+        $task = $claim->task;
+        $run = $claim->run;
+        $execution = $claim->execution;
+
+        return [
+            'claimed' => true,
+            'task_id' => $task->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'activity_execution_id' => $execution->id,
+            'activity_attempt_id' => $claim->attemptId(),
+            'attempt_number' => $claim->attemptNumber(),
+            'activity_type' => self::nonEmptyString($execution->activity_type),
+            'activity_class' => self::nonEmptyString($execution->activity_class),
+            'idempotency_key' => $execution->id,
+            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+            'arguments' => self::nonEmptyString($execution->arguments),
+            'retry_policy' => is_array($execution->retry_policy) ? $execution->retry_policy : null,
+            'connection' => self::nonEmptyString($execution->connection),
+            'queue' => self::nonEmptyString($execution->queue),
+            'lease_owner' => self::nonEmptyString($task->lease_owner),
+            'lease_expires_at' => $task->lease_expires_at?->toJSON(),
+            'reason' => null,
+            'retry_after_seconds' => null,
+            'backend_error' => null,
+            'compatibility_reason' => null,
+        ];
+    }
+
     /**
      * @return array{
      *     task_id: string,
@@ -52,33 +138,29 @@ final class ActivityTaskBridge
      */
     public static function claim(string $taskId, ?string $leaseOwner = null): ?array
     {
-        [$claim] = ActivityTaskClaimer::claim($taskId, $leaseOwner);
+        $claim = self::claimStatus($taskId, $leaseOwner);
 
-        if ($claim === null) {
+        if ($claim['claimed'] !== true) {
             return null;
         }
 
-        $task = $claim->task;
-        $run = $claim->run;
-        $execution = $claim->execution;
-
         return [
-            'task_id' => $task->id,
-            'workflow_instance_id' => $run->workflow_instance_id,
-            'workflow_run_id' => $run->id,
-            'activity_execution_id' => $execution->id,
-            'activity_attempt_id' => $claim->attemptId(),
-            'attempt_number' => $claim->attemptNumber(),
-            'activity_type' => self::nonEmptyString($execution->activity_type),
-            'activity_class' => self::nonEmptyString($execution->activity_class),
-            'idempotency_key' => $execution->id,
-            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-            'arguments' => self::nonEmptyString($execution->arguments),
-            'retry_policy' => is_array($execution->retry_policy) ? $execution->retry_policy : null,
-            'connection' => self::nonEmptyString($execution->connection),
-            'queue' => self::nonEmptyString($execution->queue),
-            'lease_owner' => self::nonEmptyString($task->lease_owner),
-            'lease_expires_at' => $task->lease_expires_at?->toJSON(),
+            'task_id' => $claim['task_id'],
+            'workflow_instance_id' => $claim['workflow_instance_id'],
+            'workflow_run_id' => $claim['workflow_run_id'],
+            'activity_execution_id' => $claim['activity_execution_id'],
+            'activity_attempt_id' => $claim['activity_attempt_id'],
+            'attempt_number' => $claim['attempt_number'],
+            'activity_type' => $claim['activity_type'],
+            'activity_class' => $claim['activity_class'],
+            'idempotency_key' => $claim['idempotency_key'],
+            'payload_codec' => $claim['payload_codec'],
+            'arguments' => $claim['arguments'],
+            'retry_policy' => $claim['retry_policy'],
+            'connection' => $claim['connection'],
+            'queue' => $claim['queue'],
+            'lease_owner' => $claim['lease_owner'],
+            'lease_expires_at' => $claim['lease_expires_at'],
         ];
     }
 
