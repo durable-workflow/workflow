@@ -1179,8 +1179,9 @@ final class HistoryExport
                 'status' => $entry['status'] ?? null,
                 'status_bucket' => $entry['status_bucket'] ?? null,
                 'closed_reason' => $entry['closed_reason'] ?? null,
-                'created_at' => self::timestamp($entry['created_at'] ?? null)
-                    ?? self::lineageLinkCreatedAt($run, $entry, 'parent'),
+                'created_at' => self::timestamp($entry['created_at'] ?? null),
+                'history_authority' => $entry['history_authority'] ?? null,
+                'diagnostic_only' => (bool) ($entry['diagnostic_only'] ?? false),
             ])
             ->values()
             ->all();
@@ -1212,42 +1213,12 @@ final class HistoryExport
                 'status' => $entry['status'] ?? null,
                 'status_bucket' => $entry['status_bucket'] ?? null,
                 'closed_reason' => $entry['closed_reason'] ?? null,
-                'created_at' => self::timestamp($entry['created_at'] ?? null)
-                    ?? self::lineageLinkCreatedAt($run, $entry, 'child'),
+                'created_at' => self::timestamp($entry['created_at'] ?? null),
+                'history_authority' => $entry['history_authority'] ?? null,
+                'diagnostic_only' => (bool) ($entry['diagnostic_only'] ?? false),
             ])
             ->values()
             ->all();
-    }
-
-    private static function lineageLinkCreatedAt(WorkflowRun $run, array $entry, string $direction): ?string
-    {
-        $entryId = self::stringValue($entry['id'] ?? null);
-        $entryType = self::stringValue($entry['link_type'] ?? null);
-        $entryRunId = self::stringValue($entry['workflow_run_id'] ?? null);
-
-        $links = $direction === 'parent'
-            ? $run->parentLinks
-            : $run->childLinks;
-
-        foreach ($links as $link) {
-            if ($entryId !== null && $link->id === $entryId) {
-                return self::timestamp($link->created_at);
-            }
-
-            if ($entryType !== null && $link->link_type !== $entryType) {
-                continue;
-            }
-
-            $linkRunId = $direction === 'parent'
-                ? $link->parent_workflow_run_id
-                : $link->child_workflow_run_id;
-
-            if ($entryRunId !== null && $linkRunId === $entryRunId) {
-                return self::timestamp($link->created_at);
-            }
-        }
-
-        return null;
     }
 
     private static function timestamp(mixed $value): ?string

@@ -54,6 +54,8 @@ class WorkflowRunLineageEntry extends Model
         $payload['status_bucket'] = $this->status_bucket;
         $payload['closed_reason'] = $this->closed_reason;
         $payload['created_at'] = $this->linked_at?->toJSON();
+        $payload['history_authority'] = $payload['history_authority'] ?? null;
+        $payload['diagnostic_only'] = (bool) ($payload['diagnostic_only'] ?? false);
 
         if ($this->direction === 'parent') {
             $payload['parent_workflow_id'] = $this->related_workflow_instance_id;

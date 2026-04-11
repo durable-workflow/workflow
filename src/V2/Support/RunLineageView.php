@@ -37,6 +37,7 @@ final class RunLineageView
                 runId: $continuedFromRunId,
                 createdAt: self::workflowStartedEvent($run)?->recorded_at
                     ?? self::workflowStartedEvent($run)?->created_at,
+                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
             );
 
             $seen[self::key('continue_as_new', $continuedFromRunId)] = true;
@@ -58,6 +59,7 @@ final class RunLineageView
                 childCallId: $parentReference['child_call_id'],
                 createdAt: self::workflowStartedEvent($run)?->recorded_at
                     ?? self::workflowStartedEvent($run)?->created_at,
+                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
             );
 
             $seen[self::key('child_workflow', $parentReference['parent_workflow_run_id'])] = true;
@@ -89,6 +91,8 @@ final class RunLineageView
                     ? ChildRunHistory::childCallIdForRun($run)
                     : null,
                 createdAt: $link->created_at,
+                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK,
+                diagnosticOnly: true,
             );
 
             $seen[$key] = true;
@@ -136,6 +140,7 @@ final class RunLineageView
                         'workflow_class' => $run->workflow_class,
                         'run_number' => self::intValue($continuedEvent->payload['continued_to_run_number'] ?? null),
                     ],
+                    historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
                 );
 
                 $seen[self::key('continue_as_new', $continuedRunId)] = true;
@@ -175,6 +180,10 @@ final class RunLineageView
                 continue;
             }
 
+            $hasTypedHistory = $scheduledEvent !== null
+                || $startedEvent !== null
+                || $resolutionEvent !== null;
+
             $entries[] = self::entry(
                 id: $childCallId ?? sprintf('child_workflow:%s:%s', $sequence, $childRunId),
                 linkType: 'child_workflow',
@@ -193,6 +202,10 @@ final class RunLineageView
                     ?? $startedEvent?->created_at
                     ?? $link?->created_at,
                 metadata: self::childMetadata($childRun, $scheduledEvent, $startedEvent, $resolutionEvent),
+                historyAuthority: $hasTypedHistory
+                    ? ChildRunHistory::HISTORY_AUTHORITY_TYPED
+                    : ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK,
+                diagnosticOnly: ! $hasTypedHistory,
             );
 
             $seen[$key] = true;
@@ -235,6 +248,8 @@ final class RunLineageView
                 relationPrefix: 'child',
                 childCallId: $childCallId,
                 createdAt: $link->created_at,
+                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK,
+                diagnosticOnly: true,
             );
 
             $seen[$key] = true;
@@ -334,6 +349,8 @@ final class RunLineageView
         ?string $childCallId = null,
         mixed $createdAt = null,
         array $metadata = [],
+        string $historyAuthority = ChildRunHistory::HISTORY_AUTHORITY_TYPED,
+        bool $diagnosticOnly = false,
     ): array {
         $summary = $relatedRun?->summary;
         $status = self::stringValue($metadata['status'] ?? null)
@@ -365,6 +382,8 @@ final class RunLineageView
             'status_bucket' => $statusBucket,
             'closed_reason' => $closedReason,
             'created_at' => self::timestamp($createdAt),
+            'history_authority' => $historyAuthority,
+            'diagnostic_only' => $diagnosticOnly,
         ];
     }
 

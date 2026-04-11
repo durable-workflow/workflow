@@ -3095,6 +3095,10 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($link->id, $childWait['child_call_id']);
         $this->assertSame($childRun->id, $childWait['child_workflow_run_id']);
         $this->assertSame($childInstance->id, $childWait['target_name']);
+        $this->assertTrue($detail['continuedWorkflows'][0]['diagnostic_only']);
+        $this->assertSame('mutable_open_fallback', $detail['continuedWorkflows'][0]['history_authority']);
+        $this->assertSame($link->id, $detail['continuedWorkflows'][0]['child_call_id']);
+        $this->assertSame($childRun->id, $detail['continuedWorkflows'][0]['child_workflow_run_id']);
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'workflow'));
     }
 
