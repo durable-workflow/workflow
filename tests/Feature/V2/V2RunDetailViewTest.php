@@ -1262,6 +1262,7 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewMarksReceivedSignalWithoutWorkflowTaskAsRepairNeeded(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-repair');
@@ -1331,6 +1332,21 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($signalRecord->id, $missingTask['workflow_resume_source_id']);
         $this->assertSame($signalRecord->id, $missingTask['workflow_signal_id']);
         $this->assertSame($signal->commandId(), $missingTask['workflow_command_id']);
+
+        $signalDetail = $detail['signals'][0];
+        $commandDetail = collect($detail['commands'])->firstWhere('id', $signal->commandId());
+
+        $this->assertSame([], $signalDetail['task_ids']);
+        $this->assertNull($signalDetail['current_task_id']);
+        $this->assertNull($signalDetail['current_task_status']);
+        $this->assertSame('missing', $signalDetail['task_transport_state']);
+        $this->assertTrue($signalDetail['task_missing']);
+        $this->assertIsArray($commandDetail);
+        $this->assertSame([], $commandDetail['task_ids']);
+        $this->assertNull($commandDetail['current_task_id']);
+        $this->assertNull($commandDetail['current_task_status']);
+        $this->assertSame('missing', $commandDetail['task_transport_state']);
+        $this->assertTrue($commandDetail['task_missing']);
     }
 
     public function testRunDetailViewDoesNotTreatUnrelatedWorkflowTaskAsAcceptedUpdateTransport(): void
@@ -1445,6 +1461,21 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('workflow_update', $missingUpdateTask['workflow_resume_source_kind']);
         $this->assertSame($update->id, $missingUpdateTask['workflow_update_id']);
         $this->assertSame($command->id, $missingUpdateTask['workflow_command_id']);
+
+        $updateDetail = $detail['updates'][0];
+        $commandDetail = collect($detail['commands'])->firstWhere('id', $command->id);
+
+        $this->assertSame([], $updateDetail['task_ids']);
+        $this->assertNull($updateDetail['current_task_id']);
+        $this->assertNull($updateDetail['current_task_status']);
+        $this->assertSame('missing', $updateDetail['task_transport_state']);
+        $this->assertTrue($updateDetail['task_missing']);
+        $this->assertIsArray($commandDetail);
+        $this->assertSame([], $commandDetail['task_ids']);
+        $this->assertNull($commandDetail['current_task_id']);
+        $this->assertNull($commandDetail['current_task_status']);
+        $this->assertSame('missing', $commandDetail['task_transport_state']);
+        $this->assertTrue($commandDetail['task_missing']);
     }
 
     public function testAcceptedUpdateAnnotatesReusedReadyWorkflowTask(): void
@@ -1479,6 +1510,25 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_update_id' => $result->updateId(),
             'workflow_command_id' => $result->commandId(),
         ], $task->payload);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+        $commandDetail = collect($detail['commands'])->firstWhere('id', $result->commandId());
+        $updateDetail = collect($detail['updates'])->firstWhere('id', $result->updateId());
+
+        $this->assertIsArray($commandDetail);
+        $this->assertSame([$task->id], $commandDetail['task_ids']);
+        $this->assertSame($task->id, $commandDetail['current_task_id']);
+        $this->assertSame('ready', $commandDetail['current_task_status']);
+        $this->assertSame('ready', $commandDetail['task_transport_state']);
+        $this->assertFalse($commandDetail['task_missing']);
+        $this->assertIsArray($updateDetail);
+        $this->assertSame([$task->id], $updateDetail['task_ids']);
+        $this->assertSame($task->id, $updateDetail['current_task_id']);
+        $this->assertSame('ready', $updateDetail['current_task_status']);
+        $this->assertSame('ready', $updateDetail['task_transport_state']);
+        $this->assertFalse($updateDetail['task_missing']);
     }
 
     public function testRunDetailViewKeepsTypedFailureCodeAndPropertiesWhenFailureRowsDrift(): void

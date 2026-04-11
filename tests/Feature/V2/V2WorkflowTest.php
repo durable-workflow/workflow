@@ -4616,6 +4616,12 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('name-provided', $detail['signals'][0]['name']);
         $this->assertSame($signal->id, $detail['commands'][1]['signal_id']);
         $this->assertSame('applied', $detail['commands'][1]['signal_status']);
+        $this->assertNull($detail['signals'][0]['current_task_id']);
+        $this->assertFalse($detail['signals'][0]['task_missing']);
+        $this->assertSame([$signalEvents[1]->workflow_task_id], $detail['signals'][0]['task_ids']);
+        $this->assertNull($detail['commands'][1]['current_task_id']);
+        $this->assertFalse($detail['commands'][1]['task_missing']);
+        $this->assertSame([$signalEvents[1]->workflow_task_id], $detail['commands'][1]['task_ids']);
     }
 
     public function testSignalCommandCanAcceptSingleAssociativePayloadViaArraySafeHelper(): void

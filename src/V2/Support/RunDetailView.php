@@ -44,6 +44,7 @@ final class RunDetailView
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
         $commandContract = RunCommandContract::forRun($run, persistBackfill: true);
         $tasks = RunTaskView::forRun($run);
+        $taskLinks = RunTaskLinkMap::forRun($run, $tasks);
         $cancelBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
         $terminateBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
         $signalBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
@@ -72,11 +73,19 @@ final class RunDetailView
 
         $activities = RunActivityView::activitiesForRun($run);
         $activityClasses = collect(RunActivityView::classesFromActivities($activities));
-        $signals = RunSignalView::forRun($run);
+        $signals = self::attachTaskLinks(
+            RunSignalView::forRun($run),
+            $taskLinks['signals'],
+            $taskLinks['commands'],
+        );
         $signalsByCommandId = collect($signals)
             ->filter(static fn (array $signal): bool => is_string($signal['command_id'] ?? null))
             ->keyBy('command_id');
-        $updates = RunUpdateView::forRun($run);
+        $updates = self::attachTaskLinks(
+            RunUpdateView::forRun($run),
+            $taskLinks['updates'],
+            $taskLinks['commands'],
+        );
         $updatesByCommandId = collect($updates)
             ->filter(static fn (array $update): bool => is_string($update['command_id'] ?? null))
             ->keyBy('command_id');
@@ -238,9 +247,14 @@ final class RunDetailView
             'activities' => $activities,
             'commands_scope' => 'selected_run',
             'commands' => $run->commands
-                ->map(static function (WorkflowCommand $command) use ($signalsByCommandId, $updatesByCommandId): array {
+                ->map(static function (WorkflowCommand $command) use (
+                    $signalsByCommandId,
+                    $taskLinks,
+                    $updatesByCommandId,
+                ): array {
                     $signal = $signalsByCommandId->get($command->id);
                     $update = $updatesByCommandId->get($command->id);
+                    $taskLink = self::taskLink($taskLinks['commands'][$command->id] ?? null);
 
                     return [
                         'id' => $command->id,
@@ -283,6 +297,11 @@ final class RunDetailView
                         'failure_id' => $update['failure_id'] ?? null,
                         'failure_message' => $update['failure_message'] ?? null,
                         'completed_at' => $update['closed_at'] ?? null,
+                        'current_task_id' => $taskLink['current_task_id'],
+                        'current_task_status' => $taskLink['current_task_status'],
+                        'task_transport_state' => $taskLink['task_transport_state'],
+                        'task_ids' => $taskLink['task_ids'],
+                        'task_missing' => $taskLink['task_missing'],
                     ];
                 })
                 ->values()
@@ -411,6 +430,74 @@ final class RunDetailView
             'open_wait_id' => null,
             'resume_source_kind' => null,
             'resume_source_id' => null,
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @param array<string, array{
+     *     current_task_id: string|null,
+     *     current_task_status: string|null,
+     *     task_transport_state: string|null,
+     *     task_ids: list<string>,
+     *     task_missing: bool
+     * }> $primaryLinks
+     * @param array<string, array{
+     *     current_task_id: string|null,
+     *     current_task_status: string|null,
+     *     task_transport_state: string|null,
+     *     task_ids: list<string>,
+     *     task_missing: bool
+     * }> $commandLinks
+     * @return list<array<string, mixed>>
+     */
+    private static function attachTaskLinks(array $rows, array $primaryLinks, array $commandLinks): array
+    {
+        return array_values(array_map(
+            static function (array $row) use ($primaryLinks, $commandLinks): array {
+                $primaryId = self::stringValue($row['id'] ?? null);
+                $commandId = self::stringValue($row['command_id'] ?? null);
+
+                $link = ($primaryId === null ? null : ($primaryLinks[$primaryId] ?? null))
+                    ?? ($commandId === null ? null : ($commandLinks[$commandId] ?? null));
+                $taskLink = self::taskLink($link);
+
+                return $row + [
+                    'current_task_id' => $taskLink['current_task_id'],
+                    'current_task_status' => $taskLink['current_task_status'],
+                    'task_transport_state' => $taskLink['task_transport_state'],
+                    'task_ids' => $taskLink['task_ids'],
+                    'task_missing' => $taskLink['task_missing'],
+                ];
+            },
+            $rows,
+        ));
+    }
+
+    /**
+     * @param array{
+     *     current_task_id: string|null,
+     *     current_task_status: string|null,
+     *     task_transport_state: string|null,
+     *     task_ids: list<string>,
+     *     task_missing: bool
+     * }|null $taskLink
+     * @return array{
+     *     current_task_id: string|null,
+     *     current_task_status: string|null,
+     *     task_transport_state: string|null,
+     *     task_ids: list<string>,
+     *     task_missing: bool
+     * }
+     */
+    private static function taskLink(?array $taskLink): array
+    {
+        return $taskLink ?? [
+            'current_task_id' => null,
+            'current_task_status' => null,
+            'task_transport_state' => null,
+            'task_ids' => [],
+            'task_missing' => false,
         ];
     }
 
