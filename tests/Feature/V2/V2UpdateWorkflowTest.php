@@ -22,6 +22,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\HistoryTimeline;
@@ -1221,9 +1222,12 @@ final class V2UpdateWorkflowTest extends TestCase
     public function testNamedUpdateValidationBackfillsPartialCommandContractsWhenWorkflowDefinitionIsLoadable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'legacy-command-contract-partial-update');
         $workflow->start();

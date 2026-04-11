@@ -82,7 +82,8 @@ final class HistoryExport
                 'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,
                 'visibility_labels' => $summary?->visibility_labels ?? $run->visibility_labels ?? $run->instance?->visibility_labels ?? [],
                 'status' => $run->status->value,
-                'status_bucket' => $run->status->statusBucket()->value,
+                'status_bucket' => $run->status->statusBucket()
+->value,
                 'closed_reason' => $summary?->closed_reason ?? $run->closed_reason,
                 'archived_at' => self::timestamp($summary?->archived_at ?? $run->archived_at),
                 'archive_command_id' => $summary?->archive_command_id ?? $run->archive_command_id,
@@ -881,7 +882,9 @@ final class HistoryExport
                 continue;
             }
 
-            $state = $states[$activityId] ?? ['id' => $activityId];
+            $state = $states[$activityId] ?? [
+                'id' => $activityId,
+            ];
             $eventTypes = is_array($state['history_event_types'] ?? null)
                 ? $state['history_event_types']
                 : [];
@@ -943,10 +946,7 @@ final class HistoryExport
     /**
      * @return array<string, mixed>
      */
-    private static function activityState(
-        array $activity,
-        array $state = [],
-    ): array
+    private static function activityState(array $activity, array $state = []): array
     {
         $unsupportedReason = self::stringValue($activity['history_unsupported_reason'] ?? null);
         $rawResult = self::stringValue($state['result'] ?? null);
@@ -993,7 +993,9 @@ final class HistoryExport
                 : $rawResult,
             'created_at' => self::timestamp($activity['created_at'] ?? ($state['created_at'] ?? null)),
             'started_at' => self::timestamp($activity['started_at'] ?? ($state['started_at'] ?? null)),
-            'last_heartbeat_at' => self::timestamp($activity['last_heartbeat_at'] ?? ($state['last_heartbeat_at'] ?? null)),
+            'last_heartbeat_at' => self::timestamp(
+                $activity['last_heartbeat_at'] ?? ($state['last_heartbeat_at'] ?? null)
+            ),
             'closed_at' => $unsupportedReason === RunActivityView::UNSUPPORTED_TERMINAL_REASON
                 ? null
                 : self::timestamp($activity['closed_at'] ?? ($state['closed_at'] ?? null)),
@@ -1017,15 +1019,7 @@ final class HistoryExport
 
         $snapshot = ActivitySnapshot::fromExecution($execution);
 
-        foreach ([
-            'sequence',
-            'type',
-            'class',
-            'retry_policy',
-            'connection',
-            'queue',
-            'arguments',
-        ] as $key) {
+        foreach (['sequence', 'type', 'class', 'retry_policy', 'connection', 'queue', 'arguments'] as $key) {
             if (! array_key_exists($key, $state) && array_key_exists($key, $snapshot)) {
                 $state[$key] = $snapshot[$key];
             }
@@ -1037,9 +1031,7 @@ final class HistoryExport
     /**
      * @return list<array<string, mixed>>
      */
-    private static function activityAttempts(
-        array $activity,
-    ): array
+    private static function activityAttempts(array $activity): array
     {
         $activityId = self::stringValue($activity['id'] ?? null);
         $attempts = [];
@@ -1181,6 +1173,12 @@ final class HistoryExport
                 'child_call_id' => $entry['child_call_id'] ?? null,
                 'sequence' => $entry['sequence'] ?? null,
                 'is_primary_parent' => (bool) ($entry['is_primary_parent'] ?? false),
+                'run_number' => $entry['run_number'] ?? null,
+                'workflow_type' => $entry['workflow_type'] ?? null,
+                'class' => $entry['class'] ?? null,
+                'status' => $entry['status'] ?? null,
+                'status_bucket' => $entry['status_bucket'] ?? null,
+                'closed_reason' => $entry['closed_reason'] ?? null,
                 'created_at' => self::timestamp($entry['created_at'] ?? null)
                     ?? self::lineageLinkCreatedAt($run, $entry, 'parent'),
             ])
@@ -1208,6 +1206,12 @@ final class HistoryExport
                 'child_call_id' => $entry['child_call_id'] ?? null,
                 'sequence' => $entry['sequence'] ?? null,
                 'is_primary_parent' => (bool) ($entry['is_primary_parent'] ?? false),
+                'run_number' => $entry['run_number'] ?? null,
+                'workflow_type' => $entry['workflow_type'] ?? null,
+                'class' => $entry['class'] ?? null,
+                'status' => $entry['status'] ?? null,
+                'status_bucket' => $entry['status_bucket'] ?? null,
+                'closed_reason' => $entry['closed_reason'] ?? null,
                 'created_at' => self::timestamp($entry['created_at'] ?? null)
                     ?? self::lineageLinkCreatedAt($run, $entry, 'child'),
             ])
@@ -1274,5 +1278,4 @@ final class HistoryExport
             ? (int) $value
             : null;
     }
-
 }

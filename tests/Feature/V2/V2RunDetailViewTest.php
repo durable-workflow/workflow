@@ -25,6 +25,7 @@ use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestUnsafeDeterminismWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
@@ -33,7 +34,6 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
-use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -45,8 +45,8 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
-use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
@@ -115,9 +115,12 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(10),
-            'closed_at' => now()->subMinutes(2),
-            'last_progress_at' => now()->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(10),
+            'closed_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinutes(2),
         ]);
 
         $instance->update([
@@ -139,8 +142,10 @@ final class V2RunDetailViewTest extends TestCase
             'file' => __FILE__,
             'line' => 42,
             'trace_preview' => 'earlier trace',
-            'created_at' => now()->subMinutes(8),
-            'updated_at' => now()->subMinutes(8),
+            'created_at' => now()
+                ->subMinutes(8),
+            'updated_at' => now()
+                ->subMinutes(8),
         ]);
         WorkflowFailure::create([
             'id' => $laterFailureId,
@@ -154,8 +159,10 @@ final class V2RunDetailViewTest extends TestCase
             'file' => __FILE__,
             'line' => 84,
             'trace_preview' => 'later trace',
-            'created_at' => now()->subMinutes(6),
-            'updated_at' => now()->subMinutes(6),
+            'created_at' => now()
+                ->subMinutes(6),
+            'updated_at' => now()
+                ->subMinutes(6),
         ]);
 
         RunSummaryProjector::project(
@@ -167,11 +174,17 @@ final class V2RunDetailViewTest extends TestCase
 
         $this->assertSame(2, $detail['exception_count']);
         $this->assertSame([$earlierFailureId, $laterFailureId], collect($detail['exceptions'])->pluck('id')->all());
-        $this->assertSame(['unresolved', 'unrestorable'], collect($detail['exceptions'])->pluck('exception_resolution_source')->all());
+        $this->assertSame(
+            ['unresolved', 'unrestorable'],
+            collect($detail['exceptions'])->pluck('exception_resolution_source')->all()
+        );
         $this->assertSame([true, true], collect($detail['exceptions'])->pluck('exception_replay_blocked')->all());
 
         $this->assertSame([$earlierFailureId, $laterFailureId], collect($export['failures'])->pluck('id')->all());
-        $this->assertSame(['unresolved', 'unrestorable'], collect($export['failures'])->pluck('exception_resolution_source')->all());
+        $this->assertSame(
+            ['unresolved', 'unrestorable'],
+            collect($export['failures'])->pluck('exception_resolution_source')->all()
+        );
         $this->assertSame([true, true], collect($export['failures'])->pluck('exception_replay_blocked')->all());
     }
 
@@ -444,7 +457,8 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewReadsWaitRowsFromRebuildableProjection(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-projected-wait');
@@ -506,11 +520,7 @@ final class V2RunDetailViewTest extends TestCase
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        $fallbackDetail = RunDetailView::forRun(
-            WorkflowRun::query()
-                ->with('summary')
-                ->findOrFail($runId)
-        );
+        $fallbackDetail = RunDetailView::forRun(WorkflowRun::query() ->with('summary') ->findOrFail($runId));
 
         $this->assertContains($fallbackDetail['waits_projection_source'], [
             'workflow_run_waits',
@@ -521,7 +531,8 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewReadsTimerRowsFromRebuildableProjection(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-projected-timer');
@@ -569,11 +580,7 @@ final class V2RunDetailViewTest extends TestCase
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        $fallbackDetail = RunDetailView::forRun(
-            WorkflowRun::query()
-                ->with('summary')
-                ->findOrFail($runId)
-        );
+        $fallbackDetail = RunDetailView::forRun(WorkflowRun::query() ->with('summary') ->findOrFail($runId));
 
         $this->assertSame('workflow_run_timer_entries_rebuilt', $fallbackDetail['timers_projection_source']);
         $this->assertCount(1, $fallbackDetail['timers']);
@@ -608,7 +615,9 @@ final class V2RunDetailViewTest extends TestCase
             'status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
             'arguments' => Serializer::serialize([]),
-            'output' => Serializer::serialize(['ok' => true]),
+            'output' => Serializer::serialize([
+                'ok' => true,
+            ]),
             'connection' => 'redis',
             'queue' => 'default',
             'started_at' => now()
@@ -635,8 +644,12 @@ final class V2RunDetailViewTest extends TestCase
                 ->subMinute(),
         ]);
 
-        $parentInstance->update(['current_run_id' => $parentRun->id]);
-        $childInstance->update(['current_run_id' => $childRun->id]);
+        $parentInstance->update([
+            'current_run_id' => $parentRun->id,
+        ]);
+        $childInstance->update([
+            'current_run_id' => $childRun->id,
+        ]);
 
         $link = WorkflowLink::create([
             'link_type' => 'child_workflow',
@@ -670,7 +683,9 @@ final class V2RunDetailViewTest extends TestCase
             'child_run_number' => 1,
             'child_status' => RunStatus::Completed->value,
             'closed_reason' => 'completed',
-            'output' => Serializer::serialize(['ok' => true]),
+            'output' => Serializer::serialize([
+                'ok' => true,
+            ]),
         ]);
 
         WorkflowRunSummary::create([
@@ -716,9 +731,12 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewExposesNormalizedCommandTargetsForMixedSignalContracts(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-command-targets');
         $workflow->start();
@@ -764,9 +782,12 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewBackfillsPartialCommandContractSnapshotsOnPassiveRead(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-command-targets-partial');
         $workflow->start();
@@ -819,9 +840,12 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewBlocksQueryAndUpdateWhenDurableTargetsExistButDefinitionIsUnavailable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-definition-unavailable');
         $workflow->start();
@@ -1161,7 +1185,10 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('workflow_signal', $detail['resume_source_kind']);
         $this->assertSame($signalRecord->id, $detail['resume_source_id']);
         $this->assertSame('repair_needed', $detail['liveness_state']);
-        $this->assertSame('Accepted signal name-provided is received without an open workflow task.', $detail['liveness_reason']);
+        $this->assertSame(
+            'Accepted signal name-provided is received without an open workflow task.',
+            $detail['liveness_reason']
+        );
         $this->assertTrue($detail['can_repair']);
         $this->assertSame('resolved', $signalWait['status']);
         $this->assertSame('received', $signalWait['source_status']);
@@ -1282,7 +1309,10 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('workflow_update', $detail['resume_source_kind']);
         $this->assertSame($update->id, $detail['resume_source_id']);
         $this->assertSame('repair_needed', $detail['liveness_state']);
-        $this->assertSame('Accepted update mark-approved is open without an open workflow task.', $detail['liveness_reason']);
+        $this->assertSame(
+            'Accepted update mark-approved is open without an open workflow task.',
+            $detail['liveness_reason']
+        );
         $this->assertNull($detail['next_task_id']);
         $this->assertTrue($detail['can_repair']);
         $this->assertFalse($updateWait['task_backed']);
@@ -1704,8 +1734,10 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewPrefersContinueAsNewLineageOverRunOrderingForCurrentRun(): void
     {
         Queue::fake();
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'detail-continued-current-run');
         $workflow->start(0, 1);
@@ -1732,8 +1764,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([999, 1000]),
             'connection' => $currentRun->connection,
             'queue' => $currentRun->queue,
-            'started_at' => now()->addMinute(),
-            'last_progress_at' => now()->addMinute(),
+            'started_at' => now()
+                ->addMinute(),
+            'last_progress_at' => now()
+                ->addMinute(),
         ]);
 
         WorkflowInstance::query()
@@ -1833,7 +1867,10 @@ final class V2RunDetailViewTest extends TestCase
         );
         $rebuiltCurrentDetail = RunDetailView::forRun($currentRun->fresh(['summary', 'instance.currentRun.summary']));
 
-        $this->assertSame('workflow_run_lineage_entries_rebuilt', $rebuiltHistoricalDetail['lineage_projection_source']);
+        $this->assertSame(
+            'workflow_run_lineage_entries_rebuilt',
+            $rebuiltHistoricalDetail['lineage_projection_source']
+        );
         $this->assertSame('workflow_run_lineage_entries_rebuilt', $rebuiltCurrentDetail['lineage_projection_source']);
         $this->assertSame($currentRun->id, $rebuiltHistoricalDetail['continuedWorkflows'][0]['child_workflow_run_id']);
         $this->assertSame($historicalRun->id, $rebuiltCurrentDetail['parents'][0]['parent_workflow_run_id']);
@@ -2065,8 +2102,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([60]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(4),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(4),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $childRun = WorkflowRun::create([
@@ -2083,13 +2122,20 @@ final class V2RunDetailViewTest extends TestCase
             ]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(3),
-            'closed_at' => now()->subSeconds(30),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinutes(3),
+            'closed_at' => now()
+                ->subSeconds(30),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
-        $parentInstance->update(['current_run_id' => $run->id]);
-        $childInstance->update(['current_run_id' => $childRun->id]);
+        $parentInstance->update([
+            'current_run_id' => $run->id,
+        ]);
+        $childInstance->update([
+            'current_run_id' => $childRun->id,
+        ]);
 
         $link = WorkflowLink::create([
             'id' => '01JTESTRUNDETAILCHILDLINK01',
@@ -2100,8 +2146,10 @@ final class V2RunDetailViewTest extends TestCase
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'is_primary_parent' => true,
-            'created_at' => now()->subSeconds(90),
-            'updated_at' => now()->subSeconds(90),
+            'created_at' => now()
+                ->subSeconds(90),
+            'updated_at' => now()
+                ->subSeconds(90),
         ]);
 
         WorkflowHistoryEvent::create([
@@ -2119,9 +2167,12 @@ final class V2RunDetailViewTest extends TestCase
                 'child_workflow_class' => TestTimerWorkflow::class,
                 'child_run_number' => 1,
             ],
-            'recorded_at' => now()->subSeconds(90),
-            'created_at' => now()->subSeconds(90),
-            'updated_at' => now()->subSeconds(90),
+            'recorded_at' => now()
+                ->subSeconds(90),
+            'created_at' => now()
+                ->subSeconds(90),
+            'updated_at' => now()
+                ->subSeconds(90),
         ]);
 
         RunSummaryProjector::project($run->fresh());
@@ -2164,6 +2215,9 @@ final class V2RunDetailViewTest extends TestCase
             'closed_reason' => null,
             'closed_at' => null,
         ])->save();
+        WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
@@ -2176,13 +2230,25 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('Child workflow test-child-greeting-workflow completed.', $childWait['summary']);
         $this->assertSame($link->child_workflow_instance_id, $childWait['target_name']);
         $this->assertSame($link->child_workflow_run_id, $childWait['resume_source_id']);
+        $this->assertSame('workflow_run_lineage_entries_rebuilt', $detail['lineage_projection_source']);
+        $this->assertCount(1, $detail['continuedWorkflows']);
+        $this->assertSame('child_workflow', $detail['continuedWorkflows'][0]['link_type']);
+        $this->assertSame($link->id, $detail['continuedWorkflows'][0]['child_call_id']);
+        $this->assertSame($childRun->workflow_type, $detail['continuedWorkflows'][0]['workflow_type']);
+        $this->assertSame($childRun->workflow_class, $detail['continuedWorkflows'][0]['class']);
+        $this->assertSame($childRun->run_number, $detail['continuedWorkflows'][0]['run_number']);
+        $this->assertSame('completed', $detail['continuedWorkflows'][0]['status']);
+        $this->assertSame('completed', $detail['continuedWorkflows'][0]['status_bucket']);
+        $this->assertSame('completed', $detail['continuedWorkflows'][0]['closed_reason']);
     }
 
     public function testRunDetailViewKeepsCurrentContinuedChildFromHistoryWhenLinksDisappear(): void
     {
         Queue::fake();
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $instanceId = 'detail-child-history';
 
@@ -2235,8 +2301,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([999, 1000]),
             'connection' => $currentChildRun->connection,
             'queue' => $currentChildRun->queue,
-            'started_at' => now()->addMinute(),
-            'last_progress_at' => now()->addMinute(),
+            'started_at' => now()
+                ->addMinute(),
+            'last_progress_at' => now()
+                ->addMinute(),
         ]);
 
         WorkflowInstance::query()
@@ -2512,7 +2580,9 @@ final class V2RunDetailViewTest extends TestCase
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($runId);
-        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']));
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
 
         $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
         $timerWait = $this->findWait($detail['waits'], 'timer');
@@ -2541,7 +2611,8 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewKeepsTypedTimerScheduledWhenMutableTimerRowFiresWithoutHistory(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-timer-row-fired-without-history');
@@ -2823,8 +2894,10 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'test-timer-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -2837,8 +2910,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([60]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -2851,9 +2926,12 @@ final class V2RunDetailViewTest extends TestCase
             'sequence' => 1,
             'status' => TimerStatus::Pending->value,
             'delay_seconds' => 60,
-            'fire_at' => now()->addMinute(),
-            'created_at' => now()->subSeconds(20),
-            'updated_at' => now()->subSeconds(20),
+            'fire_at' => now()
+                ->addMinute(),
+            'created_at' => now()
+                ->subSeconds(20),
+            'updated_at' => now()
+                ->subSeconds(20),
         ]);
 
         RunSummaryProjector::project(
@@ -2904,8 +2982,10 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_class' => TestParentWaitingOnChildWorkflow::class,
             'workflow_type' => 'workflow.parent',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         $childInstance = WorkflowInstance::query()->create([
@@ -2913,8 +2993,10 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'workflow.child',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -2927,8 +3009,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([60]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         /** @var WorkflowRun $childRun */
@@ -2941,8 +3025,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([30]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subSeconds(50),
-            'last_progress_at' => now()->subSeconds(20),
+            'started_at' => now()
+                ->subSeconds(50),
+            'last_progress_at' => now()
+                ->subSeconds(20),
         ]);
 
         $parentInstance->forceFill([
@@ -2961,8 +3047,10 @@ final class V2RunDetailViewTest extends TestCase
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'is_primary_parent' => true,
-            'created_at' => now()->subSeconds(40),
-            'updated_at' => now()->subSeconds(40),
+            'created_at' => now()
+                ->subSeconds(40),
+            'updated_at' => now()
+                ->subSeconds(40),
         ]);
 
         RunSummaryProjector::project(
@@ -3171,7 +3259,9 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Leased->value,
-            'payload' => ['activity_execution_id' => $execution->id],
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
             'connection' => 'redis',
             'queue' => 'activities',
             'available_at' => now()
@@ -3243,8 +3333,10 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         $secondAttemptId = (string) \Illuminate\Support\Str::ulid();
-        $heartbeatAt = now()->subSeconds(10);
-        $leaseExpiresAt = now()->addMinutes(5);
+        $heartbeatAt = now()
+            ->subSeconds(10);
+        $leaseExpiresAt = now()
+            ->addMinutes(5);
 
         $execution->forceFill([
             'status' => \Workflow\V2\Enums\ActivityStatus::Running->value,
@@ -3321,9 +3413,24 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertTrue($detail['activities'][0]['attempts'][1]['can_continue']);
         $this->assertFalse($detail['activities'][0]['attempts'][1]['cancel_requested']);
         $this->assertNull($detail['activities'][0]['attempts'][1]['stop_reason']);
-        $this->assertSame($heartbeatAt->toJSON(), $detail['activities'][0]['attempts'][1]['last_heartbeat_at']?->toJSON());
-        $this->assertSame($leaseExpiresAt->toJSON(), $detail['activities'][0]['attempts'][1]['lease_expires_at']?->toJSON());
-        $this->assertSame(['ActivityScheduled', 'ActivityStarted', 'ActivityRetryScheduled', 'ActivityStarted', 'ActivityHeartbeatRecorded'], array_column($detail['timeline'], 'type'));
+        $this->assertSame(
+            $heartbeatAt->toJSON(),
+            $detail['activities'][0]['attempts'][1]['last_heartbeat_at']?->toJSON()
+        );
+        $this->assertSame(
+            $leaseExpiresAt->toJSON(),
+            $detail['activities'][0]['attempts'][1]['lease_expires_at']?->toJSON()
+        );
+        $this->assertSame(
+            [
+                'ActivityScheduled',
+                'ActivityStarted',
+                'ActivityRetryScheduled',
+                'ActivityStarted',
+                'ActivityHeartbeatRecorded',
+            ],
+            array_column($detail['timeline'], 'type')
+        );
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
     }
 

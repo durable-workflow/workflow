@@ -29,12 +29,12 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
 final class HistoryExportTest extends TestCase
@@ -65,15 +65,22 @@ final class HistoryExportTest extends TestCase
             'compatibility' => 'build-export',
             'payload_codec' => 'workflow-serializer',
             'arguments' => Serializer::serialize(['order-123']),
-            'output' => Serializer::serialize(['ok' => true]),
+            'output' => Serializer::serialize([
+                'ok' => true,
+            ]),
             'connection' => 'redis',
             'queue' => 'workflow',
-            'started_at' => now()->subMinutes(5),
-            'closed_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         WorkflowRunSummary::query()->create([
             'id' => $run->id,
@@ -95,20 +102,26 @@ final class HistoryExportTest extends TestCase
             'history_event_count' => 2,
             'history_size_bytes' => 256,
             'continue_as_new_recommended' => false,
-            'created_at' => now()->subMinutes(5),
-            'updated_at' => now()->subMinute(),
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinute(),
         ]);
 
         $command = WorkflowCommand::record($instance, $run, [
             'command_type' => CommandType::Start->value,
             'target_scope' => 'instance',
             'payload_codec' => config('workflows.serializer'),
-            'payload' => Serializer::serialize(['arguments' => ['order-123']]),
+            'payload' => Serializer::serialize([
+                'arguments' => ['order-123'],
+            ]),
             'source' => 'php',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::StartedNew->value,
-            'accepted_at' => now()->subMinutes(5),
-            'applied_at' => now()->subMinutes(5),
+            'accepted_at' => now()
+                ->subMinutes(5),
+            'applied_at' => now()
+                ->subMinutes(5),
         ]);
 
         $signalCommand = WorkflowCommand::record($instance, $run, [
@@ -122,8 +135,10 @@ final class HistoryExportTest extends TestCase
             'source' => 'webhook',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::SignalReceived->value,
-            'accepted_at' => now()->subMinutes(4),
-            'applied_at' => now()->subMinutes(4),
+            'accepted_at' => now()
+                ->subMinutes(4),
+            'applied_at' => now()
+                ->subMinutes(4),
         ]);
 
         $signal = WorkflowSignal::query()->create([
@@ -140,34 +155,41 @@ final class HistoryExportTest extends TestCase
             'workflow_sequence' => 1,
             'payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize(['Taylor']),
-            'received_at' => now()->subMinutes(4),
-            'applied_at' => now()->subMinutes(4),
-            'closed_at' => now()->subMinutes(4),
+            'received_at' => now()
+                ->subMinutes(4),
+            'applied_at' => now()
+                ->subMinutes(4),
+            'closed_at' => now()
+                ->subMinutes(4),
         ]);
 
         WorkflowHistoryEvent::record(
             $run,
             HistoryEventType::StartAccepted,
-            ['workflow_type' => 'export.workflow'],
+            [
+                'workflow_type' => 'export.workflow',
+            ],
             command: $command,
         );
-        WorkflowHistoryEvent::record(
-            $run,
-            HistoryEventType::WorkflowCompleted,
-            ['result_available' => true],
-        );
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
+            'result_available' => true,
+        ],);
 
         $task = WorkflowTask::query()->create([
             'id' => (string) Str::ulid(),
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Completed->value,
-            'payload' => ['reason' => 'start'],
+            'payload' => [
+                'reason' => 'start',
+            ],
             'connection' => 'redis',
             'queue' => 'workflow',
             'compatibility' => 'build-export',
-            'available_at' => now()->subMinutes(5),
-            'last_dispatched_at' => now()->subMinutes(5),
+            'available_at' => now()
+                ->subMinutes(5),
+            'last_dispatched_at' => now()
+                ->subMinutes(5),
         ]);
 
         $activity = ActivityExecution::query()->create([
@@ -187,8 +209,10 @@ final class HistoryExportTest extends TestCase
                 'backoff_seconds' => [1, 5],
             ],
             'attempt_count' => 1,
-            'started_at' => now()->subMinutes(4),
-            'closed_at' => now()->subMinutes(3),
+            'started_at' => now()
+                ->subMinutes(4),
+            'closed_at' => now()
+                ->subMinutes(3),
         ]);
 
         $attempt = ActivityAttempt::query()->create([
@@ -199,11 +223,15 @@ final class HistoryExportTest extends TestCase
             'attempt_number' => 1,
             'status' => 'completed',
             'lease_owner' => 'worker-a',
-            'started_at' => now()->subMinutes(4),
-            'closed_at' => now()->subMinutes(3),
+            'started_at' => now()
+                ->subMinutes(4),
+            'closed_at' => now()
+                ->subMinutes(3),
         ]);
 
-        $activity->forceFill(['current_attempt_id' => $attempt->id])->save();
+        $activity->forceFill([
+            'current_attempt_id' => $attempt->id,
+        ])->save();
 
         $childInstance = WorkflowInstance::query()->create([
             'id' => 'history-export-child',
@@ -223,11 +251,16 @@ final class HistoryExportTest extends TestCase
             'payload_codec' => 'workflow-serializer',
             'connection' => 'redis',
             'queue' => 'workflow',
-            'started_at' => now()->subMinutes(4),
-            'closed_at' => now()->subMinutes(3),
-            'last_progress_at' => now()->subMinutes(3),
+            'started_at' => now()
+                ->subMinutes(4),
+            'closed_at' => now()
+                ->subMinutes(3),
+            'last_progress_at' => now()
+                ->subMinutes(3),
         ]);
-        $childInstance->forceFill(['current_run_id' => $childRun->id])->save();
+        $childInstance->forceFill([
+            'current_run_id' => $childRun->id,
+        ])->save();
 
         $childCallId = (string) Str::ulid();
         WorkflowLink::query()->create([
@@ -248,7 +281,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame(HistoryExport::SCHEMA, $bundle['schema']);
         $this->assertSame(HistoryExport::SCHEMA_VERSION, $bundle['schema_version']);
         $this->assertSame('2026-04-09T12:05:00.000000Z', $bundle['exported_at']);
-        $this->assertSame($run->id.':2:2026-04-09T12:00:00.000000Z', $bundle['dedupe_key']);
+        $this->assertSame($run->id . ':2:2026-04-09T12:00:00.000000Z', $bundle['dedupe_key']);
         $this->assertTrue($bundle['history_complete']);
         $this->assertSame($instance->id, $bundle['workflow']['instance_id']);
         $this->assertSame($run->id, $bundle['workflow']['run_id']);
@@ -271,12 +304,18 @@ final class HistoryExportTest extends TestCase
         $this->assertSame(hash('sha256', self::canonicalJson($unsignedBundle)), $bundle['integrity']['checksum']);
         $this->assertSame(2, $bundle['summary']['history_event_count']);
         $this->assertSame('workflow_run_waits_rebuilt', $bundle['selected_run']['waits_projection_source']);
-        $this->assertSame('workflow_run_timeline_entries_rebuilt', $bundle['selected_run']['timeline_projection_source']);
+        $this->assertSame(
+            'workflow_run_timeline_entries_rebuilt',
+            $bundle['selected_run']['timeline_projection_source']
+        );
         $this->assertSame('workflow_run_timer_entries', $bundle['selected_run']['timers_projection_source']);
         $this->assertSame('workflow_run_lineage_entries_rebuilt', $bundle['selected_run']['lineage_projection_source']);
         $this->assertSame(['activity', 'child'], array_column($bundle['waits'], 'kind'));
         $this->assertSame(['unsupported', 'unsupported'], array_column($bundle['waits'], 'status'));
-        $this->assertSame('terminal_activity_row_without_typed_history', $bundle['waits'][0]['history_unsupported_reason']);
+        $this->assertSame(
+            'terminal_activity_row_without_typed_history',
+            $bundle['waits'][0]['history_unsupported_reason']
+        );
         $this->assertSame(
             'terminal_child_link_without_typed_parent_history',
             $bundle['waits'][1]['history_unsupported_reason']
@@ -322,12 +361,17 @@ final class HistoryExportTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'workflow',
-            'started_at' => now()->subMinutes(2),
-            'closed_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(2),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         WorkflowRunSummary::query()->create([
             'id' => $run->id,
@@ -349,8 +393,10 @@ final class HistoryExportTest extends TestCase
             'history_event_count' => 1,
             'history_size_bytes' => 128,
             'continue_as_new_recommended' => false,
-            'created_at' => now()->subMinutes(2),
-            'updated_at' => now()->subMinute(),
+            'created_at' => now()
+                ->subMinutes(2),
+            'updated_at' => now()
+                ->subMinute(),
         ]);
 
         WorkflowHistoryEvent::query()->create([
@@ -382,7 +428,8 @@ final class HistoryExportTest extends TestCase
                     'properties' => [],
                 ],
             ],
-            'recorded_at' => now()->subMinute(),
+            'recorded_at' => now()
+                ->subMinute(),
         ]);
 
         $bundle = HistoryExport::forRun($run->fresh(['summary']));
@@ -422,10 +469,14 @@ final class HistoryExportTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'workflow',
-            'started_at' => now()->subMinutes(2),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
-        $parentInstance->forceFill(['current_run_id' => $parentRun->id])->save();
+        $parentInstance->forceFill([
+            'current_run_id' => $parentRun->id,
+        ])->save();
 
         $childInstance = WorkflowInstance::query()->create([
             'id' => 'history-export-child-history-only',
@@ -446,10 +497,14 @@ final class HistoryExportTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'workflow',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
-        $childInstance->forceFill(['current_run_id' => $childRun->id])->save();
+        $childInstance->forceFill([
+            'current_run_id' => $childRun->id,
+        ])->save();
 
         $childCallId = (string) Str::ulid();
         $link = WorkflowLink::query()->create([
@@ -532,6 +587,136 @@ final class HistoryExportTest extends TestCase
         $this->assertSame(1, $childBundle['links']['parents'][0]['sequence']);
     }
 
+    public function testItKeepsResolvedChildLineageMetadataFromTypedHistoryWhenChildRunDrifts(): void
+    {
+        $parentInstance = WorkflowInstance::query()->create([
+            'id' => 'history-export-child-drift-parent',
+            'workflow_class' => 'App\\Workflows\\ParentExportWorkflow',
+            'workflow_type' => 'export.parent',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $parentInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\ParentExportWorkflow',
+            'workflow_type' => 'export.parent',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'workflow',
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => now()
+                ->subMinutes(4),
+            'last_progress_at' => now()
+                ->subMinutes(4),
+        ]);
+        $parentInstance->forceFill([
+            'current_run_id' => $parentRun->id,
+        ])->save();
+
+        $childInstance = WorkflowInstance::query()->create([
+            'id' => 'history-export-child-drift-child',
+            'workflow_class' => 'App\\Workflows\\ChildExportWorkflow',
+            'workflow_type' => 'export.child',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\ChildExportWorkflow',
+            'workflow_type' => 'export.child',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize([]),
+            'output' => Serializer::serialize([
+                'ok' => true,
+            ]),
+            'connection' => 'redis',
+            'queue' => 'workflow',
+            'started_at' => now()
+                ->subMinutes(4),
+            'closed_at' => now()
+                ->subMinutes(3),
+            'last_progress_at' => now()
+                ->subMinutes(3),
+        ]);
+        $childInstance->forceFill([
+            'current_run_id' => $childRun->id,
+        ])->save();
+
+        $childCallId = (string) Str::ulid();
+        WorkflowLink::query()->create([
+            'id' => $childCallId,
+            'link_type' => 'child_workflow',
+            'sequence' => 1,
+            'parent_workflow_instance_id' => $parentInstance->id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+            'created_at' => now()
+                ->subMinutes(4),
+            'updated_at' => now()
+                ->subMinutes(4),
+        ]);
+
+        WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildWorkflowScheduled, [
+            'sequence' => 1,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+            'child_run_number' => $childRun->run_number,
+        ]);
+        WorkflowHistoryEvent::record($parentRun->refresh(), HistoryEventType::ChildRunCompleted, [
+            'sequence' => 1,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+            'child_run_number' => $childRun->run_number,
+            'child_status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+        ]);
+
+        $childRun->forceFill([
+            'status' => RunStatus::Waiting,
+            'closed_reason' => null,
+            'closed_at' => null,
+        ])->save();
+
+        WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->delete();
+
+        $bundle = HistoryExport::forRun($parentRun->fresh(['historyEvents', 'childLinks']));
+
+        $this->assertSame('workflow_run_lineage_entries_rebuilt', $bundle['links']['projection_source']);
+        $this->assertCount(1, $bundle['links']['children']);
+        $this->assertSame($childCallId, $bundle['links']['children'][0]['id']);
+        $this->assertSame('child_workflow', $bundle['links']['children'][0]['type']);
+        $this->assertSame($childInstance->id, $bundle['links']['children'][0]['child_workflow_instance_id']);
+        $this->assertSame($childRun->id, $bundle['links']['children'][0]['child_workflow_run_id']);
+        $this->assertSame($childRun->workflow_type, $bundle['links']['children'][0]['workflow_type']);
+        $this->assertSame($childRun->workflow_class, $bundle['links']['children'][0]['class']);
+        $this->assertSame($childRun->run_number, $bundle['links']['children'][0]['run_number']);
+        $this->assertSame('completed', $bundle['links']['children'][0]['status']);
+        $this->assertSame('completed', $bundle['links']['children'][0]['status_bucket']);
+        $this->assertSame('completed', $bundle['links']['children'][0]['closed_reason']);
+    }
+
     public function testItExportsActivitySnapshotsFromTypedHistoryWhenExecutionRowIsMissing(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');
@@ -550,10 +735,13 @@ final class HistoryExportTest extends TestCase
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'activities',
-            'available_at' => now()->subSeconds(40),
-            'leased_at' => now()->subSeconds(35),
+            'available_at' => now()
+                ->subSeconds(40),
+            'leased_at' => now()
+                ->subSeconds(35),
             'lease_owner' => 'worker-a',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
             'attempt_count' => 1,
         ]);
 
@@ -593,15 +781,18 @@ final class HistoryExportTest extends TestCase
             'attempt_number' => 1,
             'status' => 'running',
             'lease_owner' => 'worker-a',
-            'started_at' => now()->subSeconds(30),
-            'lease_expires_at' => now()->addMinutes(5),
+            'started_at' => now()
+                ->subSeconds(30),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         $activity->forceFill([
             'status' => 'running',
             'attempt_count' => 1,
             'current_attempt_id' => $attempt->id,
-            'started_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subSeconds(30),
         ])->save();
 
         WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityStarted, [
@@ -617,7 +808,8 @@ final class HistoryExportTest extends TestCase
         $activity->forceFill([
             'status' => 'completed',
             'result' => Serializer::serialize('ok'),
-            'closed_at' => now()->subSeconds(10),
+            'closed_at' => now()
+                ->subSeconds(10),
         ])->save();
 
         WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityCompleted, [
@@ -670,8 +862,11 @@ final class HistoryExportTest extends TestCase
         });
 
         $run = $this->createMinimalCompletedRun('history-export-timer-history');
-        $fireAt = now()->addMinute();
-        $firedAt = now()->addMinute()->addSecond();
+        $fireAt = now()
+            ->addMinute();
+        $firedAt = now()
+            ->addMinute()
+            ->addSecond();
 
         /** @var WorkflowTimer $timer */
         $timer = WorkflowTimer::query()->create([
@@ -726,8 +921,10 @@ final class HistoryExportTest extends TestCase
         });
 
         $run = $this->createMinimalCompletedRun('history-export-cancelled-timer-history');
-        $fireAt = now()->addMinute();
-        $cancelledAt = now()->addSeconds(10);
+        $fireAt = now()
+            ->addMinute();
+        $cancelledAt = now()
+            ->addSeconds(10);
 
         /** @var WorkflowTimer $timer */
         $timer = WorkflowTimer::query()->create([
@@ -788,7 +985,8 @@ final class HistoryExportTest extends TestCase
         });
 
         $run = $this->createMinimalCompletedRun('history-export-row-only-timer');
-        $fireAt = now()->subMinute();
+        $fireAt = now()
+            ->subMinute();
 
         /** @var WorkflowTimer $timer */
         $timer = WorkflowTimer::query()->create([
@@ -799,7 +997,8 @@ final class HistoryExportTest extends TestCase
             'delay_seconds' => 60,
             'fire_at' => $fireAt,
             'fired_at' => now(),
-            'created_at' => now()->subMinutes(2),
+            'created_at' => now()
+                ->subMinutes(2),
         ]);
 
         $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'timers']));
@@ -843,8 +1042,10 @@ final class HistoryExportTest extends TestCase
             'queue' => 'activities',
             'attempt_count' => 1,
             'current_attempt_id' => $completedAttemptId,
-            'started_at' => now()->subMinutes(2),
-            'closed_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(2),
+            'closed_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var ActivityExecution $cancelledActivity */
@@ -860,8 +1061,10 @@ final class HistoryExportTest extends TestCase
             'queue' => 'activities',
             'attempt_count' => 1,
             'current_attempt_id' => $cancelledAttemptId,
-            'started_at' => now()->subMinutes(2),
-            'closed_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(2),
+            'closed_at' => now()
+                ->subMinute(),
         ]);
 
         $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'activityExecutions.attempts']));
@@ -946,25 +1149,40 @@ final class HistoryExportTest extends TestCase
             'closed_reason' => 'completed',
             'payload_codec' => 'workflow-serializer',
             'arguments' => Serializer::serialize(['secret-order']),
-            'output' => Serializer::serialize(['secret' => true]),
-            'started_at' => now()->subMinutes(5),
-            'closed_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'output' => Serializer::serialize([
+                'secret' => true,
+            ]),
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         $command = WorkflowCommand::record($instance, $run, [
             'command_type' => CommandType::Start->value,
             'target_scope' => 'instance',
             'payload_codec' => config('workflows.serializer'),
-            'payload' => Serializer::serialize(['arguments' => ['secret-order']]),
-            'context' => ['workflow' => ['parent_instance_id' => 'secret-parent']],
+            'payload' => Serializer::serialize([
+                'arguments' => ['secret-order'],
+            ]),
+            'context' => [
+                'workflow' => [
+                    'parent_instance_id' => 'secret-parent',
+                ],
+            ],
             'source' => 'php',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::StartedNew->value,
-            'accepted_at' => now()->subMinutes(5),
-            'applied_at' => now()->subMinutes(5),
+            'accepted_at' => now()
+                ->subMinutes(5),
+            'applied_at' => now()
+                ->subMinutes(5),
         ]);
 
         $signalCommand = WorkflowCommand::record($instance, $run, [
@@ -978,7 +1196,8 @@ final class HistoryExportTest extends TestCase
             'source' => 'webhook',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::SignalReceived->value,
-            'accepted_at' => now()->subMinutes(4),
+            'accepted_at' => now()
+                ->subMinutes(4),
         ]);
 
         WorkflowSignal::query()->create([
@@ -994,13 +1213,16 @@ final class HistoryExportTest extends TestCase
             'command_sequence' => $signalCommand->command_sequence,
             'payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize(['secret-signal-value']),
-            'received_at' => now()->subMinutes(4),
+            'received_at' => now()
+                ->subMinutes(4),
         ]);
 
         WorkflowHistoryEvent::record(
             $run,
             HistoryEventType::WorkflowStarted,
-            ['arguments' => ['secret-order']],
+            [
+                'arguments' => ['secret-order'],
+            ],
             command: $command,
         );
 
@@ -1009,9 +1231,13 @@ final class HistoryExportTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Completed->value,
-            'payload' => ['secret' => 'task'],
-            'available_at' => now()->subMinutes(5),
-            'last_dispatched_at' => now()->subMinutes(5),
+            'payload' => [
+                'secret' => 'task',
+            ],
+            'available_at' => now()
+                ->subMinutes(5),
+            'last_dispatched_at' => now()
+                ->subMinutes(5),
         ]);
 
         ActivityExecution::query()->create([
@@ -1022,7 +1248,9 @@ final class HistoryExportTest extends TestCase
             'activity_type' => 'export.redacted.activity',
             'status' => 'completed',
             'arguments' => Serializer::serialize(['secret-order']),
-            'result' => Serializer::serialize(['activity-secret' => true]),
+            'result' => Serializer::serialize([
+                'activity-secret' => true,
+            ]),
         ]);
 
         WorkflowFailure::query()->create([
@@ -1066,7 +1294,7 @@ final class HistoryExportTest extends TestCase
              */
             public function redact(mixed $value, array $context): string
             {
-                return 'inline-redacted:'.$context['path'];
+                return 'inline-redacted:' . $context['path'];
             }
         });
 
@@ -1076,7 +1304,8 @@ final class HistoryExportTest extends TestCase
     public function testItSignsHistoryExportIntegrityWhenSigningKeyIsConfigured(): void
     {
         config()->set('workflows.v2.history_export.signing_key', 'history-export-secret');
-        config()->set('workflows.v2.history_export.signing_key_id', '2026-04-primary');
+        config()
+            ->set('workflows.v2.history_export.signing_key_id', '2026-04-primary');
 
         $run = $this->createMinimalCompletedRun('history-export-signed');
 
@@ -1089,7 +1318,10 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('sha256', $bundle['integrity']['checksum_algorithm']);
         $this->assertSame(hash('sha256', $canonicalJson), $bundle['integrity']['checksum']);
         $this->assertSame('hmac-sha256', $bundle['integrity']['signature_algorithm']);
-        $this->assertSame(hash_hmac('sha256', $canonicalJson, 'history-export-secret'), $bundle['integrity']['signature']);
+        $this->assertSame(
+            hash_hmac('sha256', $canonicalJson, 'history-export-secret'),
+            $bundle['integrity']['signature']
+        );
         $this->assertSame('2026-04-primary', $bundle['integrity']['key_id']);
     }
 
@@ -1113,13 +1345,20 @@ final class HistoryExportTest extends TestCase
             'closed_reason' => 'completed',
             'payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize(['signed']),
-            'output' => Serializer::serialize(['ok' => true]),
-            'started_at' => now()->subMinutes(2),
-            'closed_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'output' => Serializer::serialize([
+                'ok' => true,
+            ]),
+            'started_at' => now()
+                ->subMinutes(2),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
             'workflow_type' => 'export.signed',

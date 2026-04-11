@@ -18,11 +18,7 @@ final class RunLineageView
      */
     public static function parentsForRun(WorkflowRun $run): array
     {
-        $run->loadMissing([
-            'historyEvents',
-            'parentLinks.parentRun.summary',
-            'instance.runs.summary',
-        ]);
+        $run->loadMissing(['historyEvents', 'parentLinks.parentRun.summary', 'instance.runs.summary']);
 
         $entries = [];
         $seen = [];
@@ -135,6 +131,11 @@ final class RunLineageView
                     runId: $continuedRunId,
                     relationPrefix: 'child',
                     createdAt: $continuedEvent->recorded_at ?? $continuedEvent->created_at,
+                    metadata: [
+                        'workflow_type' => $run->workflow_type,
+                        'workflow_class' => $run->workflow_class,
+                        'run_number' => self::intValue($continuedEvent->payload['continued_to_run_number'] ?? null),
+                    ],
                 );
 
                 $seen[self::key('continue_as_new', $continuedRunId)] = true;
@@ -164,12 +165,7 @@ final class RunLineageView
                 ?? $link?->child_workflow_instance_id;
             $childCallId = ChildRunHistory::childCallIdForSequence($run, $sequence);
 
-            $key = self::childIdentityKey(
-                $childCallId,
-                $sequence,
-                $childInstanceId,
-                $childRunId,
-            );
+            $key = self::childIdentityKey($childCallId, $sequence, $childInstanceId, $childRunId);
 
             if (isset($seen[$key])) {
                 continue;
@@ -184,7 +180,9 @@ final class RunLineageView
                 linkType: 'child_workflow',
                 sequence: $sequence,
                 isPrimaryParent: $link?->is_primary_parent ?? true,
-                relatedRun: $childRun ?? self::resolveRun($run, $childRunId),
+                relatedRun: $resolutionEvent === null
+                    ? ($childRun ?? self::resolveRun($run, $childRunId))
+                    : null,
                 instanceId: $childInstanceId,
                 runId: $childRunId,
                 relationPrefix: 'child',
@@ -194,6 +192,7 @@ final class RunLineageView
                     ?? $startedEvent?->recorded_at
                     ?? $startedEvent?->created_at
                     ?? $link?->created_at,
+                metadata: self::childMetadata($childRun, $scheduledEvent, $startedEvent, $resolutionEvent),
             );
 
             $seen[$key] = true;
@@ -286,7 +285,9 @@ final class RunLineageView
             ->map(static fn (WorkflowHistoryEvent $event): int => $event->payload['sequence'])
             ->all();
         $linked = $run->childLinks
-            ->filter(static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow' && $link->sequence !== null)
+            ->filter(
+                static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow' && $link->sequence !== null
+            )
             ->map(static fn (WorkflowLink $link): int => (int) $link->sequence)
             ->all();
 
@@ -332,9 +333,17 @@ final class RunLineageView
         string $relationPrefix = 'parent',
         ?string $childCallId = null,
         mixed $createdAt = null,
+        array $metadata = [],
     ): array {
         $summary = $relatedRun?->summary;
-        $status = $relatedRun?->status?->value;
+        $status = self::stringValue($metadata['status'] ?? null)
+            ?? $relatedRun?->status?->value;
+        $statusBucket = self::stringValue($metadata['status_bucket'] ?? null)
+            ?? $summary?->status_bucket
+            ?? self::statusBucketFromValue($status);
+        $closedReason = self::stringValue($metadata['closed_reason'] ?? null)
+            ?? $summary?->closed_reason
+            ?? $relatedRun?->closed_reason;
 
         return [
             'id' => $id,
@@ -346,13 +355,71 @@ final class RunLineageView
             $relationPrefix . '_workflow_run_id' => $runId,
             'workflow_instance_id' => $instanceId,
             'workflow_run_id' => $runId,
-            'run_number' => $relatedRun?->run_number,
-            'workflow_type' => $relatedRun?->workflow_type,
-            'class' => $relatedRun?->workflow_class,
+            'run_number' => self::intValue($metadata['run_number'] ?? null)
+                ?? $relatedRun?->run_number,
+            'workflow_type' => self::stringValue($metadata['workflow_type'] ?? null)
+                ?? $relatedRun?->workflow_type,
+            'class' => self::stringValue($metadata['workflow_class'] ?? null)
+                ?? $relatedRun?->workflow_class,
             'status' => $status,
-            'status_bucket' => $summary?->status_bucket ?? self::statusBucket($relatedRun?->status),
-            'closed_reason' => $summary?->closed_reason ?? $relatedRun?->closed_reason,
+            'status_bucket' => $statusBucket,
+            'closed_reason' => $closedReason,
             'created_at' => self::timestamp($createdAt),
+        ];
+    }
+
+    /**
+     * @return array{
+     *     workflow_type: ?string,
+     *     workflow_class: ?string,
+     *     run_number: ?int,
+     *     status: ?string,
+     *     status_bucket: ?string,
+     *     closed_reason: ?string
+     * }
+     */
+    private static function childMetadata(
+        ?WorkflowRun $childRun,
+        ?WorkflowHistoryEvent $scheduledEvent,
+        ?WorkflowHistoryEvent $startedEvent,
+        ?WorkflowHistoryEvent $resolutionEvent,
+    ): array {
+        $status = self::stringValue($resolutionEvent?->payload['child_status'] ?? null)
+            ?? self::stringValue($startedEvent?->payload['child_status'] ?? null)
+            ?? match ($resolutionEvent?->event_type) {
+                HistoryEventType::ChildRunCompleted => RunStatus::Completed->value,
+                HistoryEventType::ChildRunFailed => RunStatus::Failed->value,
+                HistoryEventType::ChildRunCancelled => RunStatus::Cancelled->value,
+                HistoryEventType::ChildRunTerminated => RunStatus::Terminated->value,
+                default => (
+                    $startedEvent instanceof WorkflowHistoryEvent || $scheduledEvent instanceof WorkflowHistoryEvent
+                        ? RunStatus::Waiting->value
+                        : $childRun?->status?->value
+                ),
+            };
+        $statusBucket = self::statusBucketFromValue($status);
+        $closedReason = self::stringValue($resolutionEvent?->payload['closed_reason'] ?? null);
+
+        if ($closedReason === null && $resolutionEvent instanceof WorkflowHistoryEvent) {
+            $closedReason = $status;
+        }
+
+        return [
+            'workflow_type' => self::stringValue($resolutionEvent?->payload['child_workflow_type'] ?? null)
+                ?? self::stringValue($startedEvent?->payload['child_workflow_type'] ?? null)
+                ?? self::stringValue($scheduledEvent?->payload['child_workflow_type'] ?? null)
+                ?? $childRun?->workflow_type,
+            'workflow_class' => self::stringValue($resolutionEvent?->payload['child_workflow_class'] ?? null)
+                ?? self::stringValue($startedEvent?->payload['child_workflow_class'] ?? null)
+                ?? self::stringValue($scheduledEvent?->payload['child_workflow_class'] ?? null)
+                ?? $childRun?->workflow_class,
+            'run_number' => self::intValue($resolutionEvent?->payload['child_run_number'] ?? null)
+                ?? self::intValue($startedEvent?->payload['child_run_number'] ?? null)
+                ?? self::intValue($scheduledEvent?->payload['child_run_number'] ?? null)
+                ?? $childRun?->run_number,
+            'status' => $status,
+            'status_bucket' => $statusBucket,
+            'closed_reason' => $closedReason ?? $childRun?->closed_reason,
         ];
     }
 
@@ -389,6 +456,13 @@ final class RunLineageView
     private static function statusBucket(?RunStatus $status): ?string
     {
         return $status?->statusBucket()->value;
+    }
+
+    private static function statusBucketFromValue(?string $status): ?string
+    {
+        return $status === null
+            ? null
+            : self::statusBucket(RunStatus::tryFrom($status));
     }
 
     private static function stringValue(mixed $value): ?string
