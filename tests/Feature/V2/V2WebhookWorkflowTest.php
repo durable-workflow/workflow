@@ -20,6 +20,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -622,6 +623,59 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('rejection_reason', 'invalid_signal_arguments')
             ->assertJsonPath('validation_errors.name.0', 'The name argument is required.')
             ->assertJsonPath('validation_errors.nickname.0', 'Unknown argument [nickname].');
+    }
+
+    public function testSignalWebhookRejectsNamedArgumentsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-signal-contract-unavailable');
+        $workflow->start();
+        $this->runReadyWorkflowTask($workflow->runId());
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'WorkflowStarted')
+            ->sole();
+
+        $started->forceFill([
+            'payload' => [
+                'workflow_class' => TestUpdateWorkflow::class,
+                'workflow_type' => 'test-update-workflow',
+                'workflow_instance_id' => $workflow->id(),
+                'workflow_run_id' => $workflow->runId(),
+                'declared_signals' => ['name-provided'],
+                'declared_updates' => ['approve', 'explode'],
+            ],
+        ])->save();
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+            'workflow_type' => 'missing-update-workflow',
+        ]);
+
+        $response = $this->postJson('/webhooks/instances/order-signal-contract-unavailable/signals/name-provided', [
+            'arguments' => [
+                'name' => 'Taylor',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonPath('outcome', 'rejected_invalid_arguments')
+            ->assertJsonPath('workflow_id', 'order-signal-contract-unavailable')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('workflow_type', 'missing-update-workflow')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'invalid_signal_arguments')
+            ->assertJsonPath(
+                'validation_errors.arguments.0',
+                'Named arguments require a durable or loadable workflow signal contract.'
+            );
     }
 
     public function testSignalWebhookReturnsTypedUnknownSignalResponse(): void

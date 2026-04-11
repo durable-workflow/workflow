@@ -4481,6 +4481,108 @@ final class V2WorkflowTest extends TestCase
         ], $signal->normalizedValidationErrors());
     }
 
+    public function testSignalCommandRejectsNamedArgumentsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-unavailable');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'signal');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $started->forceFill([
+            'payload' => [
+                'workflow_class' => TestUpdateWorkflow::class,
+                'workflow_type' => 'test-update-workflow',
+                'workflow_instance_id' => $workflow->id(),
+                'workflow_run_id' => $workflow->runId(),
+                'declared_signals' => ['name-provided'],
+                'declared_updates' => ['approve', 'explode'],
+            ],
+        ])->save();
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+            'workflow_type' => 'missing-update-workflow',
+        ]);
+
+        $result = $workflow->attemptSignalWithArguments('name-provided', [
+            'name' => 'Taylor',
+        ]);
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedInvalidArguments());
+        $this->assertSame('rejected_invalid_arguments', $result->outcome());
+        $this->assertSame('invalid_signal_arguments', $result->rejectionReason());
+        $this->assertSame([
+            'arguments' => ['Named arguments require a durable or loadable workflow signal contract.'],
+        ], $result->validationErrors());
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $result->commandId())
+            ->sole();
+
+        $this->assertSame('rejected_invalid_arguments', $signal->outcome?->value);
+        $this->assertSame('invalid_signal_arguments', $signal->rejection_reason);
+        $this->assertSame([
+            'arguments' => ['Named arguments require a durable or loadable workflow signal contract.'],
+        ], $signal->normalizedValidationErrors());
+    }
+
+    public function testSignalCommandStillAcceptsPositionalArgumentsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-unavailable-positional');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'signal');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $started->forceFill([
+            'payload' => [
+                'workflow_class' => TestUpdateWorkflow::class,
+                'workflow_type' => 'test-update-workflow',
+                'workflow_instance_id' => $workflow->id(),
+                'workflow_run_id' => $workflow->runId(),
+                'declared_signals' => ['name-provided'],
+                'declared_updates' => ['approve', 'explode'],
+            ],
+        ])->save();
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+            'workflow_type' => 'missing-update-workflow',
+        ]);
+
+        $result = $workflow->attemptSignal('name-provided', 'Taylor');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('signal_received', $result->outcome());
+    }
+
     public function testSignalCommandRejectsTypeMismatchedArgumentsAgainstDeclaredContract(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-type-mismatch');

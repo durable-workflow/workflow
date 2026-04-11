@@ -118,6 +118,19 @@ final class RunCommandContract
         return in_array($method, self::forRun($run)['updates'], true);
     }
 
+    public static function namedSignalArgumentsRequireContract(WorkflowRun $run, string $signalName): bool
+    {
+        if (self::signalContract($run, $signalName) !== null) {
+            return false;
+        }
+
+        $state = self::historyBackfillState($run);
+
+        return $state['needed']
+            && ! $state['available']
+            && in_array($signalName, self::forRun($run)['signals'], true);
+    }
+
     /**
      * @return array{
      *     name: string,
