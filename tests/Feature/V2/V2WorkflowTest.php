@@ -17,6 +17,8 @@ use Tests\Fixtures\V2\TestConfiguredContinueSignalWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
+use Tests\Fixtures\V2\TestFiberParallelWorkflow;
+use Tests\Fixtures\V2\TestFiberSignalWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHeartbeatActivity;
@@ -84,6 +86,66 @@ use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowTest extends TestCase
 {
+    public function testFiberWorkflowUsesStraightLineHelpersAndStillSupportsQueryReplay(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestFiberSignalWorkflow::class, 'fiber-straight-line');
+        $workflow->start('Taylor');
+
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame([
+            'stage' => 'waiting-for-approval',
+            'approved_by' => null,
+        ], $workflow->currentState());
+
+        $signal = $workflow->signal('approved-by', 'Jordan');
+
+        $this->assertTrue($signal->accepted());
+        $this->assertSame('signal_received', $signal->outcome());
+
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'greeting' => 'Hello, Taylor!',
+            'approved_by' => 'Jordan',
+            'workflow_id' => 'fiber-straight-line',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+    }
+
+    public function testFiberWorkflowCanAwaitParallelBuilders(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestFiberParallelWorkflow::class, 'fiber-parallel-builders');
+        $workflow->start('Taylor', 'Abigail', 'Selena');
+
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $output = $workflow->output();
+
+        $this->assertSame('completed', $output['stage'] ?? null);
+        $this->assertSame('fiber-parallel-builders', $output['workflow_id'] ?? null);
+        $this->assertSame($workflow->runId(), $output['run_id'] ?? null);
+        $this->assertSame('Hello, Taylor!', $output['results'][0] ?? null);
+        $this->assertSame('Hello, Abigail!', $output['results'][1][0] ?? null);
+        $this->assertSame('Hello, Selena!', $output['results'][1][1]['greeting'] ?? null);
+        $this->assertIsString($output['results'][1][1]['workflow_id'] ?? null);
+        $this->assertIsString($output['results'][1][1]['run_id'] ?? null);
+        $this->assertSame([
+            'stage' => 'completed',
+        ], $workflow->currentState());
+    }
+
     public function testQueryReplayRejectsActivityHistoryShapeDrift(): void
     {
         config()->set('queue.default', 'redis');

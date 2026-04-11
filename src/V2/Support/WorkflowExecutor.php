@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Generator;
 use Illuminate\Support\Str;
 use LogicException;
 use ReflectionMethod;
@@ -67,35 +66,29 @@ final class WorkflowExecutor
         );
 
         try {
-            $result = $workflow->execute(...$arguments);
+            $workflowExecution = WorkflowExecution::start($workflow, $arguments);
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
             return null;
         }
 
-        if (! $result instanceof Generator) {
-            $this->completeRun($run, $task, $result);
+        if (! $workflowExecution->valid()) {
+            $this->completeRun($run, $task, $workflowExecution->getReturn());
 
             return null;
         }
 
-        try {
-            $current = $result->current();
-        } catch (Throwable $throwable) {
-            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-
-            return null;
-        }
+        $current = $workflowExecution->current();
 
         $sequence = 1;
         $this->syncWorkflowCursor($workflow, $sequence);
 
         while (true) {
-            if (! $result->valid()) {
+            if (! $workflowExecution->valid()) {
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence);
-                    $this->completeRun($run, $task, $result->getReturn());
+                    $this->completeRun($run, $task, $workflowExecution->getReturn());
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
                 }
@@ -120,11 +113,11 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                            $current = $result->send($this->activityResult($activityCompletion));
+                            $current = $workflowExecution->send($this->activityResult($activityCompletion));
                         } else {
                             $failureId = $activityCompletion->payload['failure_id'] ?? null;
 
-                            $current = $result->throw($this->activityException($activityCompletion, null, $run));
+                            $current = $workflowExecution->throw($this->activityException($activityCompletion, null, $run));
 
                             $this->recordFailureHandled(
                                 $run,
@@ -169,12 +162,12 @@ final class WorkflowExecutor
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($execution->status === ActivityStatus::Completed) {
-                        $current = $result->send($execution->activityResult());
+                        $current = $workflowExecution->send($execution->activityResult());
                     } else {
                         $failure = $run->failures
                             ->firstWhere('source_id', $execution->id);
 
-                        $current = $result->throw($this->activityException(null, $execution, $run));
+                        $current = $workflowExecution->throw($this->activityException(null, $execution, $run));
 
                         $this->recordFailureHandled(
                             $run,
@@ -219,7 +212,7 @@ final class WorkflowExecutor
                 if ($resolutionEvent !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $result->send(
+                        $current = $workflowExecution->send(
                             $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied
                         );
                     } catch (Throwable $throwable) {
@@ -276,7 +269,7 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $result->send(false);
+                        $current = $workflowExecution->send(false);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -304,7 +297,7 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $result->send(true);
+                        $current = $workflowExecution->send(true);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -338,7 +331,7 @@ final class WorkflowExecutor
 
                         try {
                             $this->syncWorkflowCursor($workflow, $sequence + 1);
-                            $current = $result->send(false);
+                            $current = $workflowExecution->send(false);
                         } catch (Throwable $throwable) {
                             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -378,7 +371,7 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $result->send($this->sideEffectResult($sideEffectEvent));
+                    $current = $workflowExecution->send($this->sideEffectResult($sideEffectEvent));
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -411,7 +404,7 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
-                    $current = $result->send($version);
+                    $current = $workflowExecution->send($version);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -439,7 +432,7 @@ final class WorkflowExecutor
                 if ($this->timerFiredEvent($run, $sequence) !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $result->send(true);
+                        $current = $workflowExecution->send(true);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -465,7 +458,7 @@ final class WorkflowExecutor
 
                         try {
                             $this->syncWorkflowCursor($workflow, $sequence + 1);
-                            $current = $result->send(true);
+                            $current = $workflowExecution->send(true);
                         } catch (Throwable $throwable) {
                             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -492,7 +485,7 @@ final class WorkflowExecutor
 
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $result->send(true);
+                    $current = $workflowExecution->send(true);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -519,7 +512,7 @@ final class WorkflowExecutor
                 if ($signalEvent !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $result->send($this->signalValue($signalEvent));
+                        $current = $workflowExecution->send($this->signalValue($signalEvent));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -548,7 +541,7 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $result->send($this->signalValue($signalEvent));
+                        $current = $workflowExecution->send($this->signalValue($signalEvent));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -583,12 +576,12 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                            $current = $result->send(
+                            $current = $workflowExecution->send(
                                 ChildRunHistory::outputForResolution($resolutionEvent, $childRun)
                             );
                         } else {
                             $failureId = $resolutionEvent->payload['failure_id'] ?? null;
-                            $current = $result->throw(
+                            $current = $workflowExecution->throw(
                                 ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun)
                             );
 
@@ -637,10 +630,10 @@ final class WorkflowExecutor
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                        $current = $result->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
+                        $current = $workflowExecution->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
                     } else {
                         $failureId = $resolutionEvent->payload['failure_id'] ?? null;
-                        $current = $result->throw(ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun));
+                        $current = $workflowExecution->throw(ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun));
 
                         $this->recordFailureHandled(
                             $run,
@@ -673,7 +666,7 @@ final class WorkflowExecutor
                 if ($groupSize === 0) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence);
-                        $current = $result->send($current->nestedResults([]));
+                        $current = $workflowExecution->send($current->nestedResults([]));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -915,7 +908,7 @@ final class WorkflowExecutor
                 if ($failure !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                        $current = $result->throw($failure['exception']);
+                        $current = $workflowExecution->throw($failure['exception']);
 
                         $this->recordFailureHandled(
                             $run,
@@ -940,7 +933,7 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                        $current = $result->send($current->nestedResults(array_values($results)));
+                        $current = $workflowExecution->send($current->nestedResults(array_values($results)));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
