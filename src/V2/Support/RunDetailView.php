@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
@@ -306,6 +305,8 @@ final class RunDetailView
                         'id' => $failure['id'] ?? null,
                         'code' => $failure['trace_preview'] ?? null,
                         'exception' => serialize(self::exceptionPayload($failure)),
+                        'history_authority' => $failure['history_authority'] ?? null,
+                        'diagnostic_only' => (bool) ($failure['diagnostic_only'] ?? false),
                         'exception_type' => $failure['exception_type'] ?? null,
                         'exception_class' => $failure['exception_class'] ?? null,
                         'exception_resolved_class' => $failure['exception_resolved_class'] ?? null,

@@ -179,6 +179,11 @@ final class V2RunDetailViewTest extends TestCase
             collect($detail['exceptions'])->pluck('exception_resolution_source')->all()
         );
         $this->assertSame([true, true], collect($detail['exceptions'])->pluck('exception_replay_blocked')->all());
+        $this->assertSame(
+            ['failure_row_fallback', 'failure_row_fallback'],
+            collect($detail['exceptions'])->pluck('history_authority')->all()
+        );
+        $this->assertSame([true, true], collect($detail['exceptions'])->pluck('diagnostic_only')->all());
 
         $this->assertSame([$earlierFailureId, $laterFailureId], collect($export['failures'])->pluck('id')->all());
         $this->assertSame(
@@ -186,6 +191,11 @@ final class V2RunDetailViewTest extends TestCase
             collect($export['failures'])->pluck('exception_resolution_source')->all()
         );
         $this->assertSame([true, true], collect($export['failures'])->pluck('exception_replay_blocked')->all());
+        $this->assertSame(
+            ['failure_row_fallback', 'failure_row_fallback'],
+            collect($export['failures'])->pluck('history_authority')->all()
+        );
+        $this->assertSame([true, true], collect($export['failures'])->pluck('diagnostic_only')->all());
     }
 
     public function testRunDetailViewIncludesWorkflowDeterminismDiagnostics(): void
@@ -1443,6 +1453,8 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(1, $detail['exceptions_count']);
         $this->assertCount(1, $detail['exceptions']);
         $this->assertSame($failureId, $detail['exceptions'][0]['id']);
+        $this->assertSame('typed_history', $detail['exceptions'][0]['history_authority']);
+        $this->assertFalse($detail['exceptions'][0]['diagnostic_only']);
         $this->assertIsString($detail['exceptions'][0]['code']);
         $this->assertNotSame('', $detail['exceptions'][0]['code']);
         $this->assertSame(1, $run->fresh(['summary'])->summary?->exception_count);

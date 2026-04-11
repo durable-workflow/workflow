@@ -13,6 +13,10 @@ use Workflow\V2\Models\WorkflowRun;
 
 final class FailureSnapshots
 {
+    public const HISTORY_AUTHORITY_TYPED = 'typed_history';
+
+    public const HISTORY_AUTHORITY_FAILURE_ROW_FALLBACK = 'failure_row_fallback';
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -53,10 +57,7 @@ final class FailureSnapshots
                 continue;
             }
 
-            $snapshot = self::snapshotFromEvent(
-                $event,
-                $failuresById->get($failureId),
-            );
+            $snapshot = self::snapshotFromEvent($event, $failuresById->get($failureId));
 
             if ($snapshot === null) {
                 continue;
@@ -131,12 +132,7 @@ final class FailureSnapshots
      */
     private static function snapshotFromFailure(WorkflowFailure $failure): array
     {
-        $resolution = FailureFactory::replayResolution(
-            [],
-            $failure->exception_class,
-            $failure->message,
-            0,
-        );
+        $resolution = FailureFactory::replayResolution([], $failure->exception_class, $failure->message, 0);
 
         return [
             'id' => $failure->id,
@@ -144,6 +140,8 @@ final class FailureSnapshots
             'source_id' => $failure->source_id,
             'propagation_kind' => $failure->propagation_kind,
             'handled' => (bool) $failure->handled,
+            'history_authority' => self::HISTORY_AUTHORITY_FAILURE_ROW_FALLBACK,
+            'diagnostic_only' => true,
             'exception_type' => null,
             'exception_class' => $failure->exception_class,
             'exception_resolved_class' => $resolution['class'],
@@ -173,10 +171,8 @@ final class FailureSnapshots
     /**
      * @return array<string, mixed>|null
      */
-    private static function snapshotFromEvent(
-        WorkflowHistoryEvent $event,
-        ?WorkflowFailure $failure,
-    ): ?array {
+    private static function snapshotFromEvent(WorkflowHistoryEvent $event, ?WorkflowFailure $failure): ?array
+    {
         $failureId = self::stringValue($event->payload['failure_id'] ?? null);
 
         if ($failureId === null) {
@@ -218,6 +214,8 @@ final class FailureSnapshots
             'propagation_kind' => $failure?->propagation_kind
                 ?? self::propagationKindForEvent($event),
             'handled' => (bool) ($failure?->handled ?? false),
+            'history_authority' => self::HISTORY_AUTHORITY_TYPED,
+            'diagnostic_only' => false,
             'exception_type' => $exceptionType,
             'exception_class' => $exceptionClass,
             'exception_resolved_class' => $resolution['class'],

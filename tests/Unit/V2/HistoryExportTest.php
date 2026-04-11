@@ -440,6 +440,8 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('workflow_run', $bundle['failures'][0]['source_kind']);
         $this->assertSame($run->id, $bundle['failures'][0]['source_id']);
         $this->assertSame('terminal', $bundle['failures'][0]['propagation_kind']);
+        $this->assertSame('typed_history', $bundle['failures'][0]['history_authority']);
+        $this->assertFalse($bundle['failures'][0]['diagnostic_only']);
         $this->assertSame('runtime.failure', $bundle['failures'][0]['exception_type']);
         $this->assertSame(RuntimeException::class, $bundle['failures'][0]['exception_class']);
         $this->assertFalse($bundle['failures'][0]['exception_replay_blocked']);
