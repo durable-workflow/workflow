@@ -10,20 +10,39 @@ use Illuminate\Support\Str;
 use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\TaskWatchdog;
+use Workflow\V2\Support\CommandContractBackfillSweep;
 
 final class V2RepairPassCommandTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+        Cache::forget(CommandContractBackfillSweep::CURSOR_CACHE_KEY);
+    }
+
+    protected function tearDown(): void
+    {
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+        Cache::forget(CommandContractBackfillSweep::CURSOR_CACHE_KEY);
+
+        parent::tearDown();
+    }
+
     public function testItIgnoresTheLoopThrottleByDefaultAndRepairsMissingSignalTasks(): void
     {
         Queue::fake();
@@ -44,8 +63,12 @@ final class V2RepairPassCommandTest extends TestCase
             'repaired_existing_tasks' => 0,
             'repaired_missing_tasks' => 1,
             'dispatched_tasks' => 1,
+            'selected_command_contract_candidates' => 0,
+            'backfilled_command_contracts' => 0,
+            'command_contract_backfill_unavailable' => 0,
             'existing_task_failures' => [],
             'missing_run_failures' => [],
+            'command_contract_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -102,8 +125,12 @@ final class V2RepairPassCommandTest extends TestCase
             'repaired_existing_tasks' => 0,
             'repaired_missing_tasks' => 0,
             'dispatched_tasks' => 0,
+            'selected_command_contract_candidates' => 0,
+            'backfilled_command_contracts' => 0,
+            'command_contract_backfill_unavailable' => 0,
             'existing_task_failures' => [],
             'missing_run_failures' => [],
+            'command_contract_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -131,6 +158,7 @@ final class V2RepairPassCommandTest extends TestCase
             ->expectsOutput('Workflow v2 repair pass completed.')
             ->expectsOutput('Selected 1 existing task candidate(s) and 0 missing-task run candidate(s).')
             ->expectsOutput('Repaired 1 existing task(s), 0 missing task(s), and dispatched 1 task(s).')
+            ->expectsOutput('Selected 0 command-contract candidate(s), backfilled 0, and left 0 unavailable on this build.')
             ->assertSuccessful();
 
         $task->refresh();
@@ -165,8 +193,12 @@ final class V2RepairPassCommandTest extends TestCase
             'repaired_existing_tasks' => 0,
             'repaired_missing_tasks' => 1,
             'dispatched_tasks' => 1,
+            'selected_command_contract_candidates' => 0,
+            'backfilled_command_contracts' => 0,
+            'command_contract_backfill_unavailable' => 0,
             'existing_task_failures' => [],
             'missing_run_failures' => [],
+            'command_contract_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -216,8 +248,12 @@ final class V2RepairPassCommandTest extends TestCase
             'repaired_existing_tasks' => 1,
             'repaired_missing_tasks' => 0,
             'dispatched_tasks' => 1,
+            'selected_command_contract_candidates' => 0,
+            'backfilled_command_contracts' => 0,
+            'command_contract_backfill_unavailable' => 0,
             'existing_task_failures' => [],
             'missing_run_failures' => [],
+            'command_contract_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -240,6 +276,54 @@ final class V2RepairPassCommandTest extends TestCase
             static fn (RunWorkflowTask $job): bool => $job->taskId === $selectedTask->id
         );
         Queue::assertPushed(RunWorkflowTask::class, 1);
+    }
+
+    public function testItBackfillsLoadablePreviewCommandContractsDuringRepairPass(): void
+    {
+        Queue::fake();
+
+        $run = $this->createLegacyContractRun('repair-pass-command-contracts');
+
+        $expected = [
+            'connection' => null,
+            'queue' => null,
+            'run_ids' => [],
+            'instance_id' => null,
+            'respect_throttle' => false,
+            'throttled' => false,
+            'selected_existing_task_candidates' => 0,
+            'selected_missing_task_candidates' => 0,
+            'selected_total_candidates' => 0,
+            'repaired_existing_tasks' => 0,
+            'repaired_missing_tasks' => 0,
+            'dispatched_tasks' => 0,
+            'selected_command_contract_candidates' => 1,
+            'backfilled_command_contracts' => 1,
+            'command_contract_backfill_unavailable' => 0,
+            'existing_task_failures' => [],
+            'missing_run_failures' => [],
+            'command_contract_failures' => [],
+        ];
+
+        $this->artisan('workflow:v2:repair-pass', [
+            '--json' => true,
+        ])
+            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
+            ->assertSuccessful();
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $this->assertSame(['approval-stage', 'approvalMatches'], $started->payload['declared_queries'] ?? null);
+        $this->assertSame('approval-stage', $started->payload['declared_query_contracts'][0]['name'] ?? null);
+        $this->assertSame(['approved-by', 'rejected-by'], $started->payload['declared_signals'] ?? null);
+        $this->assertSame('approved-by', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
+        $this->assertSame(['mark-approved'], $started->payload['declared_updates'] ?? null);
+        $this->assertSame('mark-approved', $started->payload['declared_update_contracts'][0]['name'] ?? null);
+        Queue::assertNothingPushed();
     }
 
     /**
@@ -341,5 +425,19 @@ final class V2RepairPassCommandTest extends TestCase
         ])->save();
 
         return $run;
+    }
+
+    private function createLegacyContractRun(string $instanceId): WorkflowRun
+    {
+        $run = $this->createWaitingRun($instanceId);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'declared_signals' => ['approved-by', 'rejected-by'],
+            'declared_updates' => ['mark-approved'],
+        ]);
+
+        return $run->refresh();
     }
 }

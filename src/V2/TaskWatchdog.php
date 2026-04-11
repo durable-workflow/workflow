@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\CommandContractBackfillSweep;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -40,8 +41,12 @@ final class TaskWatchdog
      *     repaired_existing_tasks: int,
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
+     *     selected_command_contract_candidates: int,
+     *     backfilled_command_contracts: int,
+     *     command_contract_backfill_unavailable: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
-     *     missing_run_failures: list<array{run_id: string, message: string}>
+     *     missing_run_failures: list<array{run_id: string, message: string}>,
+     *     command_contract_failures: list<array{run_id: string, message: string}>
      * }
      */
     public static function runPass(
@@ -112,6 +117,16 @@ final class TaskWatchdog
                 ];
             }
         }
+
+        $commandContractReport = CommandContractBackfillSweep::run(
+            $runIds,
+            $instanceId,
+            TaskRepairPolicy::scanLimit(),
+        );
+        $report['selected_command_contract_candidates'] = $commandContractReport['selected_candidates'];
+        $report['backfilled_command_contracts'] = $commandContractReport['backfilled'];
+        $report['command_contract_backfill_unavailable'] = $commandContractReport['unavailable'];
+        $report['command_contract_failures'] = $commandContractReport['failures'];
 
         return $report;
     }
@@ -236,8 +251,12 @@ final class TaskWatchdog
      *     repaired_existing_tasks: int,
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
+     *     selected_command_contract_candidates: int,
+     *     backfilled_command_contracts: int,
+     *     command_contract_backfill_unavailable: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
-     *     missing_run_failures: list<array{run_id: string, message: string}>
+     *     missing_run_failures: list<array{run_id: string, message: string}>,
+     *     command_contract_failures: list<array{run_id: string, message: string}>
      * }
      */
     private static function emptyReport(
@@ -261,8 +280,12 @@ final class TaskWatchdog
             'repaired_existing_tasks' => 0,
             'repaired_missing_tasks' => 0,
             'dispatched_tasks' => 0,
+            'selected_command_contract_candidates' => 0,
+            'backfilled_command_contracts' => 0,
+            'command_contract_backfill_unavailable' => 0,
             'existing_task_failures' => [],
             'missing_run_failures' => [],
+            'command_contract_failures' => [],
         ];
     }
 }

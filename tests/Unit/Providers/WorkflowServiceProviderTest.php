@@ -11,18 +11,22 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Tests\Fixtures\TestSimpleWorkflow;
+use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\CommandContractBackfillSweep;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
 
@@ -35,6 +39,7 @@ final class WorkflowServiceProviderTest extends TestCase
         Cache::forget('workflow:watchdog');
         Cache::forget('workflow:watchdog:looping');
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+        Cache::forget(CommandContractBackfillSweep::CURSOR_CACHE_KEY);
 
         $this->app->register(WorkflowServiceProvider::class);
     }
@@ -44,6 +49,7 @@ final class WorkflowServiceProviderTest extends TestCase
         Cache::forget('workflow:watchdog');
         Cache::forget('workflow:watchdog:looping');
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+        Cache::forget(CommandContractBackfillSweep::CURSOR_CACHE_KEY);
 
         parent::tearDown();
     }
@@ -264,5 +270,62 @@ final class WorkflowServiceProviderTest extends TestCase
 
         $this->assertSame(1, $task->repair_count);
         $this->assertNotNull($task->last_dispatched_at);
+    }
+
+    public function testLoopingEventBackfillsLoadablePreviewCommandContracts(): void
+    {
+        Queue::fake();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+        Cache::forget(CommandContractBackfillSweep::CURSOR_CACHE_KEY);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'provider-v2-command-contract-inst',
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'declared_signals' => ['approved-by', 'rejected-by'],
+            'declared_updates' => ['mark-approved'],
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $this->assertSame(['approval-stage', 'approvalMatches'], $started->payload['declared_queries'] ?? null);
+        $this->assertSame('approval-stage', $started->payload['declared_query_contracts'][0]['name'] ?? null);
+        $this->assertSame(['approved-by', 'rejected-by'], $started->payload['declared_signals'] ?? null);
+        $this->assertSame('approved-by', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
+        $this->assertSame(['mark-approved'], $started->payload['declared_updates'] ?? null);
+        $this->assertSame('mark-approved', $started->payload['declared_update_contracts'][0]['name'] ?? null);
+        Queue::assertNothingPushed();
     }
 }

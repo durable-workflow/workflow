@@ -492,7 +492,7 @@ final class V2UpdateWorkflowTest extends TestCase
 
         $updatedSummary = WorkflowRunSummary::query()->findOrFail($runId);
 
-        $this->assertSame('workflow-task', $updatedSummary->wait_kind);
+        $this->assertSame('update', $updatedSummary->wait_kind);
         $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
         $this->assertSame($task->id, $updatedSummary->next_task_id);
         $this->assertSame('workflow', $updatedSummary->next_task_type);

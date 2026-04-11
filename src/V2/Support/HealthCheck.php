@@ -159,7 +159,7 @@ final class HealthCheck
                 ? 'WorkflowStarted history already carries durable query, signal, and update contracts for every run.'
                 : (
                     $unavailable === 0
-                        ? 'One or more runs still rely on preview-era command-contract fallback; run workflow:v2:rebuild-projections --needs-rebuild or workflow:v2:backfill-command-contracts before class moves or long-term support.'
+                        ? 'One or more runs still rely on preview-era command-contract fallback; the background repair/watchdog loop will keep draining loadable snapshots, and workflow:v2:repair-pass, workflow:v2:rebuild-projections --needs-rebuild, or workflow:v2:backfill-command-contracts can force cleanup sooner before class moves or long-term support.'
                         : 'One or more runs still have preview-era command-contract snapshots and some can no longer be normalized on this build.'
                 ),
             [
