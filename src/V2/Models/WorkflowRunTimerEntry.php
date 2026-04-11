@@ -57,6 +57,7 @@ class WorkflowRunTimerEntry extends Model
         $payload['condition_definition_fingerprint'] = $this->condition_definition_fingerprint;
         $payload['history_authority'] = $this->history_authority;
         $payload['history_unsupported_reason'] = $this->history_unsupported_reason;
+        $payload['diagnostic_only'] = self::diagnosticOnly($payload['history_authority'] ?? $this->history_authority);
         $payload['created_at'] = self::timestamp($payload['created_at'] ?? null);
 
         return $payload;
@@ -71,5 +72,12 @@ class WorkflowRunTimerEntry extends Model
         return is_string($value) && $value !== ''
             ? Carbon::parse($value)
             : null;
+    }
+
+    private static function diagnosticOnly(mixed $historyAuthority): bool
+    {
+        return is_string($historyAuthority)
+            && $historyAuthority !== ''
+            && $historyAuthority !== 'typed_history';
     }
 }

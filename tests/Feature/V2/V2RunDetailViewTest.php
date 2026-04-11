@@ -2768,6 +2768,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('pending', $detail['timers'][0]['source_status']);
         $this->assertSame('fired', $detail['timers'][0]['row_status']);
         $this->assertSame('typed_history', $detail['timers'][0]['history_authority']);
+        $this->assertFalse($detail['timers'][0]['diagnostic_only']);
         $this->assertSame(['TimerScheduled'], $detail['timers'][0]['history_event_types']);
         $this->assertNull($detail['timers'][0]['history_unsupported_reason']);
         $this->assertNull($detail['timers'][0]['fired_at']);
@@ -3079,6 +3080,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($timer->id, $detail['timers'][0]['id']);
         $this->assertSame('pending', $detail['timers'][0]['status']);
         $this->assertSame('mutable_open_fallback', $detail['timers'][0]['history_authority']);
+        $this->assertTrue($detail['timers'][0]['diagnostic_only']);
         $this->assertNull($detail['timers'][0]['history_unsupported_reason']);
         $this->assertSame('open', $timerWait['status']);
         $this->assertSame('pending', $timerWait['source_status']);

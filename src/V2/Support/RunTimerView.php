@@ -37,6 +37,7 @@ final class RunTimerView
      *     condition_key: string|null,
      *     condition_definition_fingerprint: string|null,
      *     history_authority: string,
+     *     diagnostic_only: bool,
      *     history_event_types: list<string>,
      *     history_unsupported_reason: string|null,
      *     row_status: string|null
@@ -107,7 +108,10 @@ final class RunTimerView
             return $left['id'] <=> $right['id'];
         });
 
-        return $timers;
+        return array_values(array_map(
+            static fn (array $timer): array => self::presentTimer($timer),
+            $timers,
+        ));
     }
 
     /**
@@ -126,6 +130,7 @@ final class RunTimerView
      *     condition_key: string|null,
      *     condition_definition_fingerprint: string|null,
      *     history_authority: string,
+     *     diagnostic_only: bool,
      *     history_event_types: list<string>,
      *     history_unsupported_reason: string|null,
      *     row_status: string|null
@@ -164,6 +169,7 @@ final class RunTimerView
      *     condition_key: string|null,
      *     condition_definition_fingerprint: string|null,
      *     history_authority: string,
+     *     diagnostic_only: bool,
      *     history_event_types: list<string>,
      *     history_unsupported_reason: string|null,
      *     row_status: string|null
@@ -210,6 +216,7 @@ final class RunTimerView
      *     condition_key: string|null,
      *     condition_definition_fingerprint: string|null,
      *     history_authority: string,
+     *     diagnostic_only: bool,
      *     history_event_types: list<string>,
      *     history_unsupported_reason: string|null,
      *     row_status: string|null
@@ -283,6 +290,7 @@ final class RunTimerView
      *     condition_key: string|null,
      *     condition_definition_fingerprint: string|null,
      *     history_authority: string,
+     *     diagnostic_only: bool,
      *     history_event_types: list<string>,
      *     history_unsupported_reason: string|null,
      *     row_status: string|null
@@ -334,6 +342,7 @@ final class RunTimerView
      *     condition_key: string|null,
      *     condition_definition_fingerprint: string|null,
      *     history_authority: string,
+     *     diagnostic_only: bool,
      *     history_event_types: list<string>,
      *     history_unsupported_reason: string|null,
      *     row_status: string|null
@@ -356,10 +365,23 @@ final class RunTimerView
             'condition_key' => null,
             'condition_definition_fingerprint' => null,
             'history_authority' => self::HISTORY_AUTHORITY_TYPED,
+            'diagnostic_only' => false,
             'history_event_types' => [],
             'history_unsupported_reason' => null,
             'row_status' => null,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $timer
+     * @return array<string, mixed>
+     */
+    private static function presentTimer(array $timer): array
+    {
+        $timer['history_authority'] = self::stringValue($timer['history_authority'] ?? null);
+        $timer['diagnostic_only'] = self::isDiagnosticOnly($timer);
+
+        return $timer;
     }
 
     /**
@@ -426,6 +448,16 @@ final class RunTimerView
         $state['source_status'] ??= $state['status'] ?? $timer->status->value;
 
         return $state;
+    }
+
+    /**
+     * @param array<string, mixed> $timer
+     */
+    private static function isDiagnosticOnly(array $timer): bool
+    {
+        $historyAuthority = self::stringValue($timer['history_authority'] ?? null);
+
+        return $historyAuthority !== null && $historyAuthority !== self::HISTORY_AUTHORITY_TYPED;
     }
 
     private static function stringValue(mixed $value): ?string

@@ -1000,6 +1000,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($timerId, $bundle['timers'][0]['id']);
         $this->assertSame(3, $bundle['timers'][0]['sequence']);
         $this->assertSame('fired', $bundle['timers'][0]['status']);
+        $this->assertFalse($bundle['timers'][0]['diagnostic_only']);
         $this->assertSame(60, $bundle['timers'][0]['delay_seconds']);
         $this->assertSame($fireAt->toJSON(), $bundle['timers'][0]['fire_at']);
         $this->assertSame($firedAt->toJSON(), $bundle['timers'][0]['fired_at']);
@@ -1061,6 +1062,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($timerId, $bundle['timers'][0]['id']);
         $this->assertSame(4, $bundle['timers'][0]['sequence']);
         $this->assertSame('cancelled', $bundle['timers'][0]['status']);
+        $this->assertFalse($bundle['timers'][0]['diagnostic_only']);
         $this->assertSame(60, $bundle['timers'][0]['delay_seconds']);
         $this->assertSame($fireAt->toJSON(), $bundle['timers'][0]['fire_at']);
         $this->assertNull($bundle['timers'][0]['fired_at']);
@@ -1098,6 +1100,7 @@ final class HistoryExportTest extends TestCase
         $this->assertCount(1, $bundle['timers']);
         $this->assertSame($timer->id, $bundle['timers'][0]['id']);
         $this->assertSame('unsupported', $bundle['timers'][0]['status']);
+        $this->assertTrue($bundle['timers'][0]['diagnostic_only']);
         $this->assertSame('fired', $bundle['timers'][0]['source_status']);
         $this->assertSame('fired', $bundle['timers'][0]['row_status']);
         $this->assertSame('unsupported_terminal_without_history', $bundle['timers'][0]['history_authority']);

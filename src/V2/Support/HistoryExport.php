@@ -1126,6 +1126,7 @@ final class HistoryExport
             'condition_key' => $timer['condition_key'] ?? null,
             'condition_definition_fingerprint' => $timer['condition_definition_fingerprint'] ?? null,
             'history_authority' => $timer['history_authority'] ?? null,
+            'diagnostic_only' => (bool) ($timer['diagnostic_only'] ?? false),
             'history_event_types' => is_array($timer['history_event_types'] ?? null)
                 ? array_values($timer['history_event_types'])
                 : [],
