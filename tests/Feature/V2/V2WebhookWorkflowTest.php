@@ -800,6 +800,139 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testSignalWithStartWebhookReturnsTypedStartedNewResponse(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $response = $this->postJson('/webhooks/start/test-signal-workflow/signals/name-provided', [
+            'workflow_id' => 'order-signal-with-start',
+            'signal_arguments' => ['Taylor'],
+        ]);
+
+        $response
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', 'signal_received')
+            ->assertJsonPath('workflow_id', 'order-signal-with-start')
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('workflow_type', 'test-signal-workflow')
+            ->assertJsonPath('start_outcome', 'started_new')
+            ->assertJsonPath('start_command_sequence', 1)
+            ->assertJsonPath('command_sequence', 2)
+            ->assertJsonPath('start_command_status', 'accepted')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('rejection_reason', null);
+
+        $runId = $response->json('run_id');
+        $startCommandId = $response->json('start_command_id');
+        $commandId = $response->json('command_id');
+        $intakeGroupId = $response->json('intake_group_id');
+
+        $this->assertIsString($runId);
+        $this->assertIsString($startCommandId);
+        $this->assertIsString($commandId);
+        $this->assertIsString($intakeGroupId);
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $startCommandId,
+            'workflow_instance_id' => 'order-signal-with-start',
+            'workflow_run_id' => $runId,
+            'command_type' => 'start',
+            'status' => 'accepted',
+            'outcome' => 'started_new',
+        ]);
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $commandId,
+            'workflow_instance_id' => 'order-signal-with-start',
+            'workflow_run_id' => $runId,
+            'command_type' => 'signal',
+            'status' => 'accepted',
+            'outcome' => 'signal_received',
+        ]);
+    }
+
+    public function testSignalWithStartWebhookReturnsExistingActiveOutcomeAndSharedIngressMetadata(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-signal-with-start-existing');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->withHeaders([
+            'X-Request-Id' => 'req-signal-with-start',
+            'X-Correlation-Id' => 'corr-signal-with-start',
+        ])->postJson('/webhooks/start/test-signal-workflow/signals/name-provided', [
+            'workflow_id' => 'order-signal-with-start-existing',
+            'signal_arguments' => ['Taylor'],
+        ]);
+
+        $response
+            ->assertStatus(202)
+            ->assertJsonPath('outcome', 'signal_received')
+            ->assertJsonPath('workflow_id', 'order-signal-with-start-existing')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('start_outcome', 'returned_existing_active')
+            ->assertJsonPath('start_command_sequence', 2)
+            ->assertJsonPath('command_sequence', 3)
+            ->assertJsonPath('start_command_status', 'accepted')
+            ->assertJsonPath('command_status', 'accepted');
+
+        /** @var WorkflowCommand $startCommand */
+        $startCommand = WorkflowCommand::query()->findOrFail($response->json('start_command_id'));
+        /** @var WorkflowCommand $signalCommand */
+        $signalCommand = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+
+        $this->assertSame('corr-signal-with-start', $startCommand->correlationId());
+        $this->assertSame('corr-signal-with-start', $signalCommand->correlationId());
+        $this->assertSame($response->json('intake_group_id'), $startCommand->intakeGroupId());
+        $this->assertSame($response->json('intake_group_id'), $signalCommand->intakeGroupId());
+        $this->assertSame('/webhooks/start/test-signal-workflow/signals/name-provided', $startCommand->requestPath());
+        $this->assertSame('/webhooks/start/test-signal-workflow/signals/name-provided', $signalCommand->requestPath());
+        $this->assertSame('workflows.v2.start-signal.test-signal-workflow', $startCommand->requestRouteName());
+        $this->assertSame('workflows.v2.start-signal.test-signal-workflow', $signalCommand->requestRouteName());
+    }
+
+    public function testSignalWithStartWebhookRejectsUnknownSignalWithoutStartingARun(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $response = $this->postJson('/webhooks/start/test-signal-workflow/signals/missing-signal', [
+            'workflow_id' => 'order-signal-with-start-unknown',
+            'signal_arguments' => ['Taylor'],
+        ]);
+
+        $response
+            ->assertStatus(404)
+            ->assertJsonPath('outcome', 'rejected_unknown_signal')
+            ->assertJsonPath('workflow_id', 'order-signal-with-start-unknown')
+            ->assertJsonPath('workflow_type', 'test-signal-workflow')
+            ->assertJsonPath('run_id', null)
+            ->assertJsonPath('start_command_id', null)
+            ->assertJsonPath('start_outcome', null)
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'unknown_signal');
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-signal-with-start-unknown',
+            'workflow_run_id' => null,
+            'command_type' => 'signal',
+            'status' => 'rejected',
+            'outcome' => 'rejected_unknown_signal',
+            'rejection_reason' => 'unknown_signal',
+        ]);
+        $this->assertDatabaseMissing('workflow_commands', [
+            'workflow_instance_id' => 'order-signal-with-start-unknown',
+            'command_type' => 'start',
+        ]);
+    }
+
     public function testRunTargetedSignalWebhookReturnsTypedAcceptedResponse(): void
     {
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-signal-run');

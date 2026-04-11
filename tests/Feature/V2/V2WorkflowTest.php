@@ -4705,6 +4705,124 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame([$signalEvents[1]->workflow_task_id], $detail['commands'][1]['task_ids']);
     }
 
+    public function testSignalWithStartStartsNewRunAndOrdersSignalBeforeFirstWorkflowStep(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'signal-with-start-instance');
+        $result = $workflow->signalWithStart('name-provided', ['Taylor']);
+        $runId = $workflow->runId();
+
+        $this->assertTrue($result->accepted());
+        $this->assertTrue($result->startedNew());
+        $this->assertSame('signal_received', $result->outcome());
+        $this->assertSame('signal-with-start-instance', $result->instanceId());
+        $this->assertSame($runId, $result->runId());
+        $this->assertSame(1, $result->startCommandSequence());
+        $this->assertSame(2, $result->commandSequence());
+        $this->assertIsString($result->startCommandId());
+        $this->assertIsString($result->intakeGroupId());
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->count());
+
+        $this->assertSame(
+            ['start', 'signal'],
+            WorkflowCommand::query()
+                ->where('workflow_run_id', $runId)
+                ->orderBy('command_sequence')
+                ->pluck('command_type')
+                ->map(static fn ($commandType) => $commandType->value)
+                ->all(),
+        );
+
+        $this->drainReadyTasks();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $events = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalReceived',
+            'SignalWaitOpened',
+            'SignalApplied',
+            'ActivityScheduled',
+            'ActivityStarted',
+            'ActivityCompleted',
+            'WorkflowCompleted',
+        ], $events
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $signalReceived = $events->firstWhere('event_type', HistoryEventType::SignalReceived);
+        $signalWaitOpened = $events->firstWhere('event_type', HistoryEventType::SignalWaitOpened);
+
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $signalReceived);
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $signalWaitOpened);
+        $this->assertSame(
+            $signalReceived->payload['signal_wait_id'] ?? null,
+            $signalWaitOpened->payload['signal_wait_id'] ?? null,
+        );
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('signal_with_start', $detail['commands'][0]['context']['intake']['mode']);
+        $this->assertSame($result->intakeGroupId(), $detail['commands'][0]['context']['intake']['group_id']);
+        $this->assertSame($result->intakeGroupId(), $detail['commands'][1]['context']['intake']['group_id']);
+        $this->assertSame('started_new', $detail['commands'][0]['outcome']);
+        $this->assertSame('signal_received', $detail['commands'][1]['outcome']);
+        $this->assertSame([
+            'name' => 'Taylor',
+            'greeting' => 'Hello, Taylor!',
+            'workflow_id' => 'signal-with-start-instance',
+            'run_id' => $runId,
+        ], $workflow->output());
+    }
+
+    public function testAttemptSignalWithStartRejectsUnknownSignalWithoutStartingNewRun(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'signal-with-start-unknown');
+        $result = $workflow->attemptSignalWithStart('missing-signal', ['Taylor']);
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('rejected_unknown_signal', $result->outcome());
+        $this->assertSame('unknown_signal', $result->rejectionReason());
+        $this->assertNull($result->startCommandId());
+        $this->assertNull($workflow->runId());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'signal-with-start-unknown',
+            'workflow_run_id' => null,
+            'command_type' => 'signal',
+            'status' => 'rejected',
+            'outcome' => 'rejected_unknown_signal',
+            'rejection_reason' => 'unknown_signal',
+        ]);
+
+        $this->assertDatabaseMissing('workflow_commands', [
+            'workflow_instance_id' => 'signal-with-start-unknown',
+            'command_type' => 'start',
+        ]);
+        $this->assertSame(0, WorkflowRun::query()->count());
+    }
+
     public function testSignalCommandCanAcceptSingleAssociativePayloadViaArraySafeHelper(): void
     {
         $workflow = WorkflowStub::make(TestSignalPayloadWorkflow::class, 'signal-payload-instance');

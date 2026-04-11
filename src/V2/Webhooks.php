@@ -49,6 +49,35 @@ final class Webhooks
                     default => 409,
                 }, TypeRegistry::for($workflow));
             })->name("workflows.v2.start.{$alias}");
+
+            Route::post("{$basePath}/start/{$alias}/signals/{signal}", static function (
+                Request $request,
+                string $signal,
+            ) use ($alias, $workflow) {
+                $request = self::validateAuth($request);
+                $commandContext = self::commandContext($request);
+                $signalArguments = self::resolveArgumentsField($request->all(), 'signal_arguments');
+                [$instanceId, $arguments, $startOptions] = self::resolveStartArguments(
+                    $workflow,
+                    $request->all(),
+                    DuplicateStartPolicy::ReturnExistingActive,
+                );
+
+                if ($startOptions->duplicateStartPolicy !== DuplicateStartPolicy::ReturnExistingActive) {
+                    throw ValidationException::withMessages([
+                        'on_duplicate' => ['The on_duplicate field must be return_existing_active for signal-with-start.'],
+                    ]);
+                }
+
+                $stub = WorkflowStub::make($workflow, $instanceId)->withCommandContext($commandContext);
+                $result = $stub->attemptSignalWithStart($signal, $signalArguments, ...[...$arguments, $startOptions]);
+
+                return self::commandResponse($result, match ($result->outcome()) {
+                    CommandOutcome::RejectedUnknownSignal->value => 404,
+                    CommandOutcome::RejectedInvalidArguments->value => 422,
+                    default => $result->accepted() ? 202 : 409,
+                }, TypeRegistry::for($workflow));
+            })->name("workflows.v2.start-signal.{$alias}");
         }
 
         Route::post("{$basePath}/activity-tasks/{taskId}/claim", static function (
@@ -391,11 +420,15 @@ final class Webhooks
      * @param class-string<Workflow> $workflow
      * @return array{0: ?string, 1: array<int, mixed>, 2: StartOptions}
      */
-    private static function resolveStartArguments(string $workflow, array $payload): array
+    private static function resolveStartArguments(
+        string $workflow,
+        array $payload,
+        DuplicateStartPolicy $defaultDuplicateStartPolicy = DuplicateStartPolicy::RejectDuplicate,
+    ): array
     {
         $hasInstanceId = array_key_exists('workflow_id', $payload);
         $instanceId = $payload['workflow_id'] ?? null;
-        $onDuplicate = $payload['on_duplicate'] ?? DuplicateStartPolicy::RejectDuplicate->value;
+        $onDuplicate = $payload['on_duplicate'] ?? $defaultDuplicateStartPolicy->value;
         $visibility = $payload['visibility'] ?? [];
 
         if ($hasInstanceId && ! is_string($instanceId)) {
@@ -512,21 +545,7 @@ final class Webhooks
      */
     private static function resolveSignalArguments(array $payload): array
     {
-        if (! array_key_exists('arguments', $payload)) {
-            return [];
-        }
-
-        $arguments = $payload['arguments'];
-
-        if (! is_array($arguments)) {
-            throw ValidationException::withMessages([
-                'arguments' => ['The arguments field must be an array.'],
-            ]);
-        }
-
-        return array_is_list($arguments)
-            ? array_values($arguments)
-            : $arguments;
+        return self::resolveArgumentsField($payload);
     }
 
     /**
@@ -535,21 +554,7 @@ final class Webhooks
      */
     private static function resolveQueryArguments(array $payload): array
     {
-        if (! array_key_exists('arguments', $payload)) {
-            return [];
-        }
-
-        $arguments = $payload['arguments'];
-
-        if (! is_array($arguments)) {
-            throw ValidationException::withMessages([
-                'arguments' => ['The arguments field must be an array.'],
-            ]);
-        }
-
-        return array_is_list($arguments)
-            ? array_values($arguments)
-            : $arguments;
+        return self::resolveArgumentsField($payload);
     }
 
     /**
@@ -558,15 +563,24 @@ final class Webhooks
      */
     private static function resolveUpdateArguments(array $payload): array
     {
-        if (! array_key_exists('arguments', $payload)) {
+        return self::resolveArgumentsField($payload);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<int|string, mixed>
+     */
+    private static function resolveArgumentsField(array $payload, string $field = 'arguments'): array
+    {
+        if (! array_key_exists($field, $payload)) {
             return [];
         }
 
-        $arguments = $payload['arguments'];
+        $arguments = $payload[$field];
 
         if (! is_array($arguments)) {
             throw ValidationException::withMessages([
-                'arguments' => ['The arguments field must be an array.'],
+                $field => [sprintf('The %s field must be an array.', $field)],
             ]);
         }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Workflow\V2\CommandResult;
+use Workflow\V2\SignalWithStartResult;
 use Workflow\V2\UpdateResult;
 
 final class CommandResponse
@@ -29,6 +30,14 @@ final class CommandResponse
             'rejection_reason' => $result->rejectionReason(),
             'validation_errors' => $result->validationErrors(),
         ];
+
+        if ($result instanceof SignalWithStartResult) {
+            $payload['start_command_id'] = $result->startCommandId();
+            $payload['start_command_sequence'] = $result->startCommandSequence();
+            $payload['start_outcome'] = $result->startOutcome();
+            $payload['start_command_status'] = $result->startStatus();
+            $payload['intake_group_id'] = $result->intakeGroupId();
+        }
 
         if ($result instanceof UpdateResult) {
             $payload['update_id'] = $result->updateId();

@@ -97,6 +97,24 @@ final class CommandContext
     }
 
     /**
+     * @param array<string, mixed> $context
+     */
+    public function with(array $context): self
+    {
+        return new self($this->source, array_replace_recursive($this->context, $context));
+    }
+
+    public function withIntake(string $mode, string $groupId): self
+    {
+        return $this->with([
+            'intake' => [
+                'mode' => $mode,
+                'group_id' => $groupId,
+            ],
+        ]);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function requestMetadata(Request $request): array

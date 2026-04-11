@@ -201,31 +201,40 @@ class WorkflowCommand extends Model
     public function publicContext(): array
     {
         $workflow = $this->commandContext()['workflow'] ?? null;
+        $intake = $this->commandContext()['intake'] ?? null;
 
-        if (! is_array($workflow)) {
-            return [];
-        }
+        $publicWorkflow = is_array($workflow)
+            ? array_filter([
+                'parent_instance_id' => is_string($workflow['parent_instance_id'] ?? null)
+                    ? $workflow['parent_instance_id']
+                    : null,
+                'parent_run_id' => is_string($workflow['parent_run_id'] ?? null)
+                    ? $workflow['parent_run_id']
+                    : null,
+                'sequence' => is_int($workflow['sequence'] ?? null)
+                    ? $workflow['sequence']
+                    : null,
+                'child_call_id' => is_string($workflow['child_call_id'] ?? null)
+                    ? $workflow['child_call_id']
+                    : null,
+            ], static fn (mixed $value): bool => $value !== null)
+            : [];
 
-        $publicWorkflow = array_filter([
-            'parent_instance_id' => is_string($workflow['parent_instance_id'] ?? null)
-                ? $workflow['parent_instance_id']
-                : null,
-            'parent_run_id' => is_string($workflow['parent_run_id'] ?? null)
-                ? $workflow['parent_run_id']
-                : null,
-            'sequence' => is_int($workflow['sequence'] ?? null)
-                ? $workflow['sequence']
-                : null,
-            'child_call_id' => is_string($workflow['child_call_id'] ?? null)
-                ? $workflow['child_call_id']
-                : null,
+        $publicIntake = is_array($intake)
+            ? array_filter([
+                'mode' => is_string($intake['mode'] ?? null)
+                    ? $intake['mode']
+                    : null,
+                'group_id' => is_string($intake['group_id'] ?? null)
+                    ? $intake['group_id']
+                    : null,
+            ], static fn (mixed $value): bool => $value !== null && $value !== '')
+            : [];
+
+        return array_filter([
+            'workflow' => $publicWorkflow === [] ? null : $publicWorkflow,
+            'intake' => $publicIntake === [] ? null : $publicIntake,
         ], static fn (mixed $value): bool => $value !== null);
-
-        return $publicWorkflow === []
-            ? []
-            : [
-                'workflow' => $publicWorkflow,
-            ];
     }
 
     public function callerLabel(): ?string
@@ -336,6 +345,24 @@ class WorkflowCommand extends Model
 
         return is_array($request) && is_string($request['correlation_id'] ?? null)
             ? $request['correlation_id']
+            : null;
+    }
+
+    public function intakeMode(): ?string
+    {
+        $intake = $this->commandContext()['intake'] ?? null;
+
+        return is_array($intake) && is_string($intake['mode'] ?? null)
+            ? $intake['mode']
+            : null;
+    }
+
+    public function intakeGroupId(): ?string
+    {
+        $intake = $this->commandContext()['intake'] ?? null;
+
+        return is_array($intake) && is_string($intake['group_id'] ?? null)
+            ? $intake['group_id']
             : null;
     }
 
