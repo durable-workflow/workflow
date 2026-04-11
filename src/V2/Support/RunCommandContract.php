@@ -43,15 +43,13 @@ final class RunCommandContract
             ];
         }
 
-        if ($event instanceof WorkflowHistoryEvent) {
-            $contract = self::backfillContractFromDefinition($run, $event);
+        $liveDefinitionContract = self::liveDefinitionContract($run);
 
-            if ($contract !== null) {
-                return [
-                    ...self::withTargets($contract),
-                    'source' => self::SOURCE_DURABLE_HISTORY,
-                ];
-            }
+        if ($liveDefinitionContract !== null) {
+            return [
+                ...self::withTargets($liveDefinitionContract),
+                'source' => self::SOURCE_LIVE_DEFINITION,
+            ];
         }
 
         if ($contract !== null) {
@@ -61,25 +59,9 @@ final class RunCommandContract
             ];
         }
 
-        try {
-            $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
-        } catch (LogicException) {
-            return [
-                ...self::withTargets([
-                    'queries' => [],
-                    'query_contracts' => [],
-                    'signals' => [],
-                    'signal_contracts' => [],
-                    'updates' => [],
-                    'update_contracts' => [],
-                ]),
-                'source' => self::SOURCE_UNAVAILABLE,
-            ];
-        }
-
         return [
-            ...self::withTargets(WorkflowDefinition::commandContract($resolvedClass)),
-            'source' => self::SOURCE_LIVE_DEFINITION,
+            ...self::withTargets(self::emptyContract()),
+            'source' => self::SOURCE_UNAVAILABLE,
         ];
     }
 
@@ -203,6 +185,27 @@ final class RunCommandContract
      *     update_contracts: list<array<string, mixed>>
      * }|null
      */
+    private static function liveDefinitionContract(WorkflowRun $run): ?array
+    {
+        try {
+            $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        } catch (LogicException) {
+            return null;
+        }
+
+        return WorkflowDefinition::commandContract($resolvedClass);
+    }
+
+    /**
+     * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * }|null
+     */
     private static function contractFromHistory(WorkflowRun $run): ?array
     {
         $event = self::workflowStartedEvent($run);
@@ -220,12 +223,18 @@ final class RunCommandContract
             ? self::normalizeCommandContracts($event->payload['declared_query_contracts'] ?? null)
             : [];
         $signals = self::normalizeList($event->payload['declared_signals'] ?? null);
-        $hasSignalContracts = is_array($event->payload) && array_key_exists('declared_signal_contracts', $event->payload);
+        $hasSignalContracts = is_array($event->payload) && array_key_exists(
+            'declared_signal_contracts',
+            $event->payload
+        );
         $signalContracts = $hasSignalContracts
             ? self::normalizeCommandContracts($event->payload['declared_signal_contracts'] ?? null)
             : [];
         $updates = self::normalizeList($event->payload['declared_updates'] ?? null);
-        $hasUpdateContracts = is_array($event->payload) && array_key_exists('declared_update_contracts', $event->payload);
+        $hasUpdateContracts = is_array($event->payload) && array_key_exists(
+            'declared_update_contracts',
+            $event->payload
+        );
         $updateContracts = $hasUpdateContracts
             ? self::normalizeCommandContracts($event->payload['declared_update_contracts'] ?? null)
             : [];
@@ -261,10 +270,8 @@ final class RunCommandContract
      *     update_contracts: list<array<string, mixed>>
      * }|null
      */
-    private static function backfillContractFromDefinition(
-        WorkflowRun $run,
-        WorkflowHistoryEvent $event,
-    ): ?array {
+    private static function backfillContractFromDefinition(WorkflowRun $run, WorkflowHistoryEvent $event): ?array
+    {
         try {
             $resolvedClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         } catch (LogicException) {
@@ -329,6 +336,28 @@ final class RunCommandContract
     }
 
     /**
+     * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * }
+     */
+    private static function emptyContract(): array
+    {
+        return [
+            'queries' => [],
+            'query_contracts' => [],
+            'signals' => [],
+            'signal_contracts' => [],
+            'updates' => [],
+            'update_contracts' => [],
+        ];
+    }
+
+    /**
      * @param array{
      *     queries: list<string>,
      *     query_contracts: list<array<string, mixed>>,
@@ -353,18 +382,9 @@ final class RunCommandContract
     {
         return [
             ...$contract,
-            'query_targets' => self::normalizeTargets(
-                $contract['queries'],
-                $contract['query_contracts'],
-            ),
-            'signal_targets' => self::normalizeTargets(
-                $contract['signals'],
-                $contract['signal_contracts'],
-            ),
-            'update_targets' => self::normalizeTargets(
-                $contract['updates'],
-                $contract['update_contracts'],
-            ),
+            'query_targets' => self::normalizeTargets($contract['queries'], $contract['query_contracts']),
+            'signal_targets' => self::normalizeTargets($contract['signals'], $contract['signal_contracts']),
+            'update_targets' => self::normalizeTargets($contract['updates'], $contract['update_contracts']),
         ];
     }
 

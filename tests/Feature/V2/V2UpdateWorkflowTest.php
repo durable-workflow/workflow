@@ -234,9 +234,12 @@ final class V2UpdateWorkflowTest extends TestCase
     public function testAttemptUpdateReturnsAcceptedLifecycleWhenCompletionWaitTimesOut(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
-        config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
+        config()
+            ->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-timeout');
         $workflow->start();
@@ -310,9 +313,12 @@ final class V2UpdateWorkflowTest extends TestCase
     public function testInspectUpdateCanFollowTimedOutLifecycleUntilItCloses(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
-        config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
+        config()
+            ->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-inspect-timeout');
         $workflow->start();
@@ -337,7 +343,8 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertNotNull($accepted->acceptedAt());
         $this->assertNull($accepted->closedAt());
 
-        config()->set('workflows.v2.compatibility.supported', ['build-inspect-timeout']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-inspect-timeout']);
 
         $this->runReadyWorkflowTask($workflow->runId());
 
@@ -358,7 +365,8 @@ final class V2UpdateWorkflowTest extends TestCase
     public function testAcceptedUpdateWithoutWorkflowTaskMarksTheRunAsRepairNeeded(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         Queue::fake();
 
@@ -415,9 +423,12 @@ final class V2UpdateWorkflowTest extends TestCase
     public function testUpdateThrowsHelpfulMessageWhenCompletionWaitTimesOut(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
-        config()->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.v2.update_wait.completion_timeout_seconds', 1);
+        config()
+            ->set('workflows.v2.update_wait.poll_interval_milliseconds', 10);
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-timeout-throws');
         $workflow->start();
@@ -840,7 +851,9 @@ final class V2UpdateWorkflowTest extends TestCase
         $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
         $detail = RunDetailView::forRun($run);
         $signalWait = collect($detail['waits'])
-            ->first(static fn (array $wait): bool => ($wait['kind'] ?? null) === 'signal' && ($wait['target_name'] ?? null) === 'advance');
+            ->first(
+                static fn (array $wait): bool => ($wait['kind'] ?? null) === 'signal' && ($wait['target_name'] ?? null) === 'advance'
+            );
 
         $this->assertSame('workflow-task', $detail['wait_kind']);
         $this->assertSame('workflow_task_ready', $detail['liveness_state']);
@@ -1007,7 +1020,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame(3, $updateRejected['command_sequence']);
     }
 
-    public function testAttemptSignalBackfillsMissingCommandContractOnWorkflowStartedHistory(): void
+    public function testAttemptSignalUsesLiveCommandContractWithoutBackfillingWorkflowStartedHistory(): void
     {
         Queue::fake();
 
@@ -1081,20 +1094,20 @@ final class V2UpdateWorkflowTest extends TestCase
             ->where('event_type', 'WorkflowStarted')
             ->sole();
 
-        $this->assertSame(['name-provided'], $started->payload['declared_signals'] ?? null);
-        $this->assertSame('name-provided', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
-        $this->assertSame(
-            'name',
-            $started->payload['declared_signal_contracts'][0]['parameters'][0]['name'] ?? null,
-        );
-        $this->assertSame(['approve', 'explode'], $started->payload['declared_updates'] ?? null);
+        $this->assertArrayNotHasKey('declared_queries', $started->payload);
+        $this->assertArrayNotHasKey('declared_query_contracts', $started->payload);
+        $this->assertArrayNotHasKey('declared_signals', $started->payload);
+        $this->assertArrayNotHasKey('declared_signal_contracts', $started->payload);
+        $this->assertArrayNotHasKey('declared_updates', $started->payload);
+        $this->assertArrayNotHasKey('declared_update_contracts', $started->payload);
 
         $detail = RunDetailView::forRun($run->fresh());
 
+        $this->assertSame(['currentState'], $detail['declared_queries']);
         $this->assertSame(['name-provided'], $detail['declared_signals']);
         $this->assertSame('name-provided', $detail['declared_signal_contracts'][0]['name']);
         $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
-        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertSame('live_definition', $detail['declared_contract_source']);
     }
 
     public function testUpdateFailuresAreRecordedWithoutClosingTheRun(): void
@@ -1191,7 +1204,9 @@ final class V2UpdateWorkflowTest extends TestCase
                 'outcome' => 'update_completed',
                 'failure_id' => null,
                 'failure_message' => 'corrupted update row',
-                'result' => Serializer::serialize(['wrong' => true]),
+                'result' => Serializer::serialize([
+                    'wrong' => true,
+                ]),
                 'closed_at' => now(),
             ]);
 
@@ -1230,7 +1245,8 @@ final class V2UpdateWorkflowTest extends TestCase
             'stage' => 'waiting-for-name',
             'approved' => false,
             'events' => ['started'],
-        ], $workflow->refresh()->currentState());
+        ], $workflow->refresh()
+            ->currentState());
     }
 
     public function testUpdateFailureDetailUsesUpdateIdHistoryWhenCommandRelationIsMissing(): void
@@ -1285,7 +1301,9 @@ final class V2UpdateWorkflowTest extends TestCase
                 'outcome' => 'update_completed',
                 'failure_id' => null,
                 'failure_message' => 'corrupted update row',
-                'result' => Serializer::serialize(['wrong' => true]),
+                'result' => Serializer::serialize([
+                    'wrong' => true,
+                ]),
                 'closed_at' => now(),
             ]);
 
@@ -1509,7 +1527,10 @@ final class V2UpdateWorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('approve', $rejectedEvent->payload['update_name'] ?? null);
-        $this->assertSame([true, 'api'], Serializer::unserialize($rejectedEvent->payload['arguments'] ?? serialize([])));
+        $this->assertSame(
+            [true, 'api'],
+            Serializer::unserialize($rejectedEvent->payload['arguments'] ?? serialize([]))
+        );
 
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
