@@ -47,11 +47,18 @@ class WorkflowRunTimerEntry extends Model
     public function toTimerPayload(): array
     {
         $payload = is_array($this->payload) ? $this->payload : [];
+        $status = self::stringValue($payload['status'] ?? $this->status);
+        $sourceStatus = self::stringValue($payload['source_status'] ?? $this->source_status)
+            ?? $status;
+        $historyAuthority = self::stringValue($payload['history_authority'] ?? $this->history_authority);
+        $historyUnsupportedReason = self::stringValue(
+            $payload['history_unsupported_reason'] ?? $this->history_unsupported_reason
+        );
 
         $payload['id'] = $this->timer_id;
         $payload['sequence'] = $this->sequence;
-        $payload['status'] = $this->status;
-        $payload['source_status'] = $this->source_status;
+        $payload['status'] = $status;
+        $payload['source_status'] = $sourceStatus;
         $payload['delay_seconds'] = $this->delay_seconds;
         $payload['fire_at'] = $this->fire_at;
         $payload['fired_at'] = $this->fired_at;
@@ -60,9 +67,10 @@ class WorkflowRunTimerEntry extends Model
         $payload['condition_wait_id'] = $this->condition_wait_id;
         $payload['condition_key'] = $this->condition_key;
         $payload['condition_definition_fingerprint'] = $this->condition_definition_fingerprint;
-        $payload['history_authority'] = $this->history_authority;
-        $payload['history_unsupported_reason'] = $this->history_unsupported_reason;
-        $payload['diagnostic_only'] = self::diagnosticOnly($payload['history_authority'] ?? $this->history_authority);
+        $payload['history_authority'] = $historyAuthority;
+        $payload['history_unsupported_reason'] = $historyUnsupportedReason;
+        $payload['row_status'] = self::rowStatus($payload['row_status'] ?? null, $historyAuthority, $sourceStatus);
+        $payload['diagnostic_only'] = self::diagnosticOnly($historyAuthority);
         $payload['created_at'] = self::timestamp($payload['created_at'] ?? null);
 
         return $payload;
@@ -84,5 +92,28 @@ class WorkflowRunTimerEntry extends Model
         return is_string($historyAuthority)
             && $historyAuthority !== ''
             && $historyAuthority !== 'typed_history';
+    }
+
+    private static function rowStatus(mixed $value, ?string $historyAuthority, ?string $sourceStatus): ?string
+    {
+        $rowStatus = self::stringValue($value);
+
+        if ($rowStatus !== null) {
+            return $rowStatus;
+        }
+
+        return in_array($historyAuthority, [
+            'mutable_open_fallback',
+            'unsupported_terminal_without_history',
+        ], true)
+            ? $sourceStatus
+            : null;
+    }
+
+    private static function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 }

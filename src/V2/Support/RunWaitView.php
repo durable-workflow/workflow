@@ -185,16 +185,18 @@ final class RunWaitView
         $historyAuthority = self::stringValue($timer['history_authority'] ?? null);
         $unsupportedReason = self::stringValue($timer['history_unsupported_reason'] ?? null);
         $diagnosticOnly = self::diagnosticOnly($historyAuthority, $unsupportedReason);
+        $authoritativeStatus = self::stringValue($timer['status'] ?? null) ?? 'pending';
         $sourceStatus = self::stringValue($timer['source_status'] ?? null)
-            ?? self::stringValue($timer['status'] ?? null)
+            ?? $authoritativeStatus
             ?? 'pending';
-        $status = $unsupportedReason === RunTimerView::UNSUPPORTED_TERMINAL_REASON
-            ? 'unsupported'
-            : match ($sourceStatus) {
-                'pending' => 'open',
-                'cancelled' => 'cancelled',
-                default => 'resolved',
-            };
+        $status = $authoritativeStatus === 'unsupported'
+            || $unsupportedReason === RunTimerView::UNSUPPORTED_TERMINAL_REASON
+                ? 'unsupported'
+                : match ($authoritativeStatus) {
+                    'pending' => 'open',
+                    'cancelled' => 'cancelled',
+                    default => 'resolved',
+                };
         $timerId = self::stringValue($timer['id'] ?? null) ?? 'timer';
 
         return [
@@ -213,7 +215,7 @@ final class RunWaitView
             },
             'opened_at' => $timer['created_at'] ?? null,
             'deadline_at' => $timer['fire_at'] ?? null,
-            'resolved_at' => $timer['fired_at'] ?? null,
+            'resolved_at' => $timer['fired_at'] ?? ($timer['cancelled_at'] ?? null),
             'target_name' => null,
             'target_type' => 'timer',
             'diagnostic_only' => $diagnosticOnly,

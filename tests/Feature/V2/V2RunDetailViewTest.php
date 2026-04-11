@@ -56,6 +56,7 @@ use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RunTimerView;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\WorkflowStub;
 
@@ -605,6 +606,95 @@ final class V2RunDetailViewTest extends TestCase
             'workflow_run_id' => $runId,
             'timer_id' => $detail['timers'][0]['id'],
         ]);
+    }
+
+    public function testRunDetailViewBackfillsOlderProjectedTimerRowsWithoutRowStatus(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'detail-projected-timer-compat',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([60]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(20),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => 60,
+            'fire_at' => now()
+                ->addMinute(),
+            'created_at' => now()
+                ->subSeconds(20),
+            'updated_at' => now()
+                ->subSeconds(20),
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $canonical = RunTimerView::timersForRun($run->fresh(['timers', 'historyEvents']))[0];
+        unset($canonical['row_status']);
+
+        WorkflowRunTimerEntry::query()->updateOrCreate(
+            [
+                'id' => hash('sha256', $run->id . '|' . $timer->id),
+            ],
+            [
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $instance->id,
+                'timer_id' => $timer->id,
+                'position' => 0,
+                'sequence' => 1,
+                'status' => 'pending',
+                'source_status' => 'pending',
+                'delay_seconds' => 60,
+                'fire_at' => $timer->fire_at,
+                'timer_kind' => null,
+                'condition_wait_id' => null,
+                'condition_key' => null,
+                'condition_definition_fingerprint' => null,
+                'history_authority' => 'mutable_open_fallback',
+                'history_unsupported_reason' => null,
+                'payload' => $canonical,
+            ],
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary', 'timerEntries']));
+
+        $this->assertSame('workflow_run_timer_entries', $detail['timers_projection_source']);
+        $this->assertCount(1, $detail['timers']);
+        $this->assertSame('pending', $detail['timers'][0]['status']);
+        $this->assertSame('pending', $detail['timers'][0]['source_status']);
+        $this->assertSame('pending', $detail['timers'][0]['row_status']);
+        $this->assertTrue($detail['timers'][0]['diagnostic_only']);
+        $this->assertSame('mutable_open_fallback', $detail['timers'][0]['history_authority']);
     }
 
     public function testRunDetailViewFallsBackToTypedChildWaitsWhenSummaryHasNoCurrentWait(): void

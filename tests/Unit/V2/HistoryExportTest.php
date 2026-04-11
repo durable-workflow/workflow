@@ -29,6 +29,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -1116,6 +1117,60 @@ final class HistoryExportTest extends TestCase
         );
         $this->assertSame([], $bundle['timers'][0]['history_event_types']);
         $this->assertNull($bundle['timers'][0]['fired_at']);
+    }
+
+    public function testItBackfillsOlderProjectedTimerRowsWithoutRowStatusInExports(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:25:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createMinimalCompletedRun('history-export-row-only-timer-projection-compat');
+        $fireAt = now()
+            ->subMinute();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 2,
+            'status' => TimerStatus::Fired->value,
+            'delay_seconds' => 60,
+            'fire_at' => $fireAt,
+            'fired_at' => now(),
+            'created_at' => now()
+                ->subMinutes(2),
+        ]);
+
+        $initialBundle = HistoryExport::forRun($run->fresh(['historyEvents', 'timers']));
+        $entry = WorkflowRunTimerEntry::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('timer_id', $timer->id)
+            ->firstOrFail();
+
+        $payload = $entry->payload;
+        unset($payload['row_status']);
+
+        $entry->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'timers', 'timerEntries']));
+
+        $this->assertSame('workflow_run_timer_entries', $bundle['selected_run']['timers_projection_source']);
+        $this->assertCount(1, $bundle['timers']);
+        $this->assertSame($timer->id, $bundle['timers'][0]['id']);
+        $this->assertSame('unsupported', $bundle['timers'][0]['status']);
+        $this->assertSame('fired', $bundle['timers'][0]['source_status']);
+        $this->assertSame('fired', $bundle['timers'][0]['row_status']);
+        $this->assertTrue($bundle['timers'][0]['diagnostic_only']);
+        $this->assertSame('unsupported_terminal_without_history', $bundle['timers'][0]['history_authority']);
+
+        $this->assertSame(
+            $initialBundle['timers'][0],
+            $bundle['timers'][0],
+        );
     }
 
     public function testItLabelsTerminalActivityRowsWithoutTypedHistoryAsUnsupportedInExports(): void
