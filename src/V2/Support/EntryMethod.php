@@ -14,18 +14,56 @@ final class EntryMethod
 {
     public static function forWorkflow(object|string $workflow): ReflectionMethod
     {
-        return self::resolve($workflow, Workflow::class, 'workflow');
+        return self::describe($workflow, Workflow::class, 'workflow')['method'];
     }
 
     public static function forActivity(object|string $activity): ReflectionMethod
     {
-        return self::resolve($activity, Activity::class, 'activity');
+        return self::describe($activity, Activity::class, 'activity')['method'];
     }
 
-    private static function resolve(object|string $target, string $baseClass, string $type): ReflectionMethod
+    /**
+     * @return array{
+     *     method: ReflectionMethod,
+     *     name: 'handle'|'execute',
+     *     mode: 'canonical'|'compatibility',
+     *     declared_on: class-string
+     * }
+     */
+    public static function describeWorkflow(object|string $workflow): array
+    {
+        return self::describe($workflow, Workflow::class, 'workflow');
+    }
+
+    /**
+     * @return array{
+     *     method: ReflectionMethod,
+     *     name: 'handle'|'execute',
+     *     mode: 'canonical'|'compatibility',
+     *     declared_on: class-string
+     * }
+     */
+    public static function describeActivity(object|string $activity): array
+    {
+        return self::describe($activity, Activity::class, 'activity');
+    }
+
+    /**
+     * @return array{
+     *     method: ReflectionMethod,
+     *     name: 'handle'|'execute',
+     *     mode: 'canonical'|'compatibility',
+     *     declared_on: class-string
+     * }
+     */
+    private static function describe(object|string $target, string $baseClass, string $type): array
     {
         $reflection = new ReflectionClass($target);
         $current = $reflection;
+        $resolvedMethod = null;
+        $resolvedName = null;
+        $resolvedMode = null;
+        $declaredOn = null;
 
         while ($current instanceof ReflectionClass && is_subclass_of($current->getName(), $baseClass)) {
             $handle = self::declaredPublicMethod($current, 'handle');
@@ -40,14 +78,49 @@ final class EntryMethod
             }
 
             if ($handle instanceof ReflectionMethod) {
-                return $handle;
+                if ($resolvedName === 'execute') {
+                    throw new LogicException(sprintf(
+                        'V2 %s [%s] cannot mix handle() and execute() across its inheritance chain. Normalize the hierarchy to one entry method.',
+                        $type,
+                        $reflection->getName(),
+                    ));
+                }
+
+                if ($resolvedMethod === null) {
+                    $resolvedMethod = $handle;
+                    $resolvedName = 'handle';
+                    $resolvedMode = 'canonical';
+                    $declaredOn = $current->getName();
+                }
             }
 
             if ($execute instanceof ReflectionMethod) {
-                return $execute;
+                if ($resolvedName === 'handle') {
+                    throw new LogicException(sprintf(
+                        'V2 %s [%s] cannot mix handle() and execute() across its inheritance chain. Normalize the hierarchy to one entry method.',
+                        $type,
+                        $reflection->getName(),
+                    ));
+                }
+
+                if ($resolvedMethod === null) {
+                    $resolvedMethod = $execute;
+                    $resolvedName = 'execute';
+                    $resolvedMode = 'compatibility';
+                    $declaredOn = $current->getName();
+                }
             }
 
             $current = $current->getParentClass();
+        }
+
+        if ($resolvedMethod instanceof ReflectionMethod && is_string($declaredOn)) {
+            return [
+                'method' => $resolvedMethod,
+                'name' => $resolvedName,
+                'mode' => $resolvedMode,
+                'declared_on' => $declaredOn,
+            ];
         }
 
         throw new LogicException(sprintf(

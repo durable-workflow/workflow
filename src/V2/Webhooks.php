@@ -402,7 +402,14 @@ final class Webhooks
 
         $arguments = [];
         $missing = [];
-        $method = EntryMethod::forWorkflow($workflow);
+
+        try {
+            $method = EntryMethod::forWorkflow($workflow);
+        } catch (LogicException $exception) {
+            throw ValidationException::withMessages([
+                'workflow' => [$exception->getMessage()],
+            ]);
+        }
 
         foreach ($method->getParameters() as $parameter) {
             if (self::isContainerInjected($parameter)) {

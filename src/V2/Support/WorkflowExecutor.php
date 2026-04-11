@@ -148,7 +148,7 @@ final class WorkflowExecutor
 
                 if ($execution === null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    return $this->scheduleActivity($run, $task, $sequence, $current);
+                    return $this->scheduleActivityOrFailRun($run, $task, $sequence, $current);
                 }
 
                 if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
@@ -620,7 +620,7 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    return $this->scheduleChildWorkflow($run, $task, $sequence, $current);
+                    return $this->scheduleChildWorkflowOrFailRun($run, $task, $sequence, $current);
                 }
 
                 $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
@@ -756,7 +756,7 @@ final class WorkflowExecutor
                         $execution = $run->activityExecutions->firstWhere('sequence', $itemSequence);
 
                         if (! $execution instanceof ActivityExecution) {
-                            $scheduledTasks[] = $this->scheduleActivity(
+                            $activityTask = $this->scheduleActivityOrFailRun(
                                 $run,
                                 $task,
                                 $itemSequence,
@@ -764,6 +764,11 @@ final class WorkflowExecutor
                                 $parallelMetadata,
                                 false,
                             );
+                            if (! $activityTask instanceof WorkflowTask) {
+                                return null;
+                            }
+
+                            $scheduledTasks[] = $activityTask;
                             $pending = true;
 
                             continue;
@@ -879,7 +884,7 @@ final class WorkflowExecutor
                             continue;
                         }
 
-                        $scheduledTasks[] = $this->scheduleChildWorkflow(
+                        $childTask = $this->scheduleChildWorkflowOrFailRun(
                             $run,
                             $task,
                             $itemSequence,
@@ -887,6 +892,11 @@ final class WorkflowExecutor
                             $parallelMetadata,
                             false,
                         );
+                        if (! $childTask instanceof WorkflowTask) {
+                            return null;
+                        }
+
+                        $scheduledTasks[] = $childTask;
                         $pending = true;
 
                         continue;
@@ -1018,6 +1028,8 @@ final class WorkflowExecutor
         ?array $parallelMetadata = null,
         bool $parkRun = true,
     ): WorkflowTask {
+        EntryMethod::describeActivity($activityCall->activity);
+
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
@@ -1065,6 +1077,23 @@ final class WorkflowExecutor
         }
 
         return $activityTask;
+    }
+
+    private function scheduleActivityOrFailRun(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        ActivityCall $activityCall,
+        ?array $parallelMetadata = null,
+        bool $parkRun = true,
+    ): ?WorkflowTask {
+        try {
+            return $this->scheduleActivity($run, $task, $sequence, $activityCall, $parallelMetadata, $parkRun);
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+            return null;
+        }
     }
 
     private function scheduleConditionTimeout(
@@ -1236,6 +1265,9 @@ final class WorkflowExecutor
             'declared_signal_contracts' => $commandContract['signal_contracts'],
             'declared_updates' => $commandContract['updates'],
             'declared_update_contracts' => $commandContract['update_contracts'],
+            'declared_entry_method' => $commandContract['entry_method'],
+            'declared_entry_mode' => $commandContract['entry_mode'],
+            'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
         ], null, $startCommand);
 
         /** @var WorkflowTask $childTask */
@@ -1268,6 +1300,23 @@ final class WorkflowExecutor
         );
 
         return $childTask;
+    }
+
+    private function scheduleChildWorkflowOrFailRun(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        ChildWorkflowCall $childWorkflowCall,
+        ?array $parallelMetadata = null,
+        bool $parkRun = true,
+    ): ?WorkflowTask {
+        try {
+            return $this->scheduleChildWorkflow($run, $task, $sequence, $childWorkflowCall, $parallelMetadata, $parkRun);
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+            return null;
+        }
     }
 
     private function scheduleTimer(
@@ -1840,6 +1889,9 @@ final class WorkflowExecutor
             'declared_signal_contracts' => $commandContract['signal_contracts'],
             'declared_updates' => $commandContract['updates'],
             'declared_update_contracts' => $commandContract['update_contracts'],
+            'declared_entry_method' => $commandContract['entry_method'],
+            'declared_entry_mode' => $commandContract['entry_mode'],
+            'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
             'parent_workflow_instance_id' => $parentReference['parent_workflow_instance_id'] ?? null,
             'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
             'parent_sequence' => $parentReference['parent_sequence'] ?? null,

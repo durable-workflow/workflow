@@ -72,6 +72,15 @@ final class WorkflowDefinition
     private static array $updateContracts = [];
 
     /**
+     * @var array<class-string, array{
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
+     * }>
+     */
+    private static array $entryContracts = [];
+
+    /**
      * @param class-string $class
      * @return list<string>
      */
@@ -256,11 +265,16 @@ final class WorkflowDefinition
      *             type: ?string,
      *             allows_null: bool
      *         }>
-     *     }>
+     *     }>,
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
      * }
      */
     public static function commandContract(string $class): array
     {
+        $entryContract = self::entryContract($class);
+
         return [
             'queries' => self::queryMethods($class),
             'query_contracts' => self::queryContracts($class),
@@ -268,6 +282,9 @@ final class WorkflowDefinition
             'signal_contracts' => self::signalContracts($class),
             'updates' => self::updateMethods($class),
             'update_contracts' => self::updateContracts($class),
+            'entry_method' => $entryContract['entry_method'],
+            'entry_mode' => $entryContract['entry_mode'],
+            'entry_declaring_class' => $entryContract['entry_declaring_class'],
         ];
     }
 
@@ -714,6 +731,37 @@ final class WorkflowDefinition
     private static function isWorkflowClass(string $class): bool
     {
         return class_exists($class) && is_subclass_of($class, Workflow::class);
+    }
+
+    /**
+     * @param class-string $class
+     * @return array{
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
+     * }
+     */
+    private static function entryContract(string $class): array
+    {
+        if (! self::isWorkflowClass($class)) {
+            throw new LogicException(sprintf(
+                'Workflow definition [%s] must extend [%s].',
+                $class,
+                Workflow::class,
+            ));
+        }
+
+        if (! array_key_exists($class, self::$entryContracts)) {
+            $entry = EntryMethod::describeWorkflow($class);
+
+            self::$entryContracts[$class] = [
+                'entry_method' => $entry['name'],
+                'entry_mode' => $entry['mode'],
+                'entry_declaring_class' => $entry['declared_on'],
+            ];
+        }
+
+        return self::$entryContracts[$class];
     }
 
     /**

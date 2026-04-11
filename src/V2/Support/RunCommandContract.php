@@ -28,6 +28,9 @@ final class RunCommandContract
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
      *     update_targets: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute'|null,
+     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_declaring_class: class-string|null,
      *     source: string
      * }
      */
@@ -158,7 +161,10 @@ final class RunCommandContract
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
      * }
      */
     public static function snapshot(string $workflowClass): array
@@ -219,7 +225,10 @@ final class RunCommandContract
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
      * }|null
      */
     private static function liveDefinitionContract(WorkflowRun $run): ?array
@@ -230,7 +239,11 @@ final class RunCommandContract
             return null;
         }
 
-        return WorkflowDefinition::commandContract($resolvedClass);
+        try {
+            return WorkflowDefinition::commandContract($resolvedClass);
+        } catch (LogicException) {
+            return null;
+        }
     }
 
     /**
@@ -240,7 +253,10 @@ final class RunCommandContract
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute'|null,
+     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_declaring_class: class-string|null
      * }|null
      */
     private static function contractFromHistory(WorkflowRun $run): ?array
@@ -255,7 +271,10 @@ final class RunCommandContract
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute'|null,
+     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_declaring_class: class-string|null
      * }|null
      */
     private static function contractFromHistoryEvent(?WorkflowHistoryEvent $event): ?array
@@ -292,6 +311,18 @@ final class RunCommandContract
         $updateContracts = $hasUpdateContracts
             ? self::normalizeCommandContracts($event->payload['declared_update_contracts'] ?? null)
             : [];
+        $hasEntryMethod = array_key_exists('declared_entry_method', $event->payload);
+        $entryMethod = $hasEntryMethod
+            ? self::normalizeEntryMethod($event->payload['declared_entry_method'] ?? null)
+            : null;
+        $hasEntryMode = array_key_exists('declared_entry_mode', $event->payload);
+        $entryMode = $hasEntryMode
+            ? self::normalizeEntryMode($event->payload['declared_entry_mode'] ?? null)
+            : null;
+        $hasEntryDeclaringClass = array_key_exists('declared_entry_declaring_class', $event->payload);
+        $entryDeclaringClass = $hasEntryDeclaringClass
+            ? self::normalizeClassString($event->payload['declared_entry_declaring_class'] ?? null)
+            : null;
 
         if (
             ($hasQueries && $queries === null)
@@ -300,6 +331,9 @@ final class RunCommandContract
             || $updates === null
             || ($hasSignalContracts && $signalContracts === null)
             || ($hasUpdateContracts && $updateContracts === null)
+            || ($hasEntryMethod && $entryMethod === null)
+            || ($hasEntryMode && $entryMode === null)
+            || ($hasEntryDeclaringClass && $entryDeclaringClass === null)
         ) {
             return null;
         }
@@ -311,6 +345,9 @@ final class RunCommandContract
             'signal_contracts' => $signalContracts ?? [],
             'updates' => $updates,
             'update_contracts' => $updateContracts ?? [],
+            'entry_method' => $entryMethod,
+            'entry_mode' => $entryMode,
+            'entry_declaring_class' => $entryDeclaringClass,
         ];
     }
 
@@ -321,7 +358,10 @@ final class RunCommandContract
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
      * }|null
      */
     private static function backfillContractFromDefinition(WorkflowRun $run, WorkflowHistoryEvent $event): ?array
@@ -332,7 +372,12 @@ final class RunCommandContract
             return null;
         }
 
-        $snapshot = WorkflowDefinition::commandContract($resolvedClass);
+        try {
+            $snapshot = WorkflowDefinition::commandContract($resolvedClass);
+        } catch (LogicException) {
+            return null;
+        }
+
         self::persistSnapshot($event, $snapshot);
 
         return $snapshot;
@@ -345,7 +390,10 @@ final class RunCommandContract
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
      * } $snapshot
      */
     private static function persistSnapshot(WorkflowHistoryEvent $event, array $snapshot): void
@@ -358,6 +406,9 @@ final class RunCommandContract
         $payload['declared_signal_contracts'] = $snapshot['signal_contracts'];
         $payload['declared_updates'] = $snapshot['updates'];
         $payload['declared_update_contracts'] = $snapshot['update_contracts'];
+        $payload['declared_entry_method'] = $snapshot['entry_method'];
+        $payload['declared_entry_mode'] = $snapshot['entry_mode'];
+        $payload['declared_entry_declaring_class'] = $snapshot['entry_declaring_class'];
 
         $event->forceFill([
             'payload' => $payload,
@@ -411,7 +462,10 @@ final class RunCommandContract
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute'|null,
+     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_declaring_class: class-string|null
      * }
      */
     private static function emptyContract(): array
@@ -423,6 +477,9 @@ final class RunCommandContract
             'signal_contracts' => [],
             'updates' => [],
             'update_contracts' => [],
+            'entry_method' => null,
+            'entry_mode' => null,
+            'entry_declaring_class' => null,
         ];
     }
 
@@ -444,7 +501,10 @@ final class RunCommandContract
      *     signal_targets: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
-     *     update_targets: list<array<string, mixed>>
+     *     update_targets: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute'|null,
+     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_declaring_class: class-string|null
      * }
      */
     private static function withTargets(array $contract): array
@@ -514,7 +574,10 @@ final class RunCommandContract
      *         signals: list<string>,
      *         signal_contracts: list<array<string, mixed>>,
      *         updates: list<string>,
-     *         update_contracts: list<array<string, mixed>>
+     *         update_contracts: list<array<string, mixed>>,
+     *         entry_method: 'handle'|'execute'|null,
+     *         entry_mode: 'canonical'|'compatibility'|null,
+     *         entry_declaring_class: class-string|null
      *     }|null,
      *     live_definition: array{
      *         queries: list<string>,
@@ -522,7 +585,10 @@ final class RunCommandContract
      *         signals: list<string>,
      *         signal_contracts: list<array<string, mixed>>,
      *         updates: list<string>,
-     *         update_contracts: list<array<string, mixed>>
+     *         update_contracts: list<array<string, mixed>>,
+     *         entry_method: 'handle'|'execute',
+     *         entry_mode: 'canonical'|'compatibility',
+     *         entry_declaring_class: class-string
      *     }|null,
      *     needs_backfill: bool
      * }
@@ -552,7 +618,10 @@ final class RunCommandContract
      *     signals: list<string>,
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute'|null,
+     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_declaring_class: class-string|null
      * }|null $contract
      */
     private static function historyContractNeedsBackfill(
@@ -569,11 +638,22 @@ final class RunCommandContract
             || ! array_key_exists('declared_query_contracts', $event->payload)
             || ! array_key_exists('declared_signal_contracts', $event->payload)
             || ! array_key_exists('declared_update_contracts', $event->payload)
+            || ! array_key_exists('declared_entry_method', $event->payload)
+            || ! array_key_exists('declared_entry_mode', $event->payload)
+            || ! array_key_exists('declared_entry_declaring_class', $event->payload)
         ) {
             return true;
         }
 
         if ($contract === null) {
+            return true;
+        }
+
+        if (
+            ! is_string($contract['entry_method'] ?? null)
+            || ! is_string($contract['entry_mode'] ?? null)
+            || ! is_string($contract['entry_declaring_class'] ?? null)
+        ) {
             return true;
         }
 
@@ -649,5 +729,35 @@ final class RunCommandContract
         usort($normalized, static fn (array $left, array $right): int => $left['name'] <=> $right['name']);
 
         return $normalized;
+    }
+
+    /**
+     * @return 'handle'|'execute'|null
+     */
+    private static function normalizeEntryMethod(mixed $value): ?string
+    {
+        return in_array($value, ['handle', 'execute'], true)
+            ? $value
+            : null;
+    }
+
+    /**
+     * @return 'canonical'|'compatibility'|null
+     */
+    private static function normalizeEntryMode(mixed $value): ?string
+    {
+        return in_array($value, ['canonical', 'compatibility'], true)
+            ? $value
+            : null;
+    }
+
+    /**
+     * @return class-string|null
+     */
+    private static function normalizeClassString(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 }

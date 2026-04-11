@@ -16,17 +16,22 @@ final class EntryMethodTest extends TestCase
     {
         $this->assertSame('handle', EntryMethod::forWorkflow(HandleEntryWorkflow::class)->getName());
         $this->assertSame('handle', EntryMethod::forActivity(HandleEntryActivity::class)->getName());
+        $this->assertSame('canonical', EntryMethod::describeWorkflow(HandleEntryWorkflow::class)['mode']);
+        $this->assertSame(HandleEntryWorkflow::class, EntryMethod::describeWorkflow(HandleEntryWorkflow::class)['declared_on']);
     }
 
     public function testExecuteFallsBackForCompatibility(): void
     {
         $this->assertSame('execute', EntryMethod::forWorkflow(ExecuteEntryWorkflow::class)->getName());
         $this->assertSame('execute', EntryMethod::forActivity(ExecuteEntryActivity::class)->getName());
+        $this->assertSame('compatibility', EntryMethod::describeWorkflow(ExecuteEntryWorkflow::class)['mode']);
+        $this->assertSame(ExecuteEntryWorkflow::class, EntryMethod::describeWorkflow(ExecuteEntryWorkflow::class)['declared_on']);
     }
 
     public function testEntryMethodCanBeInheritedFromParentWorkflow(): void
     {
         $this->assertSame('handle', EntryMethod::forWorkflow(InheritedHandleWorkflow::class)->getName());
+        $this->assertSame(HandleEntryWorkflow::class, EntryMethod::describeWorkflow(InheritedHandleWorkflow::class)['declared_on']);
     }
 
     public function testDeclaringBothEntryMethodsRaisesAnError(): void
@@ -43,6 +48,22 @@ final class EntryMethodTest extends TestCase
         $this->expectExceptionMessage('must declare a public handle() method or, for compatibility, a public execute() method');
 
         EntryMethod::forWorkflow(MissingEntryWorkflow::class);
+    }
+
+    public function testMixedWorkflowHierarchyRaisesAnError(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('cannot mix handle() and execute() across its inheritance chain');
+
+        EntryMethod::forWorkflow(MixedWorkflowChild::class);
+    }
+
+    public function testMixedActivityHierarchyRaisesAnError(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('cannot mix handle() and execute() across its inheritance chain');
+
+        EntryMethod::forActivity(MixedActivityChild::class);
     }
 }
 
@@ -92,6 +113,38 @@ final class HandleEntryActivity extends Activity
 }
 
 final class ExecuteEntryActivity extends Activity
+{
+    public function execute(): mixed
+    {
+        return null;
+    }
+}
+
+abstract class MixedWorkflowParent extends Workflow
+{
+    public function handle(): mixed
+    {
+        return null;
+    }
+}
+
+final class MixedWorkflowChild extends MixedWorkflowParent
+{
+    public function execute(): mixed
+    {
+        return null;
+    }
+}
+
+abstract class MixedActivityParent extends Activity
+{
+    public function handle(): mixed
+    {
+        return null;
+    }
+}
+
+final class MixedActivityChild extends MixedActivityParent
 {
     public function execute(): mixed
     {

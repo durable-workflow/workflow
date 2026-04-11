@@ -454,6 +454,7 @@ final class WorkflowStub
             }
 
             $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
+            $commandContract = RunCommandContract::snapshot($workflowClass);
             $businessKey = $startOptions->businessKey ?? $instance->business_key;
             $visibilityLabels = $startOptions->labels !== []
                 ? $startOptions->labels
@@ -504,8 +505,6 @@ final class WorkflowStub
                 'run_count' => $run->run_number,
             ])->save();
 
-            $commandContract = RunCommandContract::snapshot($workflowClass);
-
             WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
@@ -532,6 +531,9 @@ final class WorkflowStub
                 'declared_signal_contracts' => $commandContract['signal_contracts'],
                 'declared_updates' => $commandContract['updates'],
                 'declared_update_contracts' => $commandContract['update_contracts'],
+                'declared_entry_method' => $commandContract['entry_method'],
+                'declared_entry_mode' => $commandContract['entry_mode'],
+                'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
             ], null, $command);
 
             /** @var WorkflowTask $task */
