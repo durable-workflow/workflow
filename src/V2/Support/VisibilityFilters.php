@@ -13,6 +13,14 @@ final class VisibilityFilters
 {
     public const VERSION = 1;
 
+    /**
+     * @return list<int>
+     */
+    public static function supportedVersions(): array
+    {
+        return [self::VERSION];
+    }
+
     private const FIELD_LABELS = [
         'instance_id' => 'Instance ID',
         'run_id' => 'Run ID',
@@ -86,6 +94,7 @@ final class VisibilityFilters
 
         return [
             'version' => self::VERSION,
+            'supported_versions' => self::supportedVersions(),
             'fields' => $fields,
             'labels' => [
                 'label' => 'Labels',
@@ -98,6 +107,34 @@ final class VisibilityFilters
                 'placeholder' => "tenant=acme\nregion=us-east",
                 'help' => 'One exact-match label per line in key=value format.',
             ],
+        ];
+    }
+
+    /**
+     * @return array{
+     *     version: int|null,
+     *     current_version: int,
+     *     supported_versions: list<int>,
+     *     supported: bool,
+     *     status: string,
+     *     message: string|null
+     * }
+     */
+    public static function versionMetadata(mixed $version): array
+    {
+        $normalizedVersion = self::normalizeVersion($version);
+        $supportedVersions = self::supportedVersions();
+        $supported = $normalizedVersion !== null && in_array($normalizedVersion, $supportedVersions, true);
+
+        return [
+            'version' => $normalizedVersion,
+            'current_version' => self::VERSION,
+            'supported_versions' => $supportedVersions,
+            'supported' => $supported,
+            'status' => $supported ? 'supported' : 'unsupported',
+            'message' => $supported
+                ? null
+                : self::unsupportedVersionMessage($normalizedVersion, $supportedVersions),
         ];
     }
 
@@ -226,6 +263,46 @@ final class VisibilityFilters
         }
 
         return $value;
+    }
+
+    private static function normalizeVersion(mixed $version): ?int
+    {
+        if (is_int($version)) {
+            return $version;
+        }
+
+        if (! is_string($version)) {
+            return null;
+        }
+
+        $version = trim($version);
+
+        if ($version === '' || ! ctype_digit($version)) {
+            return null;
+        }
+
+        return (int) $version;
+    }
+
+    /**
+     * @param list<int> $supportedVersions
+     */
+    private static function unsupportedVersionMessage(?int $version, array $supportedVersions): string
+    {
+        $supportedVersionList = implode(', ', $supportedVersions);
+
+        if ($version === null) {
+            return sprintf(
+                'This saved view does not declare a supported visibility filter version. This Waterline build supports version %s.',
+                $supportedVersionList,
+            );
+        }
+
+        return sprintf(
+            'This saved view uses visibility filter version %d, but this Waterline build supports version %s.',
+            $version,
+            $supportedVersionList,
+        );
     }
 
     private static function booleanValue(mixed $value): ?bool

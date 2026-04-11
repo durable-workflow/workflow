@@ -167,6 +167,7 @@ final class VisibilityFiltersTest extends TestCase
         $definition = VisibilityFilters::definition();
 
         $this->assertSame(VisibilityFilters::VERSION, $definition['version']);
+        $this->assertSame([VisibilityFilters::VERSION], $definition['supported_versions']);
         $this->assertSame('Instance ID', $definition['fields']['instance_id']['label']);
         $this->assertSame('string', $definition['fields']['instance_id']['type']);
         $this->assertSame('text', $definition['fields']['instance_id']['input']);
@@ -207,5 +208,28 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame('exact', $definition['labels']['operator']);
         $this->assertSame(['label[key]', 'labels[key]'], $definition['labels']['query_parameters']);
         $this->assertSame('tenant=acme' . "\n" . 'region=us-east', $definition['labels']['placeholder']);
+    }
+
+    public function testVersionMetadataMarksUnsupportedSavedViewContractsExplicitly(): void
+    {
+        $supported = VisibilityFilters::versionMetadata(VisibilityFilters::VERSION);
+        $unsupported = VisibilityFilters::versionMetadata(99);
+
+        $this->assertSame(VisibilityFilters::VERSION, $supported['version']);
+        $this->assertSame(VisibilityFilters::VERSION, $supported['current_version']);
+        $this->assertSame([VisibilityFilters::VERSION], $supported['supported_versions']);
+        $this->assertTrue($supported['supported']);
+        $this->assertSame('supported', $supported['status']);
+        $this->assertNull($supported['message']);
+
+        $this->assertSame(99, $unsupported['version']);
+        $this->assertSame(VisibilityFilters::VERSION, $unsupported['current_version']);
+        $this->assertSame([VisibilityFilters::VERSION], $unsupported['supported_versions']);
+        $this->assertFalse($unsupported['supported']);
+        $this->assertSame('unsupported', $unsupported['status']);
+        $this->assertSame(
+            'This saved view uses visibility filter version 99, but this Waterline build supports version 1.',
+            $unsupported['message'],
+        );
     }
 }
