@@ -15,6 +15,7 @@ use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\WorkflowStub;
 
 final class TaskDispatcher
 {
@@ -40,6 +41,16 @@ final class TaskDispatcher
 
         $job = self::makeJob($task);
         $attemptedAt = now();
+
+        if (WorkflowStub::faked()) {
+            self::markDispatched($task, $attemptedAt);
+
+            if ($task->available_at === null || ! $task->available_at->isFuture()) {
+                app()->call([$job, 'handle']);
+            }
+
+            return;
+        }
 
         try {
             self::ensureBackendSupportsDispatch($task);

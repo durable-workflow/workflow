@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use BadMethodCallException;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\QueueFake;
 use LogicException;
+use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
@@ -67,6 +70,10 @@ final class WorkflowStub
 {
     public const DEFAULT_VERSION = -1;
 
+    private const DISPATCHED_LIST = 'workflow.v2.dispatched';
+
+    private const MOCKS_LIST = 'workflow.v2.mocks';
+
     private ?WorkflowRun $run = null;
 
     private ?string $selectedRunId = null;
@@ -103,6 +110,178 @@ final class WorkflowStub
         }
 
         throw new BadMethodCallException(sprintf('Call to undefined method [%s::%s].', static::class, $method));
+    }
+
+    public static function faked(): bool
+    {
+        return App::bound(self::MOCKS_LIST) || App::bound(self::DISPATCHED_LIST);
+    }
+
+    public static function fake(): void
+    {
+        App::instance(self::MOCKS_LIST, []);
+        App::instance(self::DISPATCHED_LIST, []);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function mocks(): array
+    {
+        if (! App::bound(self::MOCKS_LIST)) {
+            return [];
+        }
+
+        /** @var array<string, mixed> $mocks */
+        $mocks = App::make(self::MOCKS_LIST);
+
+        return $mocks;
+    }
+
+    public static function mock(string $activity, mixed $result): void
+    {
+        if (! self::faked()) {
+            self::fake();
+        }
+
+        $mocks = self::mocks();
+        $mocks[$activity] = $result;
+
+        App::instance(self::MOCKS_LIST, $mocks);
+    }
+
+    public static function hasMock(string $activity): bool
+    {
+        return array_key_exists($activity, self::mocks());
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     * @return array{mocked: bool, result: mixed, throwable: Throwable|null}
+     */
+    public static function mockedResult(string $activity, mixed $context, array $arguments): array
+    {
+        $mocks = self::mocks();
+
+        if (! array_key_exists($activity, $mocks)) {
+            return [
+                'mocked' => false,
+                'result' => null,
+                'throwable' => null,
+            ];
+        }
+
+        try {
+            $result = is_callable($mocks[$activity])
+                ? $mocks[$activity]($context, ...$arguments)
+                : $mocks[$activity];
+
+            return [
+                'mocked' => true,
+                'result' => $result,
+                'throwable' => null,
+            ];
+        } catch (Throwable $throwable) {
+            return [
+                'mocked' => true,
+                'result' => null,
+                'throwable' => $throwable,
+            ];
+        }
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     */
+    public static function recordDispatched(string $activity, array $arguments): void
+    {
+        if (! self::faked()) {
+            return;
+        }
+
+        /** @var array<string, list<array<int, mixed>>> $dispatched */
+        $dispatched = App::bound(self::DISPATCHED_LIST)
+            ? App::make(self::DISPATCHED_LIST)
+            : [];
+
+        $dispatched[$activity] ??= [];
+        $dispatched[$activity][] = $arguments;
+
+        App::instance(self::DISPATCHED_LIST, $dispatched);
+    }
+
+    /**
+     * @param callable(...mixed): bool|null $callback
+     * @return Collection<int, array<int, mixed>>
+     */
+    public static function dispatched(string $activity, ?callable $callback = null): Collection
+    {
+        /** @var array<string, list<array<int, mixed>>> $dispatched */
+        $dispatched = App::bound(self::DISPATCHED_LIST)
+            ? App::make(self::DISPATCHED_LIST)
+            : [];
+
+        if (! array_key_exists($activity, $dispatched)) {
+            return collect();
+        }
+
+        $callback ??= static fn (): bool => true;
+
+        return collect($dispatched[$activity])
+            ->filter(static fn (array $arguments): bool => $callback(...$arguments))
+            ->values();
+    }
+
+    public static function assertDispatched(string $activity, callable|int|null $callback = null): void
+    {
+        if (is_int($callback)) {
+            self::assertDispatchedTimes($activity, $callback);
+
+            return;
+        }
+
+        \PHPUnit\Framework\Assert::assertTrue(
+            self::dispatched($activity, $callback)->isNotEmpty(),
+            sprintf('The expected [%s] activity was not dispatched.', $activity),
+        );
+    }
+
+    public static function assertDispatchedTimes(string $activity, int $times = 1): void
+    {
+        $count = self::dispatched($activity)->count();
+
+        \PHPUnit\Framework\Assert::assertSame(
+            $times,
+            $count,
+            sprintf(
+                'The expected [%s] activity was dispatched %d times instead of %d times.',
+                $activity,
+                $count,
+                $times,
+            ),
+        );
+    }
+
+    public static function assertNotDispatched(string $activity, ?callable $callback = null): void
+    {
+        \PHPUnit\Framework\Assert::assertTrue(
+            self::dispatched($activity, $callback)->isEmpty(),
+            sprintf('The unexpected [%s] activity was dispatched.', $activity),
+        );
+    }
+
+    public static function assertNothingDispatched(): void
+    {
+        /** @var array<string, list<array<int, mixed>>> $dispatched */
+        $dispatched = App::bound(self::DISPATCHED_LIST)
+            ? App::make(self::DISPATCHED_LIST)
+            : [];
+
+        \PHPUnit\Framework\Assert::assertSame(
+            0,
+            array_sum(array_map(static fn (array $entries): int => count($entries), $dispatched)),
+            'An unexpected activity was dispatched.',
+        );
     }
 
     /**

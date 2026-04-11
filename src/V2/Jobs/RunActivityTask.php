@@ -20,6 +20,8 @@ use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Testing\ActivityFakeContext;
+use Workflow\V2\WorkflowStub;
 
 final class RunActivityTask implements ShouldQueue
 {
@@ -66,14 +68,36 @@ final class RunActivityTask implements ShouldQueue
         $activity = new $activityClass($execution, $execution->run, $this->taskId);
         $entryMethod = EntryMethod::forActivity($activity);
         $arguments = $activity->resolveMethodDependencies($execution->activityArguments(), $entryMethod);
+        $activityArguments = $execution->activityArguments();
 
         $result = null;
         $throwable = null;
 
-        try {
-            $result = $activity->{$entryMethod->getName()}(...$arguments);
-        } catch (Throwable $error) {
-            $throwable = $error;
+        if (WorkflowStub::faked()) {
+            WorkflowStub::recordDispatched($execution->activity_class, $activityArguments);
+        }
+
+        if (WorkflowStub::hasMock($execution->activity_class)) {
+            $mocked = WorkflowStub::mockedResult(
+                $execution->activity_class,
+                new ActivityFakeContext(
+                    run: $execution->run,
+                    execution: $execution,
+                    taskId: $this->taskId,
+                    sequence: (int) $execution->sequence,
+                    activity: $execution->activity_class,
+                ),
+                $activityArguments,
+            );
+
+            $result = $mocked['result'];
+            $throwable = $mocked['throwable'];
+        } else {
+            try {
+                $result = $activity->{$entryMethod->getName()}(...$arguments);
+            } catch (Throwable $error) {
+                $throwable = $error;
+            }
         }
 
         $maxAttempts = ActivityRetryPolicy::maxAttempts($execution, $activity);

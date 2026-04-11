@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Workflow\V2\Exceptions\UnsupportedBackendCapabilitiesException;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\WorkflowStub;
 
 final class TaskBackendCapabilities
 {
@@ -14,6 +15,12 @@ final class TaskBackendCapabilities
         WorkflowTask $task,
         ?CarbonInterface $failedAt = null,
     ): ?string {
+        if (WorkflowStub::faked()) {
+            self::clearClaimFailure($task);
+
+            return null;
+        }
+
         $message = self::unsupportedMessage($task);
 
         if ($message === null) {
