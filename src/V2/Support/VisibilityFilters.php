@@ -11,14 +11,14 @@ use Workflow\V2\Enums\StatusBucket;
 
 final class VisibilityFilters
 {
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     /**
      * @return list<int>
      */
     public static function supportedVersions(): array
     {
-        return [1, self::VERSION];
+        return [1, 2, self::VERSION];
     }
 
     private const FIELD_LABELS = [
@@ -38,6 +38,7 @@ final class VisibilityFilters
         'wait_kind' => 'Wait Kind',
         'liveness_state' => 'Liveness State',
         'repair_blocked_reason' => 'Repair Blocked Reason',
+        'repair_attention' => 'Repair Attention',
         'task_problem' => 'Task Problem',
         'declared_contract_backfill_needed' => 'Command Contract Backfill Needed',
         'declared_contract_backfill_available' => 'Command Contract Backfill Available',
@@ -66,6 +67,7 @@ final class VisibilityFilters
 
     private const BOOLEAN_FIELDS = [
         'is_current_run',
+        'repair_attention',
         'task_problem',
         'declared_contract_backfill_needed',
         'declared_contract_backfill_available',

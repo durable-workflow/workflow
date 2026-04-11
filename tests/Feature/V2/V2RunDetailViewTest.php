@@ -443,6 +443,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertNull($detail['update_blocked_reason']);
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('repair_not_needed', $detail['repair_blocked_reason']);
+        $this->assertFalse($detail['repair_attention']);
         $this->assertSame([
             'code' => 'repair_not_needed',
             'label' => 'Repair Not Needed',
@@ -3244,6 +3245,7 @@ final class V2RunDetailViewTest extends TestCase
         );
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('unsupported_history', $detail['repair_blocked_reason']);
+        $this->assertTrue($detail['repair_attention']);
         $this->assertSame([
             'code' => 'unsupported_history',
             'label' => 'Replay Blocked',
@@ -3252,6 +3254,7 @@ final class V2RunDetailViewTest extends TestCase
             'badge_visible' => true,
         ], $detail['repair_blocked']);
         $this->assertSame('unsupported_history', $run->fresh()->summary?->repair_blocked_reason);
+        $this->assertTrue((bool) $run->fresh()->summary?->repair_attention);
         $this->assertSame('open', $activityWait['status']);
         $this->assertSame('running', $activityWait['source_status']);
         $this->assertSame(

@@ -706,6 +706,7 @@ final class HistoryExport
             'next_task_lease_expires_at' => self::timestamp($summary->next_task_lease_expires_at),
             'liveness_state' => $summary->liveness_state,
             'liveness_reason' => $summary->liveness_reason,
+            'repair_attention' => (bool) $summary->repair_attention,
             'task_problem' => (bool) $summary->task_problem,
             'task_problem_badge' => $summary->task_problem_badge,
             'exception_count' => (int) $summary->exception_count,

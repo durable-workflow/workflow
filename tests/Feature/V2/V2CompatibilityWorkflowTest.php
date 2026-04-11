@@ -867,6 +867,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         );
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('waiting_for_compatible_worker', $detail['repair_blocked_reason']);
+        $this->assertTrue($detail['repair_attention']);
         $this->assertSame([
             'code' => 'waiting_for_compatible_worker',
             'label' => 'Compat Blocked',
@@ -875,6 +876,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'badge_visible' => true,
         ], $detail['repair_blocked']);
         $this->assertSame('waiting_for_compatible_worker', $run->fresh()->summary?->repair_blocked_reason);
+        $this->assertTrue((bool) $run->fresh()->summary?->repair_attention);
         $this->assertSame('build-a', $detail['tasks'][0]['compatibility']);
         $this->assertFalse($detail['tasks'][0]['compatibility_supported']);
         $this->assertSame(

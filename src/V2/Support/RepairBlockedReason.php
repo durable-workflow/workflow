@@ -109,6 +109,11 @@ final class RepairBlockedReason
         ];
     }
 
+    public static function needsAttention(?string $code): bool
+    {
+        return self::metadata($code)['badge_visible'] ?? false;
+    }
+
     public static function forRun(
         WorkflowRun $run,
         bool $isCurrentRun,

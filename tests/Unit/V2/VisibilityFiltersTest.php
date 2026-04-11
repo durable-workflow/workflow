@@ -26,6 +26,7 @@ final class VisibilityFiltersTest extends TestCase
             'wait_kind' => ' signal ',
             'liveness_state' => ' waiting_for_signal ',
             'repair_blocked_reason' => ' unsupported_history ',
+            'repair_attention' => '1',
             'task_problem' => 'yes',
             'declared_contract_backfill_needed' => 'yes',
             'declared_contract_backfill_available' => '0',
@@ -53,6 +54,7 @@ final class VisibilityFiltersTest extends TestCase
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
             'is_current_run' => true,
+            'repair_attention' => true,
             'task_problem' => true,
             'declared_contract_backfill_needed' => true,
             'declared_contract_backfill_available' => false,
@@ -72,6 +74,7 @@ final class VisibilityFiltersTest extends TestCase
                 'instance_id' => 'workflow-order',
                 'workflow_type' => 'billing.invoice-sync',
                 'archived' => false,
+                'repair_attention' => false,
                 'continue_as_new_recommended' => false,
                 'labels' => [
                     'region' => 'us-east',
@@ -81,6 +84,7 @@ final class VisibilityFiltersTest extends TestCase
             [
                 'business_key' => 'order-123',
                 'archived' => true,
+                'repair_attention' => true,
                 'continue_as_new_recommended' => true,
                 'labels' => [
                     'region' => 'eu-west',
@@ -92,6 +96,7 @@ final class VisibilityFiltersTest extends TestCase
             'instance_id' => 'workflow-order',
             'workflow_type' => 'billing.invoice-sync',
             'business_key' => 'order-123',
+            'repair_attention' => true,
             'continue_as_new_recommended' => true,
             'archived' => true,
             'labels' => [
@@ -128,6 +133,7 @@ final class VisibilityFiltersTest extends TestCase
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
+            'repair_attention' => true,
             'task_problem' => true,
             'continue_as_new_recommended' => true,
         ]);
@@ -156,6 +162,7 @@ final class VisibilityFiltersTest extends TestCase
             'wait_kind' => 'timer',
             'liveness_state' => 'timer_scheduled',
             'repair_blocked_reason' => 'repair_not_needed',
+            'repair_attention' => false,
             'task_problem' => false,
             'archived_at' => now(),
             'continue_as_new_recommended' => false,
@@ -172,6 +179,7 @@ final class VisibilityFiltersTest extends TestCase
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
+            'repair_attention' => true,
             'task_problem' => true,
             'declared_contract_backfill_needed' => true,
             'declared_contract_backfill_available' => true,
@@ -199,6 +207,7 @@ final class VisibilityFiltersTest extends TestCase
             'workflow_type' => 'billing.invoice-sync',
             'status' => 'waiting',
             'status_bucket' => 'running',
+            'repair_attention' => true,
             'task_problem' => true,
             'continue_as_new_recommended' => true,
         ]);
@@ -212,6 +221,7 @@ final class VisibilityFiltersTest extends TestCase
             'workflow_type' => 'billing.invoice-sync',
             'status' => 'waiting',
             'status_bucket' => 'running',
+            'repair_attention' => false,
             'task_problem' => false,
             'continue_as_new_recommended' => false,
         ]);
@@ -219,6 +229,7 @@ final class VisibilityFiltersTest extends TestCase
         $ids = VisibilityFilters::apply(WorkflowRunSummary::query(), [
             'workflow_type' => 'billing.invoice-sync',
             'is_current_run' => false,
+            'repair_attention' => true,
             'task_problem' => true,
             'continue_as_new_recommended' => true,
         ])->pluck('id')->all();
@@ -231,7 +242,7 @@ final class VisibilityFiltersTest extends TestCase
         $definition = VisibilityFilters::definition();
 
         $this->assertSame(VisibilityFilters::VERSION, $definition['version']);
-        $this->assertSame([1, VisibilityFilters::VERSION], $definition['supported_versions']);
+        $this->assertSame([1, 2, VisibilityFilters::VERSION], $definition['supported_versions']);
         $this->assertSame('Instance ID', $definition['fields']['instance_id']['label']);
         $this->assertSame('string', $definition['fields']['instance_id']['type']);
         $this->assertSame('text', $definition['fields']['instance_id']['input']);
@@ -300,6 +311,9 @@ final class VisibilityFiltersTest extends TestCase
         );
         $this->assertSame('dark', $definition['fields']['repair_blocked_reason']['options'][0]['tone']);
         $this->assertTrue($definition['fields']['repair_blocked_reason']['options'][0]['badge_visible']);
+        $this->assertSame('Repair Attention', $definition['fields']['repair_attention']['label']);
+        $this->assertSame('boolean', $definition['fields']['repair_attention']['type']);
+        $this->assertSame('boolean_select', $definition['fields']['repair_attention']['input']);
         $this->assertSame('Task Problem', $definition['fields']['task_problem']['label']);
         $this->assertSame('boolean', $definition['fields']['task_problem']['type']);
         $this->assertSame('boolean_select', $definition['fields']['task_problem']['input']);
@@ -318,18 +332,18 @@ final class VisibilityFiltersTest extends TestCase
 
         $this->assertSame(VisibilityFilters::VERSION, $supported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $supported['current_version']);
-        $this->assertSame([1, VisibilityFilters::VERSION], $supported['supported_versions']);
+        $this->assertSame([1, 2, VisibilityFilters::VERSION], $supported['supported_versions']);
         $this->assertTrue($supported['supported']);
         $this->assertSame('supported', $supported['status']);
         $this->assertNull($supported['message']);
 
         $this->assertSame(99, $unsupported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $unsupported['current_version']);
-        $this->assertSame([1, VisibilityFilters::VERSION], $unsupported['supported_versions']);
+        $this->assertSame([1, 2, VisibilityFilters::VERSION], $unsupported['supported_versions']);
         $this->assertFalse($unsupported['supported']);
         $this->assertSame('unsupported', $unsupported['status']);
         $this->assertSame(
-            'This saved view uses visibility filter version 99, but this Waterline build supports version 1, 2.',
+            'This saved view uses visibility filter version 99, but this Waterline build supports version 1, 2, 3.',
             $unsupported['message'],
         );
     }

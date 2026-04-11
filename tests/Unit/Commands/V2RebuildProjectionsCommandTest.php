@@ -722,6 +722,10 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->nullable();
             $table->string('repair_blocked_reason')
                 ->nullable();
+            $table->boolean('repair_attention')
+                ->default(false);
+            $table->boolean('task_problem')
+                ->default(false);
             $table->string('next_task_id', 26)
                 ->nullable();
             $table->string('next_task_type')

@@ -445,6 +445,8 @@ final class ConfiguredV2ObservabilityTest extends TestCase
                 ->nullable();
             $table->string('repair_blocked_reason')
                 ->nullable();
+            $table->boolean('repair_attention')
+                ->default(false);
             $table->string('declared_entry_mode')
                 ->nullable();
             $table->string('declared_contract_source')

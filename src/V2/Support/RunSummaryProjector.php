@@ -255,6 +255,12 @@ final class RunSummaryProjector
         $historyBudget = HistoryBudget::forRun($run);
         $commandContract = RunCommandContract::forRun($run);
         $commandContractBackfill = RunCommandContract::historyBackfillState($run);
+        $repairBlockedReason = RepairBlockedReason::forRun(
+            $run,
+            $currentRun?->id === $run->id,
+            $livenessState,
+            $replayBlockedTask !== null,
+        );
 
         $durationMs = null;
 
@@ -330,12 +336,8 @@ final class RunSummaryProjector
                 'next_task_type' => $selectedNextTask?->task_type->value,
                 'next_task_status' => $selectedNextTask?->status->value,
                 'next_task_lease_expires_at' => $selectedNextTask?->lease_expires_at,
-                'repair_blocked_reason' => RepairBlockedReason::forRun(
-                    $run,
-                    $currentRun?->id === $run->id,
-                    $livenessState,
-                    $replayBlockedTask !== null,
-                ),
+                'repair_blocked_reason' => $repairBlockedReason,
+                'repair_attention' => RepairBlockedReason::needsAttention($repairBlockedReason),
                 'task_problem' => $taskProblem,
                 'exception_count' => count(FailureSnapshots::forRun($run)),
                 'history_event_count' => $historyBudget['history_event_count'],

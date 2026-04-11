@@ -27,6 +27,7 @@ class WorkflowRunSummary extends Model
 
     protected $casts = [
         'is_current_run' => 'bool',
+        'repair_attention' => 'bool',
         'task_problem' => 'bool',
         'visibility_labels' => 'array',
         'declared_contract_backfill_needed' => 'bool',
