@@ -246,10 +246,17 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame('Instance ID', $definition['fields']['instance_id']['label']);
         $this->assertSame('string', $definition['fields']['instance_id']['type']);
         $this->assertSame('text', $definition['fields']['instance_id']['input']);
+        $this->assertTrue($definition['fields']['instance_id']['filterable']);
+        $this->assertTrue($definition['fields']['instance_id']['saved_view_compatible']);
         $this->assertSame(0, $definition['fields']['instance_id']['order']);
         $this->assertSame('string', $definition['fields']['run_id']['type']);
         $this->assertSame('boolean', $definition['fields']['is_current_run']['type']);
         $this->assertSame('boolean_select', $definition['fields']['is_current_run']['input']);
+        $this->assertSame('Business Key', $definition['fields']['business_key']['label']);
+        $this->assertSame(
+            'Exact-match indexed operator metadata copied onto the run summary and saved-view contract.',
+            $definition['fields']['business_key']['help'],
+        );
         $this->assertSame('Entry Mode', $definition['fields']['declared_entry_mode']['label']);
         $this->assertSame('string', $definition['fields']['declared_entry_mode']['type']);
         $this->assertSame('select', $definition['fields']['declared_entry_mode']['input']);
@@ -321,8 +328,37 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame('map<string,string>', $definition['labels']['type']);
         $this->assertSame('key_value_textarea', $definition['labels']['input']);
         $this->assertSame('exact', $definition['labels']['operator']);
+        $this->assertTrue($definition['labels']['filterable']);
+        $this->assertTrue($definition['labels']['saved_view_compatible']);
         $this->assertSame(['label[key]', 'labels[key]'], $definition['labels']['query_parameters']);
         $this->assertSame('tenant=acme' . "\n" . 'region=us-east', $definition['labels']['placeholder']);
+        $this->assertSame(
+            'One exact-match label per line in key=value format. Labels are indexed operator metadata and saved-view compatible.',
+            $definition['labels']['help'],
+        );
+        $this->assertSame('Business Key', $definition['indexed_metadata']['business_key']['label']);
+        $this->assertSame('business_key', $definition['indexed_metadata']['business_key']['filter_field']);
+        $this->assertTrue($definition['indexed_metadata']['business_key']['indexed']);
+        $this->assertTrue($definition['indexed_metadata']['business_key']['filterable']);
+        $this->assertTrue($definition['indexed_metadata']['business_key']['saved_view_compatible']);
+        $this->assertSame(['list', 'detail', 'history_export'], $definition['indexed_metadata']['business_key']['returned_in']);
+        $this->assertSame('Labels', $definition['indexed_metadata']['labels']['label']);
+        $this->assertSame(
+            ['label[key]', 'labels[key]'],
+            $definition['indexed_metadata']['labels']['query_parameters'],
+        );
+        $this->assertTrue($definition['indexed_metadata']['labels']['indexed']);
+        $this->assertTrue($definition['indexed_metadata']['labels']['filterable']);
+        $this->assertTrue($definition['indexed_metadata']['labels']['saved_view_compatible']);
+        $this->assertSame('Memo', $definition['detail_metadata']['memo']['label']);
+        $this->assertFalse($definition['detail_metadata']['memo']['indexed']);
+        $this->assertFalse($definition['detail_metadata']['memo']['filterable']);
+        $this->assertFalse($definition['detail_metadata']['memo']['saved_view_compatible']);
+        $this->assertSame(['detail', 'history_export'], $definition['detail_metadata']['memo']['returned_in']);
+        $this->assertSame(
+            'Returned-only per-run context copied onto the instance, run, typed start history, selected-run detail, and history export.',
+            $definition['detail_metadata']['memo']['description'],
+        );
     }
 
     public function testVersionMetadataMarksUnsupportedSavedViewContractsExplicitly(): void

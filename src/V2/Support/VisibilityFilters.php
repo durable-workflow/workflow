@@ -113,12 +113,16 @@ final class VisibilityFilters
                 'type' => 'map<string,string>',
                 'input' => 'key_value_textarea',
                 'operator' => 'exact',
+                'filterable' => true,
+                'saved_view_compatible' => true,
                 'query_parameters' => ['label[key]', 'labels[key]'],
                 'key_pattern' => self::LABEL_KEY_REGEX,
                 'key_value_separator' => '=',
                 'placeholder' => "tenant=acme\nregion=us-east",
-                'help' => 'One exact-match label per line in key=value format.',
+                'help' => 'One exact-match label per line in key=value format. Labels are indexed operator metadata and saved-view compatible.',
             ],
+            'indexed_metadata' => self::indexedMetadataDefinition(),
+            'detail_metadata' => self::detailMetadataDefinition(),
         ];
     }
 
@@ -394,15 +398,77 @@ final class VisibilityFilters
                 ? 'boolean_select'
                 : ($options === [] ? 'text' : 'select'),
             'operator' => 'exact',
+            'filterable' => true,
+            'saved_view_compatible' => true,
             'order' => $order,
             'query_parameter' => $field,
         ];
+
+        $help = self::helpForField($field);
+
+        if ($help !== null) {
+            $definition['help'] = $help;
+        }
 
         if ($options !== []) {
             $definition['options'] = $options;
         }
 
         return $definition;
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private static function indexedMetadataDefinition(): array
+    {
+        return [
+            'business_key' => [
+                'label' => self::FIELD_LABELS['business_key'],
+                'filter_field' => 'business_key',
+                'query_parameter' => 'business_key',
+                'indexed' => true,
+                'filterable' => true,
+                'saved_view_compatible' => true,
+                'returned_in' => ['list', 'detail', 'history_export'],
+                'description' => 'Exact-match searchable operator metadata copied onto the run-summary projection.',
+            ],
+            'labels' => [
+                'label' => 'Labels',
+                'filter_field' => 'labels',
+                'query_parameters' => ['label[key]', 'labels[key]'],
+                'indexed' => true,
+                'filterable' => true,
+                'saved_view_compatible' => true,
+                'returned_in' => ['list', 'detail', 'history_export'],
+                'description' => 'Exact-match searchable key/value operator metadata copied onto the run-summary projection.',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private static function detailMetadataDefinition(): array
+    {
+        return [
+            'memo' => [
+                'label' => 'Memo',
+                'indexed' => false,
+                'filterable' => false,
+                'saved_view_compatible' => false,
+                'returned_in' => ['detail', 'history_export'],
+                'description' => 'Returned-only per-run context copied onto the instance, run, typed start history, selected-run detail, and history export.',
+            ],
+        ];
+    }
+
+    private static function helpForField(string $field): ?string
+    {
+        return match ($field) {
+            'business_key' => 'Exact-match indexed operator metadata copied onto the run summary and saved-view contract.',
+            default => null,
+        };
     }
 
     /**
