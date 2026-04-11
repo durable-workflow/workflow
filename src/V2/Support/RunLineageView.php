@@ -327,7 +327,7 @@ final class RunLineageView
         }
 
         /** @var WorkflowRun|null $run */
-        $run = \Workflow\V2\Models\WorkflowRun::query()
+        $run = ConfiguredV2Models::query('run_model', \Workflow\V2\Models\WorkflowRun::class)
             ->with('summary')
             ->find($runId);
 

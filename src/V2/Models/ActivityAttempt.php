@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 class ActivityAttempt extends Model
 {
@@ -34,11 +35,17 @@ class ActivityAttempt extends Model
 
     public function execution(): BelongsTo
     {
-        return $this->belongsTo(ActivityExecution::class, 'activity_execution_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('activity_execution_model', ActivityExecution::class),
+            'activity_execution_id',
+        );
     }
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(WorkflowRun::class, 'workflow_run_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'workflow_run_id',
+        );
     }
 }

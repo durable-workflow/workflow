@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowUpdate extends Model
 {
@@ -39,22 +40,34 @@ class WorkflowUpdate extends Model
 
     public function instance(): BelongsTo
     {
-        return $this->belongsTo(WorkflowInstance::class, 'workflow_instance_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('instance_model', WorkflowInstance::class),
+            'workflow_instance_id',
+        );
     }
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(WorkflowRun::class, 'workflow_run_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'workflow_run_id',
+        );
     }
 
     public function command(): BelongsTo
     {
-        return $this->belongsTo(WorkflowCommand::class, 'workflow_command_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('command_model', WorkflowCommand::class),
+            'workflow_command_id',
+        );
     }
 
     public function failure(): BelongsTo
     {
-        return $this->belongsTo(WorkflowFailure::class, 'failure_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('failure_model', WorkflowFailure::class),
+            'failure_id',
+        );
     }
 
     /**

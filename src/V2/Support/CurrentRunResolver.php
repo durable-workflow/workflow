@@ -139,7 +139,7 @@ final class CurrentRunResolver
             return $loaded;
         }
 
-        $query = WorkflowRun::query()
+        $query = ConfiguredV2Models::query('run_model', WorkflowRun::class)
             ->where('workflow_instance_id', $instance->id)
             ->whereKey($runId);
 
@@ -203,7 +203,7 @@ final class CurrentRunResolver
         $runIdLookup = array_fill_keys($runIds, true);
         $successors = [];
 
-        WorkflowHistoryEvent::query()
+        ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
             ->whereIn('workflow_run_id', $runIds)
             ->where('event_type', HistoryEventType::WorkflowStarted->value)
             ->get(['workflow_run_id', 'payload'])
@@ -255,7 +255,7 @@ final class CurrentRunResolver
         }
 
         /** @var EloquentCollection<int, WorkflowRun> $runs */
-        $runs = WorkflowRun::query()
+        $runs = ConfiguredV2Models::query('run_model', WorkflowRun::class)
             ->select(['id', 'workflow_instance_id', 'run_number', 'started_at', 'created_at'])
             ->where('workflow_instance_id', $instance->id)
             ->when($lockForUpdate, static fn ($query) => $query->lockForUpdate())
@@ -317,7 +317,7 @@ final class CurrentRunResolver
         array $relations = [],
         bool $lockForUpdate = false,
     ) {
-        $query = WorkflowRun::query()
+        $query = ConfiguredV2Models::query('run_model', WorkflowRun::class)
             ->where('workflow_instance_id', $instanceId)
             ->orderByDesc('run_number')
             ->orderByDesc('started_at')

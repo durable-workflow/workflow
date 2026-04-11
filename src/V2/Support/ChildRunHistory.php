@@ -622,7 +622,7 @@ final class ChildRunHistory
         }
 
         /** @var WorkflowRun|null $run */
-        $run = WorkflowRun::query()
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
             ->with([
                 'summary',
                 'instance',
@@ -637,7 +637,8 @@ final class ChildRunHistory
     private static function loadCurrentRunForInstance(string $instanceId): ?WorkflowRun
     {
         /** @var \Workflow\V2\Models\WorkflowInstance|null $instance */
-        $instance = \Workflow\V2\Models\WorkflowInstance::query()->find($instanceId);
+        $instance = ConfiguredV2Models::query('instance_model', \Workflow\V2\Models\WorkflowInstance::class)
+            ->find($instanceId);
 
         if ($instance === null) {
             return null;

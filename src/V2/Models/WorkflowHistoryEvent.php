@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowHistoryEvent extends Model
 {
@@ -32,12 +33,18 @@ class WorkflowHistoryEvent extends Model
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(WorkflowRun::class, 'workflow_run_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'workflow_run_id',
+        );
     }
 
     public function command(): BelongsTo
     {
-        return $this->belongsTo(WorkflowCommand::class, 'workflow_command_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('command_model', WorkflowCommand::class),
+            'workflow_command_id',
+        );
     }
 
     /**

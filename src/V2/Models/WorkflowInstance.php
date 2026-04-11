@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowInstance extends Model
 {
@@ -29,23 +30,26 @@ class WorkflowInstance extends Model
 
     public function currentRun(): BelongsTo
     {
-        return $this->belongsTo(WorkflowRun::class, 'current_run_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'current_run_id',
+        );
     }
 
     public function runs(): HasMany
     {
-        return $this->hasMany(WorkflowRun::class);
+        return $this->hasMany(ConfiguredV2Models::resolve('run_model', WorkflowRun::class));
     }
 
     public function commands(): HasMany
     {
-        return $this->hasMany(WorkflowCommand::class)
+        return $this->hasMany(ConfiguredV2Models::resolve('command_model', WorkflowCommand::class))
             ->oldest('created_at');
     }
 
     public function updates(): HasMany
     {
-        return $this->hasMany(WorkflowUpdate::class)
+        return $this->hasMany(ConfiguredV2Models::resolve('update_model', WorkflowUpdate::class))
             ->orderBy('command_sequence')
             ->oldest('accepted_at')
             ->oldest('created_at')

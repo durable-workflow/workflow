@@ -53,7 +53,7 @@ final class WorkflowDefinitionFingerprint
         }
 
         /** @var WorkflowHistoryEvent|null $event */
-        $event = WorkflowHistoryEvent::query()
+        $event = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::WorkflowStarted->value)
             ->orderBy('sequence')

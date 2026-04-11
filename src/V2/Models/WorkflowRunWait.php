@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowRunWait extends Model
 {
@@ -35,7 +36,11 @@ class WorkflowRunWait extends Model
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(WorkflowRun::class, 'workflow_run_id', 'id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'workflow_run_id',
+            'id',
+        );
     }
 
     /**

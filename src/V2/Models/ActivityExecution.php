@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 class ActivityExecution extends Model
 {
@@ -36,12 +37,18 @@ class ActivityExecution extends Model
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(WorkflowRun::class, 'workflow_run_id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'workflow_run_id',
+        );
     }
 
     public function attempts(): HasMany
     {
-        return $this->hasMany(ActivityAttempt::class, 'activity_execution_id')
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('activity_attempt_model', ActivityAttempt::class),
+            'activity_execution_id',
+        )
             ->orderBy('attempt_number')
             ->oldest('started_at')
             ->oldest('id');

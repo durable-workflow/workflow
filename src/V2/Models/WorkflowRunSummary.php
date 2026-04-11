@@ -7,6 +7,7 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowRunSummary extends Model
 {
@@ -40,7 +41,11 @@ class WorkflowRunSummary extends Model
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(WorkflowRun::class, 'id', 'id');
+        return $this->belongsTo(
+            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'id',
+            'id',
+        );
     }
 
     public function getInstanceIdAttribute(): string
