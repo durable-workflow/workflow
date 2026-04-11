@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\continueAsNew;
@@ -15,14 +14,14 @@ final class TestQueryContinueAsNewWorkflow extends Workflow
 {
     private int $count = 0;
 
-    public function execute(int $count, int $target): Generator
+    public function execute(int $count, int $target): mixed
     {
         $this->count = $count;
 
         if ($this->count < $target) {
             ++$this->count;
 
-            yield continueAsNew($this->count, $target);
+            return continueAsNew($this->count, $target);
         }
 
         return [

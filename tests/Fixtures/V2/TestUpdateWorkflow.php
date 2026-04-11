@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use RuntimeException;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
@@ -28,12 +27,12 @@ final class TestUpdateWorkflow extends Workflow
      */
     private array $events = [];
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'waiting-for-name';
         $this->events[] = 'started';
 
-        $name = yield awaitSignal('name-provided');
+        $name = awaitSignal('name-provided');
 
         $this->stage = 'completed';
         $this->events[] = sprintf('signal:%s', $name);

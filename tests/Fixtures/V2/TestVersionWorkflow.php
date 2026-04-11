@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
@@ -24,18 +23,18 @@ final class TestVersionWorkflow extends Workflow
 
     private string $stage = 'booting';
 
-    public function execute(): Generator
+    public function execute(): array
     {
-        $this->version = yield getVersion('step-1', WorkflowStub::DEFAULT_VERSION, 2);
+        $this->version = getVersion('step-1', WorkflowStub::DEFAULT_VERSION, 2);
         $this->result = match ($this->version) {
-            WorkflowStub::DEFAULT_VERSION => yield activity(TestVersionedActivityV1::class),
-            1 => yield activity(TestVersionedActivityV2::class),
-            2 => yield activity(TestVersionedActivityV3::class),
+            WorkflowStub::DEFAULT_VERSION => activity(TestVersionedActivityV1::class),
+            1 => activity(TestVersionedActivityV2::class),
+            2 => activity(TestVersionedActivityV3::class),
         };
 
         $this->stage = 'waiting-for-finish';
 
-        $finish = yield awaitSignal('finish');
+        $finish = awaitSignal('finish');
 
         $this->stage = 'completed';
 

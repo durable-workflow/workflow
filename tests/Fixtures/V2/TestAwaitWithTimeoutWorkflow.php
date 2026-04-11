@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Type;
@@ -20,11 +19,11 @@ final class TestAwaitWithTimeoutWorkflow extends Workflow
 
     private string $stage = 'booting';
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'waiting-for-approval';
 
-        $approved = yield awaitWithTimeout(5, fn (): bool => $this->approved);
+        $approved = awaitWithTimeout(5, fn (): bool => $this->approved);
 
         if (! $approved) {
             $this->timedOut = true;

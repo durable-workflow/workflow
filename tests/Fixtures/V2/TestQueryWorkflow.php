@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
@@ -23,17 +22,17 @@ final class TestQueryWorkflow extends Workflow
      */
     private array $events = [];
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'waiting-for-name';
         $this->events[] = 'started';
 
-        $name = yield awaitSignal('name-provided');
+        $name = awaitSignal('name-provided');
 
         $this->stage = 'waiting-for-timer';
         $this->events[] = sprintf('name:%s', $name);
 
-        yield timer(60);
+        timer(60);
 
         $this->stage = 'completed';
         $this->events[] = 'timer-fired';

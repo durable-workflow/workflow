@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\Commands;
 
 use Illuminate\Console\GeneratorCommand;
+use Illuminate\Support\Str;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Input\InputOption;
 
@@ -50,7 +51,9 @@ class WorkflowMakeCommand extends GeneratorCommand
      */
     protected function getStub()
     {
-        return __DIR__ . '/stubs/workflow.stub';
+        return $this->option('v2')
+            ? __DIR__ . '/stubs/workflow.v2.stub'
+            : __DIR__ . '/stubs/workflow.stub';
     }
 
     /**
@@ -71,6 +74,43 @@ class WorkflowMakeCommand extends GeneratorCommand
      */
     protected function getOptions()
     {
-        return [['force', 'f', InputOption::VALUE_NONE, 'Create the class even if the workflow already exists']];
+        return [
+            ['force', 'f', InputOption::VALUE_NONE, 'Create the class even if the workflow already exists'],
+            ['v2', null, InputOption::VALUE_NONE, 'Generate a Workflow\\V2 scaffold'],
+            ['type', null, InputOption::VALUE_REQUIRED, 'Explicit durable v2 type key'],
+        ];
+    }
+
+    /**
+     * Build the class with the given name.
+     *
+     * @param  string  $name
+     * @return string
+     */
+    protected function buildClass($name)
+    {
+        $stub = file_get_contents($this->getStub());
+
+        return str_replace(
+            ['{{ namespace }}', '{{ class }}', '{{ type_key }}'],
+            [
+                $this->getNamespace($name),
+                class_basename($name),
+                var_export($this->typeKey($name), true),
+            ],
+            $stub,
+        );
+    }
+
+    private function typeKey(string $name): string
+    {
+        $explicitType = trim((string) $this->option('type'));
+
+        if ($explicitType !== '') {
+            return $explicitType;
+        }
+
+        return (string) Str::of(class_basename($name))
+            ->kebab();
     }
 }

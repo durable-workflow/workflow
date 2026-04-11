@@ -13,7 +13,7 @@ final class WorkflowMakeCommandTest extends TestCase
 
     private const FOLDER = 'Workflows';
 
-    public function testMakeCommand(): void
+    public function testMakeCommandCreatesLegacyWorkflowByDefault(): void
     {
         $file = self::FOLDER . '/' . self::WORKFLOW . '.php';
 
@@ -28,6 +28,56 @@ final class WorkflowMakeCommandTest extends TestCase
         $this->artisan('make:workflow ' . self::WORKFLOW)->assertSuccessful();
 
         $this->assertTrue($filesystem->exists($file));
+        $this->assertStringContainsString('use Workflow\\Workflow;', $filesystem->get($file));
+        $this->assertStringNotContainsString('Workflow\\V2\\Workflow', $filesystem->get($file));
+
+        $filesystem->delete($file);
+        $filesystem->deleteDirectory(self::FOLDER);
+    }
+
+    public function testMakeCommandCanCreateV2WorkflowScaffold(): void
+    {
+        $file = self::FOLDER . '/' . self::WORKFLOW . '.php';
+
+        $filesystem = Storage::build([
+            'driver' => 'local',
+            'root' => app_path(),
+        ]);
+
+        $this->assertFalse($filesystem->exists(self::FOLDER));
+        $this->assertFalse($filesystem->exists($file));
+
+        $this->artisan('make:workflow ' . self::WORKFLOW . ' --v2')->assertSuccessful();
+
+        $contents = $filesystem->get($file);
+
+        $this->assertTrue($filesystem->exists($file));
+        $this->assertStringContainsString('use Workflow\\V2\\Attributes\\Type;', $contents);
+        $this->assertStringContainsString('use Workflow\\V2\\Workflow;', $contents);
+        $this->assertStringContainsString("#[Type('test-workflow')]", $contents);
+        $this->assertStringContainsString('public function execute(): mixed', $contents);
+        $this->assertStringContainsString('return null;', $contents);
+        $this->assertStringNotContainsString('use Workflow\\Workflow;', $contents);
+
+        $filesystem->delete($file);
+        $filesystem->deleteDirectory(self::FOLDER);
+    }
+
+    public function testMakeCommandCanUseExplicitV2WorkflowType(): void
+    {
+        $file = self::FOLDER . '/' . self::WORKFLOW . '.php';
+
+        $filesystem = Storage::build([
+            'driver' => 'local',
+            'root' => app_path(),
+        ]);
+
+        $this->artisan('make:workflow ' . self::WORKFLOW . ' --v2 --type=orders.approval')->assertSuccessful();
+
+        $this->assertStringContainsString(
+            "#[Type('orders.approval')]",
+            $filesystem->get($file),
+        );
 
         $filesystem->delete($file);
         $filesystem->deleteDirectory(self::FOLDER);

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Type;
@@ -16,9 +15,9 @@ final class TestKeyedAwaitWorkflow extends Workflow
 {
     private bool $approved = false;
 
-    public function execute(): Generator
+    public function execute(): array
     {
-        yield await(fn (): bool => $this->approved, 'approval.ready');
+        await(fn (): bool => $this->approved, 'approval.ready');
 
         return [
             'approved' => $this->approved,

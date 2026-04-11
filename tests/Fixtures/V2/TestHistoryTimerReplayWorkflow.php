@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use function Workflow\V2\awaitSignal;
@@ -21,17 +20,17 @@ final class TestHistoryTimerReplayWorkflow extends Workflow
      */
     private array $events = [];
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'before-timer';
         $this->events[] = 'started';
 
-        yield timer(0);
+        timer(0);
 
         $this->stage = 'after-timer';
         $this->events[] = 'timer-fired';
 
-        $resume = yield awaitSignal('resume');
+        $resume = awaitSignal('resume');
 
         $this->stage = 'completed';
         $this->events[] = sprintf('signal:%s', $resume);

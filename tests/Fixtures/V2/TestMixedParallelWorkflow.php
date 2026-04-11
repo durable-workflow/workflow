@@ -4,12 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\activity;
 use function Workflow\V2\all;
-use function Workflow\V2\child;
+use function Workflow\V2\startActivity;
+use function Workflow\V2\startChild;
 use Workflow\V2\Workflow;
 
 #[Type('test-mixed-parallel-workflow')]
@@ -17,13 +16,13 @@ final class TestMixedParallelWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(string $name, int $seconds): Generator
+    public function execute(string $name, int $seconds): array
     {
         $this->stage = 'waiting-for-mixed-group';
 
-        $results = yield all([
-            activity(TestGreetingActivity::class, $name),
-            child(TestTimerWorkflow::class, $seconds),
+        $results = all([
+            startActivity(TestGreetingActivity::class, $name),
+            startChild(TestTimerWorkflow::class, $seconds),
         ]);
 
         $this->stage = 'completed';

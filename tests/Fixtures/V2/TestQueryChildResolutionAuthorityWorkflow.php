@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\child;
@@ -15,11 +14,11 @@ final class TestQueryChildResolutionAuthorityWorkflow extends Workflow
 {
     private string $stage = 'not-started';
 
-    public function execute(int $seconds): Generator
+    public function execute(int $seconds): array
     {
         $this->stage = 'waiting-for-child';
 
-        $child = yield child(TestTimerWorkflow::class, $seconds);
+        $child = child(TestTimerWorkflow::class, $seconds);
 
         $this->stage = 'child-resolved';
 

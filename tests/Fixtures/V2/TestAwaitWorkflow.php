@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Type;
@@ -18,11 +17,11 @@ final class TestAwaitWorkflow extends Workflow
 
     private string $stage = 'booting';
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'waiting-for-approval';
 
-        yield await(fn (): bool => $this->approved);
+        await(fn (): bool => $this->approved);
 
         $this->stage = 'completed';
 

@@ -1,0 +1,17 @@
+<?php
+
+declare(strict_types=1);
+
+namespace {{ namespace }};
+
+use Workflow\V2\Activity;
+use Workflow\V2\Attributes\Type;
+
+#[Type({{ type_key }})]
+class {{ class }} extends Activity
+{
+    public function execute(): mixed
+    {
+        return null;
+    }
+}

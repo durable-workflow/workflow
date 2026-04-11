@@ -4,11 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\activity;
 use function Workflow\V2\all;
+use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-activity-workflow')]
@@ -16,13 +15,13 @@ final class TestParallelActivityWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(string $firstName, string $secondName): Generator
+    public function execute(string $firstName, string $secondName): array
     {
         $this->stage = 'waiting-for-activities';
 
-        $results = yield all([
-            activity(TestGreetingActivity::class, $firstName),
-            activity(TestGreetingActivity::class, $secondName),
+        $results = all([
+            startActivity(TestGreetingActivity::class, $firstName),
+            startActivity(TestGreetingActivity::class, $secondName),
         ]);
 
         $this->stage = 'completed';
