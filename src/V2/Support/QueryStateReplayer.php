@@ -275,19 +275,11 @@ final class QueryStateReplayer
                     continue;
                 }
 
-                if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $sequence)) {
-                    $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    return new ReplayState($workflow, $sequence, $current);
-                }
+                $childStatus = $childRun instanceof WorkflowRun
+                    ? ChildRunHistory::resolvedStatus(null, $childRun)
+                    : null;
 
-                if ($childRun === null) {
-                    $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    return new ReplayState($workflow, $sequence, $current);
-                }
-
-                $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
-
-                if ($childStatus === null || in_array($childStatus, [
+                if ($childRun instanceof WorkflowRun && $childStatus instanceof RunStatus && ! in_array($childStatus, [
                     RunStatus::Pending,
                     RunStatus::Running,
                     RunStatus::Waiting,
@@ -295,21 +287,28 @@ final class QueryStateReplayer
                     WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    if ($childStatus === RunStatus::Completed) {
+                        $current = $workflowExecution->send(ChildRunHistory::outputForChildRun($childRun));
+                    } else {
+                        $current = $workflowExecution->throw(ChildRunHistory::exceptionForChildRun($childRun));
+                    }
+
+                    ++$sequence;
+
+                    continue;
+                }
+
+                if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $sequence)) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
-                WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
-
-                $this->syncWorkflowCursor($workflow, $sequence + 1);
-                if ($childStatus === RunStatus::Completed) {
-                    $current = $workflowExecution->send(ChildRunHistory::outputForChildRun($childRun));
-                } else {
-                    $current = $workflowExecution->throw(ChildRunHistory::exceptionForChildRun($childRun));
+                if ($childRun instanceof WorkflowRun) {
+                    WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
                 }
 
-                ++$sequence;
-
-                continue;
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+                return new ReplayState($workflow, $sequence, $current);
             }
 
             if ($current instanceof AllCall) {
@@ -439,21 +438,11 @@ final class QueryStateReplayer
                         continue;
                     }
 
-                    if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $itemSequence)) {
-                        $pending = true;
+                    $childStatus = $childRun instanceof WorkflowRun
+                        ? ChildRunHistory::resolvedStatus(null, $childRun)
+                        : null;
 
-                        continue;
-                    }
-
-                    if (! $childRun instanceof WorkflowRun) {
-                        $pending = true;
-
-                        continue;
-                    }
-
-                    $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
-
-                    if (! $childStatus instanceof RunStatus || in_array($childStatus, [
+                    if ($childRun instanceof WorkflowRun && $childStatus instanceof RunStatus && ! in_array($childStatus, [
                         RunStatus::Pending,
                         RunStatus::Running,
                         RunStatus::Waiting,
@@ -464,29 +453,37 @@ final class QueryStateReplayer
                             WorkflowStepHistory::CHILD_WORKFLOW,
                         );
 
+                        if ($childStatus === RunStatus::Completed) {
+                            $results[$offset] = ChildRunHistory::outputForChildRun($childRun);
+
+                            continue;
+                        }
+
+                        $failure = ParallelFailureSelector::select(
+                            $failure,
+                            $offset,
+                            ChildRunHistory::exceptionForChildRun($childRun),
+                            $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
+                        );
+
+                        continue;
+                    }
+
+                    if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $itemSequence)) {
                         $pending = true;
 
                         continue;
                     }
 
-                    WorkflowStepHistory::assertTypedHistoryRecorded(
-                        $run,
-                        $itemSequence,
-                        WorkflowStepHistory::CHILD_WORKFLOW,
-                    );
-
-                    if ($childStatus === RunStatus::Completed) {
-                        $results[$offset] = ChildRunHistory::outputForChildRun($childRun);
-
-                        continue;
+                    if ($childRun instanceof WorkflowRun) {
+                        WorkflowStepHistory::assertTypedHistoryRecorded(
+                            $run,
+                            $itemSequence,
+                            WorkflowStepHistory::CHILD_WORKFLOW,
+                        );
                     }
 
-                    $failure = ParallelFailureSelector::select(
-                        $failure,
-                        $offset,
-                        ChildRunHistory::exceptionForChildRun($childRun),
-                        $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
-                    );
+                    $pending = true;
                 }
 
                 if ($failure !== null) {

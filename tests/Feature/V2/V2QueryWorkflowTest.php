@@ -23,6 +23,7 @@ use Tests\Fixtures\V2\TestParallelChildHandlesWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
+use Tests\Fixtures\V2\TestParallelChildTerminalOutcomeWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
@@ -1618,6 +1619,8 @@ final class V2QueryWorkflowTest extends TestCase
 
     public function testQueriesReplayParallelChildFailureAfterParentCommitsChildResolutionHistory(): void
     {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelChildFailureWorkflow::class, 'query-parallel-child-failure');
@@ -1655,6 +1658,100 @@ final class V2QueryWorkflowTest extends TestCase
             'stage' => 'caught-child-failure',
             'message' => 'boom',
         ], $workflow->currentState());
+    }
+
+    public function testQueriesReplayParallelCancelledChildBeforeParentWorkflowTaskResumes(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            TestParallelChildTerminalOutcomeWorkflow::class,
+            'query-parallel-child-cancelled-outcome',
+        );
+        $workflow->start(60, 0);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+
+        $cancelledChildRunId = $links[0]->child_workflow_run_id;
+
+        $this->assertIsString($cancelledChildRunId);
+
+        $cancelled = WorkflowStub::loadRun($cancelledChildRunId)->cancel();
+
+        $this->assertTrue($cancelled->accepted());
+        $this->assertSame('cancelled', $cancelled->outcome());
+
+        $state = $workflow->currentState();
+
+        $this->assertSame('caught-child-outcome', $state['stage']);
+        $this->assertStringContainsString('closed as cancelled', $state['message']);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $state = $workflow->currentState();
+
+        $this->assertSame('caught-child-outcome', $state['stage']);
+        $this->assertStringContainsString('closed as cancelled', $state['message']);
+    }
+
+    public function testQueriesReplayParallelTerminatedChildBeforeParentWorkflowTaskResumes(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            TestParallelChildTerminalOutcomeWorkflow::class,
+            'query-parallel-child-terminated-outcome',
+        );
+        $workflow->start(60, 0);
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runNextReadyTask();
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $links);
+
+        $terminatedChildRunId = $links[0]->child_workflow_run_id;
+
+        $this->assertIsString($terminatedChildRunId);
+
+        $terminated = WorkflowStub::loadRun($terminatedChildRunId)->terminate();
+
+        $this->assertTrue($terminated->accepted());
+        $this->assertSame('terminated', $terminated->outcome());
+
+        $state = $workflow->currentState();
+
+        $this->assertSame('caught-child-outcome', $state['stage']);
+        $this->assertStringContainsString('closed as terminated', $state['message']);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $state = $workflow->currentState();
+
+        $this->assertSame('caught-child-outcome', $state['stage']);
+        $this->assertStringContainsString('closed as terminated', $state['message']);
     }
 
     public function testQueriesKeepParallelActivityAllWaitingUntilEveryActivityCompletes(): void
