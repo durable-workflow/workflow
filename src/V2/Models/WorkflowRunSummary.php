@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\RepairBlockedReason;
 
 class WorkflowRunSummary extends Model
 {
@@ -21,7 +22,7 @@ class WorkflowRunSummary extends Model
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
-    protected $appends = ['instance_id', 'selected_run_id', 'run_id', 'exceptions_count', 'is_terminal'];
+    protected $appends = ['instance_id', 'selected_run_id', 'run_id', 'exceptions_count', 'is_terminal', 'repair_blocked'];
 
     protected $casts = [
         'is_current_run' => 'bool',
@@ -67,5 +68,21 @@ class WorkflowRunSummary extends Model
     public function getIsTerminalAttribute(): bool
     {
         return RunStatus::from($this->status)->isTerminal();
+    }
+
+    /**
+     * @return array{
+     *     code: string,
+     *     label: string,
+     *     description: string,
+     *     tone: string,
+     *     badge_visible: bool
+     * }|null
+     */
+    public function getRepairBlockedAttribute(): ?array
+    {
+        return RepairBlockedReason::metadata(
+            is_string($this->repair_blocked_reason) ? $this->repair_blocked_reason : null,
+        );
     }
 }

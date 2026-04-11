@@ -208,6 +208,7 @@ final class RunDetailView
             'update_blocked_reason' => $updateBlockedReason,
             'can_repair' => $canRepair,
             'repair_blocked_reason' => $repairBlockedReason,
+            'repair_blocked' => RepairBlockedReason::metadata($repairBlockedReason),
             'can_archive' => $canArchive,
             'archive_blocked_reason' => $archiveBlockedReason,
             'read_only_reason' => self::readOnlyReason($run, $isCurrentRun),

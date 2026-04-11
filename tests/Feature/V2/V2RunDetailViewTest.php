@@ -438,6 +438,13 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertNull($detail['update_blocked_reason']);
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('repair_not_needed', $detail['repair_blocked_reason']);
+        $this->assertSame([
+            'code' => 'repair_not_needed',
+            'label' => 'Repair Not Needed',
+            'description' => 'Repair is blocked because the run already has a healthy durable resume path.',
+            'tone' => 'secondary',
+            'badge_visible' => false,
+        ], $detail['repair_blocked']);
         $this->assertNull($detail['read_only_reason']);
         $this->assertSame(1, $detail['commands'][0]['sequence']);
         $this->assertSame('start', $detail['commands'][0]['type']);
@@ -2984,6 +2991,13 @@ final class V2RunDetailViewTest extends TestCase
         );
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('unsupported_history', $detail['repair_blocked_reason']);
+        $this->assertSame([
+            'code' => 'unsupported_history',
+            'label' => 'Replay Blocked',
+            'description' => 'Repair is blocked because only unsupported diagnostic history remains.',
+            'tone' => 'dark',
+            'badge_visible' => true,
+        ], $detail['repair_blocked']);
         $this->assertSame('unsupported_history', $run->fresh()->summary?->repair_blocked_reason);
         $this->assertSame('open', $activityWait['status']);
         $this->assertSame('running', $activityWait['source_status']);

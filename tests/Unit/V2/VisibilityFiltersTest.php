@@ -195,6 +195,12 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame('select', $definition['fields']['repair_blocked_reason']['input']);
         $this->assertSame('Replay Blocked', $definition['fields']['repair_blocked_reason']['options'][0]['label']);
         $this->assertSame('unsupported_history', $definition['fields']['repair_blocked_reason']['options'][0]['value']);
+        $this->assertSame(
+            'Repair is blocked because only unsupported diagnostic history remains.',
+            $definition['fields']['repair_blocked_reason']['options'][0]['description'],
+        );
+        $this->assertSame('dark', $definition['fields']['repair_blocked_reason']['options'][0]['tone']);
+        $this->assertTrue($definition['fields']['repair_blocked_reason']['options'][0]['badge_visible']);
         $this->assertSame('Labels', $definition['labels']['label']);
         $this->assertSame('map<string,string>', $definition['labels']['type']);
         $this->assertSame('key_value_textarea', $definition['labels']['input']);

@@ -394,26 +394,7 @@ final class VisibilityFilters
                 ],
             ],
             'repair_blocked_reason' => [
-                [
-                    'label' => 'Replay Blocked',
-                    'value' => 'unsupported_history',
-                ],
-                [
-                    'label' => 'Compat Blocked',
-                    'value' => 'waiting_for_compatible_worker',
-                ],
-                [
-                    'label' => 'Selected Run Not Current',
-                    'value' => 'selected_run_not_current',
-                ],
-                [
-                    'label' => 'Run Closed',
-                    'value' => 'run_closed',
-                ],
-                [
-                    'label' => 'Repair Not Needed',
-                    'value' => 'repair_not_needed',
-                ],
+                ...RepairBlockedReason::filterOptions(),
             ],
             default => [],
         };
