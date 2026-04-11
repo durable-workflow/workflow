@@ -5187,6 +5187,105 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($signalRecord->id, $taskDetail['workflow_signal_id']);
     }
 
+    public function testTaskWatchdogRecreatesMissingWorkflowTaskAfterSignalIsReceived(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'repair-watchdog-signal-received');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $signal = $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertTrue($signal->accepted());
+        $this->assertSame('signal_received', $signal->outcome());
+
+        /** @var WorkflowSignal $signalRecord */
+        $signalRecord = WorkflowSignal::query()
+            ->where('workflow_command_id', $signal->commandId())
+            ->sole();
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+
+        $summary = RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $this->assertSame('signal', $summary->wait_kind);
+        $this->assertSame('Waiting to apply signal name-provided', $summary->wait_reason);
+        $this->assertSame('signal-application:' . $signalRecord->id, $summary->open_wait_id);
+        $this->assertSame('workflow_signal', $summary->resume_source_kind);
+        $this->assertSame($signalRecord->id, $summary->resume_source_id);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+
+        $this->wakeTaskWatchdog();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame([
+            'workflow_wait_kind' => 'signal',
+            'open_wait_id' => 'signal-application:' . $signalRecord->id,
+            'resume_source_kind' => 'workflow_signal',
+            'resume_source_id' => $signalRecord->id,
+            'workflow_signal_id' => $signalRecord->id,
+            'workflow_command_id' => $signalRecord->workflow_command_id,
+        ], $task->payload);
+        $this->assertSame(1, $task->repair_count);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($runId);
+
+        $this->assertSame('workflow-task', $updatedSummary->wait_kind);
+        $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+        $this->assertSame('workflow', $updatedSummary->next_task_type);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+        $taskDetail = collect($detail['tasks'])->firstWhere('id', $task->id);
+
+        $this->assertIsArray($taskDetail);
+        $this->assertSame('Workflow task ready to apply accepted signal.', $taskDetail['summary']);
+        $this->assertSame('signal', $taskDetail['workflow_wait_kind']);
+        $this->assertSame($signalRecord->id, $taskDetail['workflow_signal_id']);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'name' => 'Taylor',
+            'greeting' => 'Hello, Taylor!',
+            'workflow_id' => 'repair-watchdog-signal-received',
+            'run_id' => $runId,
+        ], $workflow->output());
+    }
+
     public function testTaskWatchdogRedispatchesReadyWorkflowTaskWhenDispatchIsOverdue(): void
     {
         Queue::fake();

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestChildHandleParentWorkflow;
@@ -27,6 +28,7 @@ use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2UpdateWorkflowTest extends TestCase
@@ -419,6 +421,99 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame($update->updateId(), $updateWait['update_id']);
         $this->assertSame('open', $signalWait['status']);
         $this->assertSame('waiting', $signalWait['source_status']);
+    }
+
+    public function testTaskWatchdogRecreatesMissingWorkflowTaskForAcceptedUpdate(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-watchdog-repair');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $update = $workflow->submitUpdate('approve', true, 'watchdog');
+        $runId = $workflow->runId();
+
+        $this->assertIsString($runId);
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->delete();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $summary = RunSummaryProjector::project($run->fresh([
+            'instance',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+        ]));
+
+        $this->assertSame('update', $summary->wait_kind);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+        $this->assertSame('update:' . $update->updateId(), $summary->open_wait_id);
+        $this->assertSame('workflow_update', $summary->resume_source_kind);
+        $this->assertSame($update->updateId(), $summary->resume_source_id);
+
+        $this->wakeTaskWatchdog();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame([
+            'workflow_wait_kind' => 'update',
+            'open_wait_id' => 'update:' . $update->updateId(),
+            'resume_source_kind' => 'workflow_update',
+            'resume_source_id' => $update->updateId(),
+            'workflow_update_id' => $update->updateId(),
+            'workflow_command_id' => $update->commandId(),
+        ], $task->payload);
+        $this->assertSame(1, $task->repair_count);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($runId);
+
+        $this->assertSame('workflow-task', $updatedSummary->wait_kind);
+        $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+        $this->assertSame('workflow', $updatedSummary->next_task_type);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+        $taskDetail = collect($detail['tasks'])->firstWhere('id', $task->id);
+
+        $this->assertIsArray($taskDetail);
+        $this->assertSame('Workflow task ready to apply accepted update.', $taskDetail['summary']);
+        $this->assertSame('update', $taskDetail['workflow_wait_kind']);
+        $this->assertSame($update->updateId(), $taskDetail['workflow_update_id']);
+
+        $this->runReadyWorkflowTask($runId);
+
+        $completed = $workflow->inspectUpdate($update->updateId());
+
+        $this->assertTrue($completed->completed());
+        $this->assertSame('update_completed', $completed->outcome());
+        $this->assertSame([
+            'approved' => true,
+            'events' => ['started', 'approved:yes:watchdog'],
+        ], $completed->result());
     }
 
     public function testUpdateThrowsHelpfulMessageWhenCompletionWaitTimesOut(): void
@@ -1698,6 +1793,12 @@ final class V2UpdateWorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+    }
+
+    private function wakeTaskWatchdog(): void
+    {
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+        TaskWatchdog::wake();
     }
 
     private function waitFor(callable $condition): void
