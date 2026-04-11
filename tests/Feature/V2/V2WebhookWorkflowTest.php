@@ -1278,6 +1278,73 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testUpdateWebhookRejectsNamedArgumentsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-web-contract-unavailable');
+        $workflow->start();
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'WorkflowStarted')
+            ->sole();
+
+        $started->forceFill([
+            'payload' => [
+                'workflow_class' => TestUpdateWorkflow::class,
+                'workflow_type' => 'test-update-workflow',
+                'workflow_instance_id' => $workflow->id(),
+                'workflow_run_id' => $workflow->runId(),
+                'declared_queries' => ['currentState'],
+                'declared_signals' => ['name-provided'],
+                'declared_updates' => ['approve', 'explode'],
+            ],
+        ])->save();
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+            'workflow_type' => 'missing-update-workflow',
+        ]);
+
+        $response = $this->postJson('/webhooks/instances/order-update-web-contract-unavailable/updates/approve', [
+            'arguments' => [
+                'source' => 'webhook',
+            ],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonPath('outcome', 'rejected_invalid_arguments')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'invalid_update_arguments')
+            ->assertJsonPath(
+                'validation_errors.arguments.0',
+                'Named arguments require a durable or loadable workflow update contract.'
+            )
+            ->assertJsonPath('workflow_id', 'order-update-web-contract-unavailable')
+            ->assertJsonPath('workflow_type', 'missing-update-workflow')
+            ->assertJsonPath('result', null)
+            ->assertJsonPath('failure_id', null)
+            ->assertJsonPath('failure_message', null);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'order-update-web-contract-unavailable',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'update',
+            'status' => 'rejected',
+            'outcome' => 'rejected_invalid_arguments',
+            'rejection_reason' => 'invalid_update_arguments',
+        ]);
+    }
+
     public function testUpdateWebhookRejectsPendingSignalInsteadOfInlineClosingTheRun(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-webhook-b');

@@ -1273,6 +1273,76 @@ final class V2UpdateWorkflowTest extends TestCase
         ], $detail['commands'][1]['validation_errors']);
     }
 
+    public function testNamedUpdateValidationRejectsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'legacy-command-contract-unavailable-update');
+        $workflow->start();
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'WorkflowStarted')
+            ->sole();
+
+        $started->forceFill([
+            'payload' => [
+                'workflow_class' => TestUpdateWorkflow::class,
+                'workflow_type' => 'test-update-workflow',
+                'workflow_instance_id' => $workflow->id(),
+                'workflow_run_id' => $workflow->runId(),
+                'declared_queries' => ['currentState'],
+                'declared_signals' => ['name-provided'],
+                'declared_updates' => ['approve', 'explode'],
+            ],
+        ])->save();
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
+            'workflow_type' => 'missing-update-workflow',
+        ]);
+
+        $result = $workflow->attemptUpdateWithArguments('approve', [
+            'source' => 'api',
+        ]);
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedInvalidArguments());
+        $this->assertSame('rejected_invalid_arguments', $result->outcome());
+        $this->assertSame('invalid_update_arguments', $result->rejectionReason());
+        $this->assertSame([
+            'arguments' => ['Named arguments require a durable or loadable workflow update contract.'],
+        ], $result->validationErrors());
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId())->fresh());
+
+        $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
+        $this->assertSame('approve', $detail['declared_update_targets'][0]['name']);
+        $this->assertFalse($detail['declared_update_targets'][0]['has_contract']);
+        $this->assertSame('explode', $detail['declared_update_targets'][1]['name']);
+        $this->assertFalse($detail['declared_update_targets'][1]['has_contract']);
+        $this->assertSame('unavailable', $detail['declared_contract_source']);
+        $this->assertTrue($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
+        $this->assertFalse($detail['can_update']);
+        $this->assertSame('workflow_definition_unavailable', $detail['update_blocked_reason']);
+        $this->assertSame('approve', $detail['commands'][1]['target_name']);
+        $this->assertSame('invalid_update_arguments', $detail['commands'][1]['rejection_reason']);
+        $this->assertSame([
+            'arguments' => ['Named arguments require a durable or loadable workflow update contract.'],
+        ], $detail['commands'][1]['validation_errors']);
+    }
+
     public function testUpdateFailuresAreRecordedWithoutClosingTheRun(): void
     {
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-failure');

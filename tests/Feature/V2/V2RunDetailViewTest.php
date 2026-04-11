@@ -847,6 +847,98 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('approvalMatches', $started->payload['declared_query_contracts'][1]['name'] ?? null);
     }
 
+    public function testRunDetailViewMarksPartialLegacyCommandContractsAsUnavailableWhenDefinitionCannotBeResolved(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-command-targets-unavailable');
+        $workflow->start();
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $started->forceFill([
+            'payload' => [
+                'workflow_class' => TestCommandTargetWorkflow::class,
+                'workflow_type' => 'workflow.command-target',
+                'workflow_instance_id' => $workflow->id(),
+                'workflow_run_id' => $workflow->runId(),
+                'declared_queries' => ['approval-stage', 'approvalMatches'],
+                'declared_query_contracts' => [
+                    [
+                        'name' => 'approval-stage',
+                        'parameters' => [],
+                    ],
+                ],
+                'declared_signals' => ['approved-by', 'rejected-by'],
+                'declared_signal_contracts' => [
+                    [
+                        'name' => 'approved-by',
+                        'parameters' => [
+                            [
+                                'name' => 'actor',
+                                'position' => 0,
+                                'required' => true,
+                                'variadic' => false,
+                                'default_available' => false,
+                                'default' => null,
+                                'type' => 'string',
+                                'allows_null' => false,
+                            ],
+                        ],
+                    ],
+                ],
+                'declared_updates' => ['mark-approved'],
+                'declared_update_contracts' => [],
+            ],
+        ])->save();
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
+            'workflow_type' => 'missing-command-target-workflow',
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame(['approval-stage', 'approvalMatches'], $detail['declared_queries']);
+        $this->assertSame('approval-stage', $detail['declared_query_targets'][0]['name']);
+        $this->assertTrue($detail['declared_query_targets'][0]['has_contract']);
+        $this->assertSame('approvalMatches', $detail['declared_query_targets'][1]['name']);
+        $this->assertFalse($detail['declared_query_targets'][1]['has_contract']);
+        $this->assertSame(['approved-by', 'rejected-by'], $detail['declared_signals']);
+        $this->assertSame('approved-by', $detail['declared_signal_targets'][0]['name']);
+        $this->assertTrue($detail['declared_signal_targets'][0]['has_contract']);
+        $this->assertSame('rejected-by', $detail['declared_signal_targets'][1]['name']);
+        $this->assertFalse($detail['declared_signal_targets'][1]['has_contract']);
+        $this->assertSame(['mark-approved'], $detail['declared_updates']);
+        $this->assertSame('mark-approved', $detail['declared_update_targets'][0]['name']);
+        $this->assertFalse($detail['declared_update_targets'][0]['has_contract']);
+        $this->assertSame('unavailable', $detail['declared_contract_source']);
+        $this->assertTrue($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
+        $this->assertFalse($detail['can_query']);
+        $this->assertSame('workflow_definition_unavailable', $detail['query_blocked_reason']);
+        $this->assertTrue($detail['can_signal']);
+        $this->assertNull($detail['signal_blocked_reason']);
+        $this->assertFalse($detail['can_update']);
+        $this->assertSame('workflow_definition_unavailable', $detail['update_blocked_reason']);
+    }
+
     public function testRunDetailViewBlocksQueryAndUpdateWhenDurableTargetsExistButDefinitionIsUnavailable(): void
     {
         config()->set('queue.default', 'redis');

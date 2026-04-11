@@ -58,8 +58,10 @@ final class RunCommandContract
 
         if ($contract !== null) {
             return [
+                // A partial legacy snapshot can stay visible for observability, but it is not authoritative once
+                // the current build can no longer finish backfilling durable command-contract history.
                 ...self::withTargets($contract),
-                'source' => self::SOURCE_DURABLE_HISTORY,
+                'source' => self::SOURCE_UNAVAILABLE,
             ];
         }
 

@@ -42,6 +42,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
@@ -274,6 +275,67 @@ final class V2QueryWorkflowTest extends TestCase
                 $exception->getMessage(),
             );
         }
+    }
+
+    public function testNamedQueryArgumentsRejectWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestQueryWorkflow::class, 'query-contract-unavailable');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $started->forceFill([
+            'payload' => [
+                'workflow_class' => TestQueryWorkflow::class,
+                'workflow_type' => 'test-query-workflow',
+                'workflow_instance_id' => $workflow->id(),
+                'workflow_run_id' => $workflow->runId(),
+                'declared_queries' => ['events-starting-with'],
+                'declared_signals' => ['name-provided'],
+                'declared_updates' => [],
+            ],
+        ])->save();
+
+        WorkflowRun::query()->whereKey($workflow->runId())->update([
+            'workflow_class' => 'Missing\\Workflow\\TestQueryWorkflow',
+            'workflow_type' => 'missing-query-workflow',
+        ]);
+
+        try {
+            $workflow->queryWithArguments('events-starting-with', [
+                'prefix' => 'start',
+            ]);
+
+            $this->fail('Expected named query arguments to reject when the contract cannot be recovered.');
+        } catch (InvalidQueryArgumentsException $exception) {
+            $this->assertSame('events-starting-with', $exception->queryName());
+            $this->assertSame([
+                'arguments' => ['Named arguments require a durable or loadable workflow query contract.'],
+            ], $exception->validationErrors());
+        }
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId())->fresh());
+
+        $this->assertSame(['events-starting-with'], $detail['declared_queries']);
+        $this->assertSame('events-starting-with', $detail['declared_query_targets'][0]['name']);
+        $this->assertFalse($detail['declared_query_targets'][0]['has_contract']);
+        $this->assertSame([], $detail['declared_query_targets'][0]['parameters']);
+        $this->assertSame('unavailable', $detail['declared_contract_source']);
+        $this->assertTrue($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
+        $this->assertFalse($detail['can_query']);
+        $this->assertSame('workflow_definition_unavailable', $detail['query_blocked_reason']);
     }
 
     public function testQueriesIgnorePendingAcceptedSignalsUntilTheyAreApplied(): void
