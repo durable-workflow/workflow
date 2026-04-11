@@ -789,7 +789,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertFalse($detail['declared_contract_backfill_available']);
     }
 
-    public function testRunDetailViewLeavesPartialCommandContractSnapshotsReadOnly(): void
+    public function testRunDetailViewBackfillsPartialCommandContractSnapshotsWhenWorkflowDefinitionIsLoadable(): void
     {
         config()->set('queue.default', 'redis');
         config()
@@ -828,9 +828,9 @@ final class V2RunDetailViewTest extends TestCase
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
-        $this->assertSame('live_definition', $detail['declared_contract_source']);
-        $this->assertTrue($detail['declared_contract_backfill_needed']);
-        $this->assertTrue($detail['declared_contract_backfill_available']);
+        $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertFalse($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
         $this->assertCount(2, $detail['declared_query_targets']);
         $this->assertSame('approval-stage', $detail['declared_query_targets'][0]['name']);
         $this->assertSame('approvalMatches', $detail['declared_query_targets'][1]['name']);
@@ -842,8 +842,9 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('approved-by', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
         $this->assertSame(['mark-approved'], $started->payload['declared_updates'] ?? null);
         $this->assertSame('mark-approved', $started->payload['declared_update_contracts'][0]['name'] ?? null);
-        $this->assertCount(1, $started->payload['declared_query_contracts'] ?? []);
+        $this->assertCount(2, $started->payload['declared_query_contracts'] ?? []);
         $this->assertSame('approval-stage', $started->payload['declared_query_contracts'][0]['name'] ?? null);
+        $this->assertSame('approvalMatches', $started->payload['declared_query_contracts'][1]['name'] ?? null);
     }
 
     public function testRunDetailViewBlocksQueryAndUpdateWhenDurableTargetsExistButDefinitionIsUnavailable(): void
