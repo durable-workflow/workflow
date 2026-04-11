@@ -262,6 +262,19 @@ final class RunSummaryProjector
             $durationMs = $run->closed_at->diffInMilliseconds($run->started_at);
         }
 
+        $taskProblem = self::taskProblemDetected(
+            $run,
+            $nextTask,
+            $replayBlockedTask,
+            $openUpdateWait,
+            $openUpdateTask,
+            $openSignalApplicationWait,
+            $openConditionWait,
+            $pendingChildResolutionWait,
+            $waitKind,
+            $livenessState,
+        );
+
         $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
         $summaryModel = self::summaryModel();
         $selectedNextTask = $openUpdateWait !== null ? $openUpdateTask : $nextTask;
@@ -323,6 +336,7 @@ final class RunSummaryProjector
                     $livenessState,
                     $replayBlockedTask !== null,
                 ),
+                'task_problem' => $taskProblem,
                 'exception_count' => count(FailureSnapshots::forRun($run)),
                 'history_event_count' => $historyBudget['history_event_count'],
                 'history_size_bytes' => $historyBudget['history_size_bytes'],
@@ -349,6 +363,71 @@ final class RunSummaryProjector
         $model = config('workflows.v2.run_summary_model', WorkflowRunSummary::class);
 
         return $model;
+    }
+
+    private static function taskProblemDetected(
+        WorkflowRun $run,
+        ?WorkflowTask $nextTask,
+        ?WorkflowTask $replayBlockedTask,
+        ?array $openUpdateWait,
+        ?WorkflowTask $openUpdateTask,
+        ?array $openSignalApplicationWait,
+        ?array $openConditionWait,
+        ?array $pendingChildResolutionWait,
+        ?string $waitKind,
+        string $livenessState,
+    ): bool {
+        if ($replayBlockedTask !== null) {
+            return true;
+        }
+
+        foreach ($run->tasks as $task) {
+            if (self::workflowTaskProblemEvidence($task)) {
+                return true;
+            }
+        }
+
+        if ($openUpdateWait !== null && $openUpdateTask === null) {
+            return true;
+        }
+
+        if ($openSignalApplicationWait !== null) {
+            return true;
+        }
+
+        if ($pendingChildResolutionWait !== null) {
+            return true;
+        }
+
+        if (
+            $openConditionWait !== null
+            && self::timestamp($openConditionWait['timeout_fired_at'] ?? null) !== null
+            && $nextTask === null
+        ) {
+            return true;
+        }
+
+        return $livenessState === 'repair_needed' && $waitKind === null;
+    }
+
+    private static function workflowTaskProblemEvidence(WorkflowTask $task): bool
+    {
+        if ($task->task_type !== TaskType::Workflow) {
+            return false;
+        }
+
+        if (($task->payload['replay_blocked'] ?? false) === true) {
+            return true;
+        }
+
+        if ($task->repair_count > 0) {
+            return true;
+        }
+
+        return TaskRepairPolicy::dispatchFailed($task)
+            || TaskRepairPolicy::dispatchOverdue($task)
+            || TaskRepairPolicy::claimFailed($task)
+            || TaskRepairPolicy::leaseExpired($task);
     }
 
     private static function nextOpenTask(WorkflowRun $run): ?WorkflowTask

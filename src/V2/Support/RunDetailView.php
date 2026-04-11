@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\WorkflowTaskProblem;
 
 final class RunDetailView
 {
@@ -198,6 +199,12 @@ final class RunDetailView
             'next_task_lease_expires_at' => $summary?->next_task_lease_expires_at,
             'liveness_state' => $summary?->liveness_state,
             'liveness_reason' => $summary?->liveness_reason,
+            'task_problem' => (bool) ($summary?->task_problem ?? false),
+            'task_problem_badge' => WorkflowTaskProblem::metadata(
+                (bool) ($summary?->task_problem ?? false),
+                $summary?->liveness_state,
+                $summary?->wait_kind,
+            ),
             'exception_count' => $summary?->exception_count ?? count($failureSnapshots),
             'exceptions_count' => $summary?->exceptions_count ?? count($failureSnapshots),
             'history_event_count' => $historyBudget['history_event_count'],

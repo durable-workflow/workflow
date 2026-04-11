@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\RepairBlockedReason;
+use Workflow\V2\Support\WorkflowTaskProblem;
 
 class WorkflowRunSummary extends Model
 {
@@ -22,10 +23,11 @@ class WorkflowRunSummary extends Model
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
-    protected $appends = ['instance_id', 'selected_run_id', 'run_id', 'exceptions_count', 'is_terminal', 'repair_blocked'];
+    protected $appends = ['instance_id', 'selected_run_id', 'run_id', 'exceptions_count', 'is_terminal', 'repair_blocked', 'task_problem_badge'];
 
     protected $casts = [
         'is_current_run' => 'bool',
+        'task_problem' => 'bool',
         'visibility_labels' => 'array',
         'declared_contract_backfill_needed' => 'bool',
         'declared_contract_backfill_available' => 'bool',
@@ -85,6 +87,24 @@ class WorkflowRunSummary extends Model
     {
         return RepairBlockedReason::metadata(
             is_string($this->repair_blocked_reason) ? $this->repair_blocked_reason : null,
+        );
+    }
+
+    /**
+     * @return array{
+     *     code: string,
+     *     label: string,
+     *     description: string,
+     *     tone: string,
+     *     badge_visible: bool
+     * }|null
+     */
+    public function getTaskProblemBadgeAttribute(): ?array
+    {
+        return WorkflowTaskProblem::metadata(
+            (bool) $this->task_problem,
+            is_string($this->liveness_state) ? $this->liveness_state : null,
+            is_string($this->wait_kind) ? $this->wait_kind : null,
         );
     }
 }

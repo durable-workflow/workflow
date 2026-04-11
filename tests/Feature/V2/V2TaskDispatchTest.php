@@ -32,6 +32,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\TaskDispatcher;
 
@@ -135,6 +136,9 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertSame('workflow-task', $summary->wait_kind);
         $this->assertSame('repair_needed', $summary->liveness_state);
         $this->assertSame('Workflow task dispatch failed', $summary->wait_reason);
+        $this->assertTrue((bool) $summary->task_problem);
+        $this->assertSame('active', $summary->task_problem_badge['code']);
+        $this->assertSame('Task Problem', $summary->task_problem_badge['label']);
         $this->assertSame(
             sprintf(
                 'Workflow task %s could not be dispatched at %s. Queue transport unavailable.',
@@ -148,6 +152,8 @@ final class V2TaskDispatchTest extends TestCase
 
         $this->assertSame('repair_needed', $detail['liveness_state']);
         $this->assertSame('Workflow task dispatch failed', $detail['wait_reason']);
+        $this->assertTrue($detail['task_problem']);
+        $this->assertSame('active', $detail['task_problem_badge']['code']);
         $this->assertTrue($detail['tasks'][0]['dispatch_failed']);
         $this->assertFalse($detail['tasks'][0]['dispatch_overdue']);
         $this->assertSame('dispatch_failed', $detail['tasks'][0]['transport_state']);
@@ -157,6 +163,11 @@ final class V2TaskDispatchTest extends TestCase
             $detail['tasks'][0]['last_dispatch_attempt_at']?->toJSON(),
         );
         $this->assertSame('Queue transport unavailable.', $detail['tasks'][0]['last_dispatch_error']);
+
+        $export = HistoryExport::forRun($run->fresh(['summary']));
+
+        $this->assertTrue($export['summary']['task_problem']);
+        $this->assertSame('active', $export['summary']['task_problem_badge']['code']);
     }
 
     public function testTaskDispatchFailureRecordsUnsupportedQueueCapabilityWithoutRunningInline(): void
@@ -258,12 +269,16 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertSame('workflow-task', $summary->wait_kind);
         $this->assertSame('Workflow task claim failed', $summary->wait_reason);
         $this->assertSame('workflow_task_claim_failed', $summary->liveness_state);
+        $this->assertTrue((bool) $summary->task_problem);
+        $this->assertSame('active', $summary->task_problem_badge['code']);
         $this->assertStringContainsString('could not be claimed by a worker', (string) $summary->liveness_reason);
         $this->assertStringContainsString('queue_sync_unsupported', (string) $summary->liveness_reason);
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
         $this->assertSame('workflow_task_claim_failed', $detail['liveness_state']);
+        $this->assertTrue($detail['task_problem']);
+        $this->assertSame('active', $detail['task_problem_badge']['code']);
         $this->assertTrue($detail['tasks'][0]['claim_failed']);
         $this->assertSame('repair_backoff', $detail['tasks'][0]['transport_state']);
         $this->assertSame($task->last_claim_error, $detail['tasks'][0]['last_claim_error']);
@@ -272,6 +287,11 @@ final class V2TaskDispatchTest extends TestCase
             $task->repair_available_at?->toJSON(),
             $detail['tasks'][0]['repair_available_at']?->toJSON(),
         );
+
+        $export = HistoryExport::forRun($run->fresh(['summary']));
+
+        $this->assertTrue($export['summary']['task_problem']);
+        $this->assertSame('active', $export['summary']['task_problem_badge']['code']);
     }
 
     public function testActivityTaskClaimFailureRecordsUnsupportedQueueCapabilityWithoutStartingAttempt(): void

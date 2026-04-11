@@ -11,14 +11,14 @@ use Workflow\V2\Enums\StatusBucket;
 
 final class VisibilityFilters
 {
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     /**
      * @return list<int>
      */
     public static function supportedVersions(): array
     {
-        return [self::VERSION];
+        return [1, self::VERSION];
     }
 
     private const FIELD_LABELS = [
@@ -38,6 +38,7 @@ final class VisibilityFilters
         'wait_kind' => 'Wait Kind',
         'liveness_state' => 'Liveness State',
         'repair_blocked_reason' => 'Repair Blocked Reason',
+        'task_problem' => 'Task Problem',
         'declared_contract_backfill_needed' => 'Command Contract Backfill Needed',
         'declared_contract_backfill_available' => 'Command Contract Backfill Available',
         'continue_as_new_recommended' => 'Continue As New Recommended',
@@ -65,6 +66,7 @@ final class VisibilityFilters
 
     private const BOOLEAN_FIELDS = [
         'is_current_run',
+        'task_problem',
         'declared_contract_backfill_needed',
         'declared_contract_backfill_available',
         'continue_as_new_recommended',
@@ -237,6 +239,14 @@ final class VisibilityFilters
             if (array_key_exists($field, $normalized)) {
                 $query->where(self::columnForField($field), $normalized[$field]);
             }
+        }
+
+        foreach (self::BOOLEAN_FIELDS as $field) {
+            if (in_array($field, ['archived', 'is_terminal'], true) || ! array_key_exists($field, $normalized)) {
+                continue;
+            }
+
+            $query->where(self::columnForField($field), $normalized[$field]);
         }
 
         if (array_key_exists('archived', $normalized)) {

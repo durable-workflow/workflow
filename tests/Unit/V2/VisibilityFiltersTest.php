@@ -26,6 +26,7 @@ final class VisibilityFiltersTest extends TestCase
             'wait_kind' => ' signal ',
             'liveness_state' => ' waiting_for_signal ',
             'repair_blocked_reason' => ' unsupported_history ',
+            'task_problem' => 'yes',
             'declared_contract_backfill_needed' => 'yes',
             'declared_contract_backfill_available' => '0',
             'archived' => 'true',
@@ -52,6 +53,7 @@ final class VisibilityFiltersTest extends TestCase
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
             'is_current_run' => true,
+            'task_problem' => true,
             'declared_contract_backfill_needed' => true,
             'declared_contract_backfill_available' => false,
             'archived' => true,
@@ -126,6 +128,7 @@ final class VisibilityFiltersTest extends TestCase
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
+            'task_problem' => true,
             'continue_as_new_recommended' => true,
         ]);
         WorkflowRunSummary::create([
@@ -153,6 +156,7 @@ final class VisibilityFiltersTest extends TestCase
             'wait_kind' => 'timer',
             'liveness_state' => 'timer_scheduled',
             'repair_blocked_reason' => 'repair_not_needed',
+            'task_problem' => false,
             'archived_at' => now(),
             'continue_as_new_recommended' => false,
         ]);
@@ -168,6 +172,7 @@ final class VisibilityFiltersTest extends TestCase
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
+            'task_problem' => true,
             'declared_contract_backfill_needed' => true,
             'declared_contract_backfill_available' => true,
             'continue_as_new_recommended' => true,
@@ -182,12 +187,51 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame(['01JVISFILTERMATCH000000001'], $ids);
     }
 
+    public function testApplyFiltersUseBooleanExactFields(): void
+    {
+        WorkflowRunSummary::create([
+            'id' => '01JVISBOOLMATCH00000000001',
+            'workflow_instance_id' => 'visibility-bool-match',
+            'run_number' => 1,
+            'is_current_run' => false,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'status' => 'waiting',
+            'status_bucket' => 'running',
+            'task_problem' => true,
+            'continue_as_new_recommended' => true,
+        ]);
+        WorkflowRunSummary::create([
+            'id' => '01JVISBOOLMISS000000000001',
+            'workflow_instance_id' => 'visibility-bool-miss',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'status' => 'waiting',
+            'status_bucket' => 'running',
+            'task_problem' => false,
+            'continue_as_new_recommended' => false,
+        ]);
+
+        $ids = VisibilityFilters::apply(WorkflowRunSummary::query(), [
+            'workflow_type' => 'billing.invoice-sync',
+            'is_current_run' => false,
+            'task_problem' => true,
+            'continue_as_new_recommended' => true,
+        ])->pluck('id')->all();
+
+        $this->assertSame(['01JVISBOOLMATCH00000000001'], $ids);
+    }
+
     public function testDefinitionDescribesExactVisibilityContract(): void
     {
         $definition = VisibilityFilters::definition();
 
         $this->assertSame(VisibilityFilters::VERSION, $definition['version']);
-        $this->assertSame([VisibilityFilters::VERSION], $definition['supported_versions']);
+        $this->assertSame([1, VisibilityFilters::VERSION], $definition['supported_versions']);
         $this->assertSame('Instance ID', $definition['fields']['instance_id']['label']);
         $this->assertSame('string', $definition['fields']['instance_id']['type']);
         $this->assertSame('text', $definition['fields']['instance_id']['input']);
@@ -256,6 +300,9 @@ final class VisibilityFiltersTest extends TestCase
         );
         $this->assertSame('dark', $definition['fields']['repair_blocked_reason']['options'][0]['tone']);
         $this->assertTrue($definition['fields']['repair_blocked_reason']['options'][0]['badge_visible']);
+        $this->assertSame('Task Problem', $definition['fields']['task_problem']['label']);
+        $this->assertSame('boolean', $definition['fields']['task_problem']['type']);
+        $this->assertSame('boolean_select', $definition['fields']['task_problem']['input']);
         $this->assertSame('Labels', $definition['labels']['label']);
         $this->assertSame('map<string,string>', $definition['labels']['type']);
         $this->assertSame('key_value_textarea', $definition['labels']['input']);
@@ -271,18 +318,18 @@ final class VisibilityFiltersTest extends TestCase
 
         $this->assertSame(VisibilityFilters::VERSION, $supported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $supported['current_version']);
-        $this->assertSame([VisibilityFilters::VERSION], $supported['supported_versions']);
+        $this->assertSame([1, VisibilityFilters::VERSION], $supported['supported_versions']);
         $this->assertTrue($supported['supported']);
         $this->assertSame('supported', $supported['status']);
         $this->assertNull($supported['message']);
 
         $this->assertSame(99, $unsupported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $unsupported['current_version']);
-        $this->assertSame([VisibilityFilters::VERSION], $unsupported['supported_versions']);
+        $this->assertSame([1, VisibilityFilters::VERSION], $unsupported['supported_versions']);
         $this->assertFalse($unsupported['supported']);
         $this->assertSame('unsupported', $unsupported['status']);
         $this->assertSame(
-            'This saved view uses visibility filter version 99, but this Waterline build supports version 1.',
+            'This saved view uses visibility filter version 99, but this Waterline build supports version 1, 2.',
             $unsupported['message'],
         );
     }
