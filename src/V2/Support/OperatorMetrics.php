@@ -10,7 +10,6 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
-use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -219,41 +218,7 @@ final class OperatorMetrics
      */
     private static function commandContractMetrics(): array
     {
-        $runModel = self::runModel();
-        $counts = [
-            'backfill_needed_runs' => 0,
-            'backfill_available_runs' => 0,
-            'backfill_unavailable_runs' => 0,
-        ];
-
-        $runModel::query()
-            ->select(['id', 'workflow_class', 'workflow_type'])
-            ->with([
-                'historyEvents' => static function ($query): void {
-                    $query->select(['workflow_run_id', 'event_type', 'payload', 'sequence'])
-                        ->where('event_type', HistoryEventType::WorkflowStarted->value)
-                        ->orderBy('sequence');
-                },
-            ])
-            ->chunkById(100, function ($runs) use (&$counts): void {
-                foreach ($runs as $run) {
-                    $state = RunCommandContract::historyBackfillState($run);
-
-                    if (! $state['needed']) {
-                        continue;
-                    }
-
-                    $counts['backfill_needed_runs']++;
-
-                    if ($state['available']) {
-                        $counts['backfill_available_runs']++;
-                    } else {
-                        $counts['backfill_unavailable_runs']++;
-                    }
-                }
-            });
-
-        return $counts;
+        return CommandContractSnapshotDrift::metrics();
     }
 
     /**
