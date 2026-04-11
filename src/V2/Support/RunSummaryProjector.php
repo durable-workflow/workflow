@@ -30,11 +30,8 @@ final class RunSummaryProjector
         $openActivity = $isTerminal
             ? null
             : collect($activities)
-                ->first(static fn (array $activity): bool => in_array(
-                    $activity['status'] ?? null,
-                    [ActivityStatus::Pending->value, ActivityStatus::Running->value],
-                    true,
-                ));
+                ->first(static fn (array $activity): bool => self::isAuthoritativeOpenActivity($activity));
+        $diagnosticActivity = $isTerminal ? null : self::diagnosticActivity($activities);
         $unsupportedActivity = $isTerminal ? null : self::unsupportedActivity($activities);
         $unsupportedTimer = $isTerminal ? null : self::unsupportedTimer($timers);
 
@@ -69,14 +66,28 @@ final class RunSummaryProjector
             ? null
             : collect($timers)
                 ->first(
-                    static fn (array $timer): bool => ($timer['status'] ?? null) === 'pending'
+                    static fn (array $timer): bool => self::isAuthoritativeOpenTimer($timer)
                         && ($timer['timer_kind'] ?? null) !== 'condition_timeout'
                         && ($timer['id'] ?? null) !== ($openConditionWait['timer_id'] ?? null)
                 );
+        $diagnosticTimer = $isTerminal || $openUpdateWait !== null
+            ? null
+            : self::diagnosticTimer($timers, self::nonEmptyString($openConditionWait['timer_id'] ?? null));
 
         $openChildWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
             ? null
             : self::openChildWait($run);
+        $diagnosticChildWait = (
+            $isTerminal
+            || $openActivity !== null
+            || $openUpdateWait !== null
+            || $openSignalApplicationWait !== null
+            || $openConditionWait !== null
+            || $openTimer !== null
+            || $nextTask !== null
+        )
+            ? null
+            : self::diagnosticChildWait($run);
 
         $pendingChildResolutionWait = (
             $isTerminal
@@ -86,6 +97,7 @@ final class RunSummaryProjector
             || $openConditionWait !== null
             || $openTimer !== null
             || $nextTask !== null
+            || $diagnosticChildWait !== null
         )
             ? null
             : self::pendingChildResolutionWait($run, $openChildWait !== null);
@@ -98,6 +110,7 @@ final class RunSummaryProjector
             || $openConditionWait !== null
             || $openTimer !== null
             || $nextTask !== null
+            || $diagnosticChildWait !== null
             || $openChildWait !== null
             || $pendingChildResolutionWait !== null
         )
@@ -112,6 +125,7 @@ final class RunSummaryProjector
             || $openConditionWait !== null
             || $openTimer !== null
             || $nextTask !== null
+            || $diagnosticChildWait !== null
             || $openChildWait !== null
             || $pendingChildResolutionWait !== null
             || $unsupportedChildWait !== null
@@ -219,16 +233,19 @@ final class RunSummaryProjector
             $run,
             $isTerminal,
             $openActivity,
+            $diagnosticActivity,
             $unsupportedActivity,
             $openUpdateWait,
             $openUpdateTask,
             $openSignalApplicationWait,
             $openConditionWait,
             $openTimer,
+            $diagnosticTimer,
             $unsupportedTimer,
             $nextTask,
             $replayBlockedTask,
             $openChildWait,
+            $diagnosticChildWait,
             $pendingChildResolutionWait,
             $unsupportedChildWait,
             $openSignalWait,
@@ -382,16 +399,19 @@ final class RunSummaryProjector
         WorkflowRun $run,
         bool $isTerminal,
         ?array $openActivity,
+        ?array $diagnosticActivity,
         ?array $unsupportedActivity,
         ?array $openUpdateWait,
         ?WorkflowTask $openUpdateTask,
         ?array $openSignalApplicationWait,
         ?array $openConditionWait,
         ?array $openTimer,
+        ?array $diagnosticTimer,
         ?array $unsupportedTimer,
         ?WorkflowTask $nextTask,
         ?WorkflowTask $replayBlockedTask,
         ?array $openChildWait,
+        ?array $diagnosticChildWait,
         ?array $pendingChildResolutionWait,
         ?array $unsupportedChildWait,
         ?array $openSignalWait,
@@ -402,6 +422,16 @@ final class RunSummaryProjector
 
         if ($replayBlockedTask !== null) {
             return self::replayBlockedLiveness($replayBlockedTask);
+        }
+
+        if ($diagnosticActivity !== null) {
+            return [
+                'workflow_replay_blocked',
+                sprintf(
+                    'Activity %s is visible only from an older mutable row without typed activity history. This row is diagnostic-only and does not satisfy the durable resume-path invariant.',
+                    self::activityType($diagnosticActivity),
+                ),
+            ];
         }
 
         if ($openActivity !== null) {
@@ -518,6 +548,16 @@ final class RunSummaryProjector
             return ['repair_needed', sprintf('Timer %s is pending without an open timer task.', $openTimer['id'])];
         }
 
+        if ($diagnosticTimer !== null) {
+            return [
+                'workflow_replay_blocked',
+                sprintf(
+                    'Timer %s is visible only from an older mutable row without typed timer history. This row is diagnostic-only and does not satisfy the durable resume-path invariant.',
+                    $diagnosticTimer['id'] ?? 'unknown',
+                ),
+            ];
+        }
+
         if ($nextTask !== null) {
             return self::taskLiveness($nextTask, $run, 'Workflow');
         }
@@ -554,6 +594,16 @@ final class RunSummaryProjector
 
         if ($openChildWait !== null) {
             return ['waiting_for_child', sprintf('Waiting for child workflow %s.', $openChildWait['label'])];
+        }
+
+        if ($diagnosticChildWait !== null) {
+            return [
+                'workflow_replay_blocked',
+                sprintf(
+                    'Child workflow %s is visible only from an older mutable row or link without typed parent child history. This state is diagnostic-only and does not satisfy the durable resume-path invariant.',
+                    $diagnosticChildWait['label'],
+                ),
+            ];
         }
 
         if ($unsupportedChildWait !== null) {
@@ -838,6 +888,22 @@ final class RunSummaryProjector
     }
 
     /**
+     * @param list<array<string, mixed>> $activities
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function diagnosticActivity(array $activities): ?array
+    {
+        foreach ($activities as $activity) {
+            if (self::hasMutableOpenFallbackAuthority($activity['history_authority'] ?? null)) {
+                return $activity;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @param list<array<string, mixed>> $timers
      *
      * @return array<string, mixed>|null
@@ -846,6 +912,26 @@ final class RunSummaryProjector
     {
         foreach ($timers as $timer) {
             if (($timer['history_unsupported_reason'] ?? null) === RunTimerView::UNSUPPORTED_TERMINAL_REASON) {
+                return $timer;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $timers
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function diagnosticTimer(array $timers, ?string $ignoredTimerId = null): ?array
+    {
+        foreach ($timers as $timer) {
+            if (($timer['id'] ?? null) === $ignoredTimerId) {
+                continue;
+            }
+
+            if (self::hasMutableOpenFallbackAuthority($timer['history_authority'] ?? null)) {
                 return $timer;
             }
         }
@@ -892,6 +978,36 @@ final class RunSummaryProjector
      * @return array{
      *     id: string,
      *     label: string,
+     *     opened_at: \Carbon\CarbonInterface|null
+     * }|null
+     */
+    private static function diagnosticChildWait(WorkflowRun $run): ?array
+    {
+        foreach (ChildRunHistory::knownSequences($run) as $sequence) {
+            $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
+
+            if (
+                $snapshot === null
+                || $snapshot['status'] !== 'open'
+                || ($snapshot['history_authority'] ?? null) !== ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK
+            ) {
+                continue;
+            }
+
+            return [
+                'id' => sprintf('child:%s', $snapshot['child_call_id'] ?? $sequence),
+                'label' => $snapshot['label'],
+                'opened_at' => $snapshot['opened_at'],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{
+     *     id: string,
+     *     label: string,
      *     opened_at: \Carbon\CarbonInterface,
      *     resume_source_kind: string,
      *     resume_source_id: string|null
@@ -902,7 +1018,11 @@ final class RunSummaryProjector
         foreach (ChildRunHistory::knownSequences($run) as $sequence) {
             $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
 
-            if ($snapshot === null || $snapshot['status'] !== 'open') {
+            if (
+                $snapshot === null
+                || $snapshot['status'] !== 'open'
+                || ($snapshot['history_authority'] ?? null) === ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK
+            ) {
                 continue;
             }
 
@@ -916,6 +1036,28 @@ final class RunSummaryProjector
         }
 
         return null;
+    }
+
+    private static function isAuthoritativeOpenActivity(array $activity): bool
+    {
+        return in_array(
+            $activity['status'] ?? null,
+            [ActivityStatus::Pending->value, ActivityStatus::Running->value],
+            true,
+        ) && ! self::hasMutableOpenFallbackAuthority($activity['history_authority'] ?? null);
+    }
+
+    private static function isAuthoritativeOpenTimer(array $timer): bool
+    {
+        return ($timer['status'] ?? null) === 'pending'
+            && ! self::hasMutableOpenFallbackAuthority($timer['history_authority'] ?? null);
+    }
+
+    private static function hasMutableOpenFallbackAuthority(mixed $historyAuthority): bool
+    {
+        return $historyAuthority === RunActivityView::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK
+            || $historyAuthority === RunTimerView::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK
+            || $historyAuthority === ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK;
     }
 
     /**

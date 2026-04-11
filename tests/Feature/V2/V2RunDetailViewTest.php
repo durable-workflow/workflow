@@ -2720,7 +2720,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($timerWait['sequence'], $missingTask['timer_sequence']);
     }
 
-    public function testRunDetailViewMarksRunningActivityWithoutTaskAsNonRepairable(): void
+    public function testRunDetailViewMarksRowOnlyRunningActivityFallbackAsUnsupportedHistory(): void
     {
         $instance = WorkflowInstance::query()->create([
             'id' => 'detail-running-activity',
@@ -2774,23 +2774,230 @@ final class V2RunDetailViewTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary']));
         $activityWait = $this->findWait($detail['waits'], 'activity');
 
-        $this->assertSame('activity', $detail['wait_kind']);
-        $this->assertSame('activity_running_without_task', $detail['liveness_state']);
+        $this->assertNull($detail['wait_kind']);
+        $this->assertNull($detail['open_wait_id']);
+        $this->assertNull($detail['resume_source_kind']);
+        $this->assertNull($detail['resume_source_id']);
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
         $this->assertSame(
             sprintf(
-                'Activity %s is already running without an open activity task. Repair is deferred to avoid duplicating in-flight work.',
-                $execution->id,
+                'Activity %s is visible only from an older mutable row without typed activity history. This row is diagnostic-only and does not satisfy the durable resume-path invariant.',
+                \Tests\Fixtures\V2\TestGreetingActivity::class,
             ),
             $detail['liveness_reason'],
         );
         $this->assertFalse($detail['can_repair']);
+        $this->assertSame('unsupported_history', $detail['repair_blocked_reason']);
         $this->assertSame('open', $activityWait['status']);
         $this->assertSame('running', $activityWait['source_status']);
+        $this->assertSame(
+            sprintf(
+                'Activity %s is visible only from an older mutable row without typed activity history.',
+                \Tests\Fixtures\V2\TestGreetingActivity::class,
+            ),
+            $activityWait['summary'],
+        );
+        $this->assertTrue($activityWait['diagnostic_only']);
         $this->assertFalse($activityWait['task_backed']);
-        $this->assertSame('activity_execution', $activityWait['resume_source_kind']);
-        $this->assertSame($execution->id, $activityWait['resume_source_id']);
+        $this->assertSame('mutable_open_fallback', $activityWait['history_authority']);
+        $this->assertNull($activityWait['resume_source_kind']);
+        $this->assertNull($activityWait['resume_source_id']);
         $this->assertNull($activityWait['task_id']);
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
+    }
+
+    public function testRunDetailViewMarksRowOnlyPendingTimerFallbackAsUnsupportedHistory(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'detail-row-only-timer',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'test-timer-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([60]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => 60,
+            'fire_at' => now()->addMinute(),
+            'created_at' => now()->subSeconds(20),
+            'updated_at' => now()->subSeconds(20),
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $timerWait = $this->findWait($detail['waits'], 'timer');
+
+        $this->assertNull($detail['wait_kind']);
+        $this->assertNull($detail['open_wait_id']);
+        $this->assertNull($detail['resume_source_kind']);
+        $this->assertNull($detail['resume_source_id']);
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertSame(
+            sprintf(
+                'Timer %s is visible only from an older mutable row without typed timer history. This row is diagnostic-only and does not satisfy the durable resume-path invariant.',
+                $timer->id,
+            ),
+            $detail['liveness_reason'],
+        );
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame('unsupported_history', $detail['repair_blocked_reason']);
+        $this->assertCount(1, $detail['timers']);
+        $this->assertSame($timer->id, $detail['timers'][0]['id']);
+        $this->assertSame('pending', $detail['timers'][0]['status']);
+        $this->assertSame('mutable_open_fallback', $detail['timers'][0]['history_authority']);
+        $this->assertNull($detail['timers'][0]['history_unsupported_reason']);
+        $this->assertSame('open', $timerWait['status']);
+        $this->assertSame('pending', $timerWait['source_status']);
+        $this->assertSame(
+            'Timer is visible only from an older mutable row without typed timer history.',
+            $timerWait['summary'],
+        );
+        $this->assertTrue($timerWait['diagnostic_only']);
+        $this->assertFalse($timerWait['task_backed']);
+        $this->assertSame('mutable_open_fallback', $timerWait['history_authority']);
+        $this->assertNull($timerWait['resume_source_kind']);
+        $this->assertNull($timerWait['resume_source_id']);
+        $this->assertNull($timerWait['task_id']);
+        $this->assertNull($this->findTaskOrNull($detail['tasks'], 'timer'));
+    }
+
+    public function testRunDetailViewMarksRowOnlyOpenChildFallbackAsUnsupportedHistory(): void
+    {
+        $parentInstance = WorkflowInstance::query()->create([
+            'id' => 'detail-row-only-child-parent',
+            'workflow_class' => TestParentWaitingOnChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        $childInstance = WorkflowInstance::query()->create([
+            'id' => 'detail-row-only-child-child',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $parentInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestParentWaitingOnChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([60]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([30]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subSeconds(50),
+            'last_progress_at' => now()->subSeconds(20),
+        ]);
+
+        $parentInstance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+        $childInstance->forceFill([
+            'current_run_id' => $childRun->id,
+        ])->save();
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()->create([
+            'link_type' => 'child_workflow',
+            'sequence' => 1,
+            'parent_workflow_instance_id' => $parentInstance->id,
+            'parent_workflow_run_id' => $run->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+            'created_at' => now()->subSeconds(40),
+            'updated_at' => now()->subSeconds(40),
+        ]);
+
+        RunSummaryProjector::project(
+            $run->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+                'childLinks.childRun.historyEvents',
+            ])
+        );
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $childWait = $this->findWait($detail['waits'], 'child');
+
+        $this->assertNull($detail['wait_kind']);
+        $this->assertNull($detail['open_wait_id']);
+        $this->assertNull($detail['resume_source_kind']);
+        $this->assertNull($detail['resume_source_id']);
+        $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+        $this->assertSame(
+            'Child workflow workflow.child is visible only from an older mutable row or link without typed parent child history. This state is diagnostic-only and does not satisfy the durable resume-path invariant.',
+            $detail['liveness_reason'],
+        );
+        $this->assertFalse($detail['can_repair']);
+        $this->assertSame('unsupported_history', $detail['repair_blocked_reason']);
+        $this->assertSame('open', $childWait['status']);
+        $this->assertSame('waiting', $childWait['source_status']);
+        $this->assertSame(
+            'Child workflow workflow.child is visible only from an older mutable row or link without typed parent child history.',
+            $childWait['summary'],
+        );
+        $this->assertTrue($childWait['diagnostic_only']);
+        $this->assertFalse($childWait['task_backed']);
+        $this->assertSame('mutable_open_fallback', $childWait['history_authority']);
+        $this->assertNull($childWait['resume_source_kind']);
+        $this->assertNull($childWait['resume_source_id']);
+        $this->assertSame($link->id, $childWait['child_call_id']);
+        $this->assertSame($childRun->id, $childWait['child_workflow_run_id']);
+        $this->assertSame($childInstance->id, $childWait['target_name']);
+        $this->assertNull($this->findTaskOrNull($detail['tasks'], 'workflow'));
     }
 
     public function testRunDetailViewKeepsRunningActivityFromTypedHistoryWhenExecutionRowIsMissing(): void

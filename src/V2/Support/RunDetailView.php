@@ -44,12 +44,18 @@ final class RunDetailView
         $currentSummary = $currentRunResolution['summary'];
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
         $commandContract = RunCommandContract::forRun($run);
+        $tasks = RunTaskView::forRun($run);
         $cancelBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
         $terminateBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
         $signalBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
         $queryBlockedReason = self::queryBlockedReason($run);
         $updateBlockedReason = self::updateBlockedReason($run, $isCurrentRun);
-        $repairBlockedReason = self::repairBlockedReason($run, $isCurrentRun, $summary?->liveness_state);
+        $repairBlockedReason = self::repairBlockedReason(
+            $run,
+            $isCurrentRun,
+            $summary?->liveness_state,
+            self::hasReplayBlockedTask($tasks),
+        );
         $archiveBlockedReason = self::archiveBlockedReason($run);
         $canCancel = $cancelBlockedReason === null;
         $canTerminate = $terminateBlockedReason === null;
@@ -76,7 +82,6 @@ final class RunDetailView
             ->filter(static fn (array $update): bool => is_string($update['command_id'] ?? null))
             ->keyBy('command_id');
         $failureSnapshots = FailureSnapshots::forRun($run);
-        $tasks = RunTaskView::forRun($run);
         $waitSnapshot = $selectedRun['waits'];
         $waits = $waitSnapshot['waits'];
         $openWaitCount = collect($waits)
@@ -330,7 +335,7 @@ final class RunDetailView
     private static function currentOpenWait(array $waits): ?array
     {
         foreach ($waits as $wait) {
-            if (($wait['status'] ?? null) === 'open') {
+            if (($wait['status'] ?? null) === 'open' && ($wait['diagnostic_only'] ?? false) !== true) {
                 return $wait;
             }
         }
@@ -443,6 +448,7 @@ final class RunDetailView
         WorkflowRun $run,
         bool $isCurrentRun,
         ?string $livenessState,
+        bool $hasReplayBlockedTask,
     ): ?string {
         $blockedReason = self::actionBlockedReason($run, $isCurrentRun);
 
@@ -450,8 +456,14 @@ final class RunDetailView
             return $blockedReason;
         }
 
-        if (in_array($livenessState, ['repair_needed', 'workflow_replay_blocked'], true)) {
+        if ($livenessState === 'repair_needed') {
             return null;
+        }
+
+        if ($livenessState === 'workflow_replay_blocked') {
+            return $hasReplayBlockedTask
+                ? null
+                : 'unsupported_history';
         }
 
         if (is_string($livenessState) && str_contains($livenessState, 'waiting_for_compatible_worker')) {
@@ -495,6 +507,20 @@ final class RunDetailView
             RunStatus::Cancelled,
             RunStatus::Terminated,
         ], true);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $tasks
+     */
+    private static function hasReplayBlockedTask(array $tasks): bool
+    {
+        foreach ($tasks as $task) {
+            if (($task['transport_state'] ?? null) === 'replay_blocked') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

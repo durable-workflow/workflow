@@ -151,6 +151,10 @@ final class WorkflowExecutor
                 }
 
                 if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                    if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::ACTIVITY)) {
+                        return null;
+                    }
+
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->waitForNextResumeSource($run, $task);
                 }
@@ -475,6 +479,10 @@ final class WorkflowExecutor
                 }
 
                 if ($timer->status === TimerStatus::Pending) {
+                    if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::TIMER)) {
+                        return null;
+                    }
+
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->waitForNextResumeSource($run, $task);
                 }
@@ -617,6 +625,10 @@ final class WorkflowExecutor
                 $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
 
                 if (in_array($childStatus, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
+                    if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
+                        return null;
+                    }
+
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return $this->waitForNextResumeSource($run, $task);
                 }
@@ -760,6 +772,15 @@ final class WorkflowExecutor
                             ActivityStatus::Pending,
                             ActivityStatus::Running,
                         ], true)) {
+                            if (! $this->ensureTypedStepHistoryRecorded(
+                                $run,
+                                $task,
+                                $itemSequence,
+                                WorkflowStepHistory::ACTIVITY,
+                            )) {
+                                return null;
+                            }
+
                             $pending = true;
 
                             continue;
@@ -877,6 +898,15 @@ final class WorkflowExecutor
                         RunStatus::Running,
                         RunStatus::Waiting,
                     ], true)) {
+                        if (! $this->ensureTypedStepHistoryRecorded(
+                            $run,
+                            $task,
+                            $itemSequence,
+                            WorkflowStepHistory::CHILD_WORKFLOW,
+                        )) {
+                            return null;
+                        }
+
                         $pending = true;
 
                         continue;

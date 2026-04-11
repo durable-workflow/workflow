@@ -4988,7 +4988,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($task->id, $updatedSummary->next_task_id);
     }
 
-    public function testRepairRecreatesMissingTimerTaskForPendingTimer(): void
+    public function testRepairDoesNotCreateTaskForRowOnlyPendingTimerFallback(): void
     {
         Queue::fake();
 
@@ -5037,35 +5037,29 @@ final class V2WorkflowTest extends TestCase
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
-        $this->assertSame('repair_needed', $summary->liveness_state);
-        $this->assertSame('timer', $summary->wait_kind);
+        $this->assertNull($summary->wait_kind);
+        $this->assertSame('workflow_replay_blocked', $summary->liveness_state);
+        $this->assertSame(
+            sprintf(
+                'Timer %s is visible only from an older mutable row without typed timer history. This row is diagnostic-only and does not satisfy the durable resume-path invariant.',
+                $timer->id,
+            ),
+            $summary->liveness_reason,
+        );
 
         $result = WorkflowStub::loadRun($run->id)->attemptRepair();
 
         $this->assertTrue($result->accepted());
-        $this->assertSame('repair_dispatched', $result->outcome());
+        $this->assertSame('repair_not_needed', $result->outcome());
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $run->id)->count());
 
-        /** @var WorkflowTask $task */
-        $task = WorkflowTask::query()
-            ->where('workflow_run_id', $run->id)
-            ->sole();
-
-        $this->assertSame(TaskType::Timer, $task->task_type);
-        $this->assertSame(TaskStatus::Ready, $task->status);
-        $this->assertSame([
-            'timer_id' => $timer->id,
-        ], $task->payload);
-        $this->assertSame(1, $task->repair_count);
-        $this->assertSame($timer->fire_at?->toJSON(), $task->available_at?->toJSON());
-
-        Queue::assertPushed(RunTimerTask::class, static fn (RunTimerTask $job): bool => $job->taskId === $task->id);
+        Queue::assertNothingPushed();
 
         $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
 
-        $this->assertSame('timer', $updatedSummary->wait_kind);
-        $this->assertSame('timer_scheduled', $updatedSummary->liveness_state);
-        $this->assertSame($task->id, $updatedSummary->next_task_id);
-        $this->assertSame('timer', $updatedSummary->next_task_type);
+        $this->assertNull($updatedSummary->wait_kind);
+        $this->assertSame('workflow_replay_blocked', $updatedSummary->liveness_state);
+        $this->assertNull($updatedSummary->next_task_id);
     }
 
     public function testRepairReturnsAcceptedNoOpForHealthySignalWait(): void
@@ -5674,7 +5668,7 @@ final class V2WorkflowTest extends TestCase
         }
     }
 
-    public function testTaskWatchdogDoesNotRecreateMissingTaskForRunningActivityExecution(): void
+    public function testTaskWatchdogLeavesRowOnlyRunningActivityFallbackDiagnosticOnly(): void
     {
         Queue::fake();
 
@@ -5727,11 +5721,12 @@ final class V2WorkflowTest extends TestCase
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
-        $this->assertSame('activity_running_without_task', $summary->liveness_state);
+        $this->assertNull($summary->wait_kind);
+        $this->assertSame('workflow_replay_blocked', $summary->liveness_state);
         $this->assertSame(
             sprintf(
-                'Activity %s is already running without an open activity task. Repair is deferred to avoid duplicating in-flight work.',
-                $execution->id,
+                'Activity %s is visible only from an older mutable row without typed activity history. This row is diagnostic-only and does not satisfy the durable resume-path invariant.',
+                TestGreetingActivity::class,
             ),
             $summary->liveness_reason,
         );
@@ -5743,8 +5738,8 @@ final class V2WorkflowTest extends TestCase
 
         $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
 
-        $this->assertSame('activity', $updatedSummary->wait_kind);
-        $this->assertSame('activity_running_without_task', $updatedSummary->liveness_state);
+        $this->assertNull($updatedSummary->wait_kind);
+        $this->assertSame('workflow_replay_blocked', $updatedSummary->liveness_state);
         $this->assertNull($updatedSummary->next_task_id);
     }
 
@@ -6854,7 +6849,7 @@ final class V2WorkflowTest extends TestCase
         }
     }
 
-    public function testRepairDoesNotRecreateMissingTaskForRunningActivityExecution(): void
+    public function testRepairReturnsAcceptedNoOpForRowOnlyRunningActivityFallback(): void
     {
         Queue::fake();
 
@@ -6907,12 +6902,12 @@ final class V2WorkflowTest extends TestCase
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
-        $this->assertSame('activity', $summary->wait_kind);
-        $this->assertSame('activity_running_without_task', $summary->liveness_state);
+        $this->assertNull($summary->wait_kind);
+        $this->assertSame('workflow_replay_blocked', $summary->liveness_state);
         $this->assertSame(
             sprintf(
-                'Activity %s is already running without an open activity task. Repair is deferred to avoid duplicating in-flight work.',
-                $execution->id,
+                'Activity %s is visible only from an older mutable row without typed activity history. This row is diagnostic-only and does not satisfy the durable resume-path invariant.',
+                TestGreetingActivity::class,
             ),
             $summary->liveness_reason,
         );
@@ -6928,8 +6923,8 @@ final class V2WorkflowTest extends TestCase
 
         $updatedSummary = WorkflowRunSummary::query()->findOrFail($run->id);
 
-        $this->assertSame('activity', $updatedSummary->wait_kind);
-        $this->assertSame('activity_running_without_task', $updatedSummary->liveness_state);
+        $this->assertNull($updatedSummary->wait_kind);
+        $this->assertSame('workflow_replay_blocked', $updatedSummary->liveness_state);
         $this->assertNull($updatedSummary->next_task_id);
 
         $this->assertDatabaseHas('workflow_commands', [
@@ -6948,6 +6943,130 @@ final class V2WorkflowTest extends TestCase
             'workflow_task_id' => null,
             'event_type' => 'RepairRequested',
         ]);
+    }
+
+    public function testRepairReturnsAcceptedNoOpForRowOnlyOpenChildFallback(): void
+    {
+        Queue::fake();
+
+        $parentInstance = WorkflowInstance::query()->create([
+            'id' => 'repair-row-only-child-parent',
+            'workflow_class' => TestParentWaitingOnChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        $childInstance = WorkflowInstance::query()->create([
+            'id' => 'repair-row-only-child-child',
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $parentInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestParentWaitingOnChildWorkflow::class,
+            'workflow_type' => 'workflow.parent',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([60]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+        ]);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestTimerWorkflow::class,
+            'workflow_type' => 'workflow.child',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([30]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subSeconds(50),
+            'last_progress_at' => now()->subSeconds(20),
+        ]);
+
+        $parentInstance->forceFill([
+            'current_run_id' => $parentRun->id,
+        ])->save();
+        $childInstance->forceFill([
+            'current_run_id' => $childRun->id,
+        ])->save();
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()->create([
+            'link_type' => 'child_workflow',
+            'sequence' => 1,
+            'parent_workflow_instance_id' => $parentInstance->id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+            'created_at' => now()->subSeconds(45),
+            'updated_at' => now()->subSeconds(45),
+        ]);
+
+        $summary = RunSummaryProjector::project(
+            $parentRun->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+                'childLinks.childRun.historyEvents',
+            ])
+        );
+
+        $this->assertNull($summary->wait_kind);
+        $this->assertSame('workflow_replay_blocked', $summary->liveness_state);
+        $this->assertSame(
+            'Child workflow workflow.child is visible only from an older mutable row or link without typed parent child history. This state is diagnostic-only and does not satisfy the durable resume-path invariant.',
+            $summary->liveness_reason,
+        );
+
+        $result = WorkflowStub::loadRun($parentRun->id)->attemptRepair();
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('repair_not_needed', $result->outcome());
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $parentRun->id)->count());
+
+        Queue::assertNothingPushed();
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($parentRun->id);
+
+        $this->assertNull($updatedSummary->wait_kind);
+        $this->assertSame('workflow_replay_blocked', $updatedSummary->liveness_state);
+        $this->assertNull($updatedSummary->next_task_id);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => $parentInstance->id,
+            'workflow_run_id' => $parentRun->id,
+            'command_type' => 'repair',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'outcome' => 'repair_not_needed',
+        ]);
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $parentRun->id,
+            'workflow_command_id' => $result->commandId(),
+            'workflow_task_id' => null,
+            'event_type' => 'RepairRequested',
+        ]);
+        $this->assertSame($childRun->id, $link->child_workflow_run_id);
     }
 
     private function waitFor(callable $condition): void

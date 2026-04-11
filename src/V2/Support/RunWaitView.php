@@ -109,8 +109,9 @@ final class RunWaitView
         $activityType = self::stringValue($activity['type'] ?? null)
             ?? self::stringValue($activity['class'] ?? null)
             ?? 'activity';
+        $historyAuthority = self::stringValue($activity['history_authority'] ?? null);
         $unsupportedReason = self::stringValue($activity['history_unsupported_reason'] ?? null);
-        $diagnosticOnly = $unsupportedReason !== null;
+        $diagnosticOnly = self::diagnosticOnly($historyAuthority, $unsupportedReason);
         $sourceStatus = $unsupportedReason === RunActivityView::UNSUPPORTED_TERMINAL_REASON
             ? (self::stringValue($activity['row_status'] ?? null) ?? self::stringValue(
                 $activity['status'] ?? null
@@ -131,7 +132,12 @@ final class RunWaitView
             'status' => $status,
             'source_status' => $sourceStatus,
             'summary' => match ($status) {
-                'open' => sprintf('Waiting for activity %s.', $activityType),
+                'open' => $diagnosticOnly
+                    ? sprintf(
+                        'Activity %s is visible only from an older mutable row without typed activity history.',
+                        $activityType,
+                    )
+                    : sprintf('Waiting for activity %s.', $activityType),
                 'cancelled' => sprintf('Activity wait for %s was cancelled.', $activityType),
                 'unsupported' => sprintf(
                     'Activity %s has a terminal mutable row without typed activity history.',
@@ -159,7 +165,7 @@ final class RunWaitView
             'command_sequence' => null,
             'command_status' => null,
             'command_outcome' => null,
-            'history_authority' => self::stringValue($activity['history_authority'] ?? null),
+            'history_authority' => $historyAuthority,
             'history_unsupported_reason' => $unsupportedReason,
             'row_status' => self::stringValue($activity['row_status'] ?? null),
             'parallel_group_kind' => $activity['parallel_group_kind'] ?? null,
@@ -176,8 +182,9 @@ final class RunWaitView
      */
     private static function timerWait(array $timer, ?WorkflowTask $task): array
     {
+        $historyAuthority = self::stringValue($timer['history_authority'] ?? null);
         $unsupportedReason = self::stringValue($timer['history_unsupported_reason'] ?? null);
-        $diagnosticOnly = $unsupportedReason !== null;
+        $diagnosticOnly = self::diagnosticOnly($historyAuthority, $unsupportedReason);
         $sourceStatus = self::stringValue($timer['source_status'] ?? null)
             ?? self::stringValue($timer['status'] ?? null)
             ?? 'pending';
@@ -197,7 +204,9 @@ final class RunWaitView
             'status' => $status,
             'source_status' => $sourceStatus,
             'summary' => match ($status) {
-                'open' => 'Waiting for timer.',
+                'open' => $diagnosticOnly
+                    ? 'Timer is visible only from an older mutable row without typed timer history.'
+                    : 'Waiting for timer.',
                 'cancelled' => 'Timer wait was cancelled.',
                 'unsupported' => 'Timer has a terminal mutable row without typed timer history.',
                 default => 'Timer fired.',
@@ -219,7 +228,7 @@ final class RunWaitView
             'command_sequence' => null,
             'command_status' => null,
             'command_outcome' => null,
-            'history_authority' => self::stringValue($timer['history_authority'] ?? null),
+            'history_authority' => $historyAuthority,
             'history_unsupported_reason' => $unsupportedReason,
             'row_status' => self::stringValue($timer['row_status'] ?? null),
         ];
@@ -378,8 +387,9 @@ final class RunWaitView
             $label = $snapshot['label'];
             $childCallId = self::stringValue($snapshot['child_call_id'] ?? null);
             $resumeSourceId = self::stringValue($snapshot['resume_source_id'] ?? null);
+            $historyAuthority = self::stringValue($snapshot['history_authority'] ?? null);
             $unsupportedReason = self::stringValue($snapshot['history_unsupported_reason'] ?? null);
-            $diagnosticOnly = $unsupportedReason !== null;
+            $diagnosticOnly = self::diagnosticOnly($historyAuthority, $unsupportedReason);
             $task = ($childCallId === null ? null : ($taskByChildCallId[$childCallId] ?? null))
                 ?? ($resumeSourceId === null ? null : ($taskByChildRunId[$resumeSourceId] ?? null));
 
@@ -407,12 +417,17 @@ final class RunWaitView
                 'sequence' => $sequence,
                 'status' => $snapshot['status'],
                 'source_status' => $sourceStatus,
-                'summary' => $unsupportedReason === ChildRunHistory::UNSUPPORTED_TERMINAL_REASON
-                    ? sprintf(
+                'summary' => match (true) {
+                    $unsupportedReason === ChildRunHistory::UNSUPPORTED_TERMINAL_REASON => sprintf(
                         'Child workflow %s has a terminal mutable row or link without typed parent child history.',
                         $label,
-                    )
-                    : $summary,
+                    ),
+                    $diagnosticOnly => sprintf(
+                        'Child workflow %s is visible only from an older mutable row or link without typed parent child history.',
+                        $label,
+                    ),
+                    default => $summary,
+                },
                 'opened_at' => $snapshot['opened_at'],
                 'deadline_at' => null,
                 'resolved_at' => $snapshot['resolved_at'],
@@ -431,7 +446,7 @@ final class RunWaitView
                 'command_sequence' => null,
                 'command_status' => null,
                 'command_outcome' => null,
-                'history_authority' => self::stringValue($snapshot['history_authority'] ?? null),
+                'history_authority' => $historyAuthority,
                 'history_unsupported_reason' => $unsupportedReason,
                 'parallel_group_kind' => $parallelMetadata['parallel_group_kind'] ?? null,
                 'parallel_group_id' => $parallelMetadata['parallel_group_id'] ?? null,
@@ -464,6 +479,14 @@ final class RunWaitView
     private static function durationLabel(int $seconds): string
     {
         return sprintf('%d second%s', $seconds, $seconds === 1 ? '' : 's');
+    }
+
+    private static function diagnosticOnly(?string $historyAuthority, ?string $unsupportedReason): bool
+    {
+        return $unsupportedReason !== null
+            || $historyAuthority === RunActivityView::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK
+            || $historyAuthority === RunTimerView::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK
+            || $historyAuthority === ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK;
     }
 
     /**

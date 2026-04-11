@@ -108,6 +108,10 @@ final class QueryStateReplayer
                     [ActivityStatus::Pending, ActivityStatus::Running],
                     true
                 )) {
+                    if ($execution !== null) {
+                        WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::ACTIVITY);
+                    }
+
                     $this->applyRecordedUpdates($run, $workflow, $sequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
@@ -171,6 +175,10 @@ final class QueryStateReplayer
                 $timer = $run->timers->firstWhere('sequence', $sequence);
 
                 if ($timer === null || $timer->status === TimerStatus::Pending) {
+                    if ($timer !== null) {
+                        WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::TIMER);
+                    }
+
                     $this->applyRecordedUpdates($run, $workflow, $sequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
@@ -283,6 +291,8 @@ final class QueryStateReplayer
                     RunStatus::Running,
                     RunStatus::Waiting,
                 ], true)) {
+                    WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
+
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     return new ReplayState($workflow, $sequence, $current);
                 }
@@ -373,6 +383,12 @@ final class QueryStateReplayer
                             ActivityStatus::Pending,
                             ActivityStatus::Running,
                         ], true)) {
+                            WorkflowStepHistory::assertTypedHistoryRecorded(
+                                $run,
+                                $itemSequence,
+                                WorkflowStepHistory::ACTIVITY,
+                            );
+
                             $pending = true;
 
                             continue;
@@ -441,6 +457,12 @@ final class QueryStateReplayer
                         RunStatus::Running,
                         RunStatus::Waiting,
                     ], true)) {
+                        WorkflowStepHistory::assertTypedHistoryRecorded(
+                            $run,
+                            $itemSequence,
+                            WorkflowStepHistory::CHILD_WORKFLOW,
+                        );
+
                         $pending = true;
 
                         continue;

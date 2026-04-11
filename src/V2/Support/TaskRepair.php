@@ -155,6 +155,10 @@ final class TaskRepair
 
     private static function createMissingTask(WorkflowRun $run, WorkflowRunSummary $summary): ?WorkflowTask
     {
+        if ($summary->liveness_state !== 'repair_needed') {
+            return null;
+        }
+
         if ($summary->wait_kind === 'activity') {
             $execution = ActivityRecovery::pendingExecutionForSummary($run, $summary);
 
