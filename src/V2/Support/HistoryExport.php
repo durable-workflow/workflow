@@ -123,6 +123,8 @@ final class HistoryExport
                 ->all(),
             'waits' => $waitSnapshot['waits'],
             'timeline' => $timelineSnapshot['timeline'],
+            'linked_intakes_scope' => 'selected_run',
+            'linked_intakes' => RunLinkedIntakeView::forRun($run),
             'commands' => $run->commands
                 ->map(static fn (WorkflowCommand $command): array => self::command($command))
                 ->values()

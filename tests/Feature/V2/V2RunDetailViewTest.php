@@ -396,12 +396,16 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewIncludesWaitAndLivenessMetadataForSignalWaitingRun(): void
     {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal');
         $workflow->start();
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
 
+        $this->runNextReadyTask();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
         /** @var WorkflowRun $run */
@@ -470,6 +474,109 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('SignalWaitOpened', $detail['timeline'][2]['type']);
         $this->assertSame('signal', $detail['timeline'][2]['kind']);
         $this->assertSame('Waiting for signal name-provided.', $detail['timeline'][2]['summary']);
+    }
+
+    public function testRunDetailAndHistoryExportExposeGroupedSignalWithStartIntake(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-linked-intake');
+        $result = $workflow->signalWithStart('name-provided', ['Taylor']);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($runId);
+
+        $detail = RunDetailView::forRun($run);
+        $export = HistoryExport::forRun($run->fresh(['summary']));
+
+        $this->assertSame('selected_run', $detail['linked_intakes_scope']);
+        $this->assertSame('selected_run', $export['linked_intakes_scope']);
+        $this->assertCount(1, $detail['linked_intakes']);
+        $this->assertSame($detail['linked_intakes'], $export['linked_intakes']);
+
+        $linkedIntake = $detail['linked_intakes'][0];
+
+        $this->assertSame($result->intakeGroupId(), $linkedIntake['group_id']);
+        $this->assertSame('signal_with_start', $linkedIntake['mode']);
+        $this->assertSame('workflow_commands.context.intake', $linkedIntake['source']);
+        $this->assertTrue($linkedIntake['complete']);
+        $this->assertSame([], $linkedIntake['missing_expected_command_types']);
+        $this->assertSame(2, $linkedIntake['command_count']);
+        $this->assertSame([$result->startCommandId(), $result->commandId()], $linkedIntake['command_ids']);
+        $this->assertSame([$result->startCommandSequence(), $result->commandSequence()], $linkedIntake['command_sequences']);
+        $this->assertSame($result->startCommandId(), $linkedIntake['start_command_id']);
+        $this->assertSame($result->startCommandSequence(), $linkedIntake['start_command_sequence']);
+        $this->assertSame($result->startStatus(), $linkedIntake['start_command_status']);
+        $this->assertSame($result->startOutcome(), $linkedIntake['start_outcome']);
+        $this->assertSame($result->commandId(), $linkedIntake['primary_command_id']);
+        $this->assertSame($result->commandSequence(), $linkedIntake['primary_command_sequence']);
+        $this->assertSame('signal', $linkedIntake['primary_command_type']);
+        $this->assertSame($result->status(), $linkedIntake['primary_command_status']);
+        $this->assertSame($result->outcome(), $linkedIntake['primary_outcome']);
+        $this->assertSame(['start', 'signal'], array_column($linkedIntake['commands'], 'type'));
+        $this->assertSame(['started_new', 'signal_received'], array_column($linkedIntake['commands'], 'outcome'));
+        $this->assertSame([$runId, $runId], array_column($linkedIntake['commands'], 'resolved_run_id'));
+        $this->assertSame('name-provided', $linkedIntake['commands'][1]['target_name']);
+    }
+
+    public function testRunDetailAndHistoryExportSkipLinkedIntakeGroupingWithoutDurableGroupId(): void
+    {
+        $instance = WorkflowInstance::create([
+            'id' => 'detail-linked-intake-compat',
+            'workflow_class' => TestSignalWorkflow::class,
+            'workflow_type' => 'test-signal-workflow',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::create([
+            'id' => '01JTESTDETAILINTAKECOMPAT01',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestSignalWorkflow::class,
+            'workflow_type' => 'test-signal-workflow',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(15),
+        ]);
+
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
+
+        WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Signal->value,
+            'target_scope' => 'instance',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => 'signal_received',
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'name' => 'name-provided',
+                'arguments' => ['Taylor'],
+            ]),
+            'context' => [
+                'intake' => [
+                    'mode' => 'signal_with_start',
+                ],
+            ],
+            'accepted_at' => now()->subSeconds(10),
+        ]);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $export = HistoryExport::forRun($run->fresh(['summary']));
+
+        $this->assertSame('signal_with_start', $detail['commands'][0]['context']['intake']['mode']);
+        $this->assertArrayNotHasKey('group_id', $detail['commands'][0]['context']['intake']);
+        $this->assertSame([], $detail['linked_intakes']);
+        $this->assertSame([], $export['linked_intakes']);
     }
 
     public function testRunDetailViewReadsWaitRowsFromRebuildableProjection(): void

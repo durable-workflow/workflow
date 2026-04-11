@@ -74,6 +74,7 @@ final class RunDetailView
 
         $activities = RunActivityView::activitiesForRun($run);
         $activityClasses = collect(RunActivityView::classesFromActivities($activities));
+        $linkedIntakes = RunLinkedIntakeView::forRun($run);
         $signals = self::attachTaskLinks(
             RunSignalView::forRun($run),
             $taskLinks['signals'],
@@ -253,6 +254,8 @@ final class RunDetailView
                 ->all(),
             'activities_scope' => 'selected_run',
             'activities' => $activities,
+            'linked_intakes_scope' => 'selected_run',
+            'linked_intakes' => $linkedIntakes,
             'commands_scope' => 'selected_run',
             'commands' => $run->commands
                 ->map(static function (WorkflowCommand $command) use (
