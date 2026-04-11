@@ -6,8 +6,10 @@ namespace Workflow\V2;
 
 use Carbon\CarbonInterval;
 use Laravel\SerializableClosure\SerializableClosure;
-use Workflow\V2\Support\AllCall;
+use ReflectionFunction;
+use ReflectionMethod;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\AllCall;
 use Workflow\V2\Support\AwaitCall;
 use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\ChildWorkflowCall;
@@ -50,8 +52,7 @@ if (! function_exists(__NAMESPACE__ . '\\awaitWithTimeout')) {
         int|string|CarbonInterval $duration,
         callable $condition,
         ?string $conditionKey = null,
-    ): mixed
-    {
+    ): mixed {
         if ($duration instanceof CarbonInterval) {
             $duration = (int) ceil($duration->totalSeconds);
         } elseif (is_string($duration)) {
@@ -100,7 +101,20 @@ if (! function_exists(__NAMESPACE__ . '\\parallel')) {
 if (! function_exists(__NAMESPACE__ . '\\async')) {
     function async(callable $callback): mixed
     {
-        return child(AsyncWorkflow::class, new SerializableClosure($callback));
+        $reflection = match (true) {
+            is_array($callback) => new ReflectionMethod($callback[0], $callback[1]),
+            is_string($callback) && str_contains($callback, '::') => new ReflectionMethod($callback),
+            is_object($callback) && ! $callback instanceof \Closure => new ReflectionMethod($callback, '__invoke'),
+            default => new ReflectionFunction($callback),
+        };
+
+        if ($reflection->isGenerator()) {
+            throw new \LogicException(
+                'Workflow v2 async() callbacks must use straight-line helpers and must not yield.'
+            );
+        }
+
+        return child(AsyncWorkflow::class, new SerializableClosure(\Closure::fromCallable($callback)));
     }
 }
 

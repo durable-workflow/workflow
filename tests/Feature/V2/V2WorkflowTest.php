@@ -3534,7 +3534,7 @@ final class V2WorkflowTest extends TestCase
             ->all());
     }
 
-    public function testAsyncHelperStillSupportsGeneratorCallbacksAsCompatibilityBridge(): void
+    public function testAsyncHelperRejectsGeneratorCallbacksBeforeSchedulingAsyncChildWorkflow(): void
     {
         config()->set('queue.default', 'redis');
         config()
@@ -3546,31 +3546,35 @@ final class V2WorkflowTest extends TestCase
 
         $this->drainReadyTasks();
         $workflow->refresh();
-        $this->assertTrue($workflow->completed());
-        $this->assertSame([
-            'workflow_id' => 'async-generator-callback',
-            'run_id' => $workflow->runId(),
-            'async' => [
-                'greeting' => 'Hello, Taylor!',
-                'compatibility' => 'generator-callback',
-            ],
-        ], $workflow->output());
+        $this->assertTrue($workflow->failed());
+        $this->assertNull($workflow->output());
 
-        /** @var WorkflowRun $parentRun */
-        $parentRun = WorkflowRun::query()->findOrFail($workflow->runId());
-
-        /** @var WorkflowLink $link */
-        $link = WorkflowLink::query()
-            ->where('parent_workflow_run_id', $parentRun->id)
-            ->where('link_type', 'child_workflow')
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->latest('created_at')
             ->firstOrFail();
 
-        /** @var WorkflowRun $asyncRun */
-        $asyncRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $this->assertStringContainsString(
+            'Workflow v2 async() callbacks must use straight-line helpers and must not yield.',
+            $failure->message,
+        );
+        $childLinkCount = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $workflow->runId())
+            ->count();
+        $hasAsyncChildRun = WorkflowRun::query()
+            ->where('workflow_type', 'durable-workflow.async')
+            ->exists();
+        $eventTypes = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all();
 
-        $this->assertSame(AsyncWorkflow::class, $asyncRun->workflow_class);
-        $this->assertSame('durable-workflow.async', $asyncRun->workflow_type);
-        $this->assertSame(RunStatus::Completed, $asyncRun->status);
+        $this->assertSame(0, $childLinkCount);
+        $this->assertFalse($hasAsyncChildRun);
+        $this->assertSame(['StartAccepted', 'WorkflowStarted', 'WorkflowFailed'], $eventTypes);
     }
 
     public function testMixedAllWaitsForChildWhenActivityCompletesFirst(): void
