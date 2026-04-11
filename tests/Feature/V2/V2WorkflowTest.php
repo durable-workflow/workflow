@@ -2903,6 +2903,94 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($link->child_workflow_run_id, $workflow->output()['child']['run_id'] ?? null);
     }
 
+    public function testTaskWatchdogRecreatesMissingParentResumeTaskFromChildResolutionHistory(): void
+    {
+        Queue::fake();
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+
+        $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'parent-child-resolution-watchdog');
+        $workflow->start('Taylor');
+        $parentRunId = $workflow->runId();
+
+        $this->assertNotNull($parentRunId);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $this->runReadyTaskForRun($link->child_workflow_run_id, TaskType::Workflow);
+        $this->runReadyTaskForRun($link->child_workflow_run_id, TaskType::Activity);
+        $this->runReadyTaskForRun($link->child_workflow_run_id, TaskType::Workflow);
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->delete();
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->findOrFail($parentRunId);
+        $summary = RunSummaryProjector::project(
+            $parentRun->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+                'childLinks.childRun.historyEvents',
+            ])
+        );
+
+        $this->assertSame('child', $summary->wait_kind);
+        $this->assertSame('child:' . $link->id, $summary->open_wait_id);
+        $this->assertSame('child_workflow_run', $summary->resume_source_kind);
+        $this->assertSame($link->child_workflow_run_id, $summary->resume_source_id);
+        $this->assertSame('repair_needed', $summary->liveness_state);
+
+        $this->wakeTaskWatchdog();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $parentRunId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame('child', $task->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame('child:' . $link->id, $task->payload['open_wait_id'] ?? null);
+        $this->assertSame('child_workflow_run', $task->payload['resume_source_kind'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $task->payload['resume_source_id'] ?? null);
+        $this->assertSame($link->id, $task->payload['child_call_id'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $task->payload['child_workflow_run_id'] ?? null);
+        $this->assertSame(1, $task->repair_count);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+
+        $updatedSummary = WorkflowRunSummary::query()->findOrFail($parentRunId);
+
+        $this->assertSame('workflow-task', $updatedSummary->wait_kind);
+        $this->assertSame('workflow_task_ready', $updatedSummary->liveness_state);
+        $this->assertSame($task->id, $updatedSummary->next_task_id);
+
+        $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame($link->child_workflow_run_id, $workflow->output()['child']['run_id'] ?? null);
+    }
+
     public function testChildWorkflowFailurePropagatesToParentRun(): void
     {
         $workflow = WorkflowStub::make(TestParentFailingChildWorkflow::class, 'parent-child-failure');
@@ -6933,6 +7021,117 @@ final class V2WorkflowTest extends TestCase
 
             $this->assertTrue($result->accepted());
             $this->assertSame('repair_dispatched', $result->outcome());
+
+            /** @var WorkflowTask $repairedRetryTask */
+            $repairedRetryTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->firstOrFail();
+
+            $this->assertNotSame($originalRetryTaskId, $repairedRetryTask->id);
+            $this->assertSame($execution->id, $repairedRetryTask->payload['activity_execution_id'] ?? null);
+            $this->assertSame(
+                $originalRetryPayload['retry_of_task_id'],
+                $repairedRetryTask->payload['retry_of_task_id'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['retry_after_attempt_id'],
+                $repairedRetryTask->payload['retry_after_attempt_id'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['retry_after_attempt'],
+                $repairedRetryTask->payload['retry_after_attempt'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['retry_backoff_seconds'],
+                $repairedRetryTask->payload['retry_backoff_seconds'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['max_attempts'],
+                $repairedRetryTask->payload['max_attempts'] ?? null
+            );
+            $this->assertSame(
+                $originalRetryPayload['retry_policy'],
+                $repairedRetryTask->payload['retry_policy'] ?? null
+            );
+            $this->assertSame($originalRetryAvailableAt, $repairedRetryTask->available_at?->toJSON());
+            $this->assertSame(1, $repairedRetryTask->attempt_count);
+            $this->assertSame(1, $repairedRetryTask->repair_count);
+
+            Queue::assertPushed(
+                RunActivityTask::class,
+                static fn (RunActivityTask $job): bool => $job->taskId === $repairedRetryTask->id
+            );
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+
+            $this->assertSame('scheduled', $detail['tasks'][0]['transport_state']);
+            $this->assertSame(1, $detail['tasks'][0]['retry_after_attempt']);
+            $this->assertSame(5, $detail['tasks'][0]['retry_backoff_seconds']);
+            $this->assertSame(2, $detail['tasks'][0]['retry_max_attempts']);
+            $this->assertSame($execution->retry_policy, $detail['tasks'][0]['retry_policy']);
+
+            Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:05'));
+
+            $this->runReadyTaskForRun($runId, TaskType::Activity);
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            $this->assertTrue($workflow->refresh()->completed());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testTaskWatchdogRecreatesMissingDelayedActivityRetryTaskFromTypedHistory(): void
+    {
+        Queue::fake();
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'repair-watchdog-retry-activity-instance');
+            $workflow->start('Taylor');
+            $runId = $workflow->runId();
+
+            $this->assertNotNull($runId);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+            $this->runReadyTaskForRun($runId, TaskType::Activity);
+
+            /** @var ActivityExecution $execution */
+            $execution = ActivityExecution::query()
+                ->where('workflow_run_id', $runId)
+                ->firstOrFail();
+            /** @var WorkflowTask $missingRetryTask */
+            $missingRetryTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->firstOrFail();
+
+            $originalRetryTaskId = $missingRetryTask->id;
+            $originalRetryPayload = $missingRetryTask->payload;
+            $originalRetryAvailableAt = $missingRetryTask->available_at?->toJSON();
+
+            $this->assertSame(Carbon::parse('2026-04-09 12:00:05')->toJSON(), $originalRetryAvailableAt);
+
+            $missingRetryTask->delete();
+
+            $summary = RunSummaryProjector::project(
+                WorkflowRun::query()
+                    ->with(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                    ->findOrFail($runId)
+            );
+
+            $this->assertSame('repair_needed', $summary->liveness_state);
+            $this->assertSame('activity', $summary->wait_kind);
+            $this->assertNull($summary->next_task_id);
+
+            $this->wakeTaskWatchdog();
 
             /** @var WorkflowTask $repairedRetryTask */
             $repairedRetryTask = WorkflowTask::query()
