@@ -14,7 +14,7 @@ use Workflow\V2\Workflow;
 #[Signal('name-provided')]
 final class TestSignalWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         $name = awaitSignal('name-provided');
         $greeting = activity(TestGreetingActivity::class, $name);

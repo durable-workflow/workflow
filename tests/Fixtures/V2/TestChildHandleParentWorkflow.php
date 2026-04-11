@@ -13,7 +13,7 @@ use Workflow\V2\Workflow;
 #[Type('test-child-handle-parent-workflow')]
 final class TestChildHandleParentWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         $child = child(TestChildHandleChildWorkflow::class);
 

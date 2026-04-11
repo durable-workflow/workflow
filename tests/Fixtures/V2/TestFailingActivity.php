@@ -9,7 +9,7 @@ use Workflow\V2\Activity;
 
 final class TestFailingActivity extends Activity
 {
-    public function execute(): string
+    public function handle(): string
     {
         throw new RuntimeException('boom');
     }

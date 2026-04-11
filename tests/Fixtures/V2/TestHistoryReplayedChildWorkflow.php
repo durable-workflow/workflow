@@ -19,7 +19,7 @@ final class TestHistoryReplayedChildWorkflow extends Workflow
      */
     private array $childResult = [];
 
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $this->stage = 'waiting-for-child';
         $this->childResult = child(TestChildGreetingWorkflow::class, $name);

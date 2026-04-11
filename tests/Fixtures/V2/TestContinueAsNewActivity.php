@@ -8,7 +8,7 @@ use Workflow\V2\Activity;
 
 final class TestContinueAsNewActivity extends Activity
 {
-    public function execute(int $count): int
+    public function handle(int $count): int
     {
         return $count;
     }

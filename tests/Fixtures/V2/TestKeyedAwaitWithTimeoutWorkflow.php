@@ -14,7 +14,7 @@ final class TestKeyedAwaitWithTimeoutWorkflow extends Workflow
 {
     private bool $approved = false;
 
-    public function execute(): array
+    public function handle(): array
     {
         $approved = awaitWithTimeout(5, fn (): bool => $this->approved, 'approval.ready');
 

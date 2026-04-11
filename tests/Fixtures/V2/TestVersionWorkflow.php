@@ -23,7 +23,7 @@ final class TestVersionWorkflow extends Workflow
 
     private string $stage = 'booting';
 
-    public function execute(): array
+    public function handle(): array
     {
         $this->version = getVersion('step-1', WorkflowStub::DEFAULT_VERSION, 2);
         $this->result = match ($this->version) {

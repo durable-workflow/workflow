@@ -55,9 +55,10 @@ final class QueryStateReplayer
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         $workflow = new $workflowClass($run);
         $this->syncWorkflowCursor($workflow, 1);
+        $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = $workflow->resolveMethodDependencies(
             $run->workflowArguments(),
-            new ReflectionMethod($workflow, 'execute'),
+            $entryMethod,
         );
         $workflowExecution = WorkflowExecution::start($workflow, $arguments);
 

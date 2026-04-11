@@ -13,7 +13,7 @@ use Workflow\V2\Workflow;
 #[Type('test-async-generator-callback-workflow')]
 final class TestAsyncGeneratorCallbackWorkflow extends Workflow
 {
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         return [
             'workflow_id' => $this->workflowId(),

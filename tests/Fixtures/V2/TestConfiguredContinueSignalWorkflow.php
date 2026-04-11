@@ -18,7 +18,7 @@ final class TestConfiguredContinueSignalWorkflow extends Workflow
 {
     private int $count = 0;
 
-    public function execute(int $count = 0): mixed
+    public function handle(int $count = 0): mixed
     {
         $this->count = $count;
 

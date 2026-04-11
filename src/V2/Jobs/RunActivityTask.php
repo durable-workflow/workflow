@@ -9,7 +9,6 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use ReflectionMethod;
 use Throwable;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
@@ -17,6 +16,7 @@ use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivityRetryPolicy;
 use Workflow\V2\Support\ActivityTaskClaim;
 use Workflow\V2\Support\ActivityTaskClaimer;
+use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -64,16 +64,17 @@ final class RunActivityTask implements ShouldQueue
 
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = new $activityClass($execution, $execution->run, $this->taskId);
+        $entryMethod = EntryMethod::forActivity($activity);
         $arguments = $activity->resolveMethodDependencies(
             $execution->activityArguments(),
-            new ReflectionMethod($activity, 'execute'),
+            $entryMethod,
         );
 
         $result = null;
         $throwable = null;
 
         try {
-            $result = $activity->execute(...$arguments);
+            $result = $activity->{$entryMethod->getName()}(...$arguments);
         } catch (Throwable $error) {
             $throwable = $error;
         }

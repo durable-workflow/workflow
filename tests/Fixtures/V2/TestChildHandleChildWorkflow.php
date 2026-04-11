@@ -16,7 +16,7 @@ final class TestChildHandleChildWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(): array
+    public function handle(): array
     {
         $this->stage = 'waiting-for-approval';
 

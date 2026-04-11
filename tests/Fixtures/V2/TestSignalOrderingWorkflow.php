@@ -13,7 +13,7 @@ use Workflow\V2\Workflow;
 #[Signal('message')]
 final class TestSignalOrderingWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         $first = awaitSignal('message');
         $second = awaitSignal('message');

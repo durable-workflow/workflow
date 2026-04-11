@@ -11,7 +11,7 @@ use Workflow\V2\Workflow;
 #[Type('test-replayed-failure-child-workflow')]
 final class TestReplayedFailureChildWorkflow extends Workflow
 {
-    public function execute(string $orderId): string
+    public function handle(string $orderId): string
     {
         activity(TestReplayedFailureActivity::class, $orderId);
 

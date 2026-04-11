@@ -11,7 +11,7 @@ use Workflow\V2\Workflow;
 #[Type('test-failing-child-workflow')]
 final class TestFailingChildWorkflow extends Workflow
 {
-    public function execute(): string
+    public function handle(): string
     {
         activity(TestFailingActivity::class);
 

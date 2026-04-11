@@ -18,7 +18,7 @@ use Workflow\V2\Workflow;
 #[Signal('rejected-by')]
 final class TestCommandTargetWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         awaitSignal('approved-by');
 

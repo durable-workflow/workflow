@@ -11,7 +11,7 @@ use Workflow\V2\Workflow;
 #[Type('test-heartbeat-workflow')]
 final class TestHeartbeatWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         return activity(TestHeartbeatActivity::class);
     }

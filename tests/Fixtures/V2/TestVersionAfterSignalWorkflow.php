@@ -16,7 +16,7 @@ use function Workflow\V2\getVersion;
 #[Signal('go')]
 final class TestVersionAfterSignalWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         $gate = awaitSignal('go');
         $version = getVersion('step-2', WorkflowStub::DEFAULT_VERSION, 1);

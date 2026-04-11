@@ -12,7 +12,7 @@ use Workflow\V2\Workflow;
 #[Type('test-continue-as-new-workflow')]
 final class TestContinueAsNewWorkflow extends Workflow
 {
-    public function execute(int $count = 0, int $max = 2): mixed
+    public function handle(int $count = 0, int $max = 2): mixed
     {
         $result = activity(TestContinueAsNewActivity::class, $count);
 

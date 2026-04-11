@@ -9,7 +9,7 @@ use Workflow\V2\Activity;
 
 final class TestNamedFailingActivity extends Activity
 {
-    public function execute(string $message): string
+    public function handle(string $message): string
     {
         throw new RuntimeException($message);
     }

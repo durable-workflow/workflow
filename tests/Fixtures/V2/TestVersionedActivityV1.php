@@ -8,7 +8,7 @@ use Workflow\V2\Activity;
 
 final class TestVersionedActivityV1 extends Activity
 {
-    public function execute(): string
+    public function handle(): string
     {
         return 'v1_result';
     }

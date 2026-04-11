@@ -9,7 +9,7 @@ use Workflow\V2\Workflow;
 
 final class TestTimerWorkflow extends Workflow
 {
-    public function execute(int $seconds): array
+    public function handle(int $seconds): array
     {
         timer($seconds);
 

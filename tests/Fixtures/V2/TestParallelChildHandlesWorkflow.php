@@ -13,7 +13,7 @@ use Workflow\V2\Workflow;
 #[Type('test-parallel-child-handles-workflow')]
 final class TestParallelChildHandlesWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         return all([
             startChild(TestChildHandleChildWorkflow::class),

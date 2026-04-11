@@ -9,7 +9,7 @@ use Workflow\V2\Workflow;
 
 final class TestConfiguredGreetingWorkflow extends Workflow
 {
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $greeting = activity(TestConfiguredGreetingActivity::class, $name);
 

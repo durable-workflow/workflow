@@ -14,7 +14,7 @@ final class TestQueryContinueAsNewWorkflow extends Workflow
 {
     private int $count = 0;
 
-    public function execute(int $count, int $target): mixed
+    public function handle(int $count, int $target): mixed
     {
         $this->count = $count;
 

@@ -21,7 +21,7 @@ final class TestBroadChildFailureCatchWorkflow extends Workflow
      */
     private array $caught = [];
 
-    public function execute(string $orderId): array
+    public function handle(string $orderId): array
     {
         $this->stage = 'running-child';
 

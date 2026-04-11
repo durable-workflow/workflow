@@ -8,7 +8,7 @@ use Workflow\V2\Activity;
 
 final class TestGreetingActivity extends Activity
 {
-    public function execute(string $name): string
+    public function handle(string $name): string
     {
         return "Hello, {$name}!";
     }

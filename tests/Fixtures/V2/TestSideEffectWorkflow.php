@@ -31,7 +31,7 @@ final class TestSideEffectWorkflow extends Workflow
         return self::$sideEffectExecutions;
     }
 
-    public function execute(): array
+    public function handle(): array
     {
         $this->stage = 'recording-side-effect';
 

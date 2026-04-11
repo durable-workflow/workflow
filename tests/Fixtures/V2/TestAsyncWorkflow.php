@@ -14,7 +14,7 @@ use Workflow\V2\Workflow;
 #[Type('test-async-workflow')]
 final class TestAsyncWorkflow extends Workflow
 {
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $asyncResult = async(static function (Application $app) use ($name): array {
             if (! $app->runningInConsole()) {

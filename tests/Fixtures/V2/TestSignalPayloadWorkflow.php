@@ -13,7 +13,7 @@ use Workflow\V2\Workflow;
 #[Signal('payload-provided')]
 final class TestSignalPayloadWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         $payload = awaitSignal('payload-provided');
 

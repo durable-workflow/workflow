@@ -15,7 +15,7 @@ use function Workflow\V2\awaitSignal;
 #[Signal('go')]
 final class TestVersionBeforeSignalWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         $gate = awaitSignal('go');
 

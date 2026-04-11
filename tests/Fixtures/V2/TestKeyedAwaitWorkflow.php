@@ -15,7 +15,7 @@ final class TestKeyedAwaitWorkflow extends Workflow
 {
     private bool $approved = false;
 
-    public function execute(): array
+    public function handle(): array
     {
         await(fn (): bool => $this->approved, 'approval.ready');
 

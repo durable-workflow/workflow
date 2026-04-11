@@ -18,7 +18,7 @@ final class TestParallelMultipleActivityFailureWorkflow extends Workflow
 
     private string $message = '';
 
-    public function execute(): array
+    public function handle(): array
     {
         $this->stage = 'waiting-for-activities';
 

@@ -14,7 +14,7 @@ final class TestQueryChildResolutionAuthorityWorkflow extends Workflow
 {
     private string $stage = 'not-started';
 
-    public function execute(int $seconds): array
+    public function handle(int $seconds): array
     {
         $this->stage = 'waiting-for-child';
 

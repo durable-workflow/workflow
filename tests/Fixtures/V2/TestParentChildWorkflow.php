@@ -11,7 +11,7 @@ use Workflow\V2\Workflow;
 #[Type('test-parent-child-workflow')]
 final class TestParentChildWorkflow extends Workflow
 {
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $child = child(TestChildGreetingWorkflow::class, $name);
 

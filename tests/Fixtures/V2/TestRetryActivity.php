@@ -23,7 +23,7 @@ final class TestRetryActivity extends Activity
     /**
      * @return array<string, mixed>
      */
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $count = Cache::increment('workflow:v2:test-retry-activity:' . $this->activityId());
 

@@ -11,7 +11,7 @@ use Workflow\V2\Workflow;
 
 final class TestUnsafeDeterminismWorkflow extends Workflow
 {
-    public function execute(): string
+    public function handle(): string
     {
         $value = DB::table('orders')->count();
         $cached = Cache::get('approval');

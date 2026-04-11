@@ -15,7 +15,7 @@ final class TestGeneratorWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(string $name): Generator
+    public function handle(string $name): Generator
     {
         $this->stage = 'running';
 

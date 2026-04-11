@@ -10,7 +10,7 @@ use function Workflow\V2\activity;
 
 final class TestRetryWorkflow extends Workflow
 {
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $result = activity(TestRetryActivity::class, $name);
 

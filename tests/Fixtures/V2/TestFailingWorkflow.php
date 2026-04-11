@@ -9,7 +9,7 @@ use Workflow\V2\Workflow;
 
 final class TestFailingWorkflow extends Workflow
 {
-    public function execute(): string
+    public function handle(): string
     {
         activity(TestFailingActivity::class);
 

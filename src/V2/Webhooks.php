@@ -8,7 +8,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\ValidationException;
 use LogicException;
-use ReflectionMethod;
 use ReflectionNamedType;
 use ReflectionParameter;
 use Workflow\Auth\NullAuthenticator;
@@ -18,6 +17,7 @@ use Workflow\Auth\WebhookAuthenticator;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Support\CommandResponse;
+use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\QueryResponse;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateWaitPolicy;
@@ -402,7 +402,7 @@ final class Webhooks
 
         $arguments = [];
         $missing = [];
-        $method = new ReflectionMethod($workflow, 'execute');
+        $method = EntryMethod::forWorkflow($workflow);
 
         foreach ($method->getParameters() as $parameter) {
             if (self::isContainerInjected($parameter)) {

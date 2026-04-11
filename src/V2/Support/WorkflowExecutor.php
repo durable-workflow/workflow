@@ -60,9 +60,10 @@ final class WorkflowExecutor
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         $workflow = new $workflowClass($run);
+        $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = $workflow->resolveMethodDependencies(
             $run->workflowArguments(),
-            new ReflectionMethod($workflow, 'execute'),
+            $entryMethod,
         );
 
         try {

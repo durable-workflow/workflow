@@ -18,7 +18,7 @@ final class TestParallelChildFailureWorkflow extends Workflow
 
     private string $message = '';
 
-    public function execute(int $slowChildSeconds): array
+    public function handle(int $slowChildSeconds): array
     {
         $this->stage = 'waiting-for-children';
 

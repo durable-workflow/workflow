@@ -11,7 +11,7 @@ use Workflow\V2\Workflow;
 #[Type('test-parent-failing-child-workflow')]
 final class TestParentFailingChildWorkflow extends Workflow
 {
-    public function execute(): string
+    public function handle(): string
     {
         child(TestFailingChildWorkflow::class);
 

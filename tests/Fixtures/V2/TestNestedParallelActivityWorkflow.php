@@ -16,7 +16,7 @@ final class TestNestedParallelActivityWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(string $firstName, string $secondName, string $thirdName): array
+    public function handle(string $firstName, string $secondName, string $thirdName): array
     {
         $this->stage = 'waiting-for-activities';
 

@@ -55,7 +55,7 @@ final class ActivityMakeCommandTest extends TestCase
         $this->assertStringContainsString('use Workflow\\V2\\Activity;', $contents);
         $this->assertStringContainsString('use Workflow\\V2\\Attributes\\Type;', $contents);
         $this->assertStringContainsString("#[Type('test-activity')]", $contents);
-        $this->assertStringContainsString('public function execute(): mixed', $contents);
+        $this->assertStringContainsString('public function handle(): mixed', $contents);
         $this->assertStringContainsString('return null;', $contents);
         $this->assertStringNotContainsString('use Workflow\\Activity;', $contents);
 

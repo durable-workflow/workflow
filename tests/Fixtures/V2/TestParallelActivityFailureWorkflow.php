@@ -16,7 +16,7 @@ final class TestParallelActivityFailureWorkflow extends Workflow
     private string $stage = 'booting';
     private ?string $message = null;
 
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $this->stage = 'waiting-for-activities';
 

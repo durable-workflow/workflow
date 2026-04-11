@@ -16,7 +16,7 @@ final class TestMixedParallelWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(string $name, int $seconds): array
+    public function handle(string $name, int $seconds): array
     {
         $this->stage = 'waiting-for-mixed-group';
 

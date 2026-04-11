@@ -8,7 +8,7 @@ use Workflow\V2\Activity;
 
 final class TestReplayedFailureActivity extends Activity
 {
-    public function execute(string $orderId): never
+    public function handle(string $orderId): never
     {
         throw new TestReplayedDomainException($orderId, 'api');
     }

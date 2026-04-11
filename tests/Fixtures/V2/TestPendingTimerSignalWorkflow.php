@@ -20,7 +20,7 @@ final class TestPendingTimerSignalWorkflow extends Workflow
      */
     private array $events = [];
 
-    public function execute(int $seconds): array
+    public function handle(int $seconds): array
     {
         $this->stage = 'before-timer';
         $this->events[] = 'started';

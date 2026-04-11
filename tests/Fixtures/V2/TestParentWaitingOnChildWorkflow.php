@@ -11,7 +11,7 @@ use Workflow\V2\Workflow;
 #[Type('test-parent-waiting-on-child-workflow')]
 final class TestParentWaitingOnChildWorkflow extends Workflow
 {
-    public function execute(int $seconds): array
+    public function handle(int $seconds): array
     {
         $child = child(TestTimerWorkflow::class, $seconds);
 

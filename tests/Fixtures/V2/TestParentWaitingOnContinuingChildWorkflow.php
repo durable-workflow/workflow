@@ -12,7 +12,7 @@ use Workflow\V2\Workflow;
 #[Type('test-parent-waiting-on-continuing-child-workflow')]
 final class TestParentWaitingOnContinuingChildWorkflow extends Workflow
 {
-    public function execute(int $count = 0, int $max = 1): array
+    public function handle(int $count = 0, int $max = 1): array
     {
         $child = child(TestContinueAsNewWorkflow::class, $count, $max);
 

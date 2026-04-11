@@ -18,6 +18,8 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -42,6 +44,8 @@ final class V2WebhookWorkflowTest extends TestCase
         config([
             'workflows.webhook_auth.method' => 'none',
         ]);
+
+        Queue::fake();
 
         Webhooks::routes([
             TestGreetingWorkflow::class,
@@ -1838,9 +1842,46 @@ final class V2WebhookWorkflowTest extends TestCase
                 return;
             }
 
+            $this->drainReadyTasks();
+
+            if ($condition()) {
+                return;
+            }
+
             usleep(100000);
         }
 
         $this->fail('Timed out waiting for workflow to settle.');
+    }
+
+    private function drainReadyTasks(): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('created_at')
+                ->first();
+
+            if ($task === null) {
+                return;
+            }
+
+            if ($task->available_at !== null && $task->available_at->isFuture()) {
+                return;
+            }
+
+            $job = match ($task->task_type) {
+                TaskType::Workflow => new RunWorkflowTask($task->id),
+                TaskType::Activity => new RunActivityTask($task->id),
+                TaskType::Timer => new RunTimerTask($task->id),
+            };
+
+            $this->app->call([$job, 'handle']);
+        }
+
+        $this->fail('Timed out draining ready workflow tasks.');
     }
 }

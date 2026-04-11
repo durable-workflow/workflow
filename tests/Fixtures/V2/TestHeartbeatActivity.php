@@ -8,7 +8,7 @@ use Workflow\V2\Activity;
 
 final class TestHeartbeatActivity extends Activity
 {
-    public function execute(): array
+    public function handle(): array
     {
         \Illuminate\Support\Carbon::setTestNow(now()->addMinutes(2));
 

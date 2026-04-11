@@ -55,7 +55,7 @@ final class WorkflowMakeCommandTest extends TestCase
         $this->assertStringContainsString('use Workflow\\V2\\Attributes\\Type;', $contents);
         $this->assertStringContainsString('use Workflow\\V2\\Workflow;', $contents);
         $this->assertStringContainsString("#[Type('test-workflow')]", $contents);
-        $this->assertStringContainsString('public function execute(): mixed', $contents);
+        $this->assertStringContainsString('public function handle(): mixed', $contents);
         $this->assertStringContainsString('return null;', $contents);
         $this->assertStringNotContainsString('Generator', $contents);
         $this->assertStringNotContainsString('yield', $contents);

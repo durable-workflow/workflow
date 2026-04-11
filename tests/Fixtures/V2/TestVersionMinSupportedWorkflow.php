@@ -11,7 +11,7 @@ use function Workflow\V2\getVersion;
 #[Type('test-version-min-supported-workflow')]
 final class TestVersionMinSupportedWorkflow extends Workflow
 {
-    public function execute(): array
+    public function handle(): array
     {
         $version = getVersion('step-1', 1, 2);
 

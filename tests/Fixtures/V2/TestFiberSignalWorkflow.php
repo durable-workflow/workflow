@@ -19,7 +19,7 @@ final class TestFiberSignalWorkflow extends Workflow
 
     private ?string $approvedBy = null;
 
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $this->stage = 'loading-greeting';
         $greeting = activity(TestGreetingActivity::class, $name);

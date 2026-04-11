@@ -11,7 +11,7 @@ use Workflow\V2\Workflow;
 #[Type('test-child-greeting-workflow')]
 final class TestChildGreetingWorkflow extends Workflow
 {
-    public function execute(string $name): array
+    public function handle(string $name): array
     {
         $greeting = activity(TestGreetingActivity::class, $name);
 

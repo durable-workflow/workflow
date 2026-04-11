@@ -16,7 +16,7 @@ final class AsyncWorkflow extends Workflow
 {
     protected Container $container;
 
-    public function execute(SerializableClosure $callback): mixed
+    public function handle(SerializableClosure $callback): mixed
     {
         $this->container = App::make(Container::class);
         $callable = $callback->getClosure();

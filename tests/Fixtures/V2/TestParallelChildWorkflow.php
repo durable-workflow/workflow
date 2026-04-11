@@ -15,7 +15,7 @@ final class TestParallelChildWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(int $firstSeconds, int $secondSeconds): array
+    public function handle(int $firstSeconds, int $secondSeconds): array
     {
         $this->stage = 'waiting-for-children';
 

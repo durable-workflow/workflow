@@ -29,7 +29,7 @@ final class TestSignalThenUpdateWorkflow extends Workflow
      */
     private array $events = [];
 
-    public function execute(): array
+    public function handle(): array
     {
         $this->stage = 'waiting-for-advance';
         $this->events[] = 'started';

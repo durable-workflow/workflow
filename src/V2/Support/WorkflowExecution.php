@@ -23,8 +23,10 @@ final class WorkflowExecution
      */
     public static function start(Workflow $workflow, array $arguments): self
     {
+        $entryMethod = EntryMethod::forWorkflow($workflow);
+
         return self::startCallback(
-            static fn (): mixed => $workflow->execute(...$arguments),
+            static fn (): mixed => $workflow->{$entryMethod->getName()}(...$arguments),
             straightLineError: StraightLineWorkflowRequiredException::forWorkflow($workflow::class),
         );
     }

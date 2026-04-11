@@ -20,7 +20,7 @@ final class TestHistoryTimerReplayWorkflow extends Workflow
      */
     private array $events = [];
 
-    public function execute(): array
+    public function handle(): array
     {
         $this->stage = 'before-timer';
         $this->events[] = 'started';

@@ -16,7 +16,7 @@ final class TestReclaimDuringExecutionActivity extends Activity
         self::$callback = $callback;
     }
 
-    public function execute(string $name): string
+    public function handle(string $name): string
     {
         $callback = self::$callback;
         self::$callback = null;
