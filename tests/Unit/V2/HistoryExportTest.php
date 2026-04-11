@@ -331,6 +331,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($task->id, $bundle['tasks'][0]['id']);
         $this->assertSame($activity->id, $bundle['activities'][0]['id']);
         $this->assertSame($activity->id, $bundle['activities'][0]['idempotency_key']);
+        $this->assertTrue($bundle['activities'][0]['diagnostic_only']);
         $this->assertSame($activity->retry_policy, $bundle['activities'][0]['retry_policy']);
         $this->assertSame($attempt->id, $bundle['activities'][0]['attempts'][0]['id']);
         $this->assertSame($childCallId, $bundle['links']['children'][0]['child_call_id']);
@@ -931,6 +932,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('history.only.activity', $bundle['activities'][0]['activity_type']);
         $this->assertSame('App\\Activities\\HistoryOnlyActivity', $bundle['activities'][0]['activity_class']);
         $this->assertSame('completed', $bundle['activities'][0]['status']);
+        $this->assertFalse($bundle['activities'][0]['diagnostic_only']);
         $this->assertSame($arguments, $bundle['activities'][0]['arguments']);
         $this->assertSame($result, $bundle['activities'][0]['result']);
         $this->assertSame(1, $bundle['activities'][0]['attempt_count']);
@@ -1167,6 +1169,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('completed', $bundle['activities'][0]['source_status']);
         $this->assertSame('completed', $bundle['activities'][0]['row_status']);
         $this->assertSame('unsupported_terminal_without_history', $bundle['activities'][0]['history_authority']);
+        $this->assertTrue($bundle['activities'][0]['diagnostic_only']);
         $this->assertSame(
             'terminal_activity_row_without_typed_history',
             $bundle['activities'][0]['history_unsupported_reason'],
@@ -1188,6 +1191,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('cancelled', $bundle['activities'][1]['source_status']);
         $this->assertSame('cancelled', $bundle['activities'][1]['row_status']);
         $this->assertSame('unsupported_terminal_without_history', $bundle['activities'][1]['history_authority']);
+        $this->assertTrue($bundle['activities'][1]['diagnostic_only']);
         $this->assertSame(
             'terminal_activity_row_without_typed_history',
             $bundle['activities'][1]['history_unsupported_reason'],

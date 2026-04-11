@@ -703,6 +703,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertStringContainsString('history recorded [no typed history]', $detail['liveness_reason']);
         $this->assertSame('unsupported', $detail['activities'][0]['status']);
         $this->assertSame('unsupported_terminal_without_history', $detail['activities'][0]['history_authority']);
+        $this->assertTrue($detail['activities'][0]['diagnostic_only']);
         $this->assertSame(
             'terminal_activity_row_without_typed_history',
             $detail['activities'][0]['history_unsupported_reason'],
@@ -783,6 +784,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame('unsupported', $detail['activities'][0]['status']);
         $this->assertSame('unsupported_terminal_without_history', $detail['activities'][0]['history_authority']);
+        $this->assertTrue($detail['activities'][0]['diagnostic_only']);
         $this->assertSame(
             'terminal_activity_row_without_typed_history',
             $detail['activities'][0]['history_unsupported_reason'],
@@ -807,6 +809,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame('unsupported', $export['activities'][0]['status']);
         $this->assertSame('unsupported_terminal_without_history', $export['activities'][0]['history_authority']);
+        $this->assertTrue($export['activities'][0]['diagnostic_only']);
         $this->assertSame(
             'terminal_activity_row_without_typed_history',
             $export['activities'][0]['history_unsupported_reason'],

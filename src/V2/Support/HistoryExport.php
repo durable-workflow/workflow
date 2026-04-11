@@ -950,6 +950,8 @@ final class HistoryExport
     {
         $unsupportedReason = self::stringValue($activity['history_unsupported_reason'] ?? null);
         $rawResult = self::stringValue($state['result'] ?? null);
+        $historyAuthority = self::stringValue($activity['history_authority'] ?? null)
+            ?? self::stringValue($state['history_authority'] ?? null);
 
         return [
             'id' => $activity['id'] ?? ($state['id'] ?? null),
@@ -963,8 +965,9 @@ final class HistoryExport
                 ?? self::stringValue($state['status'] ?? null)
                 ?? self::stringValue($activity['status'] ?? null)
                 ?? 'pending',
-            'history_authority' => self::stringValue($activity['history_authority'] ?? null)
-                ?? self::stringValue($state['history_authority'] ?? null),
+            'history_authority' => $historyAuthority,
+            'diagnostic_only' => $historyAuthority !== null
+                && $historyAuthority !== RunActivityView::HISTORY_AUTHORITY_TYPED,
             'history_event_types' => is_array($activity['history_event_types'] ?? null)
                 ? array_values(array_filter(
                     $activity['history_event_types'] ?? [],
@@ -1072,6 +1075,7 @@ final class HistoryExport
             'status' => $activity['status'] ?? null,
             'source_status' => $activity['source_status'] ?? ($activity['status'] ?? null),
             'history_authority' => $activity['history_authority'] ?? null,
+            'diagnostic_only' => (bool) ($activity['diagnostic_only'] ?? false),
             'history_event_types' => is_array($activity['history_event_types'] ?? null)
                 ? array_values($activity['history_event_types'])
                 : [],

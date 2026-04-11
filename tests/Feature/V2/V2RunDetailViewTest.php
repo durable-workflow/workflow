@@ -1071,12 +1071,17 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['class']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
         $this->assertSame('completed', $detail['activities'][0]['status']);
+        $this->assertFalse($detail['activities'][0]['diagnostic_only']);
         $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
         $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['logs'][0]['class']);
+        $this->assertSame('typed_history', $detail['logs'][0]['history_authority']);
+        $this->assertFalse($detail['logs'][0]['diagnostic_only']);
         $this->assertSame('Hello, Taylor!', unserialize($detail['logs'][0]['result']));
         $this->assertSame('Activity', $detail['chartData'][1]['type']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['chartData'][1]['x']);
+        $this->assertSame('typed_history', $detail['chartData'][1]['history_authority']);
+        $this->assertFalse($detail['chartData'][1]['diagnostic_only']);
     }
 
     public function testRunDetailViewFallsBackToTypedActivityHistoryWhenActivityRowIsMissing(): void
@@ -1105,14 +1110,19 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['class']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
         $this->assertSame('completed', $detail['activities'][0]['status']);
+        $this->assertFalse($detail['activities'][0]['diagnostic_only']);
         $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
         $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
         $this->assertCount(1, $detail['logs']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['logs'][0]['class']);
+        $this->assertSame('typed_history', $detail['logs'][0]['history_authority']);
+        $this->assertFalse($detail['logs'][0]['diagnostic_only']);
         $this->assertSame('Hello, Taylor!', unserialize($detail['logs'][0]['result']));
         $this->assertCount(2, $detail['chartData']);
         $this->assertSame('Activity', $detail['chartData'][1]['type']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['chartData'][1]['x']);
+        $this->assertSame('typed_history', $detail['chartData'][1]['history_authority']);
+        $this->assertFalse($detail['chartData'][1]['diagnostic_only']);
     }
 
     public function testRunDetailViewKeepsSignalWaitCommandMetadataWhenCommandRowsDrift(): void
@@ -2895,6 +2905,12 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertNull($activityWait['resume_source_kind']);
         $this->assertNull($activityWait['resume_source_id']);
         $this->assertNull($activityWait['task_id']);
+        $this->assertTrue($detail['activities'][0]['diagnostic_only']);
+        $this->assertSame('mutable_open_fallback', $detail['activities'][0]['history_authority']);
+        $this->assertTrue($detail['logs'][0]['diagnostic_only']);
+        $this->assertSame('mutable_open_fallback', $detail['logs'][0]['history_authority']);
+        $this->assertTrue($detail['chartData'][1]['diagnostic_only']);
+        $this->assertSame('mutable_open_fallback', $detail['chartData'][1]['history_authority']);
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
     }
 
@@ -3202,10 +3218,15 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertCount(1, $detail['activities']);
         $this->assertSame($executionId, $detail['activities'][0]['id']);
         $this->assertSame('running', $detail['activities'][0]['status']);
+        $this->assertFalse($detail['activities'][0]['diagnostic_only']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['class']);
         $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
         $this->assertNotNull($detail['activities'][0]['started_at']);
+        $this->assertSame('typed_history', $detail['logs'][0]['history_authority']);
+        $this->assertFalse($detail['logs'][0]['diagnostic_only']);
+        $this->assertSame('typed_history', $detail['chartData'][1]['history_authority']);
+        $this->assertFalse($detail['chartData'][1]['diagnostic_only']);
         $this->assertSame('open', $activityWait['status']);
         $this->assertSame('running', $activityWait['source_status']);
         $this->assertFalse($activityWait['task_backed']);

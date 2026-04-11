@@ -51,6 +51,12 @@ final class RunActivityView
             'index' => max(($activity['sequence'] ?? 1) - 1, 0),
             'now' => $activity['started_at'] ?? $activity['created_at'],
             'class' => $activity['class'],
+            'type' => $activity['type'] ?? null,
+            'status' => $activity['status'] ?? null,
+            'source_status' => $activity['row_status'] ?? ($activity['status'] ?? null),
+            'history_authority' => self::stringValue($activity['history_authority'] ?? null),
+            'history_unsupported_reason' => self::stringValue($activity['history_unsupported_reason'] ?? null),
+            'diagnostic_only' => self::isDiagnosticOnly($activity),
             'result' => $activity['result'],
             'created_at' => $activity['closed_at']
                 ?? $activity['last_heartbeat_at']
@@ -84,6 +90,16 @@ final class RunActivityView
         }
 
         return $classes;
+    }
+
+    /**
+     * @param array<string, mixed> $activity
+     */
+    public static function isDiagnosticOnly(array $activity): bool
+    {
+        $historyAuthority = self::stringValue($activity['history_authority'] ?? null);
+
+        return $historyAuthority !== null && $historyAuthority !== self::HISTORY_AUTHORITY_TYPED;
     }
 
     /**
@@ -222,6 +238,7 @@ final class RunActivityView
             'type' => $state['type'] ?? null,
             'class' => $state['class'] ?? null,
             'history_authority' => self::stringValue($state['history_authority'] ?? null),
+            'diagnostic_only' => self::isDiagnosticOnly($state),
             'history_event_types' => is_array($state['history_event_types'] ?? null)
                 ? array_values(array_filter(
                     $state['history_event_types'],

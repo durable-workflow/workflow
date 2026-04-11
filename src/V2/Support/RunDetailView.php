@@ -536,10 +536,12 @@ final class RunDetailView
             'x' => $run->workflow_class,
             'type' => 'Workflow',
             'y' => [$start, $end],
+            'diagnostic_only' => false,
         ]];
 
         foreach ($activities as $activity) {
             $entries[] = [
+                'id' => $activity['id'] ?? null,
                 'x' => $activity['class'],
                 'type' => 'Activity',
                 'y' => [
@@ -552,6 +554,11 @@ final class RunDetailView
                         ?? null
                     ),
                 ],
+                'status' => $activity['status'] ?? null,
+                'source_status' => $activity['row_status'] ?? ($activity['status'] ?? null),
+                'history_authority' => $activity['history_authority'] ?? null,
+                'history_unsupported_reason' => $activity['history_unsupported_reason'] ?? null,
+                'diagnostic_only' => (bool) ($activity['diagnostic_only'] ?? false),
             ];
         }
 
