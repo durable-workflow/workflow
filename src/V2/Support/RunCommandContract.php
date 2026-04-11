@@ -33,17 +33,17 @@ final class RunCommandContract
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $contract = self::contractFromHistory($run);
-        $event = self::workflowStartedEvent($run);
+        $state = self::historySnapshotState($run);
+        $contract = $state['contract'];
 
-        if ($contract !== null && ! self::historyContractNeedsBackfill($event)) {
+        if ($contract !== null && ! $state['needs_backfill']) {
             return [
                 ...self::withTargets($contract),
                 'source' => self::SOURCE_DURABLE_HISTORY,
             ];
         }
 
-        $liveDefinitionContract = self::liveDefinitionContract($run);
+        $liveDefinitionContract = $state['live_definition'];
 
         if ($liveDefinitionContract !== null) {
             return [
@@ -149,26 +149,32 @@ final class RunCommandContract
 
     public static function historyBackfillAvailable(WorkflowRun $run): bool
     {
-        $event = self::workflowStartedEvent($run);
+        return self::historyBackfillState($run)['available'];
+    }
 
-        if (! $event instanceof WorkflowHistoryEvent || ! self::historyContractNeedsBackfill($event)) {
-            return false;
-        }
+    public static function historyBackfillNeeded(WorkflowRun $run): bool
+    {
+        return self::historyBackfillState($run)['needed'];
+    }
 
-        try {
-            TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
-        } catch (LogicException) {
-            return false;
-        }
+    /**
+     * @return array{needed: bool, available: bool}
+     */
+    public static function historyBackfillState(WorkflowRun $run): array
+    {
+        $state = self::historySnapshotState($run);
 
-        return true;
+        return [
+            'needed' => $state['needs_backfill'],
+            'available' => $state['needs_backfill'] && $state['live_definition'] !== null,
+        ];
     }
 
     public static function backfillHistory(WorkflowRun $run): bool
     {
         $event = self::workflowStartedEvent($run);
 
-        if (! $event instanceof WorkflowHistoryEvent || ! self::historyContractNeedsBackfill($event)) {
+        if (! $event instanceof WorkflowHistoryEvent || ! self::historyBackfillNeeded($run)) {
             return false;
         }
 
@@ -208,22 +214,39 @@ final class RunCommandContract
      */
     private static function contractFromHistory(WorkflowRun $run): ?array
     {
-        $event = self::workflowStartedEvent($run);
+        return self::contractFromHistoryEvent(self::workflowStartedEvent($run));
+    }
 
+    /**
+     * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * }|null
+     */
+    private static function contractFromHistoryEvent(?WorkflowHistoryEvent $event): ?array
+    {
         if (! $event instanceof WorkflowHistoryEvent) {
             return null;
         }
 
-        $hasQueries = is_array($event->payload) && array_key_exists('declared_queries', $event->payload);
+        if (! is_array($event->payload)) {
+            return null;
+        }
+
+        $hasQueries = array_key_exists('declared_queries', $event->payload);
         $queries = $hasQueries
             ? self::normalizeList($event->payload['declared_queries'] ?? null)
             : [];
-        $hasQueryContracts = is_array($event->payload) && array_key_exists('declared_query_contracts', $event->payload);
+        $hasQueryContracts = array_key_exists('declared_query_contracts', $event->payload);
         $queryContracts = $hasQueryContracts
             ? self::normalizeCommandContracts($event->payload['declared_query_contracts'] ?? null)
             : [];
         $signals = self::normalizeList($event->payload['declared_signals'] ?? null);
-        $hasSignalContracts = is_array($event->payload) && array_key_exists(
+        $hasSignalContracts = array_key_exists(
             'declared_signal_contracts',
             $event->payload
         );
@@ -437,16 +460,113 @@ final class RunCommandContract
         return array_values($targets);
     }
 
-    private static function historyContractNeedsBackfill(?WorkflowHistoryEvent $event): bool
+    /**
+     * @return array{
+     *     contract: array{
+     *         queries: list<string>,
+     *         query_contracts: list<array<string, mixed>>,
+     *         signals: list<string>,
+     *         signal_contracts: list<array<string, mixed>>,
+     *         updates: list<string>,
+     *         update_contracts: list<array<string, mixed>>
+     *     }|null,
+     *     live_definition: array{
+     *         queries: list<string>,
+     *         query_contracts: list<array<string, mixed>>,
+     *         signals: list<string>,
+     *         signal_contracts: list<array<string, mixed>>,
+     *         updates: list<string>,
+     *         update_contracts: list<array<string, mixed>>
+     *     }|null,
+     *     needs_backfill: bool
+     * }
+     */
+    private static function historySnapshotState(WorkflowRun $run): array
     {
-        return $event instanceof WorkflowHistoryEvent
-            && is_array($event->payload)
-            && (
-                ! array_key_exists('declared_queries', $event->payload)
-                || ! array_key_exists('declared_query_contracts', $event->payload)
-                || ! array_key_exists('declared_signal_contracts', $event->payload)
-                || ! array_key_exists('declared_update_contracts', $event->payload)
-            );
+        $event = self::workflowStartedEvent($run);
+        $contract = self::contractFromHistoryEvent($event);
+        $liveDefinitionContract = null;
+        $needsBackfill = self::historyContractNeedsBackfill($run, $event, $contract);
+
+        if ($needsBackfill) {
+            $liveDefinitionContract = self::liveDefinitionContract($run);
+        }
+
+        return [
+            'contract' => $contract,
+            'live_definition' => $liveDefinitionContract,
+            'needs_backfill' => $needsBackfill,
+        ];
+    }
+
+    /**
+     * @param array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>
+     * }|null $contract
+     */
+    private static function historyContractNeedsBackfill(
+        WorkflowRun $run,
+        ?WorkflowHistoryEvent $event,
+        ?array $contract,
+    ): bool {
+        if (! $event instanceof WorkflowHistoryEvent || ! is_array($event->payload)) {
+            return false;
+        }
+
+        if (
+            ! array_key_exists('declared_queries', $event->payload)
+            || ! array_key_exists('declared_query_contracts', $event->payload)
+            || ! array_key_exists('declared_signal_contracts', $event->payload)
+            || ! array_key_exists('declared_update_contracts', $event->payload)
+        ) {
+            return true;
+        }
+
+        if ($contract === null) {
+            return true;
+        }
+
+        if (self::missingDeclaredContractNames($contract['queries'], $contract['query_contracts']) !== []) {
+            return true;
+        }
+
+        if (self::missingDeclaredContractNames($contract['updates'], $contract['update_contracts']) !== []) {
+            return true;
+        }
+
+        $liveDefinitionContract = self::liveDefinitionContract($run);
+
+        if ($liveDefinitionContract === null) {
+            return false;
+        }
+
+        return self::missingDeclaredContractNames(
+            array_values(array_intersect(
+                $contract['signals'],
+                array_column($liveDefinitionContract['signal_contracts'], 'name'),
+            )),
+            $contract['signal_contracts'],
+        ) !== [];
+    }
+
+    /**
+     * @param list<string> $names
+     * @param list<array<string, mixed>> $contracts
+     * @return list<string>
+     */
+    private static function missingDeclaredContractNames(array $names, array $contracts): array
+    {
+        $contractNames = array_values(array_filter(
+            array_column($contracts, 'name'),
+            static fn (mixed $name): bool => is_string($name) && $name !== '',
+        ));
+
+        return array_values(array_diff($names, $contractNames));
     }
 
     /**

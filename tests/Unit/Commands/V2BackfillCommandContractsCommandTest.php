@@ -22,8 +22,10 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
         $expected = [
             'dry_run' => true,
             'runs_matched' => 1,
+            'command_contracts_needing_backfill' => 1,
             'command_contracts_backfilled' => 0,
             'command_contracts_would_backfill' => 1,
+            'command_contracts_backfill_unavailable' => 0,
             'failures' => [],
         ];
 
@@ -73,8 +75,10 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
         $expected = [
             'dry_run' => true,
             'runs_matched' => 1,
+            'command_contracts_needing_backfill' => 0,
             'command_contracts_backfilled' => 0,
             'command_contracts_would_backfill' => 0,
+            'command_contracts_backfill_unavailable' => 0,
             'failures' => [],
         ];
 
@@ -87,6 +91,76 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    public function testItBackfillsPartialCommandContractSnapshotsOntoWorkflowStartedHistory(): void
+    {
+        $run = $this->createLegacyContractRun('command-contract-partial', payload: [
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'declared_queries' => ['approval-stage', 'approvalMatches'],
+            'declared_query_contracts' => [
+                [
+                    'name' => 'approval-stage',
+                    'parameters' => [],
+                ],
+            ],
+            'declared_signals' => ['approved-by', 'rejected-by'],
+            'declared_signal_contracts' => [
+                [
+                    'name' => 'approved-by',
+                    'parameters' => [
+                        [
+                            'name' => 'actor',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'default' => null,
+                            'type' => 'string',
+                            'allows_null' => false,
+                        ],
+                    ],
+                ],
+            ],
+            'declared_updates' => ['mark-approved'],
+            'declared_update_contracts' => [],
+        ]);
+
+        $expected = [
+            'dry_run' => true,
+            'runs_matched' => 1,
+            'command_contracts_needing_backfill' => 1,
+            'command_contracts_backfilled' => 0,
+            'command_contracts_would_backfill' => 1,
+            'command_contracts_backfill_unavailable' => 0,
+            'failures' => [],
+        ];
+
+        $this->artisan('workflow:v2:backfill-command-contracts', [
+            '--run-id' => [$run->id],
+            '--dry-run' => true,
+            '--json' => true,
+        ])
+            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
+            ->assertSuccessful();
+
+        $this->artisan('workflow:v2:backfill-command-contracts', [
+            '--run-id' => [$run->id],
+        ])
+            ->expectsOutput('Backfilled 1 command-contract history snapshot(s).')
+            ->assertSuccessful();
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $this->assertCount(2, $started->payload['declared_query_contracts'] ?? []);
+        $this->assertSame('approvalMatches', $started->payload['declared_query_contracts'][1]['name'] ?? null);
+        $this->assertCount(1, $started->payload['declared_update_contracts'] ?? []);
+        $this->assertSame('mark-approved', $started->payload['declared_update_contracts'][0]['name'] ?? null);
+    }
+
     public function testItSkipsRunsWhoseWorkflowClassCannotBeResolved(): void
     {
         $run = $this->createLegacyContractRun('command-contract-unavailable', 'App\\MissingWorkflow');
@@ -94,8 +168,10 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
         $expected = [
             'dry_run' => true,
             'runs_matched' => 1,
+            'command_contracts_needing_backfill' => 1,
             'command_contracts_backfilled' => 0,
             'command_contracts_would_backfill' => 0,
+            'command_contracts_backfill_unavailable' => 1,
             'failures' => [],
         ];
 
@@ -111,6 +187,7 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
     private function createLegacyContractRun(
         string $instanceId,
         string $workflowClass = TestCommandTargetWorkflow::class,
+        ?array $payload = null,
     ): WorkflowRun {
         $instance = WorkflowInstance::query()->create([
             'id' => $instanceId,
@@ -140,7 +217,7 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
         WorkflowHistoryEvent::record(
             $run,
             HistoryEventType::WorkflowStarted,
-            [
+            $payload ?? [
                 'workflow_class' => $workflowClass,
                 'workflow_type' => 'test-command-target-workflow',
                 'declared_signals' => ['approved-by', 'rejected-by'],

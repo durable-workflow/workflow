@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
+use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
@@ -452,5 +453,123 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(1, $resumePaths['data']['selected_missing_task_candidates']);
         $this->assertSame('2026-04-09T11:55:00.000000Z', $resumePaths['data']['oldest_missing_run_started_at']);
         $this->assertSame(300000, $resumePaths['data']['max_missing_run_age_ms']);
+    }
+
+    public function testSnapshotWarnsWhenCommandContractSnapshotsStillNeedBackfill(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
+        $availableInstance = WorkflowInstance::query()->create([
+            'id' => 'health-command-contract-available',
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $availableRun */
+        $availableRun = WorkflowRun::query()->create([
+            'id' => '01JHEALTHCONTRACTAVAIL0001',
+            'workflow_instance_id' => $availableInstance->id,
+            'run_number' => 1,
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'status' => 'waiting',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSecond(),
+        ]);
+
+        $availableInstance->forceFill([
+            'current_run_id' => $availableRun->id,
+        ])->save();
+
+        WorkflowHistoryEvent::record($availableRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'declared_queries' => ['approval-stage', 'approvalMatches'],
+            'declared_query_contracts' => [
+                [
+                    'name' => 'approval-stage',
+                    'parameters' => [],
+                ],
+            ],
+            'declared_signals' => ['approved-by', 'rejected-by'],
+            'declared_signal_contracts' => [
+                [
+                    'name' => 'approved-by',
+                    'parameters' => [
+                        [
+                            'name' => 'actor',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'default' => null,
+                            'type' => 'string',
+                            'allows_null' => false,
+                        ],
+                    ],
+                ],
+            ],
+            'declared_updates' => ['mark-approved'],
+            'declared_update_contracts' => [
+                [
+                    'name' => 'mark-approved',
+                    'parameters' => [
+                        [
+                            'name' => 'approved',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'default' => null,
+                            'type' => 'bool',
+                            'allows_null' => false,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $unavailableInstance = WorkflowInstance::query()->create([
+            'id' => 'health-command-contract-unavailable',
+            'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
+            'workflow_type' => 'missing-command-target-workflow',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $unavailableRun */
+        $unavailableRun = WorkflowRun::query()->create([
+            'id' => '01JHEALTHCONTRACTUNAVL001',
+            'workflow_instance_id' => $unavailableInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
+            'workflow_type' => 'missing-command-target-workflow',
+            'status' => 'waiting',
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSecond(),
+        ]);
+
+        $unavailableInstance->forceFill([
+            'current_run_id' => $unavailableRun->id,
+        ])->save();
+
+        WorkflowHistoryEvent::record($unavailableRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
+            'workflow_type' => 'missing-command-target-workflow',
+            'declared_signals' => ['approved-by', 'rejected-by'],
+            'declared_updates' => ['mark-approved'],
+        ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $contracts = collect($snapshot['checks'])->firstWhere('name', 'command_contract_snapshots');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertSame('warning', $contracts['status']);
+        $this->assertSame(2, $contracts['data']['backfill_needed_runs']);
+        $this->assertSame(1, $contracts['data']['backfill_available_runs']);
+        $this->assertSame(1, $contracts['data']['backfill_unavailable_runs']);
     }
 }

@@ -31,15 +31,27 @@ class V2BackfillCommandContractsCommand extends Command
         $report = [
             'dry_run' => $dryRun,
             'runs_matched' => $matchedRuns,
+            'command_contracts_needing_backfill' => 0,
             'command_contracts_backfilled' => 0,
             'command_contracts_would_backfill' => 0,
+            'command_contracts_backfill_unavailable' => 0,
             'failures' => [],
         ];
 
         $runQuery->chunkById(100, function ($runs) use (&$report, $dryRun): void {
             foreach ($runs as $run) {
                 try {
-                    if (! RunCommandContract::historyBackfillAvailable($run)) {
+                    $state = RunCommandContract::historyBackfillState($run);
+
+                    if (! $state['needed']) {
+                        continue;
+                    }
+
+                    $report['command_contracts_needing_backfill']++;
+
+                    if (! $state['available']) {
+                        $report['command_contracts_backfill_unavailable']++;
+
                         continue;
                     }
 
@@ -127,8 +139,10 @@ class V2BackfillCommandContractsCommand extends Command
      * @param array{
      *     dry_run: bool,
      *     runs_matched: int,
+     *     command_contracts_needing_backfill: int,
      *     command_contracts_backfilled: int,
      *     command_contracts_would_backfill: int,
+     *     command_contracts_backfill_unavailable: int,
      *     failures: list<array{run_id: string, message: string}>
      * } $report
      */
@@ -153,6 +167,13 @@ class V2BackfillCommandContractsCommand extends Command
             $this->info(sprintf(
                 'Backfilled %d command-contract history snapshot(s).',
                 $report['command_contracts_backfilled'],
+            ));
+        }
+
+        if ($report['command_contracts_backfill_unavailable'] > 0) {
+            $this->warn(sprintf(
+                '%d run(s) still need command-contract normalization, but the current build cannot resolve their workflow definitions.',
+                $report['command_contracts_backfill_unavailable'],
             ));
         }
 

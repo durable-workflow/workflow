@@ -1108,6 +1108,59 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame('name-provided', $detail['declared_signal_contracts'][0]['name']);
         $this->assertSame(['approve', 'explode'], $detail['declared_updates']);
         $this->assertSame('live_definition', $detail['declared_contract_source']);
+        $this->assertTrue($detail['declared_contract_backfill_needed']);
+        $this->assertTrue($detail['declared_contract_backfill_available']);
+    }
+
+    public function testNamedUpdateValidationUsesLiveCommandContractWhenWorkflowStartedSnapshotIsPartial(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'legacy-command-contract-partial-update');
+        $workflow->start();
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'WorkflowStarted')
+            ->sole();
+
+        $payload = $started->payload;
+        $payload['declared_update_contracts'] = [];
+
+        $started->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        $result = $workflow->attemptUpdateWithArguments('approve', [
+            'source' => 'api',
+        ]);
+
+        $this->assertTrue($result->rejected());
+        $this->assertTrue($result->rejectedInvalidArguments());
+        $this->assertSame('rejected_invalid_arguments', $result->outcome());
+        $this->assertSame('invalid_update_arguments', $result->rejectionReason());
+        $this->assertSame([
+            'approved' => ['The approved argument is required.'],
+        ], $result->validationErrors());
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId())->fresh());
+
+        $this->assertSame('live_definition', $detail['declared_contract_source']);
+        $this->assertTrue($detail['declared_contract_backfill_needed']);
+        $this->assertTrue($detail['declared_contract_backfill_available']);
+        $this->assertSame([], $started->fresh()->payload['declared_update_contracts'] ?? null);
+        $this->assertSame('approve', $detail['commands'][1]['target_name']);
+        $this->assertSame('invalid_update_arguments', $detail['commands'][1]['rejection_reason']);
+        $this->assertSame([
+            'approved' => ['The approved argument is required.'],
+        ], $detail['commands'][1]['validation_errors']);
     }
 
     public function testUpdateFailuresAreRecordedWithoutClosingTheRun(): void

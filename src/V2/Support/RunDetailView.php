@@ -99,6 +99,7 @@ final class RunDetailView
         $currentDefinitionFingerprint = WorkflowDefinitionFingerprint::currentForRun($run);
         $definitionMatchesCurrent = WorkflowDefinitionFingerprint::matchesCurrent($run);
         $determinismDiagnostics = WorkflowDeterminismDiagnostics::forRun($run);
+        $commandContractBackfill = RunCommandContract::historyBackfillState($run);
         $historyBudget = $summary === null
             ? HistoryBudget::forRun($run)
             : [
@@ -154,6 +155,8 @@ final class RunDetailView
             'declared_update_contracts' => $commandContract['update_contracts'],
             'declared_update_targets' => $commandContract['update_targets'],
             'declared_contract_source' => $commandContract['source'],
+            'declared_contract_backfill_needed' => $commandContractBackfill['needed'],
+            'declared_contract_backfill_available' => $commandContractBackfill['available'],
             'status_bucket' => $summary?->status_bucket,
             'closed_reason' => $summary?->closed_reason ?? $run->closed_reason,
             'closed_at' => $summary?->closed_at ?? $run->closed_at,

@@ -649,8 +649,14 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewExposesNormalizedCommandTargetsForMixedSignalContracts(): void
     {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
         $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-command-targets');
         $workflow->start();
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
@@ -685,12 +691,65 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertTrue($detail['declared_update_targets'][0]['has_contract']);
         $this->assertSame('approved', $detail['declared_update_targets'][0]['parameters'][0]['name']);
         $this->assertSame('bool', $detail['declared_update_targets'][0]['parameters'][0]['type']);
+        $this->assertFalse($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
+    }
+
+    public function testRunDetailViewMarksPartialCommandContractSnapshotsAsNeedingBackfill(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
+        $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-command-targets-partial');
+        $workflow->start();
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+
+        $payload = $started->payload;
+        $payload['declared_query_contracts'] = [
+            [
+                'name' => 'approval-stage',
+                'parameters' => [],
+            ],
+        ];
+
+        $started->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+
+        $detail = RunDetailView::forRun($run->fresh(['summary']));
+
+        $this->assertSame('live_definition', $detail['declared_contract_source']);
+        $this->assertTrue($detail['declared_contract_backfill_needed']);
+        $this->assertTrue($detail['declared_contract_backfill_available']);
+        $this->assertCount(2, $detail['declared_query_targets']);
+        $this->assertSame('approval-stage', $detail['declared_query_targets'][0]['name']);
+        $this->assertSame('approvalMatches', $detail['declared_query_targets'][1]['name']);
+        $this->assertTrue($detail['declared_query_targets'][1]['has_contract']);
     }
 
     public function testRunDetailViewBlocksQueryAndUpdateWhenDurableTargetsExistButDefinitionIsUnavailable(): void
     {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
         $workflow = WorkflowStub::make(TestCommandTargetWorkflow::class, 'detail-definition-unavailable');
         $workflow->start();
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
 
@@ -705,6 +764,8 @@ final class V2RunDetailViewTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
         $this->assertSame('durable_history', $detail['declared_contract_source']);
+        $this->assertFalse($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
         $this->assertSame(['approval-stage', 'approvalMatches'], $detail['declared_queries']);
         $this->assertFalse($detail['can_query']);
         $this->assertSame('workflow_definition_unavailable', $detail['query_blocked_reason']);
@@ -755,6 +816,8 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame([], $detail['declared_update_contracts']);
         $this->assertSame([], $detail['declared_update_targets']);
         $this->assertSame('unavailable', $detail['declared_contract_source']);
+        $this->assertFalse($detail['declared_contract_backfill_needed']);
+        $this->assertFalse($detail['declared_contract_backfill_available']);
     }
 
     public function testRunDetailViewIncludesCommandsActivitiesAndTimelineForCompletedSignalRun(): void
@@ -2979,6 +3042,19 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($leaseExpiresAt->toJSON(), $detail['activities'][0]['attempts'][1]['lease_expires_at']?->toJSON());
         $this->assertSame(['ActivityScheduled', 'ActivityStarted', 'ActivityRetryScheduled', 'ActivityStarted', 'ActivityHeartbeatRecorded'], array_column($detail['timeline'], 'type'));
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
+    }
+
+    private function runReadyWorkflowTask(string $runId): void
+    {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->firstOrFail();
+
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
     }
 
     private function waitFor(callable $condition): void
