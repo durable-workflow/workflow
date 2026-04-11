@@ -15,11 +15,11 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
-use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\RunSummaryProjector;
 
@@ -197,8 +197,10 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'status' => 'pending',
             'arguments' => serialize([]),
             'attempt_count' => 0,
-            'created_at' => now()->subMinutes(5),
-            'updated_at' => now()->subMinute(),
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinute(),
         ]);
 
         WorkflowRunSummary::query()->create([
@@ -389,8 +391,10 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'status' => 'pending',
             'arguments' => serialize([]),
             'attempt_count' => 0,
-            'created_at' => now()->subMinutes(5),
-            'updated_at' => now()->subMinute(),
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinute(),
         ]);
 
         WorkflowHistoryEvent::record(
@@ -678,6 +682,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->nullable();
             $table->text('liveness_reason')
                 ->nullable();
+            $table->string('repair_blocked_reason')
+                ->nullable();
             $table->string('next_task_id', 26)
                 ->nullable();
             $table->string('next_task_type')
@@ -802,8 +808,10 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'workflow_class' => TestCommandTargetWorkflow::class,
             'workflow_type' => 'test-command-target-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinutes(5),
-            'started_at' => now()->subMinutes(5),
+            'reserved_at' => now()
+                ->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $run */
@@ -814,8 +822,10 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'workflow_class' => TestCommandTargetWorkflow::class,
             'workflow_type' => 'test-command-target-workflow',
             'status' => RunStatus::Waiting->value,
-            'started_at' => now()->subMinutes(5),
-            'last_progress_at' => now()->subMinutes(4),
+            'started_at' => now()
+                ->subMinutes(5),
+            'last_progress_at' => now()
+                ->subMinutes(4),
         ]);
 
         $instance->forceFill([

@@ -35,7 +35,7 @@ final class ActivityOutcomeRecorder
         int $maxAttempts,
         int $backoffSeconds,
     ): array {
-        return DB::transaction(function () use (
+        return DB::transaction(static function () use (
             $taskId,
             $attemptId,
             $attemptCount,
@@ -155,7 +155,8 @@ final class ActivityOutcomeRecorder
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
             } elseif (self::shouldRetry($throwable, $attemptCount, $maxAttempts)) {
                 $exceptionPayload = FailureFactory::payload($throwable);
-                $retryAvailableAt = now()->addSeconds($backoffSeconds);
+                $retryAvailableAt = now()
+                    ->addSeconds($backoffSeconds);
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Failed);
 

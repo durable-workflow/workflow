@@ -98,11 +98,7 @@ class V2BackfillParallelGroupMetadataCommand extends Command
         $runModel = $this->runModel();
 
         $query = $runModel::query()
-            ->with([
-                'activityExecutions',
-                'childLinks',
-                'historyEvents',
-            ]);
+            ->with(['activityExecutions', 'childLinks', 'historyEvents']);
 
         if ($runIds !== []) {
             $query->whereKey($runIds);

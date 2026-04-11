@@ -89,13 +89,7 @@ final class ParallelGroupMetadataBackfill
             }
 
             if (in_array($event->event_type, self::CHILD_EVENT_TYPES, true)) {
-                self::backfillEvent(
-                    $event,
-                    $childMetadataBySequence[$sequence] ?? [],
-                    'child',
-                    $dryRun,
-                    $report,
-                );
+                self::backfillEvent($event, $childMetadataBySequence[$sequence] ?? [], 'child', $dryRun, $report);
             }
         }
 

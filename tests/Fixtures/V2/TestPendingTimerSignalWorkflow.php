@@ -6,9 +6,9 @@ namespace Tests\Fixtures\V2;
 
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
-use Workflow\V2\Workflow;
 use function Workflow\V2\awaitSignal;
 use function Workflow\V2\timer;
+use Workflow\V2\Workflow;
 
 #[Signal('resume')]
 final class TestPendingTimerSignalWorkflow extends Workflow

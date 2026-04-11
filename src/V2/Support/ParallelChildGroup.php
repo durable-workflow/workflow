@@ -50,9 +50,7 @@ final class ParallelChildGroup
      */
     public static function itemMetadata(int $baseSequence, int $size, int $index, string $kind = 'child'): array
     {
-        return self::payloadForPath([
-            self::groupEntry($baseSequence, $size, $index, $kind),
-        ]);
+        return self::payloadForPath([self::groupEntry($baseSequence, $size, $index, $kind)]);
     }
 
     /**
@@ -230,8 +228,11 @@ final class ParallelChildGroup
         );
     }
 
-    public static function shouldWakeParentOnChildClosure(WorkflowRun $parentRun, array $metadata, RunStatus $closedChildStatus): bool
-    {
+    public static function shouldWakeParentOnChildClosure(
+        WorkflowRun $parentRun,
+        array $metadata,
+        RunStatus $closedChildStatus
+    ): bool {
         return self::shouldWakeParentOnClosure(
             $parentRun,
             self::normalizedPath($metadata),
@@ -240,8 +241,11 @@ final class ParallelChildGroup
         );
     }
 
-    public static function shouldWakeParentOnActivityClosure(WorkflowRun $parentRun, array $metadata, ActivityStatus $closedActivityStatus): bool
-    {
+    public static function shouldWakeParentOnActivityClosure(
+        WorkflowRun $parentRun,
+        array $metadata,
+        ActivityStatus $closedActivityStatus
+    ): bool {
         return self::shouldWakeParentOnClosure(
             $parentRun,
             self::normalizedPath($metadata),
@@ -387,7 +391,6 @@ final class ParallelChildGroup
     }
 
     /**
-     * @param mixed $value
      * @return list<mixed>
      */
     private static function arrayValue(mixed $value): array

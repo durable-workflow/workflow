@@ -39,7 +39,8 @@ final class OperatorDashboardSummary
 
     private static function flowsPastHour(CarbonInterface $now): int
     {
-        $cutoff = $now->copy()->subHour();
+        $cutoff = $now->copy()
+            ->subHour();
 
         return self::summaryModel()::query()
             ->where(static function ($query) use ($cutoff): void {

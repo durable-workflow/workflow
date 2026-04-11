@@ -88,7 +88,9 @@ final class CommandLifecycleBackfill
 
         return [
             'type' => 'signal',
-            'row_missing' => ! $command->relationLoaded('signalRecord') || ! ($command->signalRecord instanceof WorkflowSignal),
+            'row_missing' => ! $command->relationLoaded(
+                'signalRecord'
+            ) || ! ($command->signalRecord instanceof WorkflowSignal),
             'history_events_missing' => $missingEvents,
         ];
     }
@@ -116,7 +118,9 @@ final class CommandLifecycleBackfill
 
         return [
             'type' => 'update',
-            'row_missing' => ! $command->relationLoaded('updateRecord') || ! ($command->updateRecord instanceof WorkflowUpdate),
+            'row_missing' => ! $command->relationLoaded(
+                'updateRecord'
+            ) || ! ($command->updateRecord instanceof WorkflowUpdate),
             'history_events_missing' => $missingEvents,
         ];
     }

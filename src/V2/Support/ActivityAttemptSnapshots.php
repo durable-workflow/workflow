@@ -33,10 +33,7 @@ final class ActivityAttemptSnapshots
                 continue;
             }
 
-            $states[$activityId][$attemptId] = self::merge(
-                $states[$activityId][$attemptId] ?? [],
-                $snapshot,
-            );
+            $states[$activityId][$attemptId] = self::merge($states[$activityId][$attemptId] ?? [], $snapshot);
         }
 
         foreach ($run->activityExecutions as $execution) {

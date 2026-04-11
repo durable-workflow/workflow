@@ -499,7 +499,9 @@ final class HistoryTimeline
                 ?? (is_string($command?->payload ?? null) ? $command->payload : null)
             ),
             'source' => self::stringValue($snapshot['source'] ?? null) ?? $command?->source,
-            'context' => self::arrayValue($snapshot['context'] ?? null) ?? ($publicContext === [] ? null : $publicContext),
+            'context' => self::arrayValue(
+                $snapshot['context'] ?? null
+            ) ?? ($publicContext === [] ? null : $publicContext),
             'caller_label' => self::stringValue($snapshot['caller_label'] ?? null) ?? $command?->callerLabel(),
             'auth_status' => self::stringValue($snapshot['auth_status'] ?? null) ?? $command?->authStatus(),
             'auth_method' => self::stringValue($snapshot['auth_method'] ?? null) ?? $command?->authMethod(),

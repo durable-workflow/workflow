@@ -57,7 +57,10 @@ final class V2CompatibilityBackfillMigrationTest extends TestCase
             'exception_count' => 0,
         ]);
 
-        $migration = require dirname(__DIR__, 3) . '/src/migrations/2026_04_08_000121_backfill_workflow_task_and_summary_compatibility.php';
+        $migration = require dirname(
+            __DIR__,
+            3
+        ) . '/src/migrations/2026_04_08_000121_backfill_workflow_task_and_summary_compatibility.php';
         $migration->up();
 
         $this->assertSame('build-a', $task->fresh()->compatibility);

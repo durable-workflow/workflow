@@ -50,7 +50,8 @@ final class ConfiguredV2ObservabilityTest extends TestCase
 
         /** @var object $model */
         $model = new $modelClass();
-        $related = $model->{$relation}()->getRelated();
+        $related = $model->{$relation}()
+            ->getRelated();
 
         $this->assertSame($configuredClass, $related::class, sprintf(
             '%s::%s() should resolve %s from workflows.v2.%s',
@@ -75,7 +76,8 @@ final class ConfiguredV2ObservabilityTest extends TestCase
     public function testCurrentRunResolverUsesConfiguredRunModel(): void
     {
         $this->createConfiguredRunsTable();
-        config()->set('workflows.v2.run_model', ConfiguredWorkflowRun::class);
+        config()
+            ->set('workflows.v2.run_model', ConfiguredWorkflowRun::class);
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'configured-current-run-instance',
@@ -91,10 +93,14 @@ final class ConfiguredV2ObservabilityTest extends TestCase
             'workflow_class' => 'App\\Workflows\\ConfiguredResolverWorkflow',
             'workflow_type' => 'configured.resolver.workflow',
             'status' => RunStatus::Completed->value,
-            'started_at' => now()->subMinutes(3),
-            'closed_at' => now()->subMinutes(2),
-            'created_at' => now()->subMinutes(3),
-            'updated_at' => now()->subMinutes(2),
+            'started_at' => now()
+                ->subMinutes(3),
+            'closed_at' => now()
+                ->subMinutes(2),
+            'created_at' => now()
+                ->subMinutes(3),
+            'updated_at' => now()
+                ->subMinutes(2),
         ]);
 
         ConfiguredWorkflowRun::query()->create([
@@ -104,10 +110,14 @@ final class ConfiguredV2ObservabilityTest extends TestCase
             'workflow_class' => 'App\\Workflows\\ConfiguredResolverWorkflow',
             'workflow_type' => 'configured.resolver.workflow',
             'status' => RunStatus::Waiting->value,
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
-            'created_at' => now()->subMinute(),
-            'updated_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+            'created_at' => now()
+                ->subMinute(),
+            'updated_at' => now()
+                ->subSeconds(30),
         ]);
 
         $resolved = CurrentRunResolver::forInstance($instance->fresh());
@@ -121,8 +131,10 @@ final class ConfiguredV2ObservabilityTest extends TestCase
         $this->createConfiguredSummariesTable();
         $this->createConfiguredHistoryEventsTable();
 
-        config()->set('workflows.v2.run_summary_model', ConfiguredWorkflowRunSummary::class);
-        config()->set('workflows.v2.history_event_model', ConfiguredWorkflowHistoryEvent::class);
+        config()
+            ->set('workflows.v2.run_summary_model', ConfiguredWorkflowRunSummary::class);
+        config()
+            ->set('workflows.v2.history_event_model', ConfiguredWorkflowHistoryEvent::class);
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'configured-observability-instance',
@@ -138,8 +150,10 @@ final class ConfiguredV2ObservabilityTest extends TestCase
             'workflow_class' => 'Missing\\ConfiguredObservabilityWorkflow',
             'workflow_type' => 'configured.observability.workflow',
             'status' => RunStatus::Waiting->value,
-            'started_at' => now()->subMinutes(2),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -200,7 +214,10 @@ final class ConfiguredV2ObservabilityTest extends TestCase
 
         $this->assertSame('running', $export['summary']['status_bucket']);
         $this->assertSame('configured-business-key', $export['summary']['business_key']);
-        $this->assertSame('configured-fingerprint', $export['history_events'][0]['payload']['workflow_definition_fingerprint']);
+        $this->assertSame(
+            'configured-fingerprint',
+            $export['history_events'][0]['payload']['workflow_definition_fingerprint']
+        );
         $this->assertSame(['configured-signal'], $export['history_events'][0]['payload']['declared_signals']);
     }
 
@@ -210,52 +227,137 @@ final class ConfiguredV2ObservabilityTest extends TestCase
     public static function relationMatrixProvider(): array
     {
         return [
-            'activity attempt execution' => [ActivityAttempt::class, 'execution', 'activity_execution_model', ConfiguredActivityExecution::class],
+            'activity attempt execution' => [
+                ActivityAttempt::class,
+                'execution',
+                'activity_execution_model',
+                ConfiguredActivityExecution::class,
+            ],
             'activity attempt run' => [ActivityAttempt::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'activity execution run' => [ActivityExecution::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
-            'activity execution attempts' => [ActivityExecution::class, 'attempts', 'activity_attempt_model', ConfiguredActivityAttempt::class],
-            'command instance' => [WorkflowCommand::class, 'instance', 'instance_model', ConfiguredWorkflowInstance::class],
+            'activity execution attempts' => [
+                ActivityExecution::class,
+                'attempts',
+                'activity_attempt_model',
+                ConfiguredActivityAttempt::class,
+            ],
+            'command instance' => [
+                WorkflowCommand::class,
+                'instance',
+                'instance_model',
+                ConfiguredWorkflowInstance::class,
+            ],
             'command run' => [WorkflowCommand::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
-            'command history events' => [WorkflowCommand::class, 'historyEvents', 'history_event_model', ConfiguredWorkflowHistoryEvent::class],
-            'command update record' => [WorkflowCommand::class, 'updateRecord', 'update_model', ConfiguredWorkflowUpdate::class],
-            'command signal record' => [WorkflowCommand::class, 'signalRecord', 'signal_model', ConfiguredWorkflowSignal::class],
+            'command history events' => [
+                WorkflowCommand::class,
+                'historyEvents',
+                'history_event_model',
+                ConfiguredWorkflowHistoryEvent::class,
+            ],
+            'command update record' => [
+                WorkflowCommand::class,
+                'updateRecord',
+                'update_model',
+                ConfiguredWorkflowUpdate::class,
+            ],
+            'command signal record' => [
+                WorkflowCommand::class,
+                'signalRecord',
+                'signal_model',
+                ConfiguredWorkflowSignal::class,
+            ],
             'failure run' => [WorkflowFailure::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'history event run' => [WorkflowHistoryEvent::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
-            'history event command' => [WorkflowHistoryEvent::class, 'command', 'command_model', ConfiguredWorkflowCommand::class],
-            'instance current run' => [WorkflowInstance::class, 'currentRun', 'run_model', ConfiguredWorkflowRun::class],
+            'history event command' => [
+                WorkflowHistoryEvent::class,
+                'command',
+                'command_model',
+                ConfiguredWorkflowCommand::class,
+            ],
+            'instance current run' => [
+                WorkflowInstance::class,
+                'currentRun',
+                'run_model',
+                ConfiguredWorkflowRun::class,
+            ],
             'instance runs' => [WorkflowInstance::class, 'runs', 'run_model', ConfiguredWorkflowRun::class],
-            'instance commands' => [WorkflowInstance::class, 'commands', 'command_model', ConfiguredWorkflowCommand::class],
+            'instance commands' => [
+                WorkflowInstance::class,
+                'commands',
+                'command_model',
+                ConfiguredWorkflowCommand::class,
+            ],
             'instance updates' => [WorkflowInstance::class, 'updates', 'update_model', ConfiguredWorkflowUpdate::class],
             'link parent run' => [WorkflowLink::class, 'parentRun', 'run_model', ConfiguredWorkflowRun::class],
             'link child run' => [WorkflowLink::class, 'childRun', 'run_model', ConfiguredWorkflowRun::class],
             'run instance' => [WorkflowRun::class, 'instance', 'instance_model', ConfiguredWorkflowInstance::class],
-            'run history events' => [WorkflowRun::class, 'historyEvents', 'history_event_model', ConfiguredWorkflowHistoryEvent::class],
+            'run history events' => [
+                WorkflowRun::class,
+                'historyEvents',
+                'history_event_model',
+                ConfiguredWorkflowHistoryEvent::class,
+            ],
             'run tasks' => [WorkflowRun::class, 'tasks', 'task_model', ConfiguredWorkflowTask::class],
             'run commands' => [WorkflowRun::class, 'commands', 'command_model', ConfiguredWorkflowCommand::class],
             'run updates' => [WorkflowRun::class, 'updates', 'update_model', ConfiguredWorkflowUpdate::class],
             'run signals' => [WorkflowRun::class, 'signals', 'signal_model', ConfiguredWorkflowSignal::class],
-            'run activity executions' => [WorkflowRun::class, 'activityExecutions', 'activity_execution_model', ConfiguredActivityExecution::class],
-            'run activity attempts' => [WorkflowRun::class, 'activityAttempts', 'activity_attempt_model', ConfiguredActivityAttempt::class],
+            'run activity executions' => [
+                WorkflowRun::class,
+                'activityExecutions',
+                'activity_execution_model',
+                ConfiguredActivityExecution::class,
+            ],
+            'run activity attempts' => [
+                WorkflowRun::class,
+                'activityAttempts',
+                'activity_attempt_model',
+                ConfiguredActivityAttempt::class,
+            ],
             'run timers' => [WorkflowRun::class, 'timers', 'timer_model', ConfiguredWorkflowTimer::class],
             'run failures' => [WorkflowRun::class, 'failures', 'failure_model', ConfiguredWorkflowFailure::class],
             'run summary' => [WorkflowRun::class, 'summary', 'run_summary_model', ConfiguredWorkflowRunSummary::class],
             'run waits' => [WorkflowRun::class, 'waits', 'run_wait_model', ConfiguredWorkflowRunWait::class],
-            'run timeline entries' => [WorkflowRun::class, 'timelineEntries', 'run_timeline_entry_model', ConfiguredWorkflowTimelineEntry::class],
-            'run timer entries' => [WorkflowRun::class, 'timerEntries', 'run_timer_entry_model', ConfiguredWorkflowRunTimerEntry::class],
-            'run lineage entries' => [WorkflowRun::class, 'lineageEntries', 'run_lineage_entry_model', ConfiguredWorkflowRunLineageEntry::class],
+            'run timeline entries' => [
+                WorkflowRun::class,
+                'timelineEntries',
+                'run_timeline_entry_model',
+                ConfiguredWorkflowTimelineEntry::class,
+            ],
+            'run timer entries' => [
+                WorkflowRun::class,
+                'timerEntries',
+                'run_timer_entry_model',
+                ConfiguredWorkflowRunTimerEntry::class,
+            ],
+            'run lineage entries' => [
+                WorkflowRun::class,
+                'lineageEntries',
+                'run_lineage_entry_model',
+                ConfiguredWorkflowRunLineageEntry::class,
+            ],
             'run parent links' => [WorkflowRun::class, 'parentLinks', 'link_model', ConfiguredWorkflowLink::class],
             'run child links' => [WorkflowRun::class, 'childLinks', 'link_model', ConfiguredWorkflowLink::class],
             'lineage entry run' => [WorkflowRunLineageEntry::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'summary run' => [WorkflowRunSummary::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'timer entry run' => [WorkflowRunTimerEntry::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'wait run' => [WorkflowRunWait::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
-            'signal instance' => [WorkflowSignal::class, 'instance', 'instance_model', ConfiguredWorkflowInstance::class],
+            'signal instance' => [
+                WorkflowSignal::class,
+                'instance',
+                'instance_model',
+                ConfiguredWorkflowInstance::class,
+            ],
             'signal run' => [WorkflowSignal::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'signal command' => [WorkflowSignal::class, 'command', 'command_model', ConfiguredWorkflowCommand::class],
             'task run' => [WorkflowTask::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'timeline entry run' => [WorkflowTimelineEntry::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'timer run' => [WorkflowTimer::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
-            'update instance' => [WorkflowUpdate::class, 'instance', 'instance_model', ConfiguredWorkflowInstance::class],
+            'update instance' => [
+                WorkflowUpdate::class,
+                'instance',
+                'instance_model',
+                ConfiguredWorkflowInstance::class,
+            ],
             'update run' => [WorkflowUpdate::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'update command' => [WorkflowUpdate::class, 'command', 'command_model', ConfiguredWorkflowCommand::class],
             'update failure' => [WorkflowUpdate::class, 'failure', 'failure_model', ConfiguredWorkflowFailure::class],
@@ -265,36 +367,57 @@ final class ConfiguredV2ObservabilityTest extends TestCase
     private function configureAllModelOverrides(): void
     {
         config()->set('workflows.v2.instance_model', ConfiguredWorkflowInstance::class);
-        config()->set('workflows.v2.run_model', ConfiguredWorkflowRun::class);
-        config()->set('workflows.v2.history_event_model', ConfiguredWorkflowHistoryEvent::class);
-        config()->set('workflows.v2.task_model', ConfiguredWorkflowTask::class);
-        config()->set('workflows.v2.command_model', ConfiguredWorkflowCommand::class);
-        config()->set('workflows.v2.link_model', ConfiguredWorkflowLink::class);
-        config()->set('workflows.v2.activity_execution_model', ConfiguredActivityExecution::class);
-        config()->set('workflows.v2.activity_attempt_model', ConfiguredActivityAttempt::class);
-        config()->set('workflows.v2.timer_model', ConfiguredWorkflowTimer::class);
-        config()->set('workflows.v2.failure_model', ConfiguredWorkflowFailure::class);
-        config()->set('workflows.v2.run_summary_model', ConfiguredWorkflowRunSummary::class);
-        config()->set('workflows.v2.run_wait_model', ConfiguredWorkflowRunWait::class);
-        config()->set('workflows.v2.run_timeline_entry_model', ConfiguredWorkflowTimelineEntry::class);
-        config()->set('workflows.v2.run_timer_entry_model', ConfiguredWorkflowRunTimerEntry::class);
-        config()->set('workflows.v2.run_lineage_entry_model', ConfiguredWorkflowRunLineageEntry::class);
-        config()->set('workflows.v2.signal_model', ConfiguredWorkflowSignal::class);
-        config()->set('workflows.v2.update_model', ConfiguredWorkflowUpdate::class);
+        config()
+            ->set('workflows.v2.run_model', ConfiguredWorkflowRun::class);
+        config()
+            ->set('workflows.v2.history_event_model', ConfiguredWorkflowHistoryEvent::class);
+        config()
+            ->set('workflows.v2.task_model', ConfiguredWorkflowTask::class);
+        config()
+            ->set('workflows.v2.command_model', ConfiguredWorkflowCommand::class);
+        config()
+            ->set('workflows.v2.link_model', ConfiguredWorkflowLink::class);
+        config()
+            ->set('workflows.v2.activity_execution_model', ConfiguredActivityExecution::class);
+        config()
+            ->set('workflows.v2.activity_attempt_model', ConfiguredActivityAttempt::class);
+        config()
+            ->set('workflows.v2.timer_model', ConfiguredWorkflowTimer::class);
+        config()
+            ->set('workflows.v2.failure_model', ConfiguredWorkflowFailure::class);
+        config()
+            ->set('workflows.v2.run_summary_model', ConfiguredWorkflowRunSummary::class);
+        config()
+            ->set('workflows.v2.run_wait_model', ConfiguredWorkflowRunWait::class);
+        config()
+            ->set('workflows.v2.run_timeline_entry_model', ConfiguredWorkflowTimelineEntry::class);
+        config()
+            ->set('workflows.v2.run_timer_entry_model', ConfiguredWorkflowRunTimerEntry::class);
+        config()
+            ->set('workflows.v2.run_lineage_entry_model', ConfiguredWorkflowRunLineageEntry::class);
+        config()
+            ->set('workflows.v2.signal_model', ConfiguredWorkflowSignal::class);
+        config()
+            ->set('workflows.v2.update_model', ConfiguredWorkflowUpdate::class);
     }
 
     private function createConfiguredRunsTable(): void
     {
         Schema::create('configured_workflow_runs', static function (Blueprint $table): void {
-            $table->string('id', 26)->primary();
-            $table->string('workflow_instance_id', 191)->index();
+            $table->string('id', 26)
+                ->primary();
+            $table->string('workflow_instance_id', 191)
+                ->index();
             $table->unsignedInteger('run_number');
             $table->string('workflow_class');
             $table->string('workflow_type');
             $table->string('status');
-            $table->timestamp('started_at', 6)->nullable();
-            $table->timestamp('closed_at', 6)->nullable();
-            $table->timestamp('last_progress_at', 6)->nullable();
+            $table->timestamp('started_at', 6)
+                ->nullable();
+            $table->timestamp('closed_at', 6)
+                ->nullable();
+            $table->timestamp('last_progress_at', 6)
+                ->nullable();
             $table->timestamps(6);
         });
     }
@@ -302,23 +425,38 @@ final class ConfiguredV2ObservabilityTest extends TestCase
     private function createConfiguredSummariesTable(): void
     {
         Schema::create('configured_workflow_run_summaries', static function (Blueprint $table): void {
-            $table->string('id', 26)->primary();
-            $table->string('workflow_instance_id', 191)->index();
+            $table->string('id', 26)
+                ->primary();
+            $table->string('workflow_instance_id', 191)
+                ->index();
             $table->unsignedInteger('run_number');
-            $table->boolean('is_current_run')->default(false);
-            $table->string('engine_source')->nullable();
+            $table->boolean('is_current_run')
+                ->default(false);
+            $table->string('engine_source')
+                ->nullable();
             $table->string('class');
             $table->string('workflow_type');
-            $table->string('business_key')->nullable();
+            $table->string('business_key')
+                ->nullable();
             $table->string('status');
-            $table->string('status_bucket')->nullable();
-            $table->string('closed_reason')->nullable();
-            $table->unsignedInteger('history_event_count')->default(0);
-            $table->unsignedBigInteger('history_size_bytes')->default(0);
-            $table->boolean('continue_as_new_recommended')->default(false);
-            $table->timestamp('started_at', 6)->nullable();
-            $table->timestamp('sort_timestamp', 6)->nullable();
-            $table->string('sort_key')->nullable();
+            $table->string('status_bucket')
+                ->nullable();
+            $table->string('closed_reason')
+                ->nullable();
+            $table->string('repair_blocked_reason')
+                ->nullable();
+            $table->unsignedInteger('history_event_count')
+                ->default(0);
+            $table->unsignedBigInteger('history_size_bytes')
+                ->default(0);
+            $table->boolean('continue_as_new_recommended')
+                ->default(false);
+            $table->timestamp('started_at', 6)
+                ->nullable();
+            $table->timestamp('sort_timestamp', 6)
+                ->nullable();
+            $table->string('sort_key')
+                ->nullable();
             $table->timestamps(6);
         });
     }
@@ -326,12 +464,16 @@ final class ConfiguredV2ObservabilityTest extends TestCase
     private function createConfiguredHistoryEventsTable(): void
     {
         Schema::create('configured_workflow_history_events', static function (Blueprint $table): void {
-            $table->string('id', 26)->primary();
-            $table->string('workflow_run_id', 26)->index();
+            $table->string('id', 26)
+                ->primary();
+            $table->string('workflow_run_id', 26)
+                ->index();
             $table->unsignedInteger('sequence');
             $table->string('event_type');
-            $table->json('payload')->nullable();
-            $table->timestamp('recorded_at', 6)->nullable();
+            $table->json('payload')
+                ->nullable();
+            $table->timestamp('recorded_at', 6)
+                ->nullable();
             $table->timestamps(6);
         });
     }

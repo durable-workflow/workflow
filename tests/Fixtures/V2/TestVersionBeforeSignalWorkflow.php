@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
+use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
+use function Workflow\V2\awaitSignal;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
-use function Workflow\V2\activity;
-use function Workflow\V2\awaitSignal;
 
 #[Type('test-version-after-signal-workflow')]
 #[Signal('go')]

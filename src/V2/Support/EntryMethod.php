@@ -139,7 +139,8 @@ final class EntryMethod
         $resolved = $reflection->getMethod($method);
 
         if (
-            $resolved->getDeclaringClass()->getName() !== $reflection->getName()
+            $resolved->getDeclaringClass()
+                ->getName() !== $reflection->getName()
             || ! $resolved->isPublic()
         ) {
             return null;

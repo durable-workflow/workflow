@@ -98,8 +98,10 @@ final class V2BackfillFailureTypesCommandTest extends TestCase
             ->expectsOutput('Backfilled 2 failure history event(s).')
             ->assertSuccessful();
 
-        $failurePayload = $failureEvent->refresh()->payload;
-        $handledPayload = $handledEvent->refresh()->payload;
+        $failurePayload = $failureEvent->refresh()
+->payload;
+        $handledPayload = $handledEvent->refresh()
+->payload;
 
         $this->assertSame('order-rejected', $failurePayload['exception_type'] ?? null);
         $this->assertSame('order-rejected', $failurePayload['exception']['type'] ?? null);

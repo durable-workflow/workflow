@@ -370,9 +370,12 @@ final class RunWaitView
         WorkflowRun $run,
         array $taskByChildCallId,
         array $taskByChildRunId,
-    ): array
-    {
-        return array_values(array_filter(array_map(static function (int $sequence) use ($run, $taskByChildCallId, $taskByChildRunId): ?array {
+    ): array {
+        return array_values(array_filter(array_map(static function (int $sequence) use (
+            $run,
+            $taskByChildCallId,
+            $taskByChildRunId
+        ): ?array {
             $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
 
             if ($snapshot === null) {
@@ -401,7 +404,9 @@ final class RunWaitView
                 default => sprintf('Waiting for child workflow %s.', $label),
             };
             $parallelPayload = is_array($snapshot['parallel_group_path'] ?? null)
-                ? ['parallel_group_path' => $snapshot['parallel_group_path']]
+                ? [
+                    'parallel_group_path' => $snapshot['parallel_group_path'],
+                ]
                 : (
                     is_array($scheduledEvent?->payload) ? $scheduledEvent->payload : (
                         is_array($resolutionEvent?->payload) ? $resolutionEvent->payload : []

@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowUpdate;
 

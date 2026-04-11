@@ -55,8 +55,14 @@ return new class() extends Migration {
             $table->timestamps(6);
 
             $table->unique(['workflow_run_id', 'timer_id'], 'workflow_run_timer_entries_run_timer_unique');
-            $table->index(['workflow_run_id', 'status', 'position'], 'workflow_run_timer_entries_run_status_position_index');
-            $table->index(['workflow_instance_id', 'timer_kind', 'status'], 'workflow_run_timer_entries_instance_kind_status_index');
+            $table->index(
+                ['workflow_run_id', 'status', 'position'],
+                'workflow_run_timer_entries_run_status_position_index'
+            );
+            $table->index(
+                ['workflow_instance_id', 'timer_kind', 'status'],
+                'workflow_run_timer_entries_instance_kind_status_index'
+            );
         });
     }
 

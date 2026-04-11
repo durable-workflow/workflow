@@ -22,11 +22,8 @@ final class WorkflowExecutionGate
         return null;
     }
 
-    public static function blockedMessage(
-        WorkflowRun $run,
-        string $operation,
-        string $targetName,
-    ): ?string {
+    public static function blockedMessage(WorkflowRun $run, string $operation, string $targetName): ?string
+    {
         return match (self::blockedReason($run)) {
             self::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE => sprintf(
                 'Workflow %s [%s] cannot execute %s [%s] because the workflow definition is unavailable for durable type [%s].',

@@ -311,6 +311,12 @@ final class RunSummaryProjector
                 'next_task_type' => $selectedNextTask?->task_type->value,
                 'next_task_status' => $selectedNextTask?->status->value,
                 'next_task_lease_expires_at' => $selectedNextTask?->lease_expires_at,
+                'repair_blocked_reason' => RepairBlockedReason::forRun(
+                    $run,
+                    $currentRun?->id === $run->id,
+                    $livenessState,
+                    $replayBlockedTask !== null,
+                ),
                 'exception_count' => count(FailureSnapshots::forRun($run)),
                 'history_event_count' => $historyBudget['history_event_count'],
                 'history_size_bytes' => $historyBudget['history_size_bytes'],
@@ -466,10 +472,7 @@ final class RunSummaryProjector
 
             return [
                 'repair_needed',
-                sprintf(
-                    'Accepted update %s is open without an open workflow task.',
-                    $openUpdateWait['name'],
-                ),
+                sprintf('Accepted update %s is open without an open workflow task.', $openUpdateWait['name']),
             ];
         }
 
@@ -492,7 +495,10 @@ final class RunSummaryProjector
 
                     return [
                         'repair_needed',
-                        sprintf('Condition wait %s has a fired timeout without an open workflow task.', $openConditionWait['id']),
+                        sprintf(
+                            'Condition wait %s has a fired timeout without an open workflow task.',
+                            $openConditionWait['id']
+                        ),
                     ];
                 }
 
@@ -683,10 +689,7 @@ final class RunSummaryProjector
             ];
         }
 
-        return [
-            'workflow_replay_blocked',
-            trim($task->last_error ?? 'Workflow replay is blocked.'),
-        ];
+        return ['workflow_replay_blocked', trim($task->last_error ?? 'Workflow replay is blocked.')];
     }
 
     /**

@@ -66,8 +66,7 @@ final class CommandContext
         string $parentRunId,
         int $sequence,
         ?string $childCallId = null,
-    ): self
-    {
+    ): self {
         return new self('workflow', [
             'caller' => [
                 'type' => 'workflow',

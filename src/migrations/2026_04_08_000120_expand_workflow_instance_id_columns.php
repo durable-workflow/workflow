@@ -43,18 +43,33 @@ return new class() extends Migration {
             'pgsql' => [
                 sprintf('ALTER TABLE workflow_instances ALTER COLUMN id TYPE VARCHAR(%d)', $length),
                 sprintf('ALTER TABLE workflow_runs ALTER COLUMN workflow_instance_id TYPE VARCHAR(%d)', $length),
-                sprintf('ALTER TABLE workflow_run_summaries ALTER COLUMN workflow_instance_id TYPE VARCHAR(%d)', $length),
+                sprintf(
+                    'ALTER TABLE workflow_run_summaries ALTER COLUMN workflow_instance_id TYPE VARCHAR(%d)',
+                    $length
+                ),
                 sprintf('ALTER TABLE workflow_commands ALTER COLUMN workflow_instance_id TYPE VARCHAR(%d)', $length),
-                sprintf('ALTER TABLE workflow_links ALTER COLUMN parent_workflow_instance_id TYPE VARCHAR(%d)', $length),
+                sprintf(
+                    'ALTER TABLE workflow_links ALTER COLUMN parent_workflow_instance_id TYPE VARCHAR(%d)',
+                    $length
+                ),
                 sprintf('ALTER TABLE workflow_links ALTER COLUMN child_workflow_instance_id TYPE VARCHAR(%d)', $length),
             ],
             'sqlsrv' => [
                 sprintf('ALTER TABLE workflow_instances ALTER COLUMN id NVARCHAR(%d) NOT NULL', $length),
                 sprintf('ALTER TABLE workflow_runs ALTER COLUMN workflow_instance_id NVARCHAR(%d) NOT NULL', $length),
-                sprintf('ALTER TABLE workflow_run_summaries ALTER COLUMN workflow_instance_id NVARCHAR(%d) NOT NULL', $length),
+                sprintf(
+                    'ALTER TABLE workflow_run_summaries ALTER COLUMN workflow_instance_id NVARCHAR(%d) NOT NULL',
+                    $length
+                ),
                 sprintf('ALTER TABLE workflow_commands ALTER COLUMN workflow_instance_id NVARCHAR(%d) NULL', $length),
-                sprintf('ALTER TABLE workflow_links ALTER COLUMN parent_workflow_instance_id NVARCHAR(%d) NOT NULL', $length),
-                sprintf('ALTER TABLE workflow_links ALTER COLUMN child_workflow_instance_id NVARCHAR(%d) NOT NULL', $length),
+                sprintf(
+                    'ALTER TABLE workflow_links ALTER COLUMN parent_workflow_instance_id NVARCHAR(%d) NOT NULL',
+                    $length
+                ),
+                sprintf(
+                    'ALTER TABLE workflow_links ALTER COLUMN child_workflow_instance_id NVARCHAR(%d) NOT NULL',
+                    $length
+                ),
             ],
             default => [],
         };

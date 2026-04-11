@@ -48,10 +48,7 @@ class WorkflowUpdate extends Model
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(
-            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
-            'workflow_run_id',
-        );
+        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
     }
 
     public function command(): BelongsTo

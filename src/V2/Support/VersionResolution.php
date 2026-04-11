@@ -10,7 +10,8 @@ final class VersionResolution
         public readonly int $version,
         public readonly bool $shouldRecordMarker,
         public readonly bool $advancesSequence,
-    ) {}
+    ) {
+    }
 
     public static function recorded(int $version): self
     {

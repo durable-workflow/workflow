@@ -50,13 +50,7 @@ final class HeartbeatProgress
         }
 
         if ($strict) {
-            $unknownKeys = array_diff(array_keys($progress), [
-                'message',
-                'current',
-                'total',
-                'unit',
-                'details',
-            ]);
+            $unknownKeys = array_diff(array_keys($progress), ['message', 'current', 'total', 'unit', 'details']);
 
             if ($unknownKeys !== []) {
                 throw new LogicException(sprintf(
@@ -192,10 +186,7 @@ final class HeartbeatProgress
         }
 
         if ($strict && count($value) > self::MAX_DETAIL_ENTRIES) {
-            throw new LogicException(sprintf(
-                '[details] supports at most %d entries.',
-                self::MAX_DETAIL_ENTRIES,
-            ));
+            throw new LogicException(sprintf('[details] supports at most %d entries.', self::MAX_DETAIL_ENTRIES));
         }
 
         $details = [];
@@ -222,10 +213,7 @@ final class HeartbeatProgress
             if (is_float($detailValue)) {
                 if (! is_finite($detailValue)) {
                     if ($strict) {
-                        throw new LogicException(sprintf(
-                            'Heartbeat progress detail [%s] must be finite.',
-                            $key,
-                        ));
+                        throw new LogicException(sprintf('Heartbeat progress detail [%s] must be finite.', $key));
                     }
 
                     continue;
@@ -270,10 +258,7 @@ final class HeartbeatProgress
             }
 
             if ($strict) {
-                throw new LogicException(sprintf(
-                    'Heartbeat progress detail [%s] must be scalar or null.',
-                    $key,
-                ));
+                throw new LogicException(sprintf('Heartbeat progress detail [%s] must be scalar or null.', $key));
             }
         }
 
@@ -290,7 +275,7 @@ final class HeartbeatProgress
     private static function invalid(string $message, bool $strict, mixed $fallback = null): mixed
     {
         if ($strict) {
-            throw new LogicException('Heartbeat progress '.$message);
+            throw new LogicException('Heartbeat progress ' . $message);
         }
 
         return $fallback;

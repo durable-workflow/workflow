@@ -35,7 +35,9 @@ final class RunTimerProjector
 
             /** @var WorkflowRunTimerEntry $row */
             $row = $entryModel::query()->updateOrCreate(
-                ['id' => $projectionId],
+                [
+                    'id' => $projectionId,
+                ],
                 [
                     'workflow_run_id' => $run->id,
                     'workflow_instance_id' => $run->workflow_instance_id,
@@ -69,7 +71,8 @@ final class RunTimerProjector
         if ($seen === []) {
             $staleQuery->delete();
         } else {
-            $staleQuery->whereNotIn('id', $seen)->delete();
+            $staleQuery->whereNotIn('id', $seen)
+                ->delete();
         }
 
         $run->unsetRelation('timerEntries');

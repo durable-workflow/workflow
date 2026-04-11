@@ -130,9 +130,7 @@ final class CurrentRunResolver
     ): ?WorkflowRun {
         if ($instance->relationLoaded('runs')) {
             /** @var WorkflowRun|null $loaded */
-            $loaded = $instance->runs->first(
-                static fn (WorkflowRun $candidate): bool => $candidate->id === $runId
-            );
+            $loaded = $instance->runs->first(static fn (WorkflowRun $candidate): bool => $candidate->id === $runId);
 
             $loaded?->loadMissing($relations);
 
@@ -194,7 +192,10 @@ final class CurrentRunResolver
             return null;
         }
 
-        $runIds = $runs->pluck('id')->filter(static fn (mixed $id): bool => is_string($id))->values()->all();
+        $runIds = $runs->pluck('id')
+            ->filter(static fn (mixed $id): bool => is_string($id))
+            ->values()
+            ->all();
 
         if ($runIds === []) {
             return null;

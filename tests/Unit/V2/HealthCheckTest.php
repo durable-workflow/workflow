@@ -11,11 +11,11 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
-use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -29,8 +29,10 @@ final class HealthCheckTest extends TestCase
             Carbon::setTestNow();
         });
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
 
         $snapshot = HealthCheck::snapshot();
 
@@ -49,9 +51,12 @@ final class HealthCheckTest extends TestCase
     public function testSnapshotWarnsWhenRunSummaryProjectionNeedsRebuild(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'health-missing-summary',
@@ -67,8 +72,10 @@ final class HealthCheckTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'status' => 'running',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $instance->forceFill([
@@ -91,9 +98,12 @@ final class HealthCheckTest extends TestCase
     public function testSnapshotWarnsWhenRunSummaryProjectionIsStale(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'health-stale-summary',
@@ -110,9 +120,12 @@ final class HealthCheckTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => 'failed',
             'closed_reason' => 'failed',
-            'started_at' => now()->subMinute(),
-            'closed_at' => now()->subSecond(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'closed_at' => now()
+                ->subSecond(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $instance->forceFill([
@@ -129,9 +142,11 @@ final class HealthCheckTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => 'waiting',
             'status_bucket' => 'running',
-            'started_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
             'liveness_state' => 'waiting_for_signal',
-            'created_at' => now()->subMinute(),
+            'created_at' => now()
+                ->subMinute(),
             'updated_at' => now(),
         ]);
 
@@ -149,9 +164,12 @@ final class HealthCheckTest extends TestCase
     public function testSnapshotWarnsWhenSelectedRunProjectionsNeedRebuild(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'health-selected-projection',
@@ -168,8 +186,10 @@ final class HealthCheckTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'status' => 'waiting',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $instance->forceFill([
@@ -186,10 +206,12 @@ final class HealthCheckTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => 'waiting',
             'status_bucket' => 'running',
-            'started_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
             'open_wait_id' => 'signal:missing',
             'liveness_state' => 'waiting_for_signal',
-            'created_at' => now()->subMinute(),
+            'created_at' => now()
+                ->subMinute(),
             'updated_at' => now(),
         ]);
 
@@ -224,7 +246,9 @@ final class HealthCheckTest extends TestCase
             'timer_id' => 'health-selected-timer',
             'sequence' => 3,
             'delay_seconds' => 60,
-            'fire_at' => now()->addMinute()->toJSON(),
+            'fire_at' => now()
+                ->addMinute()
+                ->toJSON(),
         ]);
         WorkflowRunTimerEntry::query()->create([
             'id' => 'health-selected-timer-orphan',
@@ -290,9 +314,12 @@ final class HealthCheckTest extends TestCase
     public function testSnapshotWarnsWhenSelectedRunProjectionPayloadsAreStale(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $waitInstance = WorkflowInstance::query()->create([
             'id' => 'health-stale-wait-instance',
@@ -309,8 +336,10 @@ final class HealthCheckTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'status' => 'waiting',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $waitInstance->forceFill([
@@ -326,7 +355,8 @@ final class HealthCheckTest extends TestCase
             'status' => 'pending',
             'arguments' => serialize([]),
             'attempt_count' => 0,
-            'created_at' => now()->subMinute(),
+            'created_at' => now()
+                ->subMinute(),
             'updated_at' => now(),
         ]);
 
@@ -354,9 +384,12 @@ final class HealthCheckTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => 'completed',
             'closed_reason' => 'completed',
-            'started_at' => now()->subMinute(),
-            'closed_at' => now()->subSecond(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'closed_at' => now()
+                ->subSecond(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $lineageInstance->forceFill([
@@ -420,10 +453,14 @@ final class HealthCheckTest extends TestCase
             Carbon::setTestNow();
         });
 
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'health-repair-needed-instance',
@@ -439,8 +476,10 @@ final class HealthCheckTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'status' => 'waiting',
-            'started_at' => now()->subMinutes(10),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(10),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -457,11 +496,14 @@ final class HealthCheckTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => 'waiting',
             'status_bucket' => 'running',
-            'started_at' => now()->subMinutes(10),
-            'wait_started_at' => now()->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(10),
+            'wait_started_at' => now()
+                ->subMinutes(5),
             'liveness_state' => 'repair_needed',
             'liveness_reason' => 'Run is non-terminal but has no durable next-resume source.',
-            'created_at' => now()->subMinutes(10),
+            'created_at' => now()
+                ->subMinutes(10),
             'updated_at' => now(),
         ]);
 
@@ -486,9 +528,12 @@ final class HealthCheckTest extends TestCase
     public function testSnapshotWarnsWhenCommandContractSnapshotsStillNeedBackfill(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $availableInstance = WorkflowInstance::query()->create([
             'id' => 'health-command-contract-available',
@@ -505,8 +550,10 @@ final class HealthCheckTest extends TestCase
             'workflow_class' => TestCommandTargetWorkflow::class,
             'workflow_type' => 'test-command-target-workflow',
             'status' => 'waiting',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $availableInstance->forceFill([
@@ -576,8 +623,10 @@ final class HealthCheckTest extends TestCase
             'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
             'workflow_type' => 'missing-command-target-workflow',
             'status' => 'waiting',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $unavailableInstance->forceFill([

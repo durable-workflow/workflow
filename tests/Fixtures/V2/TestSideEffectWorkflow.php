@@ -35,7 +35,7 @@ final class TestSideEffectWorkflow extends Workflow
     {
         $this->stage = 'recording-side-effect';
 
-        $this->token = sideEffect(function (): int {
+        $this->token = sideEffect(static function (): int {
             self::$sideEffectExecutions++;
 
             return self::$sideEffectExecutions;

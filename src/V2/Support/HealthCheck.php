@@ -120,9 +120,7 @@ final class HealthCheck
                 'needs_rebuild' => $needsRebuild,
                 'run_waits_needs_rebuild' => $waitNeedsRebuild,
                 'run_waits_missing_runs_with_waits' => self::integer($waits['missing_runs_with_waits'] ?? 0),
-                'run_waits_missing_current_open_waits' => self::integer(
-                    $waits['missing_current_open_waits'] ?? 0
-                ),
+                'run_waits_missing_current_open_waits' => self::integer($waits['missing_current_open_waits'] ?? 0),
                 'run_waits_stale_projected_runs' => self::integer($waits['stale_projected_runs'] ?? 0),
                 'run_waits_orphaned' => self::integer($waits['orphaned'] ?? 0),
                 'timeline_needs_rebuild' => $timelineNeedsRebuild,

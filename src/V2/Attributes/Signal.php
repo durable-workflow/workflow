@@ -80,7 +80,9 @@ final class Signal
 
         foreach ($parameters as $position => $parameter) {
             $definition = is_string($parameter)
-                ? ['name' => $parameter]
+                ? [
+                    'name' => $parameter,
+                ]
                 : $parameter;
 
             if (! is_array($definition)) {

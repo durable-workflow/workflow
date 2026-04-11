@@ -40,7 +40,8 @@ final class V2TaskDispatchTest extends TestCase
     public function testTaskDispatchPersistsSuccessOnlyAfterAfterCommitPublicationRuns(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         Queue::fake();
 
@@ -51,7 +52,8 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -89,7 +91,8 @@ final class V2TaskDispatchTest extends TestCase
     public function testTaskDispatchFailureRecordsTransportFailureWithoutPretendingPublishSucceeded(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         $this->mock(BusDispatcher::class, static function (MockInterface $mock): void {
             $mock->shouldReceive('dispatch')
@@ -104,7 +107,8 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSeconds(5),
+            'available_at' => now()
+                ->subSeconds(5),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -124,10 +128,7 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertNull($task->last_dispatched_at);
         $this->assertSame('Queue transport unavailable.', $task->last_dispatch_error);
         $this->assertNotNull($task->repair_available_at);
-        $this->assertSame(
-            $task->last_dispatch_attempt_at?->toJSON(),
-            $task->repair_available_at?->toJSON(),
-        );
+        $this->assertSame($task->last_dispatch_attempt_at?->toJSON(), $task->repair_available_at?->toJSON());
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -161,10 +162,14 @@ final class V2TaskDispatchTest extends TestCase
     public function testTaskDispatchFailureRecordsUnsupportedQueueCapabilityWithoutRunningInline(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('queue.connections.sync.driver', 'sync');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         $this->mock(BusDispatcher::class, static function (MockInterface $mock): void {
             $mock->shouldNotReceive('dispatch');
@@ -177,7 +182,8 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSeconds(5),
+            'available_at' => now()
+                ->subSeconds(5),
             'payload' => [],
             'connection' => 'sync',
             'queue' => 'default',
@@ -198,10 +204,7 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertNull($task->last_dispatched_at);
         $this->assertStringContainsString('queue_sync_unsupported', (string) $task->last_dispatch_error);
         $this->assertNotNull($task->repair_available_at);
-        $this->assertSame(
-            $task->last_dispatch_attempt_at?->toJSON(),
-            $task->repair_available_at?->toJSON(),
-        );
+        $this->assertSame($task->last_dispatch_attempt_at?->toJSON(), $task->repair_available_at?->toJSON());
 
         $summary = WorkflowRunSummary::query()->findOrFail($run->id);
 
@@ -226,12 +229,14 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'sync',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'last_dispatched_at' => now()->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSecond(),
         ]);
 
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
@@ -292,12 +297,16 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
-            'payload' => ['activity_execution_id' => $execution->id],
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
             'connection' => 'sync',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'last_dispatched_at' => now()->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSecond(),
         ]);
 
         $this->app->call([new RunActivityTask($task->id), 'handle']);
@@ -351,12 +360,16 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
-            'payload' => ['activity_execution_id' => $execution->id],
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
             'connection' => 'sync',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'last_dispatched_at' => now()->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSecond(),
         ]);
 
         $this->assertNull(ActivityTaskBridge::claim($task->id, 'external-worker-unsupported'));
@@ -399,7 +412,8 @@ final class V2TaskDispatchTest extends TestCase
             'sequence' => 1,
             'status' => TimerStatus::Pending->value,
             'delay_seconds' => 1,
-            'fire_at' => now()->subSecond(),
+            'fire_at' => now()
+                ->subSecond(),
         ]);
 
         /** @var WorkflowTask $task */
@@ -407,12 +421,16 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
-            'payload' => ['timer_id' => $timer->id],
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [
+                'timer_id' => $timer->id,
+            ],
             'connection' => 'sync',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'last_dispatched_at' => now()->subSecond(),
+            'last_dispatched_at' => now()
+                ->subSecond(),
         ]);
 
         $this->app->call([new RunTimerTask($task->id), 'handle']);
@@ -450,8 +468,10 @@ final class V2TaskDispatchTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -465,8 +485,10 @@ final class V2TaskDispatchTest extends TestCase
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([
@@ -479,9 +501,12 @@ final class V2TaskDispatchTest extends TestCase
     private function configureUnsupportedSyncTaskConnection(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('queue.connections.sync.driver', 'sync');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
         config()->set('workflows.v2.compatibility.supported', ['build-a']);
     }
 }

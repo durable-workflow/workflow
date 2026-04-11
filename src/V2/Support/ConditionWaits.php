@@ -197,6 +197,60 @@ final class ConditionWaits
         return array_values($waits);
     }
 
+    public static function waitIdForSequence(WorkflowRun $run, int $sequence): ?string
+    {
+        foreach (self::forRun($run) as $wait) {
+            if (($wait['sequence'] ?? null) === $sequence) {
+                return $wait['condition_wait_id'];
+            }
+        }
+
+        return null;
+    }
+
+    public static function assertReplayCompatible(
+        WorkflowRun $run,
+        int $sequence,
+        AwaitCall|AwaitWithTimeoutCall $call,
+    ): void {
+        WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CONDITION_WAIT);
+
+        $definition = self::conditionDefinitionForSequence($run, $sequence);
+
+        if (! $definition['recorded']) {
+            return;
+        }
+
+        if ($definition['condition_key'] !== $call->conditionKey) {
+            throw new ConditionWaitDefinitionMismatchException(
+                $sequence,
+                $definition['condition_key'],
+                $call->conditionKey,
+                $definition['condition_definition_fingerprint'],
+                $call->conditionDefinitionFingerprint,
+            );
+        }
+
+        if (
+            $definition['condition_definition_fingerprint'] !== null
+            && $call->conditionDefinitionFingerprint !== null
+            && $definition['condition_definition_fingerprint'] !== $call->conditionDefinitionFingerprint
+        ) {
+            throw new ConditionWaitDefinitionMismatchException(
+                $sequence,
+                $definition['condition_key'],
+                $call->conditionKey,
+                $definition['condition_definition_fingerprint'],
+                $call->conditionDefinitionFingerprint,
+            );
+        }
+    }
+
+    public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
+    {
+        return self::conditionDefinitionForSequence($run, $sequence)['condition_key'];
+    }
+
     /**
      * @return array{
      *     id: string,
@@ -274,60 +328,6 @@ final class ConditionWaits
         ];
     }
 
-    public static function waitIdForSequence(WorkflowRun $run, int $sequence): ?string
-    {
-        foreach (self::forRun($run) as $wait) {
-            if (($wait['sequence'] ?? null) === $sequence) {
-                return $wait['condition_wait_id'];
-            }
-        }
-
-        return null;
-    }
-
-    public static function assertReplayCompatible(
-        WorkflowRun $run,
-        int $sequence,
-        AwaitCall|AwaitWithTimeoutCall $call,
-    ): void {
-        WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CONDITION_WAIT);
-
-        $definition = self::conditionDefinitionForSequence($run, $sequence);
-
-        if (! $definition['recorded']) {
-            return;
-        }
-
-        if ($definition['condition_key'] !== $call->conditionKey) {
-            throw new ConditionWaitDefinitionMismatchException(
-                $sequence,
-                $definition['condition_key'],
-                $call->conditionKey,
-                $definition['condition_definition_fingerprint'],
-                $call->conditionDefinitionFingerprint,
-            );
-        }
-
-        if (
-            $definition['condition_definition_fingerprint'] !== null
-            && $call->conditionDefinitionFingerprint !== null
-            && $definition['condition_definition_fingerprint'] !== $call->conditionDefinitionFingerprint
-        ) {
-            throw new ConditionWaitDefinitionMismatchException(
-                $sequence,
-                $definition['condition_key'],
-                $call->conditionKey,
-                $definition['condition_definition_fingerprint'],
-                $call->conditionDefinitionFingerprint,
-            );
-        }
-    }
-
-    public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
-    {
-        return self::conditionDefinitionForSequence($run, $sequence)['condition_key'];
-    }
-
     /**
      * @return array{recorded: bool, condition_key: string|null, condition_definition_fingerprint: string|null}
      */
@@ -394,11 +394,8 @@ final class ConditionWaits
      * @param array<string, array<string, mixed>> $waits
      * @param list<string> $openWaitIds
      */
-    private static function closeOpenWaits(
-        array &$waits,
-        array &$openWaitIds,
-        WorkflowHistoryEvent $event,
-    ): void {
+    private static function closeOpenWaits(array &$waits, array &$openWaitIds, WorkflowHistoryEvent $event): void
+    {
         $sourceStatus = match ($event->event_type) {
             HistoryEventType::WorkflowCancelled => 'cancelled',
             HistoryEventType::WorkflowTerminated => 'terminated',

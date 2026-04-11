@@ -36,12 +36,7 @@ final class WorkerCompatibilityFleet
 
     public static function heartbeat(?string $connection = null, ?string $queue = null): void
     {
-        self::record(
-            WorkerCompatibility::supported(),
-            $connection,
-            $queue,
-            self::workerId(),
-        );
+        self::record(WorkerCompatibility::supported(), $connection, $queue, self::workerId());
     }
 
     /**
@@ -66,7 +61,8 @@ final class WorkerCompatibilityFleet
         self::pruneExpired();
 
         $now = now();
-        $expiresAt = $now->copy()->addSeconds(self::ttlSeconds());
+        $expiresAt = $now->copy()
+            ->addSeconds(self::ttlSeconds());
         $rows = collect($queues === [] ? [null] : $queues)
             ->map(static function (?string $scopeQueue) use (
                 $workerId,
@@ -196,11 +192,7 @@ final class WorkerCompatibilityFleet
             return $reason;
         }
 
-        return sprintf(
-            '%s Active workers there advertise [%s].',
-            $reason,
-            implode(', ', $advertised),
-        );
+        return sprintf('%s Active workers there advertise [%s].', $reason, implode(', ', $advertised));
     }
 
     private static function shouldSkipRecord(
@@ -235,7 +227,8 @@ final class WorkerCompatibilityFleet
 
     private static function pruneExpired(): void
     {
-        $now = now()->getTimestamp();
+        $now = now()
+            ->getTimestamp();
 
         if (self::$lastPrunedAt !== null && self::$lastPrunedAt >= $now - self::writeIntervalSeconds()) {
             return;
@@ -251,7 +244,8 @@ final class WorkerCompatibilityFleet
 
     private static function activeSnapshots(): array
     {
-        $nowSecond = now()->getTimestamp();
+        $nowSecond = now()
+            ->getTimestamp();
 
         if (self::$snapshotCache !== null && self::$snapshotCacheSecond === $nowSecond) {
             return self::$snapshotCache;
@@ -283,10 +277,7 @@ final class WorkerCompatibilityFleet
             ->values()
             ->all();
 
-        self::$snapshotCache = self::mergeSnapshots(
-            $databaseSnapshots,
-            self::legacyCacheSnapshots(),
-        );
+        self::$snapshotCache = self::mergeSnapshots($databaseSnapshots, self::legacyCacheSnapshots());
         self::$snapshotCacheSecond = $nowSecond;
 
         return self::$snapshotCache;
@@ -335,10 +326,7 @@ final class WorkerCompatibilityFleet
 
     private static function ttlSeconds(): int
     {
-        return max(
-            1,
-            (int) config('workflows.v2.compatibility.heartbeat_ttl_seconds', 30)
-        );
+        return max(1, (int) config('workflows.v2.compatibility.heartbeat_ttl_seconds', 30));
     }
 
     /**
@@ -416,7 +404,8 @@ final class WorkerCompatibilityFleet
             return [];
         }
 
-        $now = now()->getTimestamp();
+        $now = now()
+            ->getTimestamp();
         $snapshots = [];
 
         foreach ($fleet as $workerId => $snapshot) {
@@ -585,7 +574,6 @@ final class WorkerCompatibilityFleet
     }
 
     /**
-     * @param  mixed  $values
      * @return list<string>
      */
     private static function normalizeMarkers(mixed $values): array

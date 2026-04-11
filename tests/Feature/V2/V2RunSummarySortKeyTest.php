@@ -68,7 +68,9 @@ final class V2RunSummarySortKeyTest extends TestCase
             'updated_at' => $createdAt,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         return WorkflowRunSummary::query()->create([
             'id' => $run->id,

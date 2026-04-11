@@ -31,25 +31,11 @@ final class RunLineageProjector
         $projected = [];
 
         foreach (array_values($parents) as $position => $entry) {
-            $projected[] = self::projectEntry(
-                $lineageModel,
-                $run,
-                $entry,
-                'parent',
-                $position,
-                $seen,
-            );
+            $projected[] = self::projectEntry($lineageModel, $run, $entry, 'parent', $position, $seen);
         }
 
         foreach (array_values($continuedWorkflows) as $position => $entry) {
-            $projected[] = self::projectEntry(
-                $lineageModel,
-                $run,
-                $entry,
-                'child',
-                $position,
-                $seen,
-            );
+            $projected[] = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen);
         }
 
         $staleQuery = $lineageModel::query()
@@ -58,7 +44,8 @@ final class RunLineageProjector
         if ($seen === []) {
             $staleQuery->delete();
         } else {
-            $staleQuery->whereNotIn('id', $seen)->delete();
+            $staleQuery->whereNotIn('id', $seen)
+                ->delete();
         }
 
         $run->unsetRelation('lineageEntries');
@@ -153,7 +140,9 @@ final class RunLineageProjector
 
         /** @var WorkflowRunLineageEntry $row */
         $row = $lineageModel::query()->updateOrCreate(
-            ['id' => $projectionId],
+            [
+                'id' => $projectionId,
+            ],
             [
                 'workflow_run_id' => $run->id,
                 'workflow_instance_id' => $run->workflow_instance_id,
@@ -250,8 +239,7 @@ final class RunLineageProjector
         EloquentCollection $entries,
         array $parents,
         array $continuedWorkflows,
-    ): bool
-    {
+    ): bool {
         $projected = self::payloadsFromProjected($entries);
 
         return self::canonicalEntries($projected['parents']) === self::canonicalEntries($parents)

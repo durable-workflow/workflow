@@ -168,7 +168,8 @@ final class V2BackfillCommandLifecyclesCommandTest extends TestCase
                 'arguments' => ['Taylor'],
             ]),
             'rejection_reason' => 'instance_not_started',
-            'rejected_at' => now()->subSeconds(20),
+            'rejected_at' => now()
+                ->subSeconds(20),
         ]);
 
         $updateCommand = WorkflowCommand::record($instance, $run, [
@@ -181,8 +182,10 @@ final class V2BackfillCommandLifecyclesCommandTest extends TestCase
                 'name' => 'mark-approved',
                 'arguments' => [false, 'api'],
             ]),
-            'accepted_at' => now()->subSeconds(15),
-            'applied_at' => now()->subSeconds(10),
+            'accepted_at' => now()
+                ->subSeconds(15),
+            'applied_at' => now()
+                ->subSeconds(10),
         ]);
 
         /** @var WorkflowFailure $failure */
@@ -265,8 +268,10 @@ final class V2BackfillCommandLifecyclesCommandTest extends TestCase
             'workflow_class' => 'App\\Workflows\\LegacyWorkflow',
             'workflow_type' => 'legacy-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinutes(5),
-            'started_at' => now()->subMinutes(5),
+            'reserved_at' => now()
+                ->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $run */
@@ -277,8 +282,10 @@ final class V2BackfillCommandLifecyclesCommandTest extends TestCase
             'workflow_class' => 'App\\Workflows\\LegacyWorkflow',
             'workflow_type' => 'legacy-workflow',
             'status' => RunStatus::Waiting->value,
-            'started_at' => now()->subMinutes(5),
-            'last_progress_at' => now()->subMinutes(4),
+            'started_at' => now()
+                ->subMinutes(5),
+            'last_progress_at' => now()
+                ->subMinutes(4),
         ]);
 
         $instance->forceFill([
@@ -300,7 +307,8 @@ final class V2BackfillCommandLifecyclesCommandTest extends TestCase
                 'name' => 'approved-by',
                 'arguments' => ['Taylor'],
             ]),
-            'accepted_at' => now()->subSeconds(20),
+            'accepted_at' => now()
+                ->subSeconds(20),
         ]);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, [
@@ -326,8 +334,10 @@ final class V2BackfillCommandLifecyclesCommandTest extends TestCase
                 'name' => 'mark-approved',
                 'arguments' => [true, 'api'],
             ]),
-            'accepted_at' => now()->subSeconds(15),
-            'applied_at' => now()->subSeconds(10),
+            'accepted_at' => now()
+                ->subSeconds(15),
+            'applied_at' => now()
+                ->subSeconds(10),
         ]);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [

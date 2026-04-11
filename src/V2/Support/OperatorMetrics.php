@@ -19,9 +19,9 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 
@@ -570,7 +570,8 @@ final class OperatorMetrics
 
     private static function dispatchOverdueTasks(CarbonInterface $now): int
     {
-        $cutoff = $now->copy()->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
+        $cutoff = $now->copy()
+            ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
 
         return self::taskModel()::query()
             ->where('status', TaskStatus::Ready->value)

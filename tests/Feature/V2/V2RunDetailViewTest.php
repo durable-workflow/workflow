@@ -2984,6 +2984,7 @@ final class V2RunDetailViewTest extends TestCase
         );
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('unsupported_history', $detail['repair_blocked_reason']);
+        $this->assertSame('unsupported_history', $run->fresh()->summary?->repair_blocked_reason);
         $this->assertSame('open', $activityWait['status']);
         $this->assertSame('running', $activityWait['source_status']);
         $this->assertSame(
@@ -3076,6 +3077,7 @@ final class V2RunDetailViewTest extends TestCase
         );
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('unsupported_history', $detail['repair_blocked_reason']);
+        $this->assertSame('unsupported_history', $run->fresh()->summary?->repair_blocked_reason);
         $this->assertCount(1, $detail['timers']);
         $this->assertSame($timer->id, $detail['timers'][0]['id']);
         $this->assertSame('pending', $detail['timers'][0]['status']);
@@ -3203,6 +3205,7 @@ final class V2RunDetailViewTest extends TestCase
         );
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('unsupported_history', $detail['repair_blocked_reason']);
+        $this->assertSame('unsupported_history', $run->fresh()->summary?->repair_blocked_reason);
         $this->assertSame('open', $childWait['status']);
         $this->assertSame('waiting', $childWait['source_status']);
         $this->assertSame(

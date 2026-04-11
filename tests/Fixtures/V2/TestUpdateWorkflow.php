@@ -14,7 +14,10 @@ use Workflow\V2\Workflow;
 
 #[Type('test-update-workflow')]
 #[Signal('name-provided', [
-    ['name' => 'name', 'type' => 'string'],
+    [
+        'name' => 'name',
+        'type' => 'string',
+    ],
 ])]
 final class TestUpdateWorkflow extends Workflow
 {

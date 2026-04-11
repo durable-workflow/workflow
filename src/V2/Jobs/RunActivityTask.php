@@ -65,10 +65,7 @@ final class RunActivityTask implements ShouldQueue
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = new $activityClass($execution, $execution->run, $this->taskId);
         $entryMethod = EntryMethod::forActivity($activity);
-        $arguments = $activity->resolveMethodDependencies(
-            $execution->activityArguments(),
-            $entryMethod,
-        );
+        $arguments = $activity->resolveMethodDependencies($execution->activityArguments(), $entryMethod);
 
         $result = null;
         $throwable = null;

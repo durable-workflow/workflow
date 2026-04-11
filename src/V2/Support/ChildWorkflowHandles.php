@@ -12,11 +12,8 @@ final class ChildWorkflowHandles
     /**
      * @return list<ChildWorkflowHandle>
      */
-    public static function forRun(
-        WorkflowRun $run,
-        int $visibleSequence,
-        bool $commandDispatchEnabled,
-    ): array {
+    public static function forRun(WorkflowRun $run, int $visibleSequence, bool $commandDispatchEnabled): array
+    {
         if ($visibleSequence <= 1) {
             return [];
         }

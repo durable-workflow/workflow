@@ -70,7 +70,10 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
         $this->assertSame('actor', $started->payload['declared_signal_contracts'][0]['parameters'][0]['name'] ?? null);
         $this->assertSame(['mark-approved'], $started->payload['declared_updates'] ?? null);
         $this->assertSame('mark-approved', $started->payload['declared_update_contracts'][0]['name'] ?? null);
-        $this->assertSame('approved', $started->payload['declared_update_contracts'][0]['parameters'][0]['name'] ?? null);
+        $this->assertSame(
+            'approved',
+            $started->payload['declared_update_contracts'][0]['parameters'][0]['name'] ?? null
+        );
 
         $expected = [
             'dry_run' => true,
@@ -194,8 +197,10 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
             'workflow_class' => $workflowClass,
             'workflow_type' => 'test-command-target-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinutes(5),
-            'started_at' => now()->subMinutes(5),
+            'reserved_at' => now()
+                ->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $run */
@@ -206,8 +211,10 @@ final class V2BackfillCommandContractsCommandTest extends TestCase
             'workflow_class' => $workflowClass,
             'workflow_type' => 'test-command-target-workflow',
             'status' => RunStatus::Waiting->value,
-            'started_at' => now()->subMinutes(5),
-            'last_progress_at' => now()->subMinutes(4),
+            'started_at' => now()
+                ->subMinutes(5),
+            'last_progress_at' => now()
+                ->subMinutes(4),
         ]);
 
         $instance->forceFill([

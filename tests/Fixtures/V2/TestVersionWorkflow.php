@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Workflow\QueryMethod;
+use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use Workflow\V2\Workflow;
-use Workflow\V2\WorkflowStub;
-use function Workflow\V2\activity;
 use function Workflow\V2\awaitSignal;
 use function Workflow\V2\getVersion;
+use Workflow\V2\Workflow;
+use Workflow\V2\WorkflowStub;
 
 #[Type('test-version-workflow')]
 #[Signal('finish')]

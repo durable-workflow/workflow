@@ -21,9 +21,7 @@ final class VersionResolver
         int $sequence,
     ): VersionResolution {
         if ($event !== null) {
-            return VersionResolution::recorded(
-                self::recordedVersion($event, $versionCall, $sequence)
-            );
+            return VersionResolution::recorded(self::recordedVersion($event, $versionCall, $sequence));
         }
 
         if (self::shouldUseLegacyDefault($run, $sequence)) {
@@ -124,9 +122,7 @@ final class VersionResolver
             ? $run->timers
             : collect();
 
-        if ($timers->contains(
-            static fn (object $timer): bool => ($timer->sequence ?? null) === $sequence
-        )) {
+        if ($timers->contains(static fn (object $timer): bool => ($timer->sequence ?? null) === $sequence)) {
             return true;
         }
 

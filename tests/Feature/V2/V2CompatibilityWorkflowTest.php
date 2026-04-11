@@ -16,11 +16,11 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -33,7 +33,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('workflows.v2.compatibility.namespace', null);
+        config()
+            ->set('workflows.v2.compatibility.namespace', null);
         WorkerCompatibilityFleet::clear();
     }
 
@@ -411,7 +412,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testCompatibleFleetHeartbeatKeepsUnsupportedLocalTaskReady(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
-        config()->set('workflows.v2.compatibility.namespace', 'sample-app');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'sample-app');
 
         WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-build-a');
 
@@ -511,11 +513,13 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testConfiguredCompatibilityNamespaceIgnoresOtherAppHeartbeats(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
-        config()->set('workflows.v2.compatibility.namespace', 'other-app');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'other-app');
 
         WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-build-a');
 
-        config()->set('workflows.v2.compatibility.namespace', 'sample-app');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'sample-app');
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'compat-foreign-fleet-heartbeat',
@@ -692,7 +696,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testConfiguredCompatibilityNamespaceStillCountsLegacyCacheHeartbeatDuringMixedUpgrade(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-b']);
-        config()->set('workflows.v2.compatibility.namespace', 'sample-app');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'sample-app');
 
         $this->seedLegacyFleetHeartbeat('worker-legacy-build-a', ['build-a'], 'redis', ['default']);
 
@@ -794,7 +799,8 @@ final class V2CompatibilityWorkflowTest extends TestCase
     public function testTaskWatchdogHeartbeatPersistsDurableWorkerSnapshot(): void
     {
         config()->set('workflows.v2.compatibility.supported', ['build-watchdog']);
-        config()->set('workflows.v2.compatibility.namespace', 'watchdog-app');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'watchdog-app');
 
         $this->wakeTaskWatchdog();
 
@@ -861,6 +867,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         );
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('waiting_for_compatible_worker', $detail['repair_blocked_reason']);
+        $this->assertSame('waiting_for_compatible_worker', $run->fresh()->summary?->repair_blocked_reason);
         $this->assertSame('build-a', $detail['tasks'][0]['compatibility']);
         $this->assertFalse($detail['tasks'][0]['compatibility_supported']);
         $this->assertSame(
@@ -950,6 +957,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('waiting_for_compatible_worker', $detail['repair_blocked_reason']);
+        $this->assertSame('waiting_for_compatible_worker', $summary->repair_blocked_reason);
         $this->assertSame(
             'Workflow task is waiting for a compatible worker; dispatch is overdue.',
             $detail['tasks'][0]['summary'],
@@ -1041,6 +1049,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('workflow_task_waiting_for_compatible_worker', $detail['liveness_state']);
         $this->assertFalse($detail['can_repair']);
         $this->assertSame('waiting_for_compatible_worker', $detail['repair_blocked_reason']);
+        $this->assertSame('waiting_for_compatible_worker', $summary->repair_blocked_reason);
         $this->assertSame(
             'Workflow task lease expired and is waiting for a compatible worker.',
             $detail['tasks'][0]['summary'],
@@ -1100,8 +1109,12 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'supported' => $supported,
             'connection' => $connection,
             'queues' => $queues,
-            'recorded_at' => now()->subSeconds(5)->getTimestamp(),
-            'expires_at' => now()->addSeconds(30)->getTimestamp(),
+            'recorded_at' => now()
+                ->subSeconds(5)
+                ->getTimestamp(),
+            'expires_at' => now()
+                ->addSeconds(30)
+                ->getTimestamp(),
         ];
 
         Cache::forever('workflow:v2:compatibility:fleet', $fleet);

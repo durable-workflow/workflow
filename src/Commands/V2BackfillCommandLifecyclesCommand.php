@@ -91,10 +91,7 @@ class V2BackfillCommandLifecyclesCommand extends Command
 
         $query = $commandModel::query()
             ->with(['historyEvents', 'signalRecord', 'updateRecord'])
-            ->whereIn('command_type', [
-                CommandType::Signal->value,
-                CommandType::Update->value,
-            ]);
+            ->whereIn('command_type', [CommandType::Signal->value, CommandType::Update->value]);
 
         if ($runIds !== []) {
             $query->whereIn('workflow_run_id', $runIds);

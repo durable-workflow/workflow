@@ -24,8 +24,9 @@ class V2HistoryExportCommand extends Command
 
     protected $description = 'Export a Workflow v2 history bundle for offline debugging or archival handoff';
 
-    public function __construct(private readonly Filesystem $files)
-    {
+    public function __construct(
+        private readonly Filesystem $files
+    ) {
         parent::__construct();
     }
 
@@ -83,8 +84,6 @@ class V2HistoryExportCommand extends Command
 
     /**
      * @param array<string, mixed> $bundle
-     *
-     * @throws JsonException
      */
     private function encode(array $bundle): string
     {

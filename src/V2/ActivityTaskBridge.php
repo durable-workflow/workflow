@@ -341,17 +341,7 @@ final class ActivityTaskBridge
 
             WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, $payload, $task);
 
-            return self::attemptStatus(
-                $attemptId,
-                $attempt,
-                $execution,
-                $run,
-                $task,
-                true,
-                false,
-                null,
-                true,
-            );
+            return self::attemptStatus($attemptId, $attempt, $execution, $run, $task, true, false, null, true);
         });
     }
 
@@ -373,11 +363,7 @@ final class ActivityTaskBridge
                 return [false, true, 'run_terminated'];
             }
 
-            return [
-                false,
-                $attempt->status === ActivityAttemptStatus::Cancelled,
-                'attempt_closed',
-            ];
+            return [false, $attempt->status === ActivityAttemptStatus::Cancelled, 'attempt_closed'];
         }
 
         if (! $execution instanceof ActivityExecution) {
@@ -511,7 +497,9 @@ final class ActivityTaskBridge
             'reason' => $reason,
             'heartbeat_recorded' => $heartbeatRecorded,
             'workflow_instance_id' => self::nonEmptyString($run?->workflow_instance_id),
-            'workflow_run_id' => self::nonEmptyString($run?->id ?? $execution?->workflow_run_id ?? $attempt?->workflow_run_id),
+            'workflow_run_id' => self::nonEmptyString(
+                $run?->id ?? $execution?->workflow_run_id ?? $attempt?->workflow_run_id
+            ),
             'workflow_task_id' => self::nonEmptyString($task?->id ?? $attempt?->workflow_task_id),
             'activity_execution_id' => self::nonEmptyString($execution?->id ?? $attempt?->activity_execution_id),
             'activity_attempt_id' => $attemptId,

@@ -21,8 +21,7 @@ final class TaskRepairCandidates
         ?CarbonInterface $now = null,
         array $runIds = [],
         ?string $instanceId = null,
-    ): array
-    {
+    ): array {
         return self::roundRobinCandidateIds(
             self::existingTaskIdsByScope($limit ?? TaskRepairPolicy::scanLimit(), $now, $runIds, $instanceId),
             $limit ?? TaskRepairPolicy::scanLimit(),
@@ -218,8 +217,7 @@ final class TaskRepairCandidates
         CarbonInterface $now,
         array $runIds = [],
         ?string $instanceId = null,
-    )
-    {
+    ) {
         return self::existingTaskQuery($now, $runIds, $instanceId)
             ->select(['connection', 'queue', 'compatibility'])
             ->selectRaw('COUNT(*) as candidate_count')
@@ -284,11 +282,7 @@ final class TaskRepairCandidates
 
     private static function scopeKey(?string $connection, ?string $queue, ?string $compatibility): string
     {
-        return implode(':', [
-            $connection ?? 'default',
-            $queue ?? 'default',
-            $compatibility ?? 'any',
-        ]);
+        return implode(':', [$connection ?? 'default', $queue ?? 'default', $compatibility ?? 'any']);
     }
 
     private static function nullableString(mixed $value): ?string
@@ -315,8 +309,7 @@ final class TaskRepairCandidates
         ?CarbonInterface $now = null,
         array $runIds = [],
         ?string $instanceId = null,
-    ): ?WorkflowTask
-    {
+    ): ?WorkflowTask {
         /** @var WorkflowTask|null $task */
         $task = self::existingTaskQuery($now, $runIds, $instanceId)
             ->oldest('created_at')
@@ -334,8 +327,7 @@ final class TaskRepairCandidates
         ?CarbonInterface $now = null,
         array $runIds = [],
         ?string $instanceId = null,
-    ): array
-    {
+    ): array {
         $now ??= now();
         $buckets = [];
 
@@ -343,12 +335,7 @@ final class TaskRepairCandidates
             /** @var list<string> $ids */
             $ids = self::existingTaskQuery($now, $runIds, $instanceId)
                 ->where(static function ($query) use ($scope): void {
-                    self::applyScope(
-                        $query,
-                        $scope['connection'],
-                        $scope['queue'],
-                        $scope['compatibility'],
-                    );
+                    self::applyScope($query, $scope['connection'], $scope['queue'], $scope['compatibility']);
                 })
                 ->orderBy('available_at')
                 ->orderBy('created_at')
@@ -372,20 +359,14 @@ final class TaskRepairCandidates
         int $limit,
         array $runIds = [],
         ?string $instanceId = null,
-    ): array
-    {
+    ): array {
         $buckets = [];
 
         foreach (self::normalizedScopes(self::missingTaskScopeRows($runIds, $instanceId)) as $scope) {
             /** @var list<string> $ids */
             $ids = self::missingTaskRunQuery($runIds, $instanceId)
                 ->where(static function ($query) use ($scope): void {
-                    self::applyScope(
-                        $query,
-                        $scope['connection'],
-                        $scope['queue'],
-                        $scope['compatibility'],
-                    );
+                    self::applyScope($query, $scope['connection'], $scope['queue'], $scope['compatibility']);
                 })
                 ->orderBy('wait_started_at')
                 ->orderBy('started_at')
@@ -519,8 +500,7 @@ final class TaskRepairCandidates
     private static function oldestMissingRunCandidate(
         array $runIds = [],
         ?string $instanceId = null,
-    ): ?WorkflowRunSummary
-    {
+    ): ?WorkflowRunSummary {
         /** @var WorkflowRunSummary|null $summary */
         $summary = self::missingTaskRunQuery($runIds, $instanceId)
             ->orderBy('wait_started_at')
@@ -535,8 +515,7 @@ final class TaskRepairCandidates
         ?CarbonInterface $now = null,
         array $runIds = [],
         ?string $instanceId = null,
-    )
-    {
+    ) {
         $now ??= now();
         $staleDispatchCutoff = $now->copy()
             ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
@@ -557,13 +536,18 @@ final class TaskRepairCandidates
                                 })
                                 ->orWhere(static function ($claimFailed) use ($now, $staleDispatchCutoff): void {
                                     self::applyClaimFailed($claimFailed);
-                                    $claimFailed->where(static function ($claimRepairable) use ($now, $staleDispatchCutoff): void {
+                                    $claimFailed->where(static function ($claimRepairable) use (
+                                        $now,
+                                        $staleDispatchCutoff
+                                    ): void {
                                         $claimRepairable
                                             ->where(static function ($backoffReady) use ($now): void {
                                                 $backoffReady->whereNotNull('repair_available_at')
                                                     ->where('repair_available_at', '<=', $now);
                                             })
-                                            ->orWhere(static function ($legacyClaimFailure) use ($staleDispatchCutoff): void {
+                                            ->orWhere(static function ($legacyClaimFailure) use (
+                                                $staleDispatchCutoff
+                                            ): void {
                                                 $legacyClaimFailure->whereNull('repair_available_at')
                                                     ->where('last_claim_failed_at', '<=', $staleDispatchCutoff);
                                             });
@@ -579,7 +563,9 @@ final class TaskRepairCandidates
                                         })
                                         ->where(static function ($dispatch) use ($staleDispatchCutoff): void {
                                             $dispatch->where('last_dispatched_at', '<=', $staleDispatchCutoff)
-                                                ->orWhere(static function ($neverDispatched) use ($staleDispatchCutoff): void {
+                                                ->orWhere(static function ($neverDispatched) use (
+                                                    $staleDispatchCutoff
+                                                ): void {
                                                     $neverDispatched->whereNull('last_dispatched_at')
                                                         ->where('created_at', '<=', $staleDispatchCutoff);
                                                 });
@@ -603,11 +589,7 @@ final class TaskRepairCandidates
         $query = WorkflowRunSummary::query()
             ->where('liveness_state', 'repair_needed')
             ->whereNull('next_task_id')
-            ->whereIn('status', [
-                RunStatus::Pending->value,
-                RunStatus::Running->value,
-                RunStatus::Waiting->value,
-            ]);
+            ->whereIn('status', [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value]);
 
         if ($runIds !== []) {
             $query->whereKey($runIds);

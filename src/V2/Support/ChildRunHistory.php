@@ -556,7 +556,9 @@ final class ChildRunHistory
             return null;
         }
 
-        if (! is_string($payload['parent_workflow_run_id'] ?? null) || is_string($payload['continued_from_run_id'] ?? null)) {
+        if (! is_string($payload['parent_workflow_run_id'] ?? null) || is_string(
+            $payload['continued_from_run_id'] ?? null
+        )) {
             return null;
         }
 
@@ -623,12 +625,7 @@ final class ChildRunHistory
 
         /** @var WorkflowRun|null $run */
         $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-            ->with([
-                'summary',
-                'instance',
-                'failures',
-                'historyEvents',
-            ])
+            ->with(['summary', 'instance', 'failures', 'historyEvents'])
             ->find($runId);
 
         return $run;
@@ -658,11 +655,7 @@ final class ChildRunHistory
                 return $childRun;
             }
 
-            $currentRun = CurrentRunResolver::forRun($childRun, [
-                'summary',
-                'failures',
-                'historyEvents',
-            ]);
+            $currentRun = CurrentRunResolver::forRun($childRun, ['summary', 'failures', 'historyEvents']);
 
             if (! $currentRun instanceof WorkflowRun || $currentRun->id === $childRun->id || isset($visited[$childRun->id])) {
                 return $childRun;

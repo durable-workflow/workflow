@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
-use Workflow\V2\Support\ChildWorkflowHandles;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ChildWorkflowHandles;
 
 abstract class Workflow
 {
@@ -51,11 +51,7 @@ abstract class Workflow
      */
     public function children(): array
     {
-        return ChildWorkflowHandles::forRun(
-            $this->run,
-            $this->visibleSequence,
-            $this->commandDispatchEnabled,
-        );
+        return ChildWorkflowHandles::forRun($this->run, $this->visibleSequence, $this->commandDispatchEnabled);
     }
 
     public function syncExecutionCursor(int $visibleSequence): void

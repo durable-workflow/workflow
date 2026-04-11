@@ -13,7 +13,10 @@ use Workflow\V2\Workflow;
 
 #[Type('test-command-target-workflow')]
 #[Signal('approved-by', [
-    ['name' => 'actor', 'type' => 'string'],
+    [
+        'name' => 'actor',
+        'type' => 'string',
+    ],
 ])]
 #[Signal('rejected-by')]
 final class TestCommandTargetWorkflow extends Workflow
@@ -43,6 +46,8 @@ final class TestCommandTargetWorkflow extends Workflow
     #[UpdateMethod('mark-approved')]
     public function approve(bool $approved): array
     {
-        return ['approved' => $approved];
+        return [
+            'approved' => $approved,
+        ];
     }
 }

@@ -38,8 +38,7 @@ final class WorkflowExecution
         callable $callback,
         array $arguments = [],
         ?StraightLineWorkflowRequiredException $straightLineError = null,
-    ): self
-    {
+    ): self {
         $fiber = new Fiber(static function () use ($callback, $arguments): mixed {
             WorkflowFiberContext::enter();
 

@@ -123,7 +123,9 @@ final class RunTaskView
                         'retry_after_attempt' => self::intValue($task->payload['retry_after_attempt'] ?? null),
                         'retry_backoff_seconds' => self::intValue($task->payload['retry_backoff_seconds'] ?? null),
                         'retry_max_attempts' => self::intValue($task->payload['max_attempts'] ?? null),
-                        'retry_policy' => is_array($task->payload['retry_policy'] ?? null) ? $task->payload['retry_policy'] : null,
+                        'retry_policy' => is_array(
+                            $task->payload['retry_policy'] ?? null
+                        ) ? $task->payload['retry_policy'] : null,
                         'timer_id' => $timerId,
                         'timer_sequence' => self::intValue($timer['sequence'] ?? null),
                         'timer_fire_at' => $timer['fire_at'] ?? null,
@@ -218,7 +220,9 @@ final class RunTaskView
 
                 /** @var array<string, mixed>|null $activity */
                 $activity = $activities->get($activityId);
-                $rows[] = self::missingActivityTaskRow($run, $activity ?? ['id' => $activityId], $wait);
+                $rows[] = self::missingActivityTaskRow($run, $activity ?? [
+                    'id' => $activityId,
+                ], $wait);
 
                 continue;
             }
@@ -232,7 +236,9 @@ final class RunTaskView
 
                 /** @var array<string, mixed>|null $timer */
                 $timer = $timers->get($timerId);
-                $rows[] = self::missingTimerTaskRow($run, $timer ?? ['id' => $timerId], $wait, false);
+                $rows[] = self::missingTimerTaskRow($run, $timer ?? [
+                    'id' => $timerId,
+                ], $wait, false);
 
                 continue;
             }
@@ -252,7 +258,9 @@ final class RunTaskView
 
                 /** @var array<string, mixed>|null $timer */
                 $timer = $timerId === null ? null : $timers->get($timerId);
-                $rows[] = self::missingTimerTaskRow($run, $timer ?? ['id' => $timerId], $wait, true);
+                $rows[] = self::missingTimerTaskRow($run, $timer ?? [
+                    'id' => $timerId,
+                ], $wait, true);
 
                 continue;
             }
@@ -412,9 +420,7 @@ final class RunTaskView
             ?? 'condition';
         $timerId = self::stringValue($wait['resume_source_id'] ?? null);
         $conditionKey = self::stringValue($wait['condition_key'] ?? null);
-        $conditionDefinitionFingerprint = self::stringValue(
-            $wait['condition_definition_fingerprint'] ?? null
-        );
+        $conditionDefinitionFingerprint = self::stringValue($wait['condition_definition_fingerprint'] ?? null);
         $openWaitId = self::stringValue($wait['id'] ?? null) ?? $conditionWaitId;
 
         $row = self::missingTaskBase(
@@ -452,8 +458,12 @@ final class RunTaskView
      * @param array<string, mixed> $wait
      * @return array<string, mixed>
      */
-    private static function missingTimerTaskRow(WorkflowRun $run, array $timer, array $wait, bool $conditionTimeout): array
-    {
+    private static function missingTimerTaskRow(
+        WorkflowRun $run,
+        array $timer,
+        array $wait,
+        bool $conditionTimeout
+    ): array {
         $timerId = self::stringValue($timer['id'] ?? null)
             ?? self::stringValue($wait['resume_source_id'] ?? null)
             ?? 'timer';
@@ -602,8 +612,16 @@ final class RunTaskView
             'compatibility' => $compatibility,
             'compatibility_supported' => WorkerCompatibility::supports($compatibility),
             'compatibility_reason' => WorkerCompatibility::mismatchReason($compatibility),
-            'compatibility_supported_in_fleet' => WorkerCompatibilityFleet::supports($compatibility, $connection, $queue),
-            'compatibility_fleet_reason' => WorkerCompatibilityFleet::mismatchReason($compatibility, $connection, $queue),
+            'compatibility_supported_in_fleet' => WorkerCompatibilityFleet::supports(
+                $compatibility,
+                $connection,
+                $queue
+            ),
+            'compatibility_fleet_reason' => WorkerCompatibilityFleet::mismatchReason(
+                $compatibility,
+                $connection,
+                $queue
+            ),
             'dispatch_failed' => false,
             'dispatch_overdue' => false,
             'claim_failed' => false,
@@ -845,7 +863,12 @@ final class RunTaskView
 
             return match ($task->status) {
                 TaskStatus::Ready => $task->available_at !== null && $task->available_at->isFuture()
-                    ? sprintf('Activity retry %d for %s scheduled for %s.', $retryNumber, $label, $task->available_at->toJSON())
+                    ? sprintf(
+                        'Activity retry %d for %s scheduled for %s.',
+                        $retryNumber,
+                        $label,
+                        $task->available_at->toJSON()
+                    )
                     : sprintf('Activity retry %d ready for %s.', $retryNumber, $label),
                 TaskStatus::Leased => sprintf('Activity retry %d leased for %s.', $retryNumber, $label),
                 TaskStatus::Completed => sprintf('Activity retry %d completed for %s.', $retryNumber, $label),
@@ -956,11 +979,7 @@ final class RunTaskView
         if (self::stringValue($task->payload['condition_wait_id'] ?? null) !== null) {
             return $delaySeconds === null
                 ? 'condition timeout'
-                : sprintf(
-                    'condition timeout for %s second%s',
-                    $delaySeconds,
-                    $delaySeconds === 1 ? '' : 's',
-                );
+                : sprintf('condition timeout for %s second%s', $delaySeconds, $delaySeconds === 1 ? '' : 's');
         }
 
         return $delaySeconds === null

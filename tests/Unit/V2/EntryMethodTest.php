@@ -17,7 +17,10 @@ final class EntryMethodTest extends TestCase
         $this->assertSame('handle', EntryMethod::forWorkflow(HandleEntryWorkflow::class)->getName());
         $this->assertSame('handle', EntryMethod::forActivity(HandleEntryActivity::class)->getName());
         $this->assertSame('canonical', EntryMethod::describeWorkflow(HandleEntryWorkflow::class)['mode']);
-        $this->assertSame(HandleEntryWorkflow::class, EntryMethod::describeWorkflow(HandleEntryWorkflow::class)['declared_on']);
+        $this->assertSame(
+            HandleEntryWorkflow::class,
+            EntryMethod::describeWorkflow(HandleEntryWorkflow::class)['declared_on']
+        );
     }
 
     public function testExecuteFallsBackForCompatibility(): void
@@ -25,13 +28,19 @@ final class EntryMethodTest extends TestCase
         $this->assertSame('execute', EntryMethod::forWorkflow(ExecuteEntryWorkflow::class)->getName());
         $this->assertSame('execute', EntryMethod::forActivity(ExecuteEntryActivity::class)->getName());
         $this->assertSame('compatibility', EntryMethod::describeWorkflow(ExecuteEntryWorkflow::class)['mode']);
-        $this->assertSame(ExecuteEntryWorkflow::class, EntryMethod::describeWorkflow(ExecuteEntryWorkflow::class)['declared_on']);
+        $this->assertSame(
+            ExecuteEntryWorkflow::class,
+            EntryMethod::describeWorkflow(ExecuteEntryWorkflow::class)['declared_on']
+        );
     }
 
     public function testEntryMethodCanBeInheritedFromParentWorkflow(): void
     {
         $this->assertSame('handle', EntryMethod::forWorkflow(InheritedHandleWorkflow::class)->getName());
-        $this->assertSame(HandleEntryWorkflow::class, EntryMethod::describeWorkflow(InheritedHandleWorkflow::class)['declared_on']);
+        $this->assertSame(
+            HandleEntryWorkflow::class,
+            EntryMethod::describeWorkflow(InheritedHandleWorkflow::class)['declared_on']
+        );
     }
 
     public function testDeclaringBothEntryMethodsRaisesAnError(): void
@@ -45,7 +54,9 @@ final class EntryMethodTest extends TestCase
     public function testMissingEntryMethodRaisesAnError(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('must declare a public handle() method or, for compatibility, a public execute() method');
+        $this->expectExceptionMessage(
+            'must declare a public handle() method or, for compatibility, a public execute() method'
+        );
 
         EntryMethod::forWorkflow(MissingEntryWorkflow::class);
     }

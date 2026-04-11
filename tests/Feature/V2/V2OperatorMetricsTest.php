@@ -16,11 +16,11 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
-use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\OperatorMetrics;
@@ -293,10 +293,14 @@ final class V2OperatorMetricsTest extends TestCase
 
         WorkflowRunSummary::query()
             ->whereKey($missingWaitRun->id)
-            ->update(['open_wait_id' => 'signal:missing']);
+            ->update([
+                'open_wait_id' => 'signal:missing',
+            ]);
         WorkflowRunSummary::query()
             ->whereKey($projectedWaitRun->id)
-            ->update(['open_wait_id' => 'signal:projected']);
+            ->update([
+                'open_wait_id' => 'signal:projected',
+            ]);
 
         WorkflowRunWait::query()->create([
             'id' => 'projection-wait-valid',
@@ -326,12 +330,16 @@ final class V2OperatorMetricsTest extends TestCase
         WorkflowHistoryEvent::record(
             $missingWaitRun,
             HistoryEventType::WorkflowStarted,
-            ['workflow_run_id' => $missingWaitRun->id],
+            [
+                'workflow_run_id' => $missingWaitRun->id,
+            ],
         );
         $projectedTimelineEvent = WorkflowHistoryEvent::record(
             $projectedWaitRun,
             HistoryEventType::WorkflowStarted,
-            ['workflow_run_id' => $projectedWaitRun->id],
+            [
+                'workflow_run_id' => $projectedWaitRun->id,
+            ],
         );
 
         WorkflowTimelineEntry::query()->create([
@@ -365,7 +373,9 @@ final class V2OperatorMetricsTest extends TestCase
                 'timer_id' => 'projection-timer-missing',
                 'sequence' => 11,
                 'delay_seconds' => 60,
-                'fire_at' => now()->addMinute()->toJSON(),
+                'fire_at' => now()
+                    ->addMinute()
+                    ->toJSON(),
             ],
         );
         WorkflowHistoryEvent::record(
@@ -375,7 +385,9 @@ final class V2OperatorMetricsTest extends TestCase
                 'timer_id' => 'projection-timer-projected',
                 'sequence' => 12,
                 'delay_seconds' => 90,
-                'fire_at' => now()->addSeconds(90)->toJSON(),
+                'fire_at' => now()
+                    ->addSeconds(90)
+                    ->toJSON(),
             ],
         );
         WorkflowRunTimerEntry::query()->create([
@@ -388,7 +400,8 @@ final class V2OperatorMetricsTest extends TestCase
             'status' => 'fired',
             'source_status' => 'fired',
             'delay_seconds' => 90,
-            'fire_at' => now()->addSeconds(90),
+            'fire_at' => now()
+                ->addSeconds(90),
             'fired_at' => now(),
             'history_authority' => 'typed_history',
             'payload' => [
@@ -397,8 +410,11 @@ final class V2OperatorMetricsTest extends TestCase
                 'status' => 'fired',
                 'source_status' => 'fired',
                 'delay_seconds' => 90,
-                'fire_at' => now()->addSeconds(90)->toJSON(),
-                'fired_at' => now()->toJSON(),
+                'fire_at' => now()
+                    ->addSeconds(90)
+                    ->toJSON(),
+                'fired_at' => now()
+                    ->toJSON(),
                 'history_authority' => 'typed_history',
                 'history_event_types' => ['TimerScheduled'],
             ],
@@ -518,8 +534,10 @@ final class V2OperatorMetricsTest extends TestCase
             Carbon::setTestNow();
         });
 
-        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 5);
-        config()->set('workflows.v2.task_repair.failure_backoff_max_seconds', 60);
+        config()
+            ->set('workflows.v2.task_repair.redispatch_after_seconds', 5);
+        config()
+            ->set('workflows.v2.task_repair.failure_backoff_max_seconds', 60);
 
         $run = $this->createRunWithSummary(
             instanceId: 'repair-backoff-instance',
@@ -530,18 +548,24 @@ final class V2OperatorMetricsTest extends TestCase
         );
 
         $backingOffTask = $this->createTask($run, '01JBACKOFFTASK00000000001', TaskStatus::Ready->value, [
-            'available_at' => now()->subMinute(),
-            'last_dispatch_attempt_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subMinute(),
+            'last_dispatch_attempt_at' => now()
+                ->subSecond(),
             'last_dispatch_error' => 'Queue transport unavailable.',
             'repair_count' => 2,
-            'repair_available_at' => now()->addSeconds(10),
+            'repair_available_at' => now()
+                ->addSeconds(10),
         ]);
         $readyTask = $this->createTask($run, '01JBACKOFFTASK00000000002', TaskStatus::Ready->value, [
-            'available_at' => now()->subMinute(),
-            'last_dispatch_attempt_at' => now()->subSeconds(20),
+            'available_at' => now()
+                ->subMinute(),
+            'last_dispatch_attempt_at' => now()
+                ->subSeconds(20),
             'last_dispatch_error' => 'Queue transport unavailable.',
             'repair_count' => 2,
-            'repair_available_at' => now()->subSecond(),
+            'repair_available_at' => now()
+                ->subSecond(),
         ]);
 
         $snapshot = TaskRepairCandidates::snapshot();
@@ -561,8 +585,10 @@ final class V2OperatorMetricsTest extends TestCase
             Carbon::setTestNow();
         });
 
-        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 1);
-        config()->set('workflows.v2.task_repair.scan_limit', 3);
+        config()
+            ->set('workflows.v2.task_repair.redispatch_after_seconds', 1);
+        config()
+            ->set('workflows.v2.task_repair.scan_limit', 3);
 
         $hotTaskRun = $this->createRunWithSummary(
             instanceId: 'fair-task-hot',
@@ -602,9 +628,13 @@ final class V2OperatorMetricsTest extends TestCase
                 'connection' => 'redis',
                 'queue' => 'default',
                 'compatibility' => 'build-a',
-                'available_at' => now()->subMinutes(10),
-                'last_dispatched_at' => now()->subMinutes(10),
-                'created_at' => now()->subMinutes(10)->addSeconds($i),
+                'available_at' => now()
+                    ->subMinutes(10),
+                'last_dispatched_at' => now()
+                    ->subMinutes(10),
+                'created_at' => now()
+                    ->subMinutes(10)
+                    ->addSeconds($i),
             ]);
         }
 
@@ -615,16 +645,22 @@ final class V2OperatorMetricsTest extends TestCase
             'connection' => 'redis',
             'queue' => 'imports',
             'compatibility' => 'build-a',
-            'available_at' => now()->subMinutes(9),
-            'last_dispatched_at' => now()->subMinutes(9),
-            'created_at' => now()->subMinutes(9),
+            'available_at' => now()
+                ->subMinutes(9),
+            'last_dispatched_at' => now()
+                ->subMinutes(9),
+            'created_at' => now()
+                ->subMinutes(9),
         ]);
         $this->createTask($syncTaskRun, $syncTaskId, TaskStatus::Ready->value, [
             'connection' => 'sync',
             'queue' => 'default',
-            'available_at' => now()->subMinutes(8),
-            'last_dispatched_at' => now()->subMinutes(8),
-            'created_at' => now()->subMinutes(8),
+            'available_at' => now()
+                ->subMinutes(8),
+            'last_dispatched_at' => now()
+                ->subMinutes(8),
+            'created_at' => now()
+                ->subMinutes(8),
         ]);
 
         $hotMissingRunIds = [];
@@ -718,8 +754,10 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_class' => TestCommandTargetWorkflow::class,
             'workflow_type' => 'test-command-target-workflow',
             'status' => 'waiting',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $availableInstance->forceFill([
@@ -789,8 +827,10 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
             'workflow_type' => 'missing-command-target-workflow',
             'status' => 'waiting',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSecond(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSecond(),
         ]);
 
         $unavailableInstance->forceFill([

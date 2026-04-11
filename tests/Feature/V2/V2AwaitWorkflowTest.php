@@ -33,14 +33,17 @@ final class V2AwaitWorkflowTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.default', 'redis');
     }
 
     public function testAwaitWorkflowRecordsConditionWaitAndResumesAfterUpdate(): void
     {
         Queue::fake();
-        config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 3);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_event_threshold', 3);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1000000);
 
         $workflow = WorkflowStub::make(TestAwaitWorkflow::class, 'await-update');
         $workflow->start();
@@ -208,7 +211,9 @@ final class V2AwaitWorkflowTest extends TestCase
 
         $this->assertTrue($update->completed());
         $this->assertTrue($workflow->refresh()->completed());
-        $this->assertSame(['approved' => true], $workflow->output());
+        $this->assertSame([
+            'approved' => true,
+        ], $workflow->output());
 
         /** @var WorkflowHistoryEvent $satisfied */
         $satisfied = WorkflowHistoryEvent::query()
@@ -281,13 +286,16 @@ final class V2AwaitWorkflowTest extends TestCase
 
         $payload = $opened->payload;
         $payload['condition_definition_fingerprint'] = 'sha256:' . str_repeat('0', 64);
-        $opened->forceFill(['payload' => $payload])->save();
+        $opened->forceFill([
+            'payload' => $payload,
+        ])->save();
 
         $this->expectException(ConditionWaitDefinitionMismatchException::class);
         $this->expectExceptionMessage('predicate fingerprint');
         $this->expectExceptionMessage('sha256:' . str_repeat('0', 64));
 
-        $workflow->refresh()->currentState();
+        $workflow->refresh()
+            ->currentState();
     }
 
     public function testQueryReplayRejectsConditionWaitKeyDrift(): void
@@ -307,12 +315,15 @@ final class V2AwaitWorkflowTest extends TestCase
 
         $payload = $opened->payload;
         $payload['condition_key'] = 'approval.changed';
-        $opened->forceFill(['payload' => $payload])->save();
+        $opened->forceFill([
+            'payload' => $payload,
+        ])->save();
 
         $this->expectException(ConditionWaitDefinitionMismatchException::class);
         $this->expectExceptionMessage('approval.changed');
 
-        $workflow->refresh()->currentState();
+        $workflow->refresh()
+            ->currentState();
     }
 
     public function testQueryReplayRejectsPreviouslyUnkeyedConditionWaitWhenCurrentYieldHasKey(): void
@@ -334,7 +345,8 @@ final class V2AwaitWorkflowTest extends TestCase
         $this->expectExceptionMessage('recorded with condition key [none]');
         $this->expectExceptionMessage('current workflow yielded [approval.ready]');
 
-        $workflow->refresh()->currentState();
+        $workflow->refresh()
+            ->currentState();
     }
 
     public function testQueryReplayRejectsConditionWaitWhenHistoryRecordedDifferentStepShape(): void
@@ -351,14 +363,17 @@ final class V2AwaitWorkflowTest extends TestCase
             'timer_id' => 'timer-from-older-definition',
             'sequence' => 1,
             'delay_seconds' => 60,
-            'fire_at' => now()->addMinute()->toJSON(),
+            'fire_at' => now()
+                ->addMinute()
+                ->toJSON(),
         ]);
 
         $this->expectException(HistoryEventShapeMismatchException::class);
         $this->expectExceptionMessage('recorded [TimerScheduled]');
         $this->expectExceptionMessage('current workflow yielded condition wait');
 
-        $workflow->refresh()->currentState();
+        $workflow->refresh()
+            ->currentState();
     }
 
     public function testWorkflowWorkerBlocksReplayWhenRecordedConditionKeyDoesNotMatchCurrentYield(): void
@@ -413,7 +428,8 @@ final class V2AwaitWorkflowTest extends TestCase
         $this->assertSame('approval.changed', $detail['tasks'][0]['replay_blocked_recorded_condition_key']);
         $this->assertSame('approval.ready', $detail['tasks'][0]['replay_blocked_current_condition_key']);
 
-        $repair = $workflow->refresh()->attemptRepair();
+        $repair = $workflow->refresh()
+            ->attemptRepair();
 
         $this->assertTrue($repair->accepted());
         $this->assertSame('repair_dispatched', $repair->outcome());
@@ -482,7 +498,9 @@ final class V2AwaitWorkflowTest extends TestCase
             'timer_id' => 'timer-from-older-definition',
             'sequence' => 1,
             'delay_seconds' => 60,
-            'fire_at' => now()->addMinute()->toJSON(),
+            'fire_at' => now()
+                ->addMinute()
+                ->toJSON(),
         ]);
 
         $this->runReadyWorkflowTask($workflow->runId());
@@ -519,7 +537,8 @@ final class V2AwaitWorkflowTest extends TestCase
         $this->assertSame(['TimerScheduled'], $detail['tasks'][0]['replay_blocked_recorded_event_types']);
         $this->assertStringContainsString('history shape drift', $detail['tasks'][0]['summary']);
 
-        $repair = $workflow->refresh()->attemptRepair();
+        $repair = $workflow->refresh()
+            ->attemptRepair();
 
         $this->assertTrue($repair->accepted());
         $this->assertSame('repair_dispatched', $repair->outcome());
@@ -583,9 +602,7 @@ final class V2AwaitWorkflowTest extends TestCase
             $recordedFingerprint,
             $detail['tasks'][0]['replay_blocked_recorded_condition_definition_fingerprint'],
         );
-        $this->assertIsString(
-            $detail['tasks'][0]['replay_blocked_current_condition_definition_fingerprint']
-        );
+        $this->assertIsString($detail['tasks'][0]['replay_blocked_current_condition_definition_fingerprint']);
     }
 
     public function testAwaitWorkflowCanApplySubmittedUpdateOnWorkflowWorker(): void
@@ -899,7 +916,10 @@ final class V2AwaitWorkflowTest extends TestCase
         Carbon::setTestNow(Carbon::parse('2026-04-08 14:15:00'));
 
         try {
-            $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'await-timeout-row-fired-without-history');
+            $workflow = WorkflowStub::make(
+                TestAwaitWithTimeoutWorkflow::class,
+                'await-timeout-row-fired-without-history'
+            );
             $workflow->start();
 
             $runId = $workflow->runId();
@@ -918,7 +938,8 @@ final class V2AwaitWorkflowTest extends TestCase
 
             $timer->forceFill([
                 'status' => TimerStatus::Fired->value,
-                'fired_at' => now()->addSeconds(5),
+                'fired_at' => now()
+                    ->addSeconds(5),
             ])->save();
 
             /** @var WorkflowRun $run */
@@ -928,7 +949,8 @@ final class V2AwaitWorkflowTest extends TestCase
                 'workflow_run_id' => $runId,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
-                'available_at' => now()->addSeconds(5),
+                'available_at' => now()
+                    ->addSeconds(5),
                 'payload' => [
                     'workflow_wait_kind' => 'condition',
                     'open_wait_id' => $conditionWait['condition_wait_id'],

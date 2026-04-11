@@ -12,14 +12,23 @@ use Workflow\V2\Models\WorkflowRun;
 final class WorkflowStepHistory
 {
     public const ACTIVITY = 'activity';
+
     public const CHILD_WORKFLOW = 'child workflow';
+
     public const CONDITION_WAIT = 'condition wait';
+
     public const CONTINUE_AS_NEW = 'continue as new';
+
     public const NO_TYPED_HISTORY = 'no typed history';
+
     public const PARALLEL_GROUP = 'parallel all barrier matching current topology';
+
     public const SIGNAL_WAIT = 'signal wait';
+
     public const SIDE_EFFECT = 'side effect';
+
     public const TIMER = 'timer';
+
     public const VERSION_MARKER = 'version marker';
 
     public static function assertCompatible(WorkflowRun $run, int $sequence, string $expectedShape): void
@@ -39,11 +48,7 @@ final class WorkflowStepHistory
         $eventTypes = self::workflowStepEventTypesForSequence($run, $sequence);
 
         if ($eventTypes === []) {
-            throw new HistoryEventShapeMismatchException(
-                $sequence,
-                $expectedShape,
-                [self::NO_TYPED_HISTORY],
-            );
+            throw new HistoryEventShapeMismatchException($sequence, $expectedShape, [self::NO_TYPED_HISTORY]);
         }
     }
 
@@ -81,11 +86,7 @@ final class WorkflowStepHistory
 
             if ($recordedPath === []) {
                 if ($eventTypes !== [] && self::eventTypesMatchParallelLeaf($eventTypes, $descriptor['call'] ?? null)) {
-                    throw new HistoryEventShapeMismatchException(
-                        $sequence,
-                        self::PARALLEL_GROUP,
-                        $eventTypes,
-                    );
+                    throw new HistoryEventShapeMismatchException($sequence, self::PARALLEL_GROUP, $eventTypes);
                 }
 
                 continue;

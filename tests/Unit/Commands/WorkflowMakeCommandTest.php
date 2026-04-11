@@ -76,10 +76,7 @@ final class WorkflowMakeCommandTest extends TestCase
 
         $this->artisan('make:workflow ' . self::WORKFLOW . ' --v2 --type=orders.approval')->assertSuccessful();
 
-        $this->assertStringContainsString(
-            "#[Type('orders.approval')]",
-            $filesystem->get($file),
-        );
+        $this->assertStringContainsString("#[Type('orders.approval')]", $filesystem->get($file));
 
         $filesystem->delete($file);
         $filesystem->deleteDirectory(self::FOLDER);

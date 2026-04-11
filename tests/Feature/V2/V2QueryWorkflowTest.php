@@ -11,6 +11,7 @@ use Tests\Fixtures\V2\TestAbstractReplayedException;
 use Tests\Fixtures\V2\TestBroadChildFailureCatchWorkflow;
 use Tests\Fixtures\V2\TestBroadFailureCatchWorkflow;
 use Tests\Fixtures\V2\TestChildHandleParentWorkflow;
+use Tests\Fixtures\V2\TestGeneratorWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildFailureWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedChildWorkflow;
 use Tests\Fixtures\V2\TestHistoryReplayedFailureWorkflow;
@@ -18,18 +19,17 @@ use Tests\Fixtures\V2\TestHistoryTimerReplayWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelFailureWorkflow;
 use Tests\Fixtures\V2\TestMixedParallelWorkflow;
 use Tests\Fixtures\V2\TestNestedParallelActivityWorkflow;
-use Tests\Fixtures\V2\TestPendingTimerSignalWorkflow;
-use Tests\Fixtures\V2\TestParallelChildHandlesWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestParallelActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelChildFailureWorkflow;
+use Tests\Fixtures\V2\TestParallelChildHandlesWorkflow;
 use Tests\Fixtures\V2\TestParallelChildTerminalOutcomeWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
-use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
+use Tests\Fixtures\V2\TestPendingTimerSignalWorkflow;
 use Tests\Fixtures\V2\TestQueryChildResolutionAuthorityWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
-use Tests\Fixtures\V2\TestGeneratorWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestReplayedDomainException;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
@@ -53,8 +53,8 @@ use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -139,7 +139,8 @@ final class V2QueryWorkflowTest extends TestCase
     public function testQueriesBackfillLegacyCommandContractsWhenWorkflowDefinitionIsLoadable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         Queue::fake();
 
@@ -188,7 +189,8 @@ final class V2QueryWorkflowTest extends TestCase
     public function testHistoryExportBackfillsLegacyCommandContractsWhenWorkflowDefinitionIsLoadable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         Queue::fake();
 
@@ -281,7 +283,8 @@ final class V2QueryWorkflowTest extends TestCase
     public function testNamedQueryArgumentsRejectWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestQueryWorkflow::class, 'query-contract-unavailable');
@@ -384,8 +387,10 @@ final class V2QueryWorkflowTest extends TestCase
     public function testLoadPrefersContinueAsNewLineageWhenCurrentRunPointerIsMissing(): void
     {
         Queue::fake();
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $instanceId = 'query-continue-pointer-drift';
 
@@ -410,13 +415,17 @@ final class V2QueryWorkflowTest extends TestCase
             'arguments' => Serializer::serialize([999, 1000]),
             'connection' => $currentRun->connection,
             'queue' => $currentRun->queue,
-            'started_at' => now()->addMinute(),
-            'last_progress_at' => now()->addMinute(),
+            'started_at' => now()
+                ->addMinute(),
+            'last_progress_at' => now()
+                ->addMinute(),
         ]);
 
         WorkflowInstance::query()
             ->findOrFail($instanceId)
-            ->forceFill(['current_run_id' => null])
+            ->forceFill([
+                'current_run_id' => null,
+            ])
             ->save();
 
         $resolved = WorkflowStub::load($instanceId);
@@ -537,7 +546,8 @@ final class V2QueryWorkflowTest extends TestCase
     public function testQueriesAndResumeRestoreActivityFailuresThroughDurableExceptionAliases(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
+        config()
+            ->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestHistoryReplayedFailureWorkflow::class, 'query-history-failure-alias');
@@ -621,9 +631,10 @@ final class V2QueryWorkflowTest extends TestCase
     public function testQueriesAndResumeRestorePreAliasActivityFailuresThroughClassAliases(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('workflows.v2.types.exception_class_aliases', [
-            'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.exception_class_aliases', [
+                'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
+            ]);
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestHistoryReplayedFailureWorkflow::class, 'query-history-failure-class-alias');
@@ -734,7 +745,8 @@ final class V2QueryWorkflowTest extends TestCase
         });
 
         try {
-            $workflow->refresh()->currentState();
+            $workflow->refresh()
+                ->currentState();
             $this->fail('Expected unresolved failure replay to block the query.');
         } catch (UnresolvedWorkflowFailureException $exception) {
             $this->assertSame('App\\Legacy\\OrderRejected', $exception->originalExceptionClass());
@@ -767,9 +779,10 @@ final class V2QueryWorkflowTest extends TestCase
             'status' => TaskStatus::Failed->value,
         ]);
 
-        config()->set('workflows.v2.types.exception_class_aliases', [
-            'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.exception_class_aliases', [
+                'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
+            ]);
 
         $this->assertSame([
             'stage' => 'waiting-for-resume',
@@ -799,10 +812,14 @@ final class V2QueryWorkflowTest extends TestCase
     public function testMisconfiguredDurableFailureAliasBlocksReplayAndRecoveryUntilMappingIsFixed(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
+        config()
+            ->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
         Queue::fake();
 
-        $workflow = WorkflowStub::make(TestBroadFailureCatchWorkflow::class, 'query-history-failure-misconfigured-alias');
+        $workflow = WorkflowStub::make(
+            TestBroadFailureCatchWorkflow::class,
+            'query-history-failure-misconfigured-alias'
+        );
         $workflow->start('order-123');
 
         $this->drainReadyTasks();
@@ -816,10 +833,12 @@ final class V2QueryWorkflowTest extends TestCase
 
         $this->assertSame('order-rejected', $event->payload['exception_type'] ?? null);
 
-        config()->set('workflows.v2.types.exceptions.order-rejected', \stdClass::class);
+        config()
+            ->set('workflows.v2.types.exceptions.order-rejected', \stdClass::class);
 
         try {
-            $workflow->refresh()->currentState();
+            $workflow->refresh()
+                ->currentState();
             $this->fail('Expected misconfigured failure alias replay to block the query.');
         } catch (UnresolvedWorkflowFailureException $exception) {
             $this->assertSame(TestReplayedDomainException::class, $exception->originalExceptionClass());
@@ -836,7 +855,10 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame('order-rejected', $detail['exceptions'][0]['exception_type']);
         $this->assertNull($detail['exceptions'][0]['exception_resolved_class']);
         $this->assertSame('misconfigured', $detail['exceptions'][0]['exception_resolution_source']);
-        $this->assertStringContainsString(\stdClass::class, (string) $detail['exceptions'][0]['exception_resolution_error']);
+        $this->assertStringContainsString(
+            \stdClass::class,
+            (string) $detail['exceptions'][0]['exception_resolution_error']
+        );
         $this->assertTrue($detail['exceptions'][0]['exception_replay_blocked']);
         $this->assertSame('misconfigured', $timelineFailure['failure']['exception_resolution_source'] ?? null);
         $this->assertTrue($timelineFailure['failure']['exception_replay_blocked'] ?? false);
@@ -874,7 +896,8 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertNotNull($replayBlockedTask);
         $this->assertSame('failure_resolution', $replayBlockedTask['replay_blocked_reason']);
 
-        config()->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
+        config()
+            ->set('workflows.v2.types.exceptions.order-rejected', TestReplayedDomainException::class);
 
         $repair = WorkflowStub::loadRun($workflow->runId())->attemptRepair();
 
@@ -928,7 +951,8 @@ final class V2QueryWorkflowTest extends TestCase
         });
 
         try {
-            $workflow->refresh()->currentState();
+            $workflow->refresh()
+                ->currentState();
             $this->fail('Expected unrestorable failure replay to block the query.');
         } catch (UnresolvedWorkflowFailureException $exception) {
             $this->assertSame(TestAbstractReplayedException::class, $exception->originalExceptionClass());
@@ -945,7 +969,10 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame(TestAbstractReplayedException::class, $detail['exceptions'][0]['exception_class']);
         $this->assertSame(TestAbstractReplayedException::class, $detail['exceptions'][0]['exception_resolved_class']);
         $this->assertSame('unrestorable', $detail['exceptions'][0]['exception_resolution_source']);
-        $this->assertStringContainsString('abstract throwable', (string) $detail['exceptions'][0]['exception_resolution_error']);
+        $this->assertStringContainsString(
+            'abstract throwable',
+            (string) $detail['exceptions'][0]['exception_resolution_error']
+        );
         $this->assertTrue($detail['exceptions'][0]['exception_replay_blocked']);
         $this->assertSame('unrestorable', $timelineFailure['failure']['exception_resolution_source'] ?? null);
         $this->assertTrue($timelineFailure['failure']['exception_replay_blocked'] ?? false);
@@ -967,11 +994,15 @@ final class V2QueryWorkflowTest extends TestCase
 
         $this->assertTrue($blockedTask->payload['replay_blocked'] ?? false);
         $this->assertSame('unrestorable', $blockedTask->payload['replay_blocked_resolution_source'] ?? null);
-        $this->assertSame(TestAbstractReplayedException::class, $blockedTask->payload['replay_blocked_exception_class'] ?? null);
+        $this->assertSame(
+            TestAbstractReplayedException::class,
+            $blockedTask->payload['replay_blocked_exception_class'] ?? null
+        );
 
-        config()->set('workflows.v2.types.exception_class_aliases', [
-            TestAbstractReplayedException::class => TestReplayedDomainException::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.exception_class_aliases', [
+                TestAbstractReplayedException::class => TestReplayedDomainException::class,
+            ]);
 
         $this->assertSame([
             'stage' => 'waiting-for-resume',
@@ -1048,7 +1079,8 @@ final class V2QueryWorkflowTest extends TestCase
         });
 
         try {
-            $workflow->refresh()->currentState();
+            $workflow->refresh()
+                ->currentState();
             $this->fail('Expected unresolved child failure replay to block the query.');
         } catch (UnresolvedWorkflowFailureException $exception) {
             $this->assertSame('App\\Legacy\\OrderRejected', $exception->originalExceptionClass());
@@ -1070,9 +1102,10 @@ final class V2QueryWorkflowTest extends TestCase
             'status' => TaskStatus::Failed->value,
         ]);
 
-        config()->set('workflows.v2.types.exception_class_aliases', [
-            'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.exception_class_aliases', [
+                'App\\Legacy\\OrderRejected' => TestReplayedDomainException::class,
+            ]);
 
         $this->assertSame([
             'stage' => 'waiting-for-resume',
@@ -1263,7 +1296,10 @@ final class V2QueryWorkflowTest extends TestCase
     {
         Queue::fake();
 
-        $workflow = WorkflowStub::make(TestHistoryReplayedChildFailureWorkflow::class, 'query-child-failure-projection');
+        $workflow = WorkflowStub::make(
+            TestHistoryReplayedChildFailureWorkflow::class,
+            'query-child-failure-projection'
+        );
         $workflow->start('order-123');
 
         $this->drainReadyTasks();
@@ -1363,8 +1399,10 @@ final class V2QueryWorkflowTest extends TestCase
             'arguments' => Serializer::serialize([60]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(2),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(2),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $childRun = WorkflowRun::create([
@@ -1380,13 +1418,20 @@ final class V2QueryWorkflowTest extends TestCase
             ]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(2),
-            'closed_at' => now()->subSeconds(30),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinutes(2),
+            'closed_at' => now()
+                ->subSeconds(30),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
-        $parentInstance->update(['current_run_id' => $parentRun->id]);
-        $childInstance->update(['current_run_id' => $childRun->id]);
+        $parentInstance->update([
+            'current_run_id' => $parentRun->id,
+        ]);
+        $childInstance->update([
+            'current_run_id' => $childRun->id,
+        ]);
 
         $link = WorkflowLink::create([
             'link_type' => 'child_workflow',
@@ -1396,8 +1441,10 @@ final class V2QueryWorkflowTest extends TestCase
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'is_primary_parent' => true,
-            'created_at' => now()->subSeconds(45),
-            'updated_at' => now()->subSeconds(45),
+            'created_at' => now()
+                ->subSeconds(45),
+            'updated_at' => now()
+                ->subSeconds(45),
         ]);
 
         WorkflowHistoryEvent::create([
@@ -1414,9 +1461,12 @@ final class V2QueryWorkflowTest extends TestCase
                 'child_workflow_class' => TestHistoryReplayedChildWorkflow::class,
                 'child_run_number' => 1,
             ],
-            'recorded_at' => now()->subSeconds(45),
-            'created_at' => now()->subSeconds(45),
-            'updated_at' => now()->subSeconds(45),
+            'recorded_at' => now()
+                ->subSeconds(45),
+            'created_at' => now()
+                ->subSeconds(45),
+            'updated_at' => now()
+                ->subSeconds(45),
         ]);
 
         $state = (new QueryStateReplayer())->query($parentRun->fresh(), 'currentState');
@@ -1532,8 +1582,10 @@ final class V2QueryWorkflowTest extends TestCase
     public function testQueriesFollowTheLatestContinuedChildRunOnCurrentHandle(): void
     {
         Queue::fake();
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $workflow = WorkflowStub::make(
             TestParentWaitingOnContinuingChildWorkflow::class,
@@ -1583,8 +1635,10 @@ final class V2QueryWorkflowTest extends TestCase
             'arguments' => Serializer::serialize([999, 1000]),
             'connection' => $latestChildRun->connection,
             'queue' => $latestChildRun->queue,
-            'started_at' => now()->addMinute(),
-            'last_progress_at' => now()->addMinute(),
+            'started_at' => now()
+                ->addMinute(),
+            'last_progress_at' => now()
+                ->addMinute(),
         ]);
 
         WorkflowInstance::query()
@@ -1620,7 +1674,8 @@ final class V2QueryWorkflowTest extends TestCase
     public function testQueriesReplayParallelChildFailureAfterParentCommitsChildResolutionHistory(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelChildFailureWorkflow::class, 'query-parallel-child-failure');
@@ -1663,7 +1718,8 @@ final class V2QueryWorkflowTest extends TestCase
     public function testQueriesReplayParallelCancelledChildBeforeParentWorkflowTaskResumes(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(
@@ -1710,7 +1766,8 @@ final class V2QueryWorkflowTest extends TestCase
     public function testQueriesReplayParallelTerminatedChildBeforeParentWorkflowTaskResumes(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(
@@ -1835,7 +1892,8 @@ final class V2QueryWorkflowTest extends TestCase
         $this->expectExceptionMessage('recorded [ActivityScheduled]');
         $this->expectExceptionMessage('current workflow yielded parallel all barrier matching current topology');
 
-        $workflow->refresh()->currentState();
+        $workflow->refresh()
+            ->currentState();
     }
 
     public function testQueriesRejectParallelActivityHistoryWithoutGroupMetadata(): void
@@ -1856,7 +1914,8 @@ final class V2QueryWorkflowTest extends TestCase
         $this->removeActivityHistoryParallelMetadata($parentRunId, 1);
 
         try {
-            $workflow->refresh()->currentState();
+            $workflow->refresh()
+                ->currentState();
             $this->fail('Expected query replay to reject parallel activity history without group metadata.');
         } catch (HistoryEventShapeMismatchException $exception) {
             $this->assertSame(1, $exception->workflowSequence);
@@ -2039,7 +2098,9 @@ final class V2QueryWorkflowTest extends TestCase
             ->where('task_type', TaskType::Activity->value)
             ->where('status', TaskStatus::Ready->value)
             ->get()
-            ->sole(static fn (WorkflowTask $task): bool => ($task->payload['activity_execution_id'] ?? null) === $execution->id);
+            ->sole(
+                static fn (WorkflowTask $task): bool => ($task->payload['activity_execution_id'] ?? null) === $execution->id
+            );
 
         $this->app->call([new RunActivityTask($task->id), 'handle']);
     }
@@ -2097,7 +2158,9 @@ final class V2QueryWorkflowTest extends TestCase
                     $payload['parallel_group_path'],
                 );
 
-                $event->forceFill(['payload' => $payload])->save();
+                $event->forceFill([
+                    'payload' => $payload,
+                ])->save();
             });
     }
 }

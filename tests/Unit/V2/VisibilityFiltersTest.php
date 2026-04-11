@@ -22,6 +22,7 @@ final class VisibilityFiltersTest extends TestCase
             'connection' => 'redis',
             'wait_kind' => ' signal ',
             'liveness_state' => ' waiting_for_signal ',
+            'repair_blocked_reason' => ' unsupported_history ',
             'archived' => 'true',
             'is_terminal' => '0',
             'labels' => [
@@ -42,6 +43,7 @@ final class VisibilityFiltersTest extends TestCase
             'connection' => 'redis',
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
+            'repair_blocked_reason' => 'unsupported_history',
             'archived' => true,
             'is_terminal' => false,
             'labels' => [
@@ -95,7 +97,10 @@ final class VisibilityFiltersTest extends TestCase
             'class' => 'BillingWorkflow',
             'workflow_type' => 'billing.invoice-sync',
             'business_key' => 'order-123',
-            'visibility_labels' => ['tenant' => 'acme', 'region' => 'us-east'],
+            'visibility_labels' => [
+                'tenant' => 'acme',
+                'region' => 'us-east',
+            ],
             'compatibility' => 'build-a',
             'queue' => 'workflow',
             'connection' => 'redis',
@@ -103,6 +108,7 @@ final class VisibilityFiltersTest extends TestCase
             'status_bucket' => 'running',
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
+            'repair_blocked_reason' => 'unsupported_history',
         ]);
         WorkflowRunSummary::create([
             'id' => '01JVISFILTERMISS0000000001',
@@ -113,7 +119,10 @@ final class VisibilityFiltersTest extends TestCase
             'class' => 'BillingWorkflow',
             'workflow_type' => 'billing.invoice-sync',
             'business_key' => 'order-456',
-            'visibility_labels' => ['tenant' => 'beta', 'region' => 'us-east'],
+            'visibility_labels' => [
+                'tenant' => 'beta',
+                'region' => 'us-east',
+            ],
             'compatibility' => 'build-a',
             'queue' => 'workflow',
             'connection' => 'redis',
@@ -121,6 +130,7 @@ final class VisibilityFiltersTest extends TestCase
             'status_bucket' => 'running',
             'wait_kind' => 'timer',
             'liveness_state' => 'timer_scheduled',
+            'repair_blocked_reason' => 'repair_not_needed',
             'archived_at' => now(),
         ]);
 
@@ -131,10 +141,14 @@ final class VisibilityFiltersTest extends TestCase
             'business_key' => 'order-123',
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
+            'repair_blocked_reason' => 'unsupported_history',
             'archived' => false,
             'is_terminal' => false,
-            'labels' => ['tenant' => 'acme'],
-        ])->pluck('id')->all();
+            'labels' => [
+                'tenant' => 'acme',
+            ],
+        ])->pluck('id')
+            ->all();
 
         $this->assertSame(['01JVISFILTERMATCH000000001'], $ids);
     }
@@ -156,11 +170,13 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame('boolean', $definition['fields']['is_terminal']['type']);
         $this->assertSame('exact', $definition['fields']['wait_kind']['operator']);
         $this->assertSame('wait_kind', $definition['fields']['wait_kind']['query_parameter']);
+        $this->assertSame('Repair Blocked Reason', $definition['fields']['repair_blocked_reason']['label']);
+        $this->assertSame('string', $definition['fields']['repair_blocked_reason']['type']);
         $this->assertSame('Labels', $definition['labels']['label']);
         $this->assertSame('map<string,string>', $definition['labels']['type']);
         $this->assertSame('key_value_textarea', $definition['labels']['input']);
         $this->assertSame('exact', $definition['labels']['operator']);
         $this->assertSame(['label[key]', 'labels[key]'], $definition['labels']['query_parameters']);
-        $this->assertSame('tenant=acme'."\n".'region=us-east', $definition['labels']['placeholder']);
+        $this->assertSame('tenant=acme' . "\n" . 'region=us-east', $definition['labels']['placeholder']);
     }
 }

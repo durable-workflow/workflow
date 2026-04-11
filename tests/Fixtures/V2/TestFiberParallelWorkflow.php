@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Workflow\QueryMethod;
-use Workflow\V2\Attributes\Type;
 use function Workflow\V2\all;
+use Workflow\V2\Attributes\Type;
 use function Workflow\V2\parallel;
 use function Workflow\V2\startActivity;
 use function Workflow\V2\startChild;

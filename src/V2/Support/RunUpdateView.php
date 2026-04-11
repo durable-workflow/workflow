@@ -21,22 +21,17 @@ final class RunUpdateView
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $run->loadMissing([
-            'commands',
-            'historyEvents',
-            'updates.command',
-            'updates.failure',
-        ]);
+        $run->loadMissing(['commands', 'historyEvents', 'updates.command', 'updates.failure']);
 
         $rows = [];
         $updateEvents = $run->historyEvents
             ->filter(
                 static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
-                        HistoryEventType::UpdateAccepted,
-                        HistoryEventType::UpdateRejected,
-                        HistoryEventType::UpdateApplied,
-                        HistoryEventType::UpdateCompleted,
-                    ], true)
+                    HistoryEventType::UpdateAccepted,
+                    HistoryEventType::UpdateRejected,
+                    HistoryEventType::UpdateApplied,
+                    HistoryEventType::UpdateCompleted,
+                ], true)
             )
             ->sortBy('sequence')
             ->values();
@@ -44,8 +39,16 @@ final class RunUpdateView
             ->filter(static fn (WorkflowHistoryEvent $event): bool => self::commandIdForEvent($event) !== null)
             ->groupBy(static fn (WorkflowHistoryEvent $event): string => self::commandIdForEvent($event) ?? '');
         $eventsByUpdateId = $updateEvents
-            ->filter(static fn (WorkflowHistoryEvent $event): bool => self::stringValue($event->payload['update_id'] ?? null) !== null)
-            ->groupBy(static fn (WorkflowHistoryEvent $event): string => self::stringValue($event->payload['update_id'] ?? null) ?? '');
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => self::stringValue(
+                    $event->payload['update_id'] ?? null
+                ) !== null
+            )
+            ->groupBy(
+                static fn (WorkflowHistoryEvent $event): string => self::stringValue(
+                    $event->payload['update_id'] ?? null
+                ) ?? ''
+            );
         $failureSnapshots = FailureSnapshots::keyedForRun($run);
         $updatesByCommandId = $run->updates
             ->filter(static fn (WorkflowUpdate $update): bool => $update->workflow_command_id !== null)
@@ -61,7 +64,9 @@ final class RunUpdateView
                 $update,
                 self::mergeEvents(
                     $eventsByUpdateId->get($update->id),
-                    $update->workflow_command_id === null ? null : $eventsByCommandId->get($update->workflow_command_id),
+                    $update->workflow_command_id === null ? null : $eventsByCommandId->get(
+                        $update->workflow_command_id
+                    ),
                 ),
                 $failureSnapshots,
             );
@@ -97,10 +102,7 @@ final class RunUpdateView
                 continue;
             }
 
-            $rows[] = self::rowFromHistoryFallback(
-                self::mergeEvents($events),
-                $failureSnapshots,
-            );
+            $rows[] = self::rowFromHistoryFallback(self::mergeEvents($events), $failureSnapshots);
             $seenUpdateIds[$updateId] = true;
         }
 
@@ -130,11 +132,7 @@ final class RunUpdateView
      * @param array<string, array<string, mixed>> $failureSnapshots
      * @return array<string, mixed>
      */
-    private static function rowFromUpdate(
-        WorkflowUpdate $update,
-        array $events,
-        array $failureSnapshots,
-    ): array
+    private static function rowFromUpdate(WorkflowUpdate $update, array $events, array $failureSnapshots): array
     {
         $command = $update->command;
         $failure = $update->failure;
@@ -200,8 +198,7 @@ final class RunUpdateView
         WorkflowCommand $command,
         iterable|null $events,
         array $failureSnapshots,
-    ): array
-    {
+    ): array {
         $eventList = self::mergeEvents($events);
 
         $accepted = self::findEvent($eventList, HistoryEventType::UpdateAccepted);
@@ -224,7 +221,9 @@ final class RunUpdateView
             'resolved_run_id' => $command->resolvedRunId(),
             'status' => $completed instanceof WorkflowHistoryEvent
                 ? ($failureId === null ? UpdateStatus::Completed->value : UpdateStatus::Failed->value)
-                : ($rejected instanceof WorkflowHistoryEvent ? UpdateStatus::Rejected->value : self::fallbackStatus($command)),
+                : ($rejected instanceof WorkflowHistoryEvent ? UpdateStatus::Rejected->value : self::fallbackStatus(
+                    $command
+                )),
             'outcome' => $completed instanceof WorkflowHistoryEvent
                 ? ($failureId === null ? CommandOutcome::UpdateCompleted->value : CommandOutcome::UpdateFailed->value)
                 : $command->outcome?->value,
@@ -247,7 +246,9 @@ final class RunUpdateView
             'accepted_at' => self::timestamp($command->accepted_at),
             'applied_at' => self::timestamp($command->applied_at),
             'rejected_at' => self::timestamp($command->rejected_at),
-            'closed_at' => self::timestamp($rejected?->recorded_at ?? $completed?->recorded_at ?? $command->rejected_at ?? $command->applied_at),
+            'closed_at' => self::timestamp(
+                $rejected?->recorded_at ?? $completed?->recorded_at ?? $command->rejected_at ?? $command->applied_at
+            ),
         ];
     }
 
@@ -256,10 +257,8 @@ final class RunUpdateView
      * @param array<string, array<string, mixed>> $failureSnapshots
      * @return array<string, mixed>
      */
-    private static function rowFromHistoryFallback(
-        array $events,
-        array $failureSnapshots,
-    ): array {
+    private static function rowFromHistoryFallback(array $events, array $failureSnapshots): array
+    {
         $accepted = self::findEvent($events, HistoryEventType::UpdateAccepted);
         $rejected = self::findEvent($events, HistoryEventType::UpdateRejected);
         $applied = self::findEvent($events, HistoryEventType::UpdateApplied);
@@ -285,7 +284,9 @@ final class RunUpdateView
                 : ($rejected instanceof WorkflowHistoryEvent ? UpdateStatus::Rejected->value : UpdateStatus::Accepted->value),
             'outcome' => $completed instanceof WorkflowHistoryEvent
                 ? ($failureId === null ? CommandOutcome::UpdateCompleted->value : CommandOutcome::UpdateFailed->value)
-                : ($rejected instanceof WorkflowHistoryEvent ? self::stringValue($commandSnapshot['outcome'] ?? null) : null),
+                : ($rejected instanceof WorkflowHistoryEvent ? self::stringValue(
+                    $commandSnapshot['outcome'] ?? null
+                ) : null),
             'source' => self::stringValue($commandSnapshot['source'] ?? null),
             'rejection_reason' => self::stringValue($rejected?->payload['rejection_reason'] ?? null),
             'validation_errors' => self::validationErrors($rejected),
@@ -540,10 +541,8 @@ final class RunUpdateView
         return $update?->result;
     }
 
-    private static function argumentsPayload(
-        WorkflowUpdate $update,
-        ?WorkflowHistoryEvent ...$events,
-    ): mixed {
+    private static function argumentsPayload(WorkflowUpdate $update, ?WorkflowHistoryEvent ...$events): mixed
+    {
         foreach ($events as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
                 continue;

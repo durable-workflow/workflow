@@ -12,7 +12,10 @@ use function Workflow\V2\continueAsNew;
 use Workflow\V2\Workflow;
 
 #[Signal('name-provided', [
-    ['name' => 'name', 'type' => 'string'],
+    [
+        'name' => 'name',
+        'type' => 'string',
+    ],
 ])]
 final class TestConfiguredContinueSignalWorkflow extends Workflow
 {
@@ -44,6 +47,8 @@ final class TestConfiguredContinueSignalWorkflow extends Workflow
     #[UpdateMethod('mark-approved')]
     public function approve(bool $approved): array
     {
-        return ['approved' => $approved];
+        return [
+            'approved' => $approved,
+        ];
     }
 }

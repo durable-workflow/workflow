@@ -11,8 +11,9 @@ final class UnsupportedBackendCapabilitiesException extends RuntimeException
     /**
      * @param array<string, mixed> $snapshot
      */
-    public function __construct(private readonly array $snapshot)
-    {
+    public function __construct(
+        private readonly array $snapshot
+    ) {
         parent::__construct(self::message($snapshot));
     }
 

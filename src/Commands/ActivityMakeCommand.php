@@ -93,11 +93,7 @@ class ActivityMakeCommand extends GeneratorCommand
 
         return str_replace(
             ['{{ namespace }}', '{{ class }}', '{{ type_key }}'],
-            [
-                $this->getNamespace($name),
-                class_basename($name),
-                var_export($this->typeKey($name), true),
-            ],
+            [$this->getNamespace($name), class_basename($name), var_export($this->typeKey($name), true)],
             $stub,
         );
     }

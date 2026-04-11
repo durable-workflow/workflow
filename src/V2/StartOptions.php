@@ -96,7 +96,10 @@ final class StartOptions
             }
 
             if (! is_scalar($value) && $value !== null) {
-                throw new LogicException(sprintf('Workflow v2 visibility label [%s] must be a scalar value or null.', $key));
+                throw new LogicException(sprintf(
+                    'Workflow v2 visibility label [%s] must be a scalar value or null.',
+                    $key
+                ));
             }
 
             if ($value === null) {
@@ -106,7 +109,10 @@ final class StartOptions
             $stringValue = trim((string) $value);
 
             if ($stringValue === '' || strlen($stringValue) > 191) {
-                throw new LogicException(sprintf('Workflow v2 visibility label [%s] must be a non-empty string up to 191 characters.', $key));
+                throw new LogicException(sprintf(
+                    'Workflow v2 visibility label [%s] must be a non-empty string up to 191 characters.',
+                    $key
+                ));
             }
 
             $normalized[$key] = $stringValue;

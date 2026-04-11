@@ -29,11 +29,7 @@ return new class() extends Migration {
         }
 
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
-            $table->dropColumn([
-                'open_wait_id',
-                'resume_source_kind',
-                'resume_source_id',
-            ]);
+            $table->dropColumn(['open_wait_id', 'resume_source_kind', 'resume_source_id']);
         });
     }
 };

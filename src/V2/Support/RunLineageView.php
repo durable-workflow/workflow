@@ -474,7 +474,8 @@ final class RunLineageView
 
     private static function statusBucket(?RunStatus $status): ?string
     {
-        return $status?->statusBucket()->value;
+        return $status?->statusBucket()
+->value;
     }
 
     private static function statusBucketFromValue(?string $status): ?string

@@ -141,8 +141,10 @@ final class Webhooks
                 : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
-                $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
-                $result->outcome() === CommandOutcome::RejectedInvalidArguments->value => 422,
+                $result->outcome() === CommandOutcome::RejectedUnknownUpdate
+->value => 404,
+                $result->outcome() === CommandOutcome::RejectedInvalidArguments
+->value => 422,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
                 $result instanceof UpdateResult && $result->updateStatus() === 'accepted' => 202,
@@ -168,8 +170,10 @@ final class Webhooks
                 : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
 
             return self::commandResponse($result, match (true) {
-                $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
-                $result->outcome() === CommandOutcome::RejectedInvalidArguments->value => 422,
+                $result->outcome() === CommandOutcome::RejectedUnknownUpdate
+->value => 404,
+                $result->outcome() === CommandOutcome::RejectedInvalidArguments
+->value => 422,
                 $result->rejected() => 409,
                 $result instanceof UpdateResult && $result->failed() => 422,
                 $result instanceof UpdateResult && $result->updateStatus() === 'accepted' => 202,
@@ -566,10 +570,7 @@ final class Webhooks
 
     private static function commandContext(Request $request): CommandContext
     {
-        return CommandContext::webhook(
-            $request,
-            (string) config('workflows.webhook_auth.method', 'none'),
-        );
+        return CommandContext::webhook($request, (string) config('workflows.webhook_auth.method', 'none'));
     }
 
     private static function selectionStub(string $workflowId, ?string $runId = null): WorkflowStub

@@ -171,19 +171,12 @@ final class V2WorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertStringContainsString(TestGeneratorWorkflow::class, $failure->message);
-        $this->assertStringContainsString(
-            'must use straight-line helpers and must not yield',
-            $failure->message,
-        );
+        $this->assertStringContainsString('must use straight-line helpers and must not yield', $failure->message);
         $this->assertDatabaseMissing('workflow_history_events', [
             'workflow_run_id' => $workflow->runId(),
             'event_type' => HistoryEventType::ActivityScheduled->value,
         ]);
-        $this->assertSame([
-            'StartAccepted',
-            'WorkflowStarted',
-            'WorkflowFailed',
-        ], WorkflowHistoryEvent::query()
+        $this->assertSame(['StartAccepted', 'WorkflowStarted', 'WorkflowFailed'], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->orderBy('sequence')
             ->pluck('event_type')
@@ -570,7 +563,10 @@ final class V2WorkflowTest extends TestCase
         $export = $workflow->historyExport();
 
         $this->assertSame($expectedProgress, $export['activities'][0]['last_heartbeat_progress'] ?? null);
-        $this->assertSame($expectedProgress, $export['activities'][0]['attempts'][0]['last_heartbeat_progress'] ?? null);
+        $this->assertSame(
+            $expectedProgress,
+            $export['activities'][0]['attempts'][0]['last_heartbeat_progress'] ?? null
+        );
 
         $this->assertSame([
             'StartAccepted',
@@ -841,7 +837,9 @@ final class V2WorkflowTest extends TestCase
             $export['activities'][0]['attempts'][0]['status']
         );
         $this->assertSame(
-            $run->activityExecutions()->firstOrFail()->id,
+            $run->activityExecutions()
+                ->firstOrFail()
+->id,
             $export['activities'][0]['attempts'][0]['activity_execution_id']
         );
         $this->assertNull($export['activities'][0]['closed_at']);
@@ -2548,8 +2546,8 @@ final class V2WorkflowTest extends TestCase
             0,
             2,
             StartOptions::withVisibility(businessKey: 'order-continue', labels: [
-                    'tenant' => 'acme',
-                ],),
+                'tenant' => 'acme',
+            ],),
         );
         $firstRunId = $started->runId();
 
@@ -3274,7 +3272,8 @@ final class V2WorkflowTest extends TestCase
     public function testParallelChildAllResumesParentImmediatelyOnFirstChildFailure(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelChildFailureWorkflow::class, 'parallel-child-failure');
@@ -3325,7 +3324,8 @@ final class V2WorkflowTest extends TestCase
     public function testParallelChildAllResumesParentImmediatelyOnCancelledChildAndIgnoresLateSiblingClosure(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(
@@ -3398,7 +3398,8 @@ final class V2WorkflowTest extends TestCase
     public function testParallelChildAllResumesParentImmediatelyOnTerminatedChild(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(
@@ -4745,7 +4746,8 @@ final class V2WorkflowTest extends TestCase
     public function testSignalCommandRejectsNamedArgumentsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-unavailable');
@@ -4805,7 +4807,8 @@ final class V2WorkflowTest extends TestCase
     public function testSignalCommandStillAcceptsPositionalArgumentsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-unavailable-positional');
@@ -7472,8 +7475,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestParentWaitingOnChildWorkflow::class,
             'workflow_type' => 'workflow.parent',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         $childInstance = WorkflowInstance::query()->create([
@@ -7481,8 +7486,10 @@ final class V2WorkflowTest extends TestCase
             'workflow_class' => TestTimerWorkflow::class,
             'workflow_type' => 'workflow.child',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $parentRun */
@@ -7495,8 +7502,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([60]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         /** @var WorkflowRun $childRun */
@@ -7509,8 +7518,10 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize([30]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subSeconds(50),
-            'last_progress_at' => now()->subSeconds(20),
+            'started_at' => now()
+                ->subSeconds(50),
+            'last_progress_at' => now()
+                ->subSeconds(20),
         ]);
 
         $parentInstance->forceFill([
@@ -7529,8 +7540,10 @@ final class V2WorkflowTest extends TestCase
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'is_primary_parent' => true,
-            'created_at' => now()->subSeconds(45),
-            'updated_at' => now()->subSeconds(45),
+            'created_at' => now()
+                ->subSeconds(45),
+            'updated_at' => now()
+                ->subSeconds(45),
         ]);
 
         $summary = RunSummaryProjector::project(

@@ -18,8 +18,7 @@ final class BackendCapabilities
         ?string $databaseConnection = null,
         ?string $queueConnection = null,
         ?string $cacheStore = null,
-    ): array
-    {
+    ): array {
         $now ??= now();
 
         $database = self::database($databaseConnection);
@@ -140,7 +139,9 @@ final class BackendCapabilities
      */
     private static function cache(?string $configuredStore = null): array
     {
-        $store = self::normalize($configuredStore) ?? self::normalize(config('cache.default') ?? config('cache.driver'));
+        $store = self::normalize($configuredStore) ?? self::normalize(
+            config('cache.default') ?? config('cache.driver')
+        );
         $driver = $store === null
             ? null
             : self::normalize(config(sprintf('cache.stores.%s.driver', $store)));

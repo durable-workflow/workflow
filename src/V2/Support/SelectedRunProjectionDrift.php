@@ -134,11 +134,7 @@ final class SelectedRunProjectionDrift
     public static function timerMetrics(array $runIds = [], ?string $instanceId = null): array
     {
         $analysis = self::analyze(
-            self::runQuery([
-                'timerEntries',
-                'timers',
-                'historyEvents',
-            ], $runIds, $instanceId),
+            self::runQuery(['timerEntries', 'timers', 'historyEvents'], $runIds, $instanceId),
             static fn (WorkflowRun $run): array => SelectedRunSnapshot::timerDriftStatus($run),
         );
 
@@ -158,11 +154,7 @@ final class SelectedRunProjectionDrift
     {
         return self::runIdsNeedingRebuild(
             self::analyze(
-                self::runQuery([
-                    'timerEntries',
-                    'timers',
-                    'historyEvents',
-                ], $runIds, $instanceId),
+                self::runQuery(['timerEntries', 'timers', 'historyEvents'], $runIds, $instanceId),
                 static fn (WorkflowRun $run): array => SelectedRunSnapshot::timerDriftStatus($run),
             ),
         );
@@ -300,10 +292,7 @@ final class SelectedRunProjectionDrift
      */
     private static function runIdsNeedingRebuild(array $analysis): array
     {
-        return array_values(array_unique(array_merge(
-            $analysis['missing_run_ids'],
-            $analysis['stale_run_ids'],
-        )));
+        return array_values(array_unique(array_merge($analysis['missing_run_ids'], $analysis['stale_run_ids'])));
     }
 
     /**

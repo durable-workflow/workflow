@@ -10,8 +10,8 @@ use Tests\Fixtures\V2\TestVersionBeforeSignalWorkflow;
 use Tests\Fixtures\V2\TestVersionMinSupportedWorkflow;
 use Tests\Fixtures\V2\TestVersionWorkflow;
 use Tests\TestCase;
-use Workflow\Serializers\Serializer;
 use Workflow\Exceptions\VersionNotSupportedException;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -25,8 +25,8 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\WorkflowStub;
 
 final class V2VersionWorkflowTest extends TestCase
@@ -54,7 +54,10 @@ final class V2VersionWorkflowTest extends TestCase
             ->firstOrFail();
 
         $detail = RunDetailView::forRun($run);
-        $versionMarker = collect($detail['timeline'])->firstWhere('type', HistoryEventType::VersionMarkerRecorded->value);
+        $versionMarker = collect($detail['timeline'])->firstWhere(
+            'type',
+            HistoryEventType::VersionMarkerRecorded->value
+        );
 
         $this->assertSame(
             WorkflowDefinition::fingerprint(TestVersionWorkflow::class),
@@ -212,13 +215,17 @@ final class V2VersionWorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame(\LogicException::class, $failure->exception_class);
-        $this->assertStringContainsString('expected change ID [step-1] but history recorded [wrong-step]', $failure->message);
+        $this->assertStringContainsString(
+            'expected change ID [step-1] but history recorded [wrong-step]',
+            $failure->message
+        );
     }
 
     public function testVersionMarkersRecordAfterEarlierSignalsOnCurrentCompatibility(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-b');
-        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-b']);
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestVersionAfterSignalWorkflow::class, 'version-after-signal-current');
@@ -260,7 +267,8 @@ final class V2VersionWorkflowTest extends TestCase
     public function testSameCompatibilityUsesRecordedDefinitionFingerprintToKeepOlderRunOnDefaultVersion(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-b');
-        config()->set('workflows.v2.compatibility.supported', ['build-b']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-b']);
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestVersionBeforeSignalWorkflow::class, 'version-after-signal-fingerprint');
@@ -321,7 +329,8 @@ final class V2VersionWorkflowTest extends TestCase
     public function testOlderCompatibilityFallsBackToDefaultVersionWithoutRecordingMarkerAfterEarlierSignal(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-b');
-        config()->set('workflows.v2.compatibility.supported', ['build-a', 'build-b']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a', 'build-b']);
         Queue::fake();
 
         $run = $this->createLegacyReadyRun(
@@ -379,7 +388,8 @@ final class V2VersionWorkflowTest extends TestCase
     public function testOlderCompatibilityUsesDefaultVersionOnFirstWorkflowTaskWithoutRecordingMarker(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-b');
-        config()->set('workflows.v2.compatibility.supported', ['build-a', 'build-b']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a', 'build-b']);
         Queue::fake();
 
         $run = $this->createLegacyReadyRun(
@@ -420,7 +430,8 @@ final class V2VersionWorkflowTest extends TestCase
             'id' => $instanceId,
             'workflow_class' => $workflowClass,
             'workflow_type' => $workflowType,
-            'reserved_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
             'run_count' => 1,
         ]);
 
@@ -435,8 +446,10 @@ final class V2VersionWorkflowTest extends TestCase
             'payload_codec' => config('workflows.serializer'),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
             'last_history_sequence' => 0,
         ]);
 
@@ -465,7 +478,8 @@ final class V2VersionWorkflowTest extends TestCase
                 'sequence' => $sequence++,
                 'event_type' => $event['event_type'],
                 'payload' => $event['payload'] ?? [],
-                'recorded_at' => now()->subSeconds(max(0, 61 - $sequence)),
+                'recorded_at' => now()
+                    ->subSeconds(max(0, 61 - $sequence)),
             ]);
         }
 
@@ -477,7 +491,8 @@ final class V2VersionWorkflowTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subMinute(),
+            'available_at' => now()
+                ->subMinute(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',

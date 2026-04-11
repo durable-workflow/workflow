@@ -6,8 +6,8 @@ namespace Tests\Fixtures\V2;
 
 use Throwable;
 use Workflow\QueryMethod;
-use Workflow\V2\Attributes\Type;
 use function Workflow\V2\all;
+use Workflow\V2\Attributes\Type;
 use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 

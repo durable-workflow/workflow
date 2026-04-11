@@ -296,10 +296,7 @@ final class RunCommandContract
             ? self::normalizeCommandContracts($event->payload['declared_query_contracts'] ?? null)
             : [];
         $signals = self::normalizeList($event->payload['declared_signals'] ?? null);
-        $hasSignalContracts = array_key_exists(
-            'declared_signal_contracts',
-            $event->payload
-        );
+        $hasSignalContracts = array_key_exists('declared_signal_contracts', $event->payload);
         $signalContracts = $hasSignalContracts
             ? self::normalizeCommandContracts($event->payload['declared_signal_contracts'] ?? null)
             : [];

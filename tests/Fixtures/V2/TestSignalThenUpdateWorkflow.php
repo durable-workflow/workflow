@@ -13,7 +13,10 @@ use Workflow\V2\Workflow;
 
 #[Type('test-signal-then-update-workflow')]
 #[Signal('advance', [
-    ['name' => 'name', 'type' => 'string'],
+    [
+        'name' => 'name',
+        'type' => 'string',
+    ],
 ])]
 #[Signal('finish')]
 final class TestSignalThenUpdateWorkflow extends Workflow

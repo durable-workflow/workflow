@@ -31,9 +31,9 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Webhooks;
 use Workflow\V2\WorkflowStub;
-use Workflow\V2\Support\WorkflowInstanceId;
 
 final class V2WebhookWorkflowTest extends TestCase
 {
@@ -178,9 +178,15 @@ final class V2WebhookWorkflowTest extends TestCase
         $instance = WorkflowInstance::query()->findOrFail('order-visible');
 
         $this->assertSame('order-123', $instance->business_key);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $instance->visibility_labels);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $instance->visibility_labels);
         $this->assertSame('order-123', $run->business_key);
-        $this->assertSame(['region' => 'us-east', 'tenant' => 'acme'], $run->visibility_labels);
+        $this->assertSame([
+            'region' => 'us-east',
+            'tenant' => 'acme',
+        ], $run->visibility_labels);
     }
 
     public function testWebhookCommandsPersistDurableIngressMetadata(): void
@@ -632,7 +638,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testSignalWebhookRejectsNamedArgumentsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-signal-contract-unavailable');
@@ -864,7 +871,9 @@ final class V2WebhookWorkflowTest extends TestCase
 
         $this->runReadyWorkflowTask($workflow->runId());
 
-        $this->getJson('/webhooks/instances/order-update-webhook-inspect/runs/' . $workflow->runId() . '/updates/' . $updateId)
+        $this->getJson(
+            '/webhooks/instances/order-update-webhook-inspect/runs/' . $workflow->runId() . '/updates/' . $updateId
+        )
             ->assertStatus(200)
             ->assertJsonPath('outcome', 'update_completed')
             ->assertJsonPath('update_id', $updateId)
@@ -1047,7 +1056,8 @@ final class V2WebhookWorkflowTest extends TestCase
             'workflow_class' => TestUpdateWorkflow::class,
             'workflow_type' => 'test-update-workflow',
             'run_count' => 2,
-            'started_at' => now()->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $historicalRun */
@@ -1061,9 +1071,12 @@ final class V2WebhookWorkflowTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(5),
-            'closed_at' => now()->subMinutes(4),
-            'last_progress_at' => now()->subMinutes(4),
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => now()
+                ->subMinutes(4),
+            'last_progress_at' => now()
+                ->subMinutes(4),
         ]);
 
         /** @var WorkflowRun $currentRun */
@@ -1076,8 +1089,10 @@ final class V2WebhookWorkflowTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -1285,7 +1300,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testUpdateWebhookRejectsNamedArgumentsWhenLegacyContractNeedsBackfillAndDefinitionIsUnavailable(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-web-contract-unavailable');

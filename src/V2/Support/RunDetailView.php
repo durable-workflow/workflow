@@ -454,27 +454,7 @@ final class RunDetailView
         ?string $livenessState,
         bool $hasReplayBlockedTask,
     ): ?string {
-        $blockedReason = self::actionBlockedReason($run, $isCurrentRun);
-
-        if ($blockedReason !== null) {
-            return $blockedReason;
-        }
-
-        if ($livenessState === 'repair_needed') {
-            return null;
-        }
-
-        if ($livenessState === 'workflow_replay_blocked') {
-            return $hasReplayBlockedTask
-                ? null
-                : 'unsupported_history';
-        }
-
-        if (is_string($livenessState) && str_contains($livenessState, 'waiting_for_compatible_worker')) {
-            return 'waiting_for_compatible_worker';
-        }
-
-        return 'repair_not_needed';
+        return RepairBlockedReason::forRun($run, $isCurrentRun, $livenessState, $hasReplayBlockedTask);
     }
 
     private static function archiveBlockedReason(WorkflowRun $run): ?string

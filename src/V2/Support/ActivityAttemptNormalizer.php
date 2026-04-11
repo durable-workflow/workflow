@@ -57,7 +57,8 @@ final class ActivityAttemptNormalizer
         }
 
         if ($executionChanges !== []) {
-            $execution->forceFill($executionChanges)->save();
+            $execution->forceFill($executionChanges)
+                ->save();
         }
 
         $execution->forceFill([
@@ -151,10 +152,8 @@ final class ActivityAttemptNormalizer
             : ($execution->closed_at ?? $execution->updated_at ?? $execution->started_at ?? $execution->created_at ?? now());
     }
 
-    private static function statusFor(
-        ActivityExecution $execution,
-        ?WorkflowTask $task,
-    ): ActivityAttemptStatus {
+    private static function statusFor(ActivityExecution $execution, ?WorkflowTask $task): ActivityAttemptStatus
+    {
         return match ($execution->status) {
             ActivityStatus::Running => ActivityAttemptStatus::Running,
             ActivityStatus::Completed => ActivityAttemptStatus::Completed,

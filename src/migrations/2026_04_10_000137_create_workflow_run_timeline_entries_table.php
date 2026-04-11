@@ -61,7 +61,10 @@ return new class() extends Migration {
 
             $table->unique(['workflow_run_id', 'history_event_id'], 'workflow_run_timeline_run_event_unique');
             $table->index(['workflow_run_id', 'sequence'], 'workflow_run_timeline_run_sequence_index');
-            $table->index(['workflow_instance_id', 'kind', 'recorded_at'], 'workflow_run_timeline_instance_kind_recorded_index');
+            $table->index(
+                ['workflow_instance_id', 'kind', 'recorded_at'],
+                'workflow_run_timeline_instance_kind_recorded_index'
+            );
         });
     }
 

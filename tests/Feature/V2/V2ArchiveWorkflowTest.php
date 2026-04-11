@@ -22,7 +22,9 @@ final class V2ArchiveWorkflowTest extends TestCase
     public function testArchiveMarksClosedRunAndRecordsAuditedHistory(): void
     {
         $run = $this->createRun('archive-terminal-run', '01JARCHIVEFLOWRUN00000001', 'completed');
-        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']));
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
 
         $result = WorkflowStub::loadRun($run->id)->attemptArchive('retention export complete');
 
@@ -89,7 +91,9 @@ final class V2ArchiveWorkflowTest extends TestCase
     public function testArchiveRejectsOpenRun(): void
     {
         $run = $this->createRun('archive-open-run', '01JARCHIVEFLOWRUN00000002', 'waiting');
-        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']));
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
 
         $result = WorkflowStub::loadRun($run->id)->attemptArchive('too early');
 
@@ -117,7 +121,8 @@ final class V2ArchiveWorkflowTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'run_count' => 2,
-            'started_at' => now()->subMinutes(10),
+            'started_at' => now()
+                ->subMinutes(10),
         ]);
 
         /** @var WorkflowRun $historicalRun */
@@ -130,9 +135,12 @@ final class V2ArchiveWorkflowTest extends TestCase
             'status' => 'completed',
             'closed_reason' => 'completed',
             'arguments' => Serializer::serialize([]),
-            'started_at' => now()->subMinutes(10),
-            'closed_at' => now()->subMinutes(9),
-            'last_progress_at' => now()->subMinutes(9),
+            'started_at' => now()
+                ->subMinutes(10),
+            'closed_at' => now()
+                ->subMinutes(9),
+            'last_progress_at' => now()
+                ->subMinutes(9),
         ]);
 
         /** @var WorkflowRun $currentRun */
@@ -144,16 +152,22 @@ final class V2ArchiveWorkflowTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => 'waiting',
             'arguments' => Serializer::serialize([]),
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
             'current_run_id' => $currentRun->id,
         ])->save();
 
-        RunSummaryProjector::project($historicalRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']));
-        RunSummaryProjector::project($currentRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']));
+        RunSummaryProjector::project(
+            $historicalRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+        RunSummaryProjector::project(
+            $currentRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
 
         $result = WorkflowStub::loadSelection($instance->id, $historicalRun->id)->attemptArchive();
 
@@ -185,7 +199,8 @@ final class V2ArchiveWorkflowTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'run_count' => 1,
-            'started_at' => now()->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $run */
@@ -198,9 +213,13 @@ final class V2ArchiveWorkflowTest extends TestCase
             'status' => $status,
             'closed_reason' => $isClosed ? $status : null,
             'arguments' => Serializer::serialize([]),
-            'started_at' => now()->subMinutes(5),
-            'closed_at' => $isClosed ? now()->subMinute() : null,
-            'last_progress_at' => $isClosed ? now()->subMinute() : now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => $isClosed ? now()
+                ->subMinute() : null,
+            'last_progress_at' => $isClosed ? now()
+                ->subMinute() : now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([

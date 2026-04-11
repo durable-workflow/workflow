@@ -61,10 +61,7 @@ final class WorkflowExecutor
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         $workflow = new $workflowClass($run);
         $entryMethod = EntryMethod::forWorkflow($workflow);
-        $arguments = $workflow->resolveMethodDependencies(
-            $run->workflowArguments(),
-            $entryMethod,
-        );
+        $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
 
         try {
             $workflowExecution = WorkflowExecution::start($workflow, $arguments);
@@ -118,7 +115,9 @@ final class WorkflowExecutor
                         } else {
                             $failureId = $activityCompletion->payload['failure_id'] ?? null;
 
-                            $current = $workflowExecution->throw($this->activityException($activityCompletion, null, $run));
+                            $current = $workflowExecution->throw(
+                                $this->activityException($activityCompletion, null, $run)
+                            );
 
                             $this->recordFailureHandled(
                                 $run,
@@ -152,7 +151,12 @@ final class WorkflowExecutor
                 }
 
                 if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
-                    if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::ACTIVITY)) {
+                    if (! $this->ensureTypedStepHistoryRecorded(
+                        $run,
+                        $task,
+                        $sequence,
+                        WorkflowStepHistory::ACTIVITY
+                    )) {
                         return null;
                     }
 
@@ -626,7 +630,12 @@ final class WorkflowExecutor
                 $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
 
                 if (in_array($childStatus, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
-                    if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
+                    if (! $this->ensureTypedStepHistoryRecorded(
+                        $run,
+                        $task,
+                        $sequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW
+                    )) {
                         return null;
                     }
 
@@ -634,7 +643,12 @@ final class WorkflowExecutor
                     return $this->waitForNextResumeSource($run, $task);
                 }
 
-                if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
+                if (! $this->ensureTypedStepHistoryRecorded(
+                    $run,
+                    $task,
+                    $sequence,
+                    WorkflowStepHistory::CHILD_WORKFLOW
+                )) {
                     return null;
                 }
 
@@ -643,10 +657,14 @@ final class WorkflowExecutor
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                        $current = $workflowExecution->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
+                        $current = $workflowExecution->send(
+                            ChildRunHistory::outputForResolution($resolutionEvent, $childRun)
+                        );
                     } else {
                         $failureId = $resolutionEvent->payload['failure_id'] ?? null;
-                        $current = $workflowExecution->throw(ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun));
+                        $current = $workflowExecution->throw(
+                            ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun)
+                        );
 
                         $this->recordFailureHandled(
                             $run,
@@ -997,7 +1015,12 @@ final class WorkflowExecutor
             }
 
             if ($current instanceof ContinueAsNewCall) {
-                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CONTINUE_AS_NEW)) {
+                if (! $this->ensureStepHistoryCompatible(
+                    $run,
+                    $task,
+                    $sequence,
+                    WorkflowStepHistory::CONTINUE_AS_NEW
+                )) {
                     return null;
                 }
 
@@ -1311,7 +1334,14 @@ final class WorkflowExecutor
         bool $parkRun = true,
     ): ?WorkflowTask {
         try {
-            return $this->scheduleChildWorkflow($run, $task, $sequence, $childWorkflowCall, $parallelMetadata, $parkRun);
+            return $this->scheduleChildWorkflow(
+                $run,
+                $task,
+                $sequence,
+                $childWorkflowCall,
+                $parallelMetadata,
+                $parkRun
+            );
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -2286,7 +2316,9 @@ final class WorkflowExecutor
             'source_id' => $failure?->source_id
                 ?? (is_string($failurePayload['source_id'] ?? null) ? $failurePayload['source_id'] : null),
             'propagation_kind' => $failure?->propagation_kind
-                ?? (is_string($failurePayload['propagation_kind'] ?? null) ? $failurePayload['propagation_kind'] : null),
+                ?? (is_string(
+                    $failurePayload['propagation_kind'] ?? null
+                ) ? $failurePayload['propagation_kind'] : null),
             'exception_class' => $failure?->exception_class
                 ?? (is_string($failurePayload['exception_class'] ?? null) ? $failurePayload['exception_class'] : null),
             'exception_type' => $exceptionType,
@@ -2764,7 +2796,9 @@ final class WorkflowExecutor
                 ];
         }
 
-        if (is_array($payload) && ! is_string($payload['type'] ?? null) && is_string($event?->payload['exception_type'] ?? null)) {
+        if (is_array($payload) && ! is_string($payload['type'] ?? null) && is_string(
+            $event?->payload['exception_type'] ?? null
+        )) {
             $payload['type'] = $event->payload['exception_type'];
         }
 
@@ -3178,17 +3212,11 @@ final class WorkflowExecutor
         mixed $current,
         int $sequence,
     ): void {
-        $this->syncWorkflowCursor(
-            $workflow,
-            $this->visibleSequenceForCurrent($run, $current, $sequence),
-        );
+        $this->syncWorkflowCursor($workflow, $this->visibleSequenceForCurrent($run, $current, $sequence));
     }
 
-    private function visibleSequenceForCurrent(
-        WorkflowRun $run,
-        mixed $current,
-        int $sequence,
-    ): int {
+    private function visibleSequenceForCurrent(WorkflowRun $run, mixed $current, int $sequence): int
+    {
         return match (true) {
             $current instanceof ActivityCall => (
                 $this->activityHistoryEvent($run, $sequence) !== null

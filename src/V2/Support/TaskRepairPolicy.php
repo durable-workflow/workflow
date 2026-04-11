@@ -40,10 +40,7 @@ final class TaskRepairPolicy
 
     public static function scanLimit(): int
     {
-        return self::configuredPositiveInt(
-            'workflows.v2.task_repair.scan_limit',
-            self::SCAN_LIMIT,
-        );
+        return self::configuredPositiveInt('workflows.v2.task_repair.scan_limit', self::SCAN_LIMIT);
     }
 
     public static function failureBackoffMaxSeconds(): int
@@ -83,13 +80,12 @@ final class TaskRepairPolicy
     ): CarbonInterface {
         $seconds = self::failureBackoffSeconds($task, $immediateFirstFailure);
 
-        return $failedAt->copy()->addSeconds($seconds);
+        return $failedAt->copy()
+            ->addSeconds($seconds);
     }
 
-    public static function failureBackoffSeconds(
-        WorkflowTask $task,
-        bool $immediateFirstFailure = false,
-    ): int {
+    public static function failureBackoffSeconds(WorkflowTask $task, bool $immediateFirstFailure = false): int
+    {
         $repairCount = max(0, (int) $task->repair_count);
 
         if ($immediateFirstFailure && $repairCount === 0) {

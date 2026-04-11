@@ -28,10 +28,7 @@ return new class() extends Migration {
         }
 
         Schema::table('workflow_commands', static function (Blueprint $table): void {
-            $table->dropColumn([
-                'requested_workflow_run_id',
-                'resolved_workflow_run_id',
-            ]);
+            $table->dropColumn(['requested_workflow_run_id', 'resolved_workflow_run_id']);
         });
     }
 };

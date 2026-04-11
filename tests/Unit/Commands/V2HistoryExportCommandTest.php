@@ -96,8 +96,10 @@ final class V2HistoryExportCommandTest extends TestCase
             'workflow_class' => 'App\\Workflows\\HistoryExportWorkflow',
             'workflow_type' => 'history.export',
             'run_count' => 1,
-            'reserved_at' => now()->subMinutes(5),
-            'started_at' => now()->subMinutes(5),
+            'reserved_at' => now()
+                ->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $run */
@@ -111,26 +113,37 @@ final class V2HistoryExportCommandTest extends TestCase
             'closed_reason' => 'completed',
             'payload_codec' => config('workflows.serializer'),
             'arguments' => Serializer::serialize(['order-123']),
-            'output' => Serializer::serialize(['ok' => true]),
+            'output' => Serializer::serialize([
+                'ok' => true,
+            ]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinutes(5),
-            'closed_at' => now()->subMinute(),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subMinute(),
             'last_history_sequence' => 0,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         WorkflowHistoryEvent::record(
             $run,
             HistoryEventType::WorkflowStarted,
-            ['workflow_type' => 'history.export'],
+            [
+                'workflow_type' => 'history.export',
+            ],
         );
         WorkflowHistoryEvent::record(
             $run->refresh(),
             HistoryEventType::WorkflowCompleted,
-            ['result_available' => true],
+            [
+                'result_available' => true,
+            ],
         );
 
         return [$instance, $run->refresh()];

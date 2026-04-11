@@ -53,11 +53,7 @@ return new class() extends Migration {
 
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
             $table->dropIndex('workflow_run_summaries_continue_as_new_recommended_index');
-            $table->dropColumn([
-                'history_event_count',
-                'history_size_bytes',
-                'continue_as_new_recommended',
-            ]);
+            $table->dropColumn(['history_event_count', 'history_size_bytes', 'continue_as_new_recommended']);
         });
     }
 };

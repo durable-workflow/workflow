@@ -24,6 +24,7 @@ final class VisibilityFilters
         'closed_reason' => 'Closed Reason',
         'wait_kind' => 'Wait Kind',
         'liveness_state' => 'Liveness State',
+        'repair_blocked_reason' => 'Repair Blocked Reason',
         'archived' => 'Archived',
         'is_terminal' => 'Terminal',
     ];
@@ -41,12 +42,10 @@ final class VisibilityFilters
         'closed_reason',
         'wait_kind',
         'liveness_state',
+        'repair_blocked_reason',
     ];
 
-    private const BOOLEAN_FIELDS = [
-        'archived',
-        'is_terminal',
-    ];
+    private const BOOLEAN_FIELDS = ['archived', 'is_terminal'];
 
     private const LABEL_KEY_REGEX = '^[A-Za-z0-9_.:-]{1,64}$';
 
@@ -57,10 +56,7 @@ final class VisibilityFilters
      */
     public static function exactFields(): array
     {
-        return [
-            ...self::STRING_FIELDS,
-            ...self::BOOLEAN_FIELDS,
-        ];
+        return [...self::STRING_FIELDS, ...self::BOOLEAN_FIELDS];
     }
 
     /**
@@ -163,10 +159,7 @@ final class VisibilityFilters
             }
 
             if (isset($normalized['labels']) && is_array($normalized['labels'])) {
-                $merged['labels'] = [
-                    ...($merged['labels'] ?? []),
-                    ...$normalized['labels'],
-                ];
+                $merged['labels'] = [...($merged['labels'] ?? []), ...$normalized['labels']];
             }
         }
 
@@ -254,7 +247,6 @@ final class VisibilityFilters
     }
 
     /**
-     * @param mixed $labels
      * @return array<string, string>
      */
     private static function normalizeLabels(mixed $labels): array
@@ -298,8 +290,14 @@ final class VisibilityFilters
 
         if ($type === 'boolean') {
             $definition['options'] = [
-                ['label' => 'Yes', 'value' => true],
-                ['label' => 'No', 'value' => false],
+                [
+                    'label' => 'Yes',
+                    'value' => true,
+                ],
+                [
+                    'label' => 'No',
+                    'value' => false,
+                ],
             ];
         }
 
@@ -320,11 +318,6 @@ final class VisibilityFilters
      */
     private static function terminalStatuses(): array
     {
-        return [
-            'completed',
-            'failed',
-            'cancelled',
-            'terminated',
-        ];
+        return ['completed', 'failed', 'cancelled', 'terminated'];
     }
 }

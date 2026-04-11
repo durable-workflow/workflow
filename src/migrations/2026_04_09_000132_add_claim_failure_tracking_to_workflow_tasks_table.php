@@ -26,10 +26,7 @@ return new class() extends Migration {
         }
 
         Schema::table('workflow_tasks', static function (Blueprint $table): void {
-            $table->dropColumn([
-                'last_claim_failed_at',
-                'last_claim_error',
-            ]);
+            $table->dropColumn(['last_claim_failed_at', 'last_claim_error']);
         });
     }
 };

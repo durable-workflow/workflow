@@ -38,7 +38,7 @@ class V2BackfillCommandContractsCommand extends Command
             'failures' => [],
         ];
 
-        $runQuery->chunkById(100, function ($runs) use (&$report, $dryRun): void {
+        $runQuery->chunkById(100, static function ($runs) use (&$report, $dryRun): void {
             foreach ($runs as $run) {
                 try {
                     $state = RunCommandContract::historyBackfillState($run);

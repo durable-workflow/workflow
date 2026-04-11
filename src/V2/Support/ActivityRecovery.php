@@ -133,7 +133,9 @@ final class ActivityRecovery
                 continue;
             }
 
-            $state = ActivitySnapshot::merge($state ?? ['id' => $activityId], $snapshot);
+            $state = ActivitySnapshot::merge($state ?? [
+                'id' => $activityId,
+            ], $snapshot);
         }
 
         return $state;

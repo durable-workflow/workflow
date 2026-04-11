@@ -74,10 +74,7 @@ final class ActivityMakeCommandTest extends TestCase
 
         $this->artisan('make:activity ' . self::ACTIVITY . ' --v2 --type=activities.greeting')->assertSuccessful();
 
-        $this->assertStringContainsString(
-            "#[Type('activities.greeting')]",
-            $filesystem->get($file),
-        );
+        $this->assertStringContainsString("#[Type('activities.greeting')]", $filesystem->get($file));
 
         $filesystem->delete($file);
         $filesystem->deleteDirectory(self::FOLDER);

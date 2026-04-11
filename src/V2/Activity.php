@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Illuminate\Support\Facades\DB;
+use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
-use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -18,8 +18,8 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityAttemptNormalizer;
 use Workflow\V2\Support\ActivityLease;
-use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\HeartbeatProgress;
 
 abstract class Activity
 {
@@ -180,7 +180,15 @@ abstract class Activity
                     'next_task_lease_expires_at' => $leaseExpiresAt,
                 ]);
 
-            $this->recordHeartbeat($run, $execution, $attempt, $task, $heartbeatAt, $leaseExpiresAt, $normalizedProgress);
+            $this->recordHeartbeat(
+                $run,
+                $execution,
+                $attempt,
+                $task,
+                $heartbeatAt,
+                $leaseExpiresAt,
+                $normalizedProgress
+            );
         });
     }
 

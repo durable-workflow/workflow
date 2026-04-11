@@ -383,13 +383,7 @@ final class FailureFactory
                 ? Serializer::unserializeModels($property['value'])
                 : null;
 
-            self::setPayloadProperty(
-                $throwable,
-                $class,
-                $property['declaring_class'],
-                $property['name'],
-                $value,
-            );
+            self::setPayloadProperty($throwable, $class, $property['declaring_class'], $property['name'], $value);
         }
 
         return $throwable;
@@ -413,10 +407,7 @@ final class FailureFactory
         string $property,
         mixed $value,
     ): void {
-        $candidates = array_values(array_unique([
-            $declaringClass,
-            $restoredClass,
-        ]));
+        $candidates = array_values(array_unique([$declaringClass, $restoredClass]));
 
         foreach ($candidates as $candidate) {
             if (! class_exists($candidate)) {

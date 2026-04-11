@@ -30,10 +30,7 @@ class WorkflowInstance extends Model
 
     public function currentRun(): BelongsTo
     {
-        return $this->belongsTo(
-            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
-            'current_run_id',
-        );
+        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'current_run_id');
     }
 
     public function runs(): HasMany

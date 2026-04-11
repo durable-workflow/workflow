@@ -56,10 +56,7 @@ class WorkflowRun extends Model
 
     public function tasks(): HasMany
     {
-        return $this->hasMany(
-            ConfiguredV2Models::resolve('task_model', WorkflowTask::class),
-            'workflow_run_id',
-        )
+        return $this->hasMany(ConfiguredV2Models::resolve('task_model', WorkflowTask::class), 'workflow_run_id')
             ->orderBy('available_at');
     }
 
@@ -120,10 +117,7 @@ class WorkflowRun extends Model
 
     public function timers(): HasMany
     {
-        return $this->hasMany(
-            ConfiguredV2Models::resolve('timer_model', WorkflowTimer::class),
-            'workflow_run_id',
-        )
+        return $this->hasMany(ConfiguredV2Models::resolve('timer_model', WorkflowTimer::class), 'workflow_run_id')
             ->orderBy('sequence');
     }
 

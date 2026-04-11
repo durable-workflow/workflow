@@ -38,8 +38,10 @@ final class V2ActivityAttemptIdentityBackfillMigrationTest extends TestCase
         ])->save();
 
         $startedAt = Carbon::parse('2026-04-08 10:00:00');
-        $heartbeatAt = $startedAt->copy()->addMinute();
-        $closedAt = $startedAt->copy()->addMinutes(2);
+        $heartbeatAt = $startedAt->copy()
+            ->addMinute();
+        $closedAt = $startedAt->copy()
+            ->addMinutes(2);
 
         $running = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
@@ -86,13 +88,17 @@ final class V2ActivityAttemptIdentityBackfillMigrationTest extends TestCase
                 'activity_execution_id' => $running->id,
             ],
             'lease_owner' => 'backfill-worker',
-            'lease_expires_at' => $heartbeatAt->copy()->addMinutes(5),
+            'lease_expires_at' => $heartbeatAt->copy()
+                ->addMinutes(5),
             'attempt_count' => 1,
             'connection' => 'redis',
             'queue' => 'activities',
         ]);
 
-        $migration = require dirname(__DIR__, 3) . '/src/migrations/2026_04_08_000125_backfill_activity_attempt_identity.php';
+        $migration = require dirname(
+            __DIR__,
+            3
+        ) . '/src/migrations/2026_04_08_000125_backfill_activity_attempt_identity.php';
         $migration->up();
 
         $running->refresh();

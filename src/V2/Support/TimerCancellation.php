@@ -24,8 +24,10 @@ final class TimerCancellation
         $run->loadMissing('historyEvents');
 
         $existing = $run->historyEvents
-            ->first(static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerCancelled
-                && ($event->payload['timer_id'] ?? null) === $timer->id);
+            ->first(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerCancelled
+                && ($event->payload['timer_id'] ?? null) === $timer->id
+            );
 
         if ($existing instanceof WorkflowHistoryEvent) {
             return $existing;
@@ -62,8 +64,10 @@ final class TimerCancellation
     {
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents
-            ->filter(static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
-                && ($event->payload['timer_id'] ?? null) === $timerId)
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
+                && ($event->payload['timer_id'] ?? null) === $timerId
+            )
             ->sortByDesc('sequence')
             ->first();
 

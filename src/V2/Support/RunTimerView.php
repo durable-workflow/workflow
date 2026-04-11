@@ -62,7 +62,9 @@ final class RunTimerView
             $timer = $timersById->get($timerId);
 
             $states[$timerId] = self::mergeState(
-                $existing ?? ($timer instanceof WorkflowTimer ? self::stateFromTimer($timer) : self::emptyState($timerId)),
+                $existing ?? ($timer instanceof WorkflowTimer ? self::stateFromTimer($timer) : self::emptyState(
+                    $timerId
+                )),
                 $snapshot,
             );
         }
@@ -108,10 +110,7 @@ final class RunTimerView
             return $left['id'] <=> $right['id'];
         });
 
-        return array_values(array_map(
-            static fn (array $timer): array => self::presentTimer($timer),
-            $timers,
-        ));
+        return array_values(array_map(static fn (array $timer): array => self::presentTimer($timer), $timers));
     }
 
     /**
@@ -136,8 +135,11 @@ final class RunTimerView
      *     row_status: string|null
      * }|null
      */
-    public static function timerForSequence(WorkflowRun $run, int $sequence, bool $includeConditionTimeout = true): ?array
-    {
+    public static function timerForSequence(
+        WorkflowRun $run,
+        int $sequence,
+        bool $includeConditionTimeout = true
+    ): ?array {
         foreach (self::timersForRun($run) as $timer) {
             if (($timer['sequence'] ?? null) !== $sequence) {
                 continue;

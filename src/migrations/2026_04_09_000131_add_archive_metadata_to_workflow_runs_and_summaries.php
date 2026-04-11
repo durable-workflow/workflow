@@ -45,19 +45,11 @@ return new class() extends Migration {
         }
 
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
-            $table->dropColumn([
-                'archived_at',
-                'archive_command_id',
-                'archive_reason',
-            ]);
+            $table->dropColumn(['archived_at', 'archive_command_id', 'archive_reason']);
         });
 
         Schema::table('workflow_runs', static function (Blueprint $table): void {
-            $table->dropColumn([
-                'archived_at',
-                'archive_command_id',
-                'archive_reason',
-            ]);
+            $table->dropColumn(['archived_at', 'archive_command_id', 'archive_reason']);
         });
     }
 };

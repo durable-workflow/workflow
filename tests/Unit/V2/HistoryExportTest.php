@@ -742,8 +742,10 @@ final class HistoryExportTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'workflow',
-            'started_at' => now()->subMinutes(5),
-            'last_progress_at' => now()->subMinutes(4),
+            'started_at' => now()
+                ->subMinutes(5),
+            'last_progress_at' => now()
+                ->subMinutes(4),
         ]);
         $parentInstance->forceFill([
             'current_run_id' => $parentRun->id,
@@ -768,8 +770,10 @@ final class HistoryExportTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'workflow',
-            'started_at' => now()->subMinutes(4),
-            'last_progress_at' => now()->subMinutes(3),
+            'started_at' => now()
+                ->subMinutes(4),
+            'last_progress_at' => now()
+                ->subMinutes(3),
         ]);
         $childInstance->forceFill([
             'current_run_id' => $childRun->id,
@@ -785,8 +789,10 @@ final class HistoryExportTest extends TestCase
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'is_primary_parent' => true,
-            'created_at' => now()->subMinutes(3),
-            'updated_at' => now()->subMinutes(3),
+            'created_at' => now()
+                ->subMinutes(3),
+            'updated_at' => now()
+                ->subMinutes(3),
         ]);
 
         RunLineageProjector::project($parentRun->fresh(['historyEvents', 'childLinks.childRun.summary']));

@@ -9,17 +9,17 @@ use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\CommandContractSnapshotDrift;
 use Workflow\V2\Support\RunCommandContract;
-use Workflow\V2\Support\SelectedRunProjectionDrift;
 use Workflow\V2\Support\RunSummaryProjectionDrift;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\SelectedRunProjectionDrift;
 
 #[AsCommand(name: 'workflow:v2:rebuild-projections')]
 class V2RebuildProjectionsCommand extends Command
@@ -376,7 +376,8 @@ class V2RebuildProjectionsCommand extends Command
 
         $query->select(sprintf('%s.id', $table))
             ->chunkById(500, static function ($rows) use (&$deleted, $model): void {
-                $ids = $rows->pluck('id')->all();
+                $ids = $rows->pluck('id')
+                    ->all();
 
                 if ($ids !== []) {
                     $deleted += $model::query()
@@ -596,10 +597,7 @@ class V2RebuildProjectionsCommand extends Command
             }
 
             if ($report['run_waits_pruned'] > 0) {
-                $this->info(sprintf(
-                    'Pruned %d stale wait projection row(s).',
-                    $report['run_waits_pruned'],
-                ));
+                $this->info(sprintf('Pruned %d stale wait projection row(s).', $report['run_waits_pruned']));
             }
 
             if ($report['run_timeline_entries_pruned'] > 0) {

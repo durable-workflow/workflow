@@ -217,8 +217,7 @@ final class RunActivityView
         array $state,
         ?ActivityExecution $execution = null,
         array $attemptStates = [],
-    ): array
-    {
+    ): array {
         $attempts = self::presentAttempts($state, $execution, $attemptStates);
         $latestAttempt = $attempts === []
             ? null
@@ -301,8 +300,7 @@ final class RunActivityView
         array $state,
         ?ActivityExecution $execution,
         array $attemptStates,
-    ): array
-    {
+    ): array {
         $attempts = array_map(
             static fn (array $attempt): array => self::presentAttempt($attempt, $execution),
             $attemptStates,
@@ -312,7 +310,8 @@ final class RunActivityView
 
         if (
             $syntheticAttempt !== null
-            && ! collect($attempts)->contains(static fn (array $attempt): bool => ($attempt['id'] ?? null) === $syntheticAttempt['id'])
+            && ! collect($attempts)
+                ->contains(static fn (array $attempt): bool => ($attempt['id'] ?? null) === $syntheticAttempt['id'])
         ) {
             $attempts[] = $syntheticAttempt;
         }

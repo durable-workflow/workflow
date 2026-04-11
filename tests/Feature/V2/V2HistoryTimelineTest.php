@@ -36,7 +36,6 @@ use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\RunDetailView;
-use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
 
 final class V2HistoryTimelineTest extends TestCase
@@ -541,13 +540,16 @@ final class V2HistoryTimelineTest extends TestCase
         ])->save();
 
         $activityTask->forceFill([
-            'available_at' => now()->addDay(),
+            'available_at' => now()
+                ->addDay(),
             'attempt_count' => $originalTaskAttemptCount + 10,
         ])->save();
 
         $timeline = HistoryTimeline::forRun($run->fresh());
-        $signalReceived = collect($timeline)->firstWhere('type', 'SignalReceived');
-        $activityCompleted = collect($timeline)->firstWhere('type', 'ActivityCompleted');
+        $signalReceived = collect($timeline)
+            ->firstWhere('type', 'SignalReceived');
+        $activityCompleted = collect($timeline)
+            ->firstWhere('type', 'ActivityCompleted');
 
         $this->assertIsArray($signalReceived);
         $this->assertIsArray($activityCompleted);
@@ -601,9 +603,12 @@ final class V2HistoryTimelineTest extends TestCase
             'status' => 'failed',
             'attempt_count' => 99,
             'current_attempt_id' => '01JTIMELINEDRIFTATTEMPT001',
-            'started_at' => now()->addDay(),
-            'closed_at' => now()->addDays(2),
-            'last_heartbeat_at' => now()->addDays(3),
+            'started_at' => now()
+                ->addDay(),
+            'closed_at' => now()
+                ->addDays(2),
+            'last_heartbeat_at' => now()
+                ->addDays(3),
         ])->save();
 
         $timeline = collect(HistoryTimeline::forRun($run->fresh()));
@@ -649,7 +654,8 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('workflow_run_timeline_entries_rebuilt', $fallbackDetail['timeline_projection_source']);
 
         $this->assertSame(
-            $run->historyEvents()->count(),
+            $run->historyEvents()
+                ->count(),
             WorkflowTimelineEntry::query()
                 ->where('workflow_run_id', $runId)
                 ->count(),
@@ -724,8 +730,10 @@ final class V2HistoryTimelineTest extends TestCase
         $timer->forceFill([
             'sequence' => 99,
             'delay_seconds' => 86400,
-            'fire_at' => now()->addDay(),
-            'fired_at' => now()->addDays(2),
+            'fire_at' => now()
+                ->addDay(),
+            'fired_at' => now()
+                ->addDays(2),
         ])->save();
 
         $timeline = collect(HistoryTimeline::forRun($run->fresh()));

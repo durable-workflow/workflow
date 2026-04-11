@@ -32,9 +32,12 @@ final class V2EntryMethodTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('workflows.webhook_auth.method', 'none');
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.webhook_auth.method', 'none');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
     }
 
@@ -104,7 +107,10 @@ final class V2EntryMethodTest extends TestCase
             $workflow->start('Taylor');
             $this->fail('Expected a mixed entry-method hierarchy to be rejected.');
         } catch (LogicException $exception) {
-            $this->assertStringContainsString('cannot mix handle() and execute() across its inheritance chain', $exception->getMessage());
+            $this->assertStringContainsString(
+                'cannot mix handle() and execute() across its inheritance chain',
+                $exception->getMessage()
+            );
         }
 
         $instance = WorkflowInstance::query()->findOrFail('mixed-entry-workflow');

@@ -11,11 +11,11 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CommandContractBackfillSweep;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
-use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class TaskWatchdog
@@ -73,14 +73,8 @@ final class TaskWatchdog
             Cache::put(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds());
         }
 
-        $existingTaskCandidateIds = TaskRepairCandidates::taskIds(
-            runIds: $runIds,
-            instanceId: $instanceId,
-        );
-        $missingRunIds = TaskRepairCandidates::runIds(
-            runIds: $runIds,
-            instanceId: $instanceId,
-        );
+        $existingTaskCandidateIds = TaskRepairCandidates::taskIds(runIds: $runIds, instanceId: $instanceId);
+        $missingRunIds = TaskRepairCandidates::runIds(runIds: $runIds, instanceId: $instanceId);
         $report = self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
         $report['selected_existing_task_candidates'] = count($existingTaskCandidateIds);
         $report['selected_missing_task_candidates'] = count($missingRunIds);

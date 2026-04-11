@@ -56,10 +56,7 @@ final class QueryStateReplayer
         $workflow = new $workflowClass($run);
         $this->syncWorkflowCursor($workflow, 1);
         $entryMethod = EntryMethod::forWorkflow($workflow);
-        $arguments = $workflow->resolveMethodDependencies(
-            $run->workflowArguments(),
-            $entryMethod,
-        );
+        $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
         $workflowExecution = WorkflowExecution::start($workflow, $arguments);
 
         if (! $workflowExecution->valid()) {
@@ -265,9 +262,13 @@ final class QueryStateReplayer
                 if ($resolutionEvent !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
-                        $current = $workflowExecution->send(ChildRunHistory::outputForResolution($resolutionEvent, $childRun));
+                        $current = $workflowExecution->send(
+                            ChildRunHistory::outputForResolution($resolutionEvent, $childRun)
+                        );
                     } else {
-                        $current = $workflowExecution->throw(ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun));
+                        $current = $workflowExecution->throw(
+                            ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun)
+                        );
                     }
 
                     ++$sequence;
@@ -284,7 +285,11 @@ final class QueryStateReplayer
                     RunStatus::Running,
                     RunStatus::Waiting,
                 ], true)) {
-                    WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
+                    WorkflowStepHistory::assertTypedHistoryRecorded(
+                        $run,
+                        $sequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW
+                    );
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($childStatus === RunStatus::Completed) {
@@ -304,7 +309,11 @@ final class QueryStateReplayer
                 }
 
                 if ($childRun instanceof WorkflowRun) {
-                    WorkflowStepHistory::assertTypedHistoryRecorded($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
+                    WorkflowStepHistory::assertTypedHistoryRecorded(
+                        $run,
+                        $sequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW
+                    );
                 }
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -442,11 +451,11 @@ final class QueryStateReplayer
                         ? ChildRunHistory::resolvedStatus(null, $childRun)
                         : null;
 
-                    if ($childRun instanceof WorkflowRun && $childStatus instanceof RunStatus && ! in_array($childStatus, [
-                        RunStatus::Pending,
-                        RunStatus::Running,
-                        RunStatus::Waiting,
-                    ], true)) {
+                    if ($childRun instanceof WorkflowRun && $childStatus instanceof RunStatus && ! in_array(
+                        $childStatus,
+                        [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting],
+                        true
+                    )) {
                         WorkflowStepHistory::assertTypedHistoryRecorded(
                             $run,
                             $itemSequence,
@@ -700,7 +709,9 @@ final class QueryStateReplayer
                 ];
         }
 
-        if (is_array($payload) && ! is_string($payload['type'] ?? null) && is_string($event?->payload['exception_type'] ?? null)) {
+        if (is_array($payload) && ! is_string($payload['type'] ?? null) && is_string(
+            $event?->payload['exception_type'] ?? null
+        )) {
             $payload['type'] = $event->payload['exception_type'];
         }
 
@@ -765,8 +776,7 @@ final class QueryStateReplayer
         \Workflow\V2\Workflow $workflow,
         WorkflowHistoryEvent $event,
         ?WorkflowCommand $command,
-    ): ?string
-    {
+    ): ?string {
         $target = $event->payload['update_name'] ?? $command?->targetName();
 
         if (! is_string($target) || $target === '') {
