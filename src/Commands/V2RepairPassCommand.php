@@ -13,12 +13,14 @@ use Workflow\V2\TaskWatchdog;
 class V2RepairPassCommand extends Command
 {
     protected $signature = 'workflow:v2:repair-pass
+        {--run-id=* : Limit the sweep to one or more workflow run ids}
+        {--instance-id= : Limit the sweep to one workflow instance id}
         {--connection= : Record the repair pass heartbeat against a queue connection scope}
         {--queue= : Record the repair pass heartbeat against a queue scope}
         {--respect-throttle : Respect the queue-loop repair throttle instead of forcing a repair pass}
         {--json : Output the repair pass report as JSON}';
 
-    protected $description = 'Run one Workflow v2 repair sweep using the current repair candidate scan and backoff policy';
+    protected $description = 'Run one Workflow v2 repair sweep using the current repair candidate scan and backoff policy, optionally limited to selected runs';
 
     public function handle(): int
     {
@@ -26,6 +28,8 @@ class V2RepairPassCommand extends Command
             $this->stringOption('connection'),
             $this->stringOption('queue'),
             respectThrottle: (bool) $this->option('respect-throttle'),
+            runIds: $this->runIds(),
+            instanceId: $this->stringOption('instance-id'),
         );
 
         if ((bool) $this->option('json')) {
@@ -50,6 +54,8 @@ class V2RepairPassCommand extends Command
      * @param array{
      *     connection: string|null,
      *     queue: string|null,
+     *     run_ids: list<string>,
+     *     instance_id: string|null,
      *     respect_throttle: bool,
      *     throttled: bool,
      *     selected_existing_task_candidates: int,
@@ -111,5 +117,16 @@ class V2RepairPassCommand extends Command
         $value = trim($value);
 
         return $value === '' ? null : $value;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function runIds(): array
+    {
+        return array_values(array_unique(array_filter(array_map(
+            static fn (mixed $value): string => is_scalar($value) ? trim((string) $value) : '',
+            (array) $this->option('run-id'),
+        ))));
     }
 }

@@ -34,6 +34,8 @@ final class V2RepairPassCommandTest extends TestCase
         $expected = [
             'connection' => null,
             'queue' => null,
+            'run_ids' => [],
+            'instance_id' => null,
             'respect_throttle' => false,
             'throttled' => false,
             'selected_existing_task_candidates' => 0,
@@ -90,6 +92,8 @@ final class V2RepairPassCommandTest extends TestCase
         $expected = [
             'connection' => null,
             'queue' => null,
+            'run_ids' => [],
+            'instance_id' => null,
             'respect_throttle' => true,
             'throttled' => true,
             'selected_existing_task_candidates' => 0,
@@ -138,6 +142,104 @@ final class V2RepairPassCommandTest extends TestCase
             RunWorkflowTask::class,
             static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
         );
+    }
+
+    public function testRunIdScopeRepairsOnlyTheSelectedMissingTaskRun(): void
+    {
+        Queue::fake();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        [$selectedRun] = $this->createRepairNeededSignalRun('repair-pass-run-scope-selected');
+        [$otherRun] = $this->createRepairNeededSignalRun('repair-pass-run-scope-other');
+
+        $expected = [
+            'connection' => null,
+            'queue' => null,
+            'run_ids' => [$selectedRun->id],
+            'instance_id' => null,
+            'respect_throttle' => false,
+            'throttled' => false,
+            'selected_existing_task_candidates' => 0,
+            'selected_missing_task_candidates' => 1,
+            'selected_total_candidates' => 1,
+            'repaired_existing_tasks' => 0,
+            'repaired_missing_tasks' => 1,
+            'dispatched_tasks' => 1,
+            'existing_task_failures' => [],
+            'missing_run_failures' => [],
+        ];
+
+        $this->artisan('workflow:v2:repair-pass', [
+            '--run-id' => [$selectedRun->id],
+            '--json' => true,
+        ])
+            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
+            ->assertSuccessful();
+
+        /** @var WorkflowTask $selectedTask */
+        $selectedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $selectedRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $otherRun->id)
+            ->count());
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $selectedTask->id
+        );
+        Queue::assertPushed(RunWorkflowTask::class, 1);
+    }
+
+    public function testInstanceIdScopeRepairsOnlyTheSelectedInstanceTasks(): void
+    {
+        Queue::fake();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        $selectedTask = $this->createOverdueWorkflowTask('repair-pass-instance-scope-selected');
+        $otherTask = $this->createOverdueWorkflowTask('repair-pass-instance-scope-other');
+        $otherLastDispatchedAt = $otherTask->last_dispatched_at?->toJSON();
+
+        $expected = [
+            'connection' => null,
+            'queue' => null,
+            'run_ids' => [],
+            'instance_id' => 'repair-pass-instance-scope-selected',
+            'respect_throttle' => false,
+            'throttled' => false,
+            'selected_existing_task_candidates' => 1,
+            'selected_missing_task_candidates' => 0,
+            'selected_total_candidates' => 1,
+            'repaired_existing_tasks' => 1,
+            'repaired_missing_tasks' => 0,
+            'dispatched_tasks' => 1,
+            'existing_task_failures' => [],
+            'missing_run_failures' => [],
+        ];
+
+        $this->artisan('workflow:v2:repair-pass', [
+            '--instance-id' => 'repair-pass-instance-scope-selected',
+            '--json' => true,
+        ])
+            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
+            ->assertSuccessful();
+
+        $selectedTask->refresh();
+        $otherTask->refresh();
+
+        $this->assertSame(1, $selectedTask->repair_count);
+        $this->assertNotNull($selectedTask->last_dispatched_at);
+        $this->assertSame(0, $otherTask->repair_count);
+        $this->assertSame($otherLastDispatchedAt, $otherTask->last_dispatched_at?->toJSON());
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $selectedTask->id
+        );
+        Queue::assertPushed(RunWorkflowTask::class, 1);
     }
 
     /**

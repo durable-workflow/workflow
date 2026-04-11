@@ -16,10 +16,15 @@ final class TaskRepairCandidates
     /**
      * @return list<string>
      */
-    public static function taskIds(?int $limit = null, ?CarbonInterface $now = null): array
+    public static function taskIds(
+        ?int $limit = null,
+        ?CarbonInterface $now = null,
+        array $runIds = [],
+        ?string $instanceId = null,
+    ): array
     {
         return self::roundRobinCandidateIds(
-            self::existingTaskIdsByScope($limit ?? TaskRepairPolicy::scanLimit(), $now),
+            self::existingTaskIdsByScope($limit ?? TaskRepairPolicy::scanLimit(), $now, $runIds, $instanceId),
             $limit ?? TaskRepairPolicy::scanLimit(),
         );
     }
@@ -27,10 +32,10 @@ final class TaskRepairCandidates
     /**
      * @return list<string>
      */
-    public static function runIds(?int $limit = null): array
+    public static function runIds(?int $limit = null, array $runIds = [], ?string $instanceId = null): array
     {
         return self::roundRobinCandidateIds(
-            self::missingTaskRunIdsByScope($limit ?? TaskRepairPolicy::scanLimit()),
+            self::missingTaskRunIdsByScope($limit ?? TaskRepairPolicy::scanLimit(), $runIds, $instanceId),
             $limit ?? TaskRepairPolicy::scanLimit(),
         );
     }
@@ -209,9 +214,13 @@ final class TaskRepairCandidates
         return array_values($scopes);
     }
 
-    private static function existingTaskScopeRows(CarbonInterface $now)
+    private static function existingTaskScopeRows(
+        CarbonInterface $now,
+        array $runIds = [],
+        ?string $instanceId = null,
+    )
     {
-        return self::existingTaskQuery($now)
+        return self::existingTaskQuery($now, $runIds, $instanceId)
             ->select(['connection', 'queue', 'compatibility'])
             ->selectRaw('COUNT(*) as candidate_count')
             ->selectRaw('MIN(created_at) as oldest_candidate_at')
@@ -219,9 +228,9 @@ final class TaskRepairCandidates
             ->get();
     }
 
-    private static function missingTaskScopeRows()
+    private static function missingTaskScopeRows(array $runIds = [], ?string $instanceId = null)
     {
-        return self::missingTaskRunQuery()
+        return self::missingTaskRunQuery($runIds, $instanceId)
             ->select(['connection', 'queue', 'compatibility'])
             ->selectRaw('COUNT(*) as candidate_count')
             ->selectRaw('MIN(COALESCE(wait_started_at, started_at, created_at)) as oldest_candidate_at')
@@ -302,10 +311,14 @@ final class TaskRepairCandidates
         return null;
     }
 
-    private static function oldestTaskCandidate(?CarbonInterface $now = null): ?WorkflowTask
+    private static function oldestTaskCandidate(
+        ?CarbonInterface $now = null,
+        array $runIds = [],
+        ?string $instanceId = null,
+    ): ?WorkflowTask
     {
         /** @var WorkflowTask|null $task */
-        $task = self::existingTaskQuery($now)
+        $task = self::existingTaskQuery($now, $runIds, $instanceId)
             ->oldest('created_at')
             ->oldest('id')
             ->first();
@@ -316,14 +329,19 @@ final class TaskRepairCandidates
     /**
      * @return array<string, list<string>>
      */
-    private static function existingTaskIdsByScope(int $limit, ?CarbonInterface $now = null): array
+    private static function existingTaskIdsByScope(
+        int $limit,
+        ?CarbonInterface $now = null,
+        array $runIds = [],
+        ?string $instanceId = null,
+    ): array
     {
         $now ??= now();
         $buckets = [];
 
-        foreach (self::normalizedScopes(self::existingTaskScopeRows($now)) as $scope) {
+        foreach (self::normalizedScopes(self::existingTaskScopeRows($now, $runIds, $instanceId)) as $scope) {
             /** @var list<string> $ids */
-            $ids = self::existingTaskQuery($now)
+            $ids = self::existingTaskQuery($now, $runIds, $instanceId)
                 ->where(static function ($query) use ($scope): void {
                     self::applyScope(
                         $query,
@@ -350,13 +368,17 @@ final class TaskRepairCandidates
     /**
      * @return array<string, list<string>>
      */
-    private static function missingTaskRunIdsByScope(int $limit): array
+    private static function missingTaskRunIdsByScope(
+        int $limit,
+        array $runIds = [],
+        ?string $instanceId = null,
+    ): array
     {
         $buckets = [];
 
-        foreach (self::normalizedScopes(self::missingTaskScopeRows()) as $scope) {
+        foreach (self::normalizedScopes(self::missingTaskScopeRows($runIds, $instanceId)) as $scope) {
             /** @var list<string> $ids */
-            $ids = self::missingTaskRunQuery()
+            $ids = self::missingTaskRunQuery($runIds, $instanceId)
                 ->where(static function ($query) use ($scope): void {
                     self::applyScope(
                         $query,
@@ -494,10 +516,13 @@ final class TaskRepairCandidates
         return $selected;
     }
 
-    private static function oldestMissingRunCandidate(): ?WorkflowRunSummary
+    private static function oldestMissingRunCandidate(
+        array $runIds = [],
+        ?string $instanceId = null,
+    ): ?WorkflowRunSummary
     {
         /** @var WorkflowRunSummary|null $summary */
-        $summary = self::missingTaskRunQuery()
+        $summary = self::missingTaskRunQuery($runIds, $instanceId)
             ->orderBy('wait_started_at')
             ->orderBy('started_at')
             ->orderBy('id')
@@ -506,13 +531,17 @@ final class TaskRepairCandidates
         return $summary;
     }
 
-    private static function existingTaskQuery(?CarbonInterface $now = null)
+    private static function existingTaskQuery(
+        ?CarbonInterface $now = null,
+        array $runIds = [],
+        ?string $instanceId = null,
+    )
     {
         $now ??= now();
         $staleDispatchCutoff = $now->copy()
             ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
 
-        return WorkflowTask::query()
+        $query = WorkflowTask::query()
             ->where(static function ($query) use ($now, $staleDispatchCutoff): void {
                 $query->where(static function ($ready) use ($now, $staleDispatchCutoff): void {
                     $ready->where('status', TaskStatus::Ready->value)
@@ -563,11 +592,15 @@ final class TaskRepairCandidates
                         ->where('lease_expires_at', '<=', $now);
                 });
             });
+
+        self::applyRunSelection($query, $runIds, $instanceId);
+
+        return $query;
     }
 
-    private static function missingTaskRunQuery()
+    private static function missingTaskRunQuery(array $runIds = [], ?string $instanceId = null)
     {
-        return WorkflowRunSummary::query()
+        $query = WorkflowRunSummary::query()
             ->where('liveness_state', 'repair_needed')
             ->whereNull('next_task_id')
             ->whereIn('status', [
@@ -575,6 +608,32 @@ final class TaskRepairCandidates
                 RunStatus::Running->value,
                 RunStatus::Waiting->value,
             ]);
+
+        if ($runIds !== []) {
+            $query->whereKey($runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->where('workflow_instance_id', $instanceId);
+        }
+
+        return $query;
+    }
+
+    /**
+     * @param list<string> $runIds
+     */
+    private static function applyRunSelection($query, array $runIds, ?string $instanceId): void
+    {
+        if ($runIds !== []) {
+            $query->whereIn('workflow_run_id', $runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->whereIn('workflow_run_id', self::runModel()::query()
+                ->select('id')
+                ->where('workflow_instance_id', $instanceId));
+        }
     }
 
     private static function applyScope(
@@ -651,5 +710,16 @@ final class TaskRepairCandidates
             ->whereNull('last_claim_failed_at')
             ->orWhereNull('last_claim_error')
             ->orWhere('last_claim_error', '');
+    }
+
+    /**
+     * @return class-string<\Workflow\V2\Models\WorkflowRun>
+     */
+    private static function runModel(): string
+    {
+        /** @var class-string<\Workflow\V2\Models\WorkflowRun> $model */
+        $model = config('workflows.v2.run_model', \Workflow\V2\Models\WorkflowRun::class);
+
+        return $model;
     }
 }

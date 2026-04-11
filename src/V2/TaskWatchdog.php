@@ -30,6 +30,8 @@ final class TaskWatchdog
      * @return array{
      *     connection: string|null,
      *     queue: string|null,
+     *     run_ids: list<string>,
+     *     instance_id: string|null,
      *     respect_throttle: bool,
      *     throttled: bool,
      *     selected_existing_task_candidates: int,
@@ -46,20 +48,35 @@ final class TaskWatchdog
         ?string $connection = null,
         ?string $queue = null,
         bool $respectThrottle = false,
+        array $runIds = [],
+        ?string $instanceId = null,
     ): array {
         WorkerCompatibilityFleet::heartbeat($connection, $queue);
 
         if ($respectThrottle) {
             if (! Cache::add(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds())) {
-                return self::emptyReport($connection, $queue, $respectThrottle, throttled: true);
+                return self::emptyReport(
+                    $connection,
+                    $queue,
+                    $respectThrottle,
+                    $runIds,
+                    $instanceId,
+                    throttled: true,
+                );
             }
         } else {
             Cache::put(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds());
         }
 
-        $existingTaskCandidateIds = TaskRepairCandidates::taskIds();
-        $missingRunIds = TaskRepairCandidates::runIds();
-        $report = self::emptyReport($connection, $queue, $respectThrottle);
+        $existingTaskCandidateIds = TaskRepairCandidates::taskIds(
+            runIds: $runIds,
+            instanceId: $instanceId,
+        );
+        $missingRunIds = TaskRepairCandidates::runIds(
+            runIds: $runIds,
+            instanceId: $instanceId,
+        );
+        $report = self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
         $report['selected_existing_task_candidates'] = count($existingTaskCandidateIds);
         $report['selected_missing_task_candidates'] = count($missingRunIds);
         $report['selected_total_candidates'] = count($existingTaskCandidateIds) + count($missingRunIds);
@@ -209,6 +226,8 @@ final class TaskWatchdog
      * @return array{
      *     connection: string|null,
      *     queue: string|null,
+     *     run_ids: list<string>,
+     *     instance_id: string|null,
      *     respect_throttle: bool,
      *     throttled: bool,
      *     selected_existing_task_candidates: int,
@@ -225,11 +244,15 @@ final class TaskWatchdog
         ?string $connection,
         ?string $queue,
         bool $respectThrottle,
+        array $runIds,
+        ?string $instanceId,
         bool $throttled = false,
     ): array {
         return [
             'connection' => $connection,
             'queue' => $queue,
+            'run_ids' => array_values($runIds),
+            'instance_id' => $instanceId,
             'respect_throttle' => $respectThrottle,
             'throttled' => $throttled,
             'selected_existing_task_candidates' => 0,
