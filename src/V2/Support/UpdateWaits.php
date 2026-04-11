@@ -17,13 +17,7 @@ final class UpdateWaits
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $run->loadMissing([
-            'commands',
-            'historyEvents',
-            'updates.command',
-            'updates.failure',
-            'tasks',
-        ]);
+        $run->loadMissing(['commands', 'historyEvents', 'updates.command', 'updates.failure', 'tasks']);
 
         $rows = [];
 
@@ -50,6 +44,7 @@ final class UpdateWaits
             $status = $sourceStatus === 'accepted'
                 ? 'open'
                 : 'resolved';
+            $resumeSourceKind = $updateId === null ? 'workflow_command' : 'workflow_update';
 
             $rows[] = [
                 'id' => $waitId,
@@ -71,7 +66,7 @@ final class UpdateWaits
                 'target_type' => 'update',
                 'task_backed' => $taskBacked,
                 'external_only' => false,
-                'resume_source_kind' => 'workflow_update',
+                'resume_source_kind' => $resumeSourceKind,
                 'resume_source_id' => $updateId ?? $commandId,
                 'task_id' => $task?->id,
                 'task_type' => $task?->task_type?->value,
@@ -104,8 +99,7 @@ final class UpdateWaits
         ?string $updateId,
         ?string $commandId,
         string $waitId,
-    ): ?WorkflowTask
-    {
+    ): ?WorkflowTask {
         $workflowTasks = $run->tasks
             ->filter(static fn (WorkflowTask $task): bool => $task->task_type === TaskType::Workflow)
             ->values();
