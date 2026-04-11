@@ -4,12 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Throwable;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\all;
-use function Workflow\V2\child;
+use function Workflow\V2\startChild;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-child-failure-workflow')]
@@ -19,14 +18,14 @@ final class TestParallelChildFailureWorkflow extends Workflow
 
     private string $message = '';
 
-    public function execute(int $slowChildSeconds): Generator
+    public function execute(int $slowChildSeconds): array
     {
         $this->stage = 'waiting-for-children';
 
         try {
-            yield all([
-                child(TestFailingChildWorkflow::class),
-                child(TestTimerWorkflow::class, $slowChildSeconds),
+            all([
+                startChild(TestFailingChildWorkflow::class),
+                startChild(TestTimerWorkflow::class, $slowChildSeconds),
             ]);
 
             $this->stage = 'unexpected-success';

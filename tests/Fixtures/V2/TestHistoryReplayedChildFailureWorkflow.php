@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\child;
@@ -20,12 +19,12 @@ final class TestHistoryReplayedChildFailureWorkflow extends Workflow
      */
     private array $caught = [];
 
-    public function execute(string $orderId): Generator
+    public function execute(string $orderId): array
     {
         $this->stage = 'running-child';
 
         try {
-            yield child(TestReplayedFailureChildWorkflow::class, $orderId);
+            child(TestReplayedFailureChildWorkflow::class, $orderId);
         } catch (TestReplayedDomainException $exception) {
             $this->stage = 'caught-child-failure';
             $this->caught = [

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use RuntimeException;
 use Workflow\QueryMethod;
 use function Workflow\V2\activity;
@@ -22,12 +21,12 @@ final class TestBroadFailureCatchWorkflow extends Workflow
      */
     private array $caught = [];
 
-    public function execute(string $orderId): Generator
+    public function execute(string $orderId): array
     {
         $this->stage = 'running-activity';
 
         try {
-            yield activity(TestReplayedFailureActivity::class, $orderId);
+            activity(TestReplayedFailureActivity::class, $orderId);
         } catch (RuntimeException $exception) {
             $this->stage = 'waiting-for-resume';
             $this->caught = [
@@ -37,7 +36,7 @@ final class TestBroadFailureCatchWorkflow extends Workflow
             ];
         }
 
-        $resume = yield awaitSignal('resume');
+        $resume = awaitSignal('resume');
         $this->stage = 'completed';
 
         return [

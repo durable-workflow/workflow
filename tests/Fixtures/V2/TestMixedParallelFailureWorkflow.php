@@ -4,13 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Throwable;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\activity;
 use function Workflow\V2\all;
-use function Workflow\V2\child;
+use function Workflow\V2\startActivity;
+use function Workflow\V2\startChild;
 use Workflow\V2\Workflow;
 
 #[Type('test-mixed-parallel-failure-workflow')]
@@ -20,14 +19,14 @@ final class TestMixedParallelFailureWorkflow extends Workflow
 
     private string $message = '';
 
-    public function execute(int $slowChildSeconds): Generator
+    public function execute(int $slowChildSeconds): array
     {
         $this->stage = 'waiting-for-mixed-group';
 
         try {
-            yield all([
-                activity(TestFailingActivity::class),
-                child(TestTimerWorkflow::class, $slowChildSeconds),
+            all([
+                startActivity(TestFailingActivity::class),
+                startChild(TestTimerWorkflow::class, $slowChildSeconds),
             ]);
 
             $this->stage = 'unexpected-success';

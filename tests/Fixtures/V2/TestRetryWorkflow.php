@@ -10,12 +10,9 @@ use function Workflow\V2\activity;
 
 final class TestRetryWorkflow extends Workflow
 {
-    /**
-     * @return \Generator<mixed, mixed, mixed, array<string, mixed>>
-     */
-    public function execute(string $name): \Generator
+    public function execute(string $name): array
     {
-        $result = yield activity(TestRetryActivity::class, $name);
+        $result = activity(TestRetryActivity::class, $name);
 
         return [
             'workflow_id' => $this->workflowId(),

@@ -4,12 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Throwable;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\activity;
 use function Workflow\V2\all;
+use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-multiple-activity-failure-workflow')]
@@ -19,14 +18,14 @@ final class TestParallelMultipleActivityFailureWorkflow extends Workflow
 
     private string $message = '';
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'waiting-for-activities';
 
         try {
-            yield all([
-                activity(TestNamedFailingActivity::class, 'first failure'),
-                activity(TestNamedFailingActivity::class, 'second failure'),
+            all([
+                startActivity(TestNamedFailingActivity::class, 'first failure'),
+                startActivity(TestNamedFailingActivity::class, 'second failure'),
             ]);
 
             $this->stage = 'unexpected-success';

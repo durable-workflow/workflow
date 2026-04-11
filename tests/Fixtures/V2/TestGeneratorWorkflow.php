@@ -4,33 +4,30 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
+use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\all;
-use function Workflow\V2\startChild;
 use Workflow\V2\Workflow;
+use function Workflow\V2\activity;
 
-#[Type('test-parallel-child-workflow')]
-final class TestParallelChildWorkflow extends Workflow
+#[Type('test-generator-workflow')]
+final class TestGeneratorWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(int $firstSeconds, int $secondSeconds): array
+    public function execute(string $name): Generator
     {
-        $this->stage = 'waiting-for-children';
+        $this->stage = 'running';
 
-        $children = all([
-            startChild(TestTimerWorkflow::class, $firstSeconds),
-            startChild(TestTimerWorkflow::class, $secondSeconds),
-        ]);
+        $greeting = yield activity(TestGreetingActivity::class, $name);
 
         $this->stage = 'completed';
 
         return [
             'stage' => $this->stage,
+            'greeting' => $greeting,
             'workflow_id' => $this->workflowId(),
             'run_id' => $this->runId(),
-            'children' => $children,
         ];
     }
 

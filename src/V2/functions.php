@@ -8,6 +8,7 @@ use Carbon\CarbonInterval;
 use Laravel\SerializableClosure\SerializableClosure;
 use ReflectionFunction;
 use ReflectionMethod;
+use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\AllCall;
 use Workflow\V2\Support\AwaitCall;
@@ -109,9 +110,7 @@ if (! function_exists(__NAMESPACE__ . '\\async')) {
         };
 
         if ($reflection->isGenerator()) {
-            throw new \LogicException(
-                'Workflow v2 async() callbacks must use straight-line helpers and must not yield.'
-            );
+            throw StraightLineWorkflowRequiredException::forAsyncCallback();
         }
 
         return child(AsyncWorkflow::class, new SerializableClosure(\Closure::fromCallable($callback)));

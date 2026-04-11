@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -12,7 +11,7 @@ use Workflow\V2\Workflow;
 
 final class TestUnsafeDeterminismWorkflow extends Workflow
 {
-    public function execute(): Generator
+    public function execute(): string
     {
         $value = DB::table('orders')->count();
         $cached = Cache::get('approval');
@@ -25,6 +24,6 @@ final class TestUnsafeDeterminismWorkflow extends Workflow
             return 'unsafe';
         }
 
-        yield;
+        return 'safe';
     }
 }

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
@@ -30,18 +29,18 @@ final class TestSignalThenUpdateWorkflow extends Workflow
      */
     private array $events = [];
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'waiting-for-advance';
         $this->events[] = 'started';
 
-        $name = yield awaitSignal('advance');
+        $name = awaitSignal('advance');
 
         $this->name = $name;
         $this->stage = 'waiting-for-finish';
         $this->events[] = sprintf('signal:%s', $name);
 
-        yield awaitSignal('finish');
+        awaitSignal('finish');
 
         $this->stage = 'completed';
         $this->events[] = 'finish';

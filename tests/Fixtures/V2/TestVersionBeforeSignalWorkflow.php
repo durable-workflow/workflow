@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Workflow;
@@ -16,11 +15,11 @@ use function Workflow\V2\awaitSignal;
 #[Signal('go')]
 final class TestVersionBeforeSignalWorkflow extends Workflow
 {
-    public function execute(): Generator
+    public function execute(): array
     {
-        $gate = yield awaitSignal('go');
+        $gate = awaitSignal('go');
 
-        $result = yield activity(TestVersionedActivityV1::class);
+        $result = activity(TestVersionedActivityV1::class);
 
         return [
             'gate' => $gate,

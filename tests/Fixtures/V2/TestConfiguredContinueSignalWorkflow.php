@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
@@ -19,15 +18,15 @@ final class TestConfiguredContinueSignalWorkflow extends Workflow
 {
     private int $count = 0;
 
-    public function execute(int $count = 0): Generator
+    public function execute(int $count = 0): mixed
     {
         $this->count = $count;
 
         if ($count === 0) {
-            return yield continueAsNew($count + 1);
+            return continueAsNew($count + 1);
         }
 
-        $name = yield awaitSignal('name-provided');
+        $name = awaitSignal('name-provided');
 
         return [
             'name' => $name,

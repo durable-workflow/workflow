@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
@@ -21,12 +20,12 @@ final class TestHistoryReplayedFailureWorkflow extends Workflow
      */
     private array $caught = [];
 
-    public function execute(string $orderId): Generator
+    public function execute(string $orderId): array
     {
         $this->stage = 'running-activity';
 
         try {
-            yield activity(TestReplayedFailureActivity::class, $orderId);
+            activity(TestReplayedFailureActivity::class, $orderId);
         } catch (TestReplayedDomainException $exception) {
             $this->stage = 'waiting-for-resume';
             $this->caught = [
@@ -38,7 +37,7 @@ final class TestHistoryReplayedFailureWorkflow extends Workflow
             ];
         }
 
-        $resume = yield awaitSignal('resume');
+        $resume = awaitSignal('resume');
         $this->stage = 'completed';
 
         return [

@@ -20,6 +20,7 @@ use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestFiberParallelWorkflow;
 use Tests\Fixtures\V2\TestFiberSignalWorkflow;
+use Tests\Fixtures\V2\TestGeneratorWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHandledFailureWorkflow;
@@ -147,6 +148,46 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame([
             'stage' => 'completed',
         ], $workflow->currentState());
+    }
+
+    public function testNamedWorkflowExecutionRejectsGeneratorStyleAuthoring(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGeneratorWorkflow::class, 'generator-style-workflow');
+        $workflow->start('Taylor');
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->failed());
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->latest('created_at')
+            ->firstOrFail();
+
+        $this->assertStringContainsString(TestGeneratorWorkflow::class, $failure->message);
+        $this->assertStringContainsString(
+            'must use straight-line helpers and must not yield',
+            $failure->message,
+        );
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => HistoryEventType::ActivityScheduled->value,
+        ]);
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'WorkflowFailed',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
     }
 
     public function testQueryReplayRejectsActivityHistoryShapeDrift(): void

@@ -11,8 +11,8 @@ use Workflow\V2\Workflow;
 #[Type('test-heartbeat-workflow')]
 final class TestHeartbeatWorkflow extends Workflow
 {
-    public function execute(): \Generator
+    public function execute(): array
     {
-        return yield activity(TestHeartbeatActivity::class);
+        return activity(TestHeartbeatActivity::class);
     }
 }

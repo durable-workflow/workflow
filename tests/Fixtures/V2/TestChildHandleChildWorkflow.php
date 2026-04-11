@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
@@ -17,11 +16,11 @@ final class TestChildHandleChildWorkflow extends Workflow
 {
     private string $stage = 'booting';
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'waiting-for-approval';
 
-        $approvedBy = yield awaitSignal('approved-by');
+        $approvedBy = awaitSignal('approved-by');
 
         $this->stage = 'approved';
 

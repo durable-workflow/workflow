@@ -28,6 +28,7 @@ use Tests\Fixtures\V2\TestParentWaitingOnContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestQueryChildResolutionAuthorityWorkflow;
 use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
+use Tests\Fixtures\V2\TestGeneratorWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestReplayedDomainException;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
@@ -41,6 +42,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Jobs\RunActivityTask;
@@ -82,6 +84,23 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame('waiting-for-name', $workflow->currentStage());
         $this->assertSame(1, $workflow->query('countEventsMatching', 'start'));
         $this->assertSame(0, $workflow->query('countEventsMatching', 'name:'));
+    }
+
+    public function testQueriesRejectGeneratorStyleNamedWorkflowAuthoring(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGeneratorWorkflow::class, 'query-generator-style-workflow');
+        $workflow->start('Taylor');
+
+        $this->expectException(StraightLineWorkflowRequiredException::class);
+        $this->expectExceptionMessage(TestGeneratorWorkflow::class);
+        $this->expectExceptionMessage('must use straight-line helpers and must not yield');
+
+        $workflow->currentState();
     }
 
     public function testQueriesSupportAliasedTargetsNamedArgumentMapsAndDurableContracts(): void

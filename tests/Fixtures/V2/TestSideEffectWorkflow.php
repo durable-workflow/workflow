@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
@@ -32,11 +31,11 @@ final class TestSideEffectWorkflow extends Workflow
         return self::$sideEffectExecutions;
     }
 
-    public function execute(): Generator
+    public function execute(): array
     {
         $this->stage = 'recording-side-effect';
 
-        $this->token = yield sideEffect(function (): int {
+        $this->token = sideEffect(function (): int {
             self::$sideEffectExecutions++;
 
             return self::$sideEffectExecutions;
@@ -44,7 +43,7 @@ final class TestSideEffectWorkflow extends Workflow
 
         $this->stage = 'waiting-for-finish';
 
-        $finish = yield awaitSignal('finish');
+        $finish = awaitSignal('finish');
 
         $this->stage = 'completed';
 

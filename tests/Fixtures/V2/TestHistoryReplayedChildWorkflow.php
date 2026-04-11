@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\child;
@@ -20,10 +19,10 @@ final class TestHistoryReplayedChildWorkflow extends Workflow
      */
     private array $childResult = [];
 
-    public function execute(string $name): Generator
+    public function execute(string $name): array
     {
         $this->stage = 'waiting-for-child';
-        $this->childResult = yield child(TestChildGreetingWorkflow::class, $name);
+        $this->childResult = child(TestChildGreetingWorkflow::class, $name);
         $this->stage = 'completed';
 
         return $this->currentState();

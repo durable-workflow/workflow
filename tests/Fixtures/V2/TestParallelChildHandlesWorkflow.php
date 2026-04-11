@@ -4,22 +4,21 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\all;
-use function Workflow\V2\child;
+use function Workflow\V2\startChild;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-child-handles-workflow')]
 final class TestParallelChildHandlesWorkflow extends Workflow
 {
-    public function execute(): Generator
+    public function execute(): array
     {
-        return yield all([
-            child(TestChildHandleChildWorkflow::class),
-            child(TestChildHandleChildWorkflow::class),
-            child(TestChildHandleChildWorkflow::class),
+        return all([
+            startChild(TestChildHandleChildWorkflow::class),
+            startChild(TestChildHandleChildWorkflow::class),
+            startChild(TestChildHandleChildWorkflow::class),
         ]);
     }
 

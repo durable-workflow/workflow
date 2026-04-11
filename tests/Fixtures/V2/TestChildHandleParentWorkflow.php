@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Type;
@@ -14,9 +13,9 @@ use Workflow\V2\Workflow;
 #[Type('test-child-handle-parent-workflow')]
 final class TestChildHandleParentWorkflow extends Workflow
 {
-    public function execute(): Generator
+    public function execute(): array
     {
-        $child = yield child(TestChildHandleChildWorkflow::class);
+        $child = child(TestChildHandleChildWorkflow::class);
 
         return [
             'parent_workflow_id' => $this->workflowId(),

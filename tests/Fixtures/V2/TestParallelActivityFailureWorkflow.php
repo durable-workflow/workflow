@@ -4,11 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use Generator;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\activity;
 use function Workflow\V2\all;
+use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-activity-failure-workflow')]
@@ -17,14 +16,14 @@ final class TestParallelActivityFailureWorkflow extends Workflow
     private string $stage = 'booting';
     private ?string $message = null;
 
-    public function execute(string $name): Generator
+    public function execute(string $name): array
     {
         $this->stage = 'waiting-for-activities';
 
         try {
-            yield all([
-                activity(TestFailingActivity::class),
-                activity(TestGreetingActivity::class, $name),
+            all([
+                startActivity(TestFailingActivity::class),
+                startActivity(TestGreetingActivity::class, $name),
             ]);
         } catch (\Throwable $throwable) {
             $this->stage = 'caught-activity-failure';
