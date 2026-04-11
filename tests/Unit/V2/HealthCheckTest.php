@@ -13,6 +13,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTimelineEntry;
@@ -219,6 +220,29 @@ final class HealthCheckTest extends TestCase
             'summary' => 'Orphaned timeline row.',
             'recorded_at' => now(),
         ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => 'health-selected-timer',
+            'sequence' => 3,
+            'delay_seconds' => 60,
+            'fire_at' => now()->addMinute()->toJSON(),
+        ]);
+        WorkflowRunTimerEntry::query()->create([
+            'id' => 'health-selected-timer-orphan',
+            'workflow_run_id' => '01JHEALTHSELECTMISS001',
+            'workflow_instance_id' => 'health-selected-missing-instance',
+            'timer_id' => 'health-selected-timer-orphan',
+            'position' => 0,
+            'status' => 'pending',
+            'source_status' => 'pending',
+            'history_authority' => 'typed_history',
+            'payload' => [
+                'id' => 'health-selected-timer-orphan',
+                'status' => 'pending',
+                'source_status' => 'pending',
+                'history_authority' => 'typed_history',
+                'history_event_types' => [],
+            ],
+        ]);
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
             'sequence' => 2,
             'workflow_link_id' => 'health-lineage-missing',
@@ -242,17 +266,21 @@ final class HealthCheckTest extends TestCase
 
         $this->assertSame('warning', $snapshot['status']);
         $this->assertSame('warning', $projection['status']);
-        $this->assertSame(5, $projection['data']['needs_rebuild']);
-        $this->assertSame(1, $projection['data']['run_waits_needs_rebuild']);
-        $this->assertSame(0, $projection['data']['run_waits_missing_runs_with_waits']);
+        $this->assertSame(8, $projection['data']['needs_rebuild']);
+        $this->assertSame(2, $projection['data']['run_waits_needs_rebuild']);
+        $this->assertSame(1, $projection['data']['run_waits_missing_runs_with_waits']);
         $this->assertSame(1, $projection['data']['run_waits_missing_current_open_waits']);
         $this->assertSame(0, $projection['data']['run_waits_stale_projected_runs']);
         $this->assertSame(1, $projection['data']['run_waits_orphaned']);
         $this->assertSame(2, $projection['data']['timeline_needs_rebuild']);
         $this->assertSame(1, $projection['data']['timeline_missing_runs_with_history']);
-        $this->assertSame(2, $projection['data']['timeline_missing_history_events']);
+        $this->assertSame(3, $projection['data']['timeline_missing_history_events']);
         $this->assertSame(0, $projection['data']['timeline_stale_projected_runs']);
         $this->assertSame(1, $projection['data']['timeline_orphaned']);
+        $this->assertSame(2, $projection['data']['timer_needs_rebuild']);
+        $this->assertSame(1, $projection['data']['timer_missing_runs_with_timers']);
+        $this->assertSame(0, $projection['data']['timer_stale_projected_runs']);
+        $this->assertSame(1, $projection['data']['timer_orphaned']);
         $this->assertSame(2, $projection['data']['lineage_needs_rebuild']);
         $this->assertSame(1, $projection['data']['lineage_missing_runs_with_lineage']);
         $this->assertSame(0, $projection['data']['lineage_stale_projected_runs']);

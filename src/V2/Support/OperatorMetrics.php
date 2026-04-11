@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -271,6 +272,7 @@ final class OperatorMetrics
             ],
             'run_waits' => self::runWaitProjectionMetrics(),
             'run_timeline_entries' => self::runTimelineProjectionMetrics(),
+            'run_timer_entries' => self::runTimerProjectionMetrics(),
             'run_lineage_entries' => self::runLineageProjectionMetrics(),
         ];
     }
@@ -334,6 +336,30 @@ final class OperatorMetrics
     /**
      * @return array<string, int|string|null>
      */
+    private static function runTimerProjectionMetrics(): array
+    {
+        $timerModel = self::runTimerEntryModel();
+        $drift = SelectedRunProjectionDrift::timerMetrics();
+        $orphaned = self::projectionRowsMissingRun($timerModel);
+
+        return [
+            'runs' => self::runModel()::query()->count(),
+            'rows' => $timerModel::query()->count(),
+            'projected_runs' => $timerModel::query()->distinct()->count('workflow_run_id'),
+            'runs_with_timers' => $drift['runs_with_timers'],
+            'projected_runs_with_timers' => $drift['projected_runs_with_timers'],
+            'missing_runs_with_timers' => $drift['missing_runs_with_timers'],
+            'stale_projected_runs' => $drift['stale_projected_runs'],
+            'orphaned' => $orphaned,
+            'needs_rebuild' => $drift['missing_runs_with_timers'] + $drift['stale_projected_runs'] + $orphaned,
+            'oldest_updated_at' => self::jsonTimestamp($timerModel::query()->min('updated_at')),
+            'newest_updated_at' => self::jsonTimestamp($timerModel::query()->max('updated_at')),
+        ];
+    }
+
+    /**
+     * @return array<string, int|string|null>
+     */
     private static function runLineageProjectionMetrics(): array
     {
         $lineageModel = self::runLineageEntryModel();
@@ -380,7 +406,7 @@ final class OperatorMetrics
     }
 
     /**
-     * @param class-string<WorkflowRunWait|WorkflowTimelineEntry> $projectionModel
+     * @param class-string<WorkflowRunWait|WorkflowTimelineEntry|WorkflowRunTimerEntry|WorkflowRunLineageEntry> $projectionModel
      */
     private static function projectionRowsMissingRun(string $projectionModel): int
     {
@@ -729,6 +755,17 @@ final class OperatorMetrics
     {
         /** @var class-string<WorkflowTimelineEntry> $model */
         $model = config('workflows.v2.run_timeline_entry_model', WorkflowTimelineEntry::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<WorkflowRunTimerEntry>
+     */
+    private static function runTimerEntryModel(): string
+    {
+        /** @var class-string<WorkflowRunTimerEntry> $model */
+        $model = config('workflows.v2.run_timer_entry_model', WorkflowRunTimerEntry::class);
 
         return $model;
     }

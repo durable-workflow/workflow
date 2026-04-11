@@ -272,6 +272,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame(2, $bundle['summary']['history_event_count']);
         $this->assertSame('workflow_run_waits_rebuilt', $bundle['selected_run']['waits_projection_source']);
         $this->assertSame('workflow_run_timeline_entries_rebuilt', $bundle['selected_run']['timeline_projection_source']);
+        $this->assertSame('workflow_run_timer_entries', $bundle['selected_run']['timers_projection_source']);
         $this->assertSame('workflow_run_lineage_entries_rebuilt', $bundle['selected_run']['lineage_projection_source']);
         $this->assertSame(['activity', 'child'], array_column($bundle['waits'], 'kind'));
         $this->assertSame(['unsupported', 'unsupported'], array_column($bundle['waits'], 'status'));

@@ -18,6 +18,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -359,6 +360,68 @@ final class V2OperatorMetricsTest extends TestCase
         ]);
         WorkflowHistoryEvent::record(
             $missingWaitRun,
+            HistoryEventType::TimerScheduled,
+            [
+                'timer_id' => 'projection-timer-missing',
+                'sequence' => 11,
+                'delay_seconds' => 60,
+                'fire_at' => now()->addMinute()->toJSON(),
+            ],
+        );
+        WorkflowHistoryEvent::record(
+            $projectedWaitRun,
+            HistoryEventType::TimerScheduled,
+            [
+                'timer_id' => 'projection-timer-projected',
+                'sequence' => 12,
+                'delay_seconds' => 90,
+                'fire_at' => now()->addSeconds(90)->toJSON(),
+            ],
+        );
+        WorkflowRunTimerEntry::query()->create([
+            'id' => 'projection-timer-valid-row',
+            'workflow_run_id' => $projectedWaitRun->id,
+            'workflow_instance_id' => $projectedWaitRun->workflow_instance_id,
+            'timer_id' => 'projection-timer-projected',
+            'position' => 0,
+            'sequence' => 12,
+            'status' => 'fired',
+            'source_status' => 'fired',
+            'delay_seconds' => 90,
+            'fire_at' => now()->addSeconds(90),
+            'fired_at' => now(),
+            'history_authority' => 'typed_history',
+            'payload' => [
+                'id' => 'projection-timer-projected',
+                'sequence' => 12,
+                'status' => 'fired',
+                'source_status' => 'fired',
+                'delay_seconds' => 90,
+                'fire_at' => now()->addSeconds(90)->toJSON(),
+                'fired_at' => now()->toJSON(),
+                'history_authority' => 'typed_history',
+                'history_event_types' => ['TimerScheduled'],
+            ],
+        ]);
+        WorkflowRunTimerEntry::query()->create([
+            'id' => 'projection-timer-orphan-row',
+            'workflow_run_id' => '01JMETRICSPROJTIMERGONE01',
+            'workflow_instance_id' => 'metrics-timer-orphan-instance',
+            'timer_id' => 'projection-timer-orphan',
+            'position' => 0,
+            'status' => 'pending',
+            'source_status' => 'pending',
+            'history_authority' => 'typed_history',
+            'payload' => [
+                'id' => 'projection-timer-orphan',
+                'status' => 'pending',
+                'source_status' => 'pending',
+                'history_authority' => 'typed_history',
+                'history_event_types' => [],
+            ],
+        ]);
+        WorkflowHistoryEvent::record(
+            $missingWaitRun,
             HistoryEventType::WorkflowContinuedAsNew,
             [
                 'sequence' => 3,
@@ -384,7 +447,7 @@ final class V2OperatorMetricsTest extends TestCase
             'position' => 0,
             'link_type' => 'continue_as_new',
             'related_workflow_instance_id' => $projectedWaitRun->workflow_instance_id,
-            'related_workflow_run_id' => 'projection-lineage-valid-stale',
+            'related_workflow_run_id' => '01JPROJLINEAGESTALERUN001',
             'payload' => [],
         ]);
         WorkflowRunLineageEntry::query()->create([
@@ -396,7 +459,7 @@ final class V2OperatorMetricsTest extends TestCase
             'position' => 0,
             'link_type' => 'continue_as_new',
             'related_workflow_instance_id' => 'metrics-lineage-orphan-instance',
-            'related_workflow_run_id' => 'projection-lineage-orphan-current',
+            'related_workflow_run_id' => '01JPROJLINEAGEORPHCURR001',
             'payload' => [],
         ]);
 
@@ -405,27 +468,37 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(2, $snapshot['projections']['run_waits']['runs']);
         $this->assertSame(2, $snapshot['projections']['run_waits']['rows']);
         $this->assertSame(2, $snapshot['projections']['run_waits']['projected_runs']);
-        $this->assertSame(0, $snapshot['projections']['run_waits']['runs_with_waits']);
-        $this->assertSame(0, $snapshot['projections']['run_waits']['projected_runs_with_waits']);
-        $this->assertSame(0, $snapshot['projections']['run_waits']['missing_runs_with_waits']);
+        $this->assertSame(2, $snapshot['projections']['run_waits']['runs_with_waits']);
+        $this->assertSame(1, $snapshot['projections']['run_waits']['projected_runs_with_waits']);
+        $this->assertSame(1, $snapshot['projections']['run_waits']['missing_runs_with_waits']);
         $this->assertSame(2, $snapshot['projections']['run_waits']['summaries_with_open_waits']);
         $this->assertSame(1, $snapshot['projections']['run_waits']['projected_current_open_waits']);
         $this->assertSame(1, $snapshot['projections']['run_waits']['missing_current_open_waits']);
         $this->assertSame(1, $snapshot['projections']['run_waits']['stale_projected_runs']);
         $this->assertSame(1, $snapshot['projections']['run_waits']['orphaned']);
-        $this->assertSame(2, $snapshot['projections']['run_waits']['needs_rebuild']);
+        $this->assertSame(3, $snapshot['projections']['run_waits']['needs_rebuild']);
 
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['runs']);
-        $this->assertSame(4, $snapshot['projections']['run_timeline_entries']['history_events']);
+        $this->assertSame(6, $snapshot['projections']['run_timeline_entries']['history_events']);
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['rows']);
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['projected_runs']);
         $this->assertSame(2, $snapshot['projections']['run_timeline_entries']['runs_with_history']);
         $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['projected_runs_with_history']);
         $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['missing_runs_with_history']);
-        $this->assertSame(3, $snapshot['projections']['run_timeline_entries']['missing_history_events']);
+        $this->assertSame(5, $snapshot['projections']['run_timeline_entries']['missing_history_events']);
         $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['stale_projected_runs']);
         $this->assertSame(1, $snapshot['projections']['run_timeline_entries']['orphaned']);
         $this->assertSame(3, $snapshot['projections']['run_timeline_entries']['needs_rebuild']);
+
+        $this->assertSame(2, $snapshot['projections']['run_timer_entries']['runs']);
+        $this->assertSame(2, $snapshot['projections']['run_timer_entries']['rows']);
+        $this->assertSame(2, $snapshot['projections']['run_timer_entries']['projected_runs']);
+        $this->assertSame(2, $snapshot['projections']['run_timer_entries']['runs_with_timers']);
+        $this->assertSame(1, $snapshot['projections']['run_timer_entries']['projected_runs_with_timers']);
+        $this->assertSame(1, $snapshot['projections']['run_timer_entries']['missing_runs_with_timers']);
+        $this->assertSame(1, $snapshot['projections']['run_timer_entries']['stale_projected_runs']);
+        $this->assertSame(1, $snapshot['projections']['run_timer_entries']['orphaned']);
+        $this->assertSame(3, $snapshot['projections']['run_timer_entries']['needs_rebuild']);
 
         $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['runs']);
         $this->assertSame(2, $snapshot['projections']['run_lineage_entries']['rows']);

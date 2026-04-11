@@ -29,6 +29,7 @@ final class RunDetailView
             'historyEvents',
             'waits',
             'timelineEntries',
+            'timerEntries',
             'lineageEntries',
             'parentLinks.parentRun.summary',
             'childLinks.childRun.summary',
@@ -108,6 +109,7 @@ final class RunDetailView
                 'continue_as_new_recommended' => (bool) $summary->continue_as_new_recommended,
             ];
         $timelineSnapshot = $selectedRun['timeline'];
+        $timerSnapshot = $selectedRun['timers'];
         $lineageSnapshot = $selectedRun['lineage'];
 
         return [
@@ -289,6 +291,7 @@ final class RunDetailView
             'timeline_scope' => 'selected_run',
             'timeline_projection_source' => $timelineSnapshot['source'],
             'timeline' => $timelineSnapshot['timeline'],
+            'timers_projection_source' => $timerSnapshot['source'],
             'logs' => RunActivityView::logsFromActivities($activities),
             'exceptions' => collect($failureSnapshots)
                 ->map(static function (array $failure) use ($activityClasses): array {
@@ -312,26 +315,7 @@ final class RunDetailView
                 ->values(),
             'lineage_scope' => 'selected_run',
             'lineage_projection_source' => $lineageSnapshot['source'],
-            'timers' => collect(RunTimerView::timersForRun($run))
-                ->map(static fn (array $timer): array => [
-                    'id' => $timer['id'],
-                    'sequence' => $timer['sequence'],
-                    'status' => $timer['status'],
-                    'source_status' => $timer['source_status'] ?? $timer['status'],
-                    'delay_seconds' => $timer['delay_seconds'],
-                    'fire_at' => $timer['fire_at'],
-                    'fired_at' => $timer['fired_at'],
-                    'cancelled_at' => $timer['cancelled_at'] ?? null,
-                    'timer_kind' => $timer['timer_kind'] ?? null,
-                    'condition_wait_id' => $timer['condition_wait_id'] ?? null,
-                    'condition_key' => $timer['condition_key'] ?? null,
-                    'condition_definition_fingerprint' => $timer['condition_definition_fingerprint'] ?? null,
-                    'history_authority' => $timer['history_authority'] ?? null,
-                    'history_event_types' => $timer['history_event_types'] ?? [],
-                    'history_unsupported_reason' => $timer['history_unsupported_reason'] ?? null,
-                    'row_status' => $timer['row_status'] ?? null,
-                ])
-                ->values(),
+            'timers' => $timerSnapshot['timers'],
             'parents' => $lineageSnapshot['parents'],
             'continuedWorkflows' => $lineageSnapshot['continued_workflows'],
             'chartData' => self::chartData($run, $activities),

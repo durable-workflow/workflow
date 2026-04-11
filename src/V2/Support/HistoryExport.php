@@ -50,6 +50,7 @@ final class HistoryExport
             'timers',
             'failures',
             'historyEvents',
+            'timerEntries',
             'parentLinks',
             'childLinks',
         ]);
@@ -60,6 +61,7 @@ final class HistoryExport
         $currentRun = $currentRunResolution['run'];
         $waitSnapshot = $selectedRun['waits'];
         $timelineSnapshot = $selectedRun['timeline'];
+        $timerSnapshot = $selectedRun['timers'];
         $lineageSnapshot = $selectedRun['lineage'];
 
         $bundle = [
@@ -108,6 +110,7 @@ final class HistoryExport
             'selected_run' => [
                 'waits_projection_source' => $waitSnapshot['source'],
                 'timeline_projection_source' => $timelineSnapshot['source'],
+                'timers_projection_source' => $timerSnapshot['source'],
                 'lineage_projection_source' => $lineageSnapshot['source'],
             ],
             'history_events' => $run->historyEvents
@@ -136,7 +139,7 @@ final class HistoryExport
                 ->map(static fn (array $activity): array => self::activity($activity))
                 ->values()
                 ->all(),
-            'timers' => collect(RunTimerView::timersForRun($run))
+            'timers' => collect($timerSnapshot['timers'])
                 ->map(static fn (array $timer): array => self::timer($timer))
                 ->values()
                 ->all(),

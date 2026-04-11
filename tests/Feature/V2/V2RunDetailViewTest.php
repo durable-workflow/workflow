@@ -45,6 +45,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSignal;
@@ -514,6 +515,71 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertContains($fallbackDetail['waits_projection_source'], [
             'workflow_run_waits',
             'workflow_run_waits_rebuilt',
+        ]);
+    }
+
+    public function testRunDetailViewReadsTimerRowsFromRebuildableProjection(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-projected-timer');
+        $workflow->start(60);
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->runNextReadyTask();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()
+            ->with('summary')
+            ->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+
+        $this->assertSame('workflow_run_timer_entries', $detail['timers_projection_source']);
+        $this->assertCount(1, $detail['timers']);
+        $this->assertDatabaseHas('workflow_run_timer_entries', [
+            'workflow_run_id' => $runId,
+            'workflow_instance_id' => 'detail-projected-timer',
+            'timer_id' => $detail['timers'][0]['id'],
+            'status' => 'pending',
+            'source_status' => 'pending',
+            'history_authority' => 'typed_history',
+        ]);
+
+        WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        $projectedDetail = RunDetailView::forRun(
+            WorkflowRun::query()
+                ->with(['summary', 'timerEntries'])
+                ->findOrFail($runId)
+        );
+
+        $this->assertSame('workflow_run_timer_entries_rebuilt', $projectedDetail['timers_projection_source']);
+        $this->assertCount(1, $projectedDetail['timers']);
+        $this->assertSame($detail['timers'][0]['id'], $projectedDetail['timers'][0]['id']);
+        $this->assertSame('pending', $projectedDetail['timers'][0]['status']);
+        $this->assertSame('typed_history', $projectedDetail['timers'][0]['history_authority']);
+
+        WorkflowRunTimerEntry::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        $fallbackDetail = RunDetailView::forRun(
+            WorkflowRun::query()
+                ->with('summary')
+                ->findOrFail($runId)
+        );
+
+        $this->assertSame('workflow_run_timer_entries_rebuilt', $fallbackDetail['timers_projection_source']);
+        $this->assertCount(1, $fallbackDetail['timers']);
+        $this->assertDatabaseHas('workflow_run_timer_entries', [
+            'workflow_run_id' => $runId,
+            'timer_id' => $detail['timers'][0]['id'],
         ]);
     }
 

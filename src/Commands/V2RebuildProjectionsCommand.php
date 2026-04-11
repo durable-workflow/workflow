@@ -11,6 +11,7 @@ use Throwable;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTimelineEntry;
@@ -25,7 +26,7 @@ class V2RebuildProjectionsCommand extends Command
         {--run-id=* : Rebuild one or more selected workflow run ids}
         {--instance-id= : Rebuild every run for one workflow instance id}
         {--missing : Only rebuild runs that do not have a run-summary row}
-        {--needs-rebuild : Only rebuild runs whose summary, wait, timeline, or lineage projections need rebuild}
+        {--needs-rebuild : Only rebuild runs whose summary, wait, timeline, timer, or lineage projections need rebuild}
         {--prune-stale : Delete projection rows whose durable workflow run or history row no longer exists}
         {--dry-run : Report the affected rows without changing projection tables}
         {--json : Output the rebuild report as JSON}';
@@ -55,6 +56,8 @@ class V2RebuildProjectionsCommand extends Command
             'run_waits_would_prune' => 0,
             'run_timeline_entries_pruned' => 0,
             'run_timeline_entries_would_prune' => 0,
+            'run_timer_entries_pruned' => 0,
+            'run_timer_entries_would_prune' => 0,
             'run_lineage_entries_pruned' => 0,
             'run_lineage_entries_would_prune' => 0,
             'failures' => [],
@@ -85,6 +88,9 @@ class V2RebuildProjectionsCommand extends Command
             $staleTimelineQuery = $this->staleTimelineQuery($runIds, $instanceId);
             $timelineTable = $this->tableFor($this->runTimelineEntryModel());
             $staleTimelineCount = (clone $staleTimelineQuery)->count(sprintf('%s.id', $timelineTable));
+            $staleTimerQuery = $this->staleTimerQuery($runIds, $instanceId);
+            $timerTable = $this->tableFor($this->runTimerEntryModel());
+            $staleTimerCount = (clone $staleTimerQuery)->count(sprintf('%s.id', $timerTable));
             $staleLineageQuery = $this->staleLineageQuery($runIds, $instanceId);
             $lineageTable = $this->tableFor($this->runLineageEntryModel());
             $staleLineageCount = (clone $staleLineageQuery)->count(sprintf('%s.id', $lineageTable));
@@ -93,6 +99,7 @@ class V2RebuildProjectionsCommand extends Command
                 $report['run_summaries_would_prune'] = $staleCount;
                 $report['run_waits_would_prune'] = $staleWaitCount;
                 $report['run_timeline_entries_would_prune'] = $staleTimelineCount;
+                $report['run_timer_entries_would_prune'] = $staleTimerCount;
                 $report['run_lineage_entries_would_prune'] = $staleLineageCount;
             } else {
                 $report['run_summaries_pruned'] = $staleQuery->delete();
@@ -105,6 +112,11 @@ class V2RebuildProjectionsCommand extends Command
                     $staleTimelineQuery,
                     $this->runTimelineEntryModel(),
                     $timelineTable,
+                );
+                $report['run_timer_entries_pruned'] = $this->deleteProjectionRows(
+                    $staleTimerQuery,
+                    $this->runTimerEntryModel(),
+                    $timerTable,
                 );
                 $report['run_lineage_entries_pruned'] = $this->deleteProjectionRows(
                     $staleLineageQuery,
@@ -156,10 +168,12 @@ class V2RebuildProjectionsCommand extends Command
                 ->select(sprintf('%s.id', $summaryTable));
             $selectedRunWaitIds = SelectedRunProjectionDrift::waitRunIdsNeedingRebuild($runIds, $instanceId);
             $selectedRunTimelineIds = SelectedRunProjectionDrift::timelineRunIdsNeedingRebuild($runIds, $instanceId);
+            $selectedRunTimerIds = SelectedRunProjectionDrift::timerRunIdsNeedingRebuild($runIds, $instanceId);
             $selectedRunLineageIds = SelectedRunProjectionDrift::lineageRunIdsNeedingRebuild($runIds, $instanceId);
 
             $query->where(static function ($query) use (
                 $selectedRunLineageIds,
+                $selectedRunTimerIds,
                 $selectedRunTimelineIds,
                 $selectedRunWaitIds,
                 $summaryModel,
@@ -175,6 +189,10 @@ class V2RebuildProjectionsCommand extends Command
 
                 if ($selectedRunTimelineIds !== []) {
                     $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunTimelineIds);
+                }
+
+                if ($selectedRunTimerIds !== []) {
+                    $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunTimerIds);
                 }
 
                 if ($selectedRunLineageIds !== []) {
@@ -267,6 +285,31 @@ class V2RebuildProjectionsCommand extends Command
 
         if ($instanceId !== null) {
             $query->where(sprintf('%s.workflow_instance_id', $timelineTable), $instanceId);
+        }
+
+        return $query;
+    }
+
+    /**
+     * @param list<string> $runIds
+     */
+    private function staleTimerQuery(array $runIds, ?string $instanceId)
+    {
+        $runModel = $this->runModel();
+        $timerModel = $this->runTimerEntryModel();
+        $runTable = $this->tableFor($runModel);
+        $timerTable = $this->tableFor($timerModel);
+
+        $query = $timerModel::query()
+            ->leftJoin($runTable, sprintf('%s.workflow_run_id', $timerTable), '=', sprintf('%s.id', $runTable))
+            ->whereNull(sprintf('%s.id', $runTable));
+
+        if ($runIds !== []) {
+            $query->whereIn(sprintf('%s.workflow_run_id', $timerTable), $runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->where(sprintf('%s.workflow_instance_id', $timerTable), $instanceId);
         }
 
         return $query;
@@ -374,6 +417,17 @@ class V2RebuildProjectionsCommand extends Command
     }
 
     /**
+     * @return class-string<WorkflowRunTimerEntry>
+     */
+    private function runTimerEntryModel(): string
+    {
+        /** @var class-string<WorkflowRunTimerEntry> $model */
+        $model = config('workflows.v2.run_timer_entry_model', WorkflowRunTimerEntry::class);
+
+        return $model;
+    }
+
+    /**
      * @return class-string<WorkflowRunLineageEntry>
      */
     private function runLineageEntryModel(): string
@@ -428,6 +482,8 @@ class V2RebuildProjectionsCommand extends Command
      *     run_waits_would_prune: int,
      *     run_timeline_entries_pruned: int,
      *     run_timeline_entries_would_prune: int,
+     *     run_timer_entries_pruned: int,
+     *     run_timer_entries_would_prune: int,
      *     run_lineage_entries_pruned: int,
      *     run_lineage_entries_would_prune: int,
      *     failures: list<array{run_id: string, message: string}>
@@ -472,6 +528,13 @@ class V2RebuildProjectionsCommand extends Command
                 ));
             }
 
+            if ($report['run_timer_entries_would_prune'] > 0) {
+                $this->info(sprintf(
+                    'Would prune %d stale timer projection row(s).',
+                    $report['run_timer_entries_would_prune'],
+                ));
+            }
+
             if ($report['run_lineage_entries_would_prune'] > 0) {
                 $this->info(sprintf(
                     'Would prune %d stale lineage projection row(s).',
@@ -499,6 +562,13 @@ class V2RebuildProjectionsCommand extends Command
                 $this->info(sprintf(
                     'Pruned %d stale timeline projection row(s).',
                     $report['run_timeline_entries_pruned'],
+                ));
+            }
+
+            if ($report['run_timer_entries_pruned'] > 0) {
+                $this->info(sprintf(
+                    'Pruned %d stale timer projection row(s).',
+                    $report['run_timer_entries_pruned'],
                 ));
             }
 

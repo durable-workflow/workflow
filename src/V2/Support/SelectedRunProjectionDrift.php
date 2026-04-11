@@ -125,6 +125,52 @@ final class SelectedRunProjectionDrift
     /**
      * @param list<string> $runIds
      * @return array{
+     *     runs_with_timers: int,
+     *     projected_runs_with_timers: int,
+     *     missing_runs_with_timers: int,
+     *     stale_projected_runs: int
+     * }
+     */
+    public static function timerMetrics(array $runIds = [], ?string $instanceId = null): array
+    {
+        $analysis = self::analyze(
+            self::runQuery([
+                'timerEntries',
+                'timers',
+                'historyEvents',
+            ], $runIds, $instanceId),
+            static fn (WorkflowRun $run): array => SelectedRunSnapshot::timerDriftStatus($run),
+        );
+
+        return [
+            'runs_with_timers' => $analysis['runs_with_canonical'],
+            'projected_runs_with_timers' => $analysis['projected_runs_with_canonical'],
+            'missing_runs_with_timers' => count($analysis['missing_run_ids']),
+            'stale_projected_runs' => count($analysis['stale_run_ids']),
+        ];
+    }
+
+    /**
+     * @param list<string> $runIds
+     * @return list<string>
+     */
+    public static function timerRunIdsNeedingRebuild(array $runIds = [], ?string $instanceId = null): array
+    {
+        return self::runIdsNeedingRebuild(
+            self::analyze(
+                self::runQuery([
+                    'timerEntries',
+                    'timers',
+                    'historyEvents',
+                ], $runIds, $instanceId),
+                static fn (WorkflowRun $run): array => SelectedRunSnapshot::timerDriftStatus($run),
+            ),
+        );
+    }
+
+    /**
+     * @param list<string> $runIds
+     * @return array{
      *     runs_with_lineage: int,
      *     projected_runs_with_lineage: int,
      *     missing_runs_with_lineage: int,

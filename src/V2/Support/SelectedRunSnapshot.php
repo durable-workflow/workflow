@@ -18,6 +18,7 @@ final class SelectedRunSnapshot
      *     },
      *     waits: array{source: string, waits: list<array<string, mixed>>},
      *     timeline: array{source: string, timeline: list<array<string, mixed>>},
+     *     timers: array{source: string, timers: list<array<string, mixed>>},
      *     lineage: array{
      *         source: string,
      *         parents: list<array<string, mixed>>,
@@ -31,6 +32,7 @@ final class SelectedRunSnapshot
             'current_run' => self::currentRun($run),
             'waits' => self::waits($run),
             'timeline' => self::timeline($run),
+            'timers' => self::timers($run),
             'lineage' => self::lineage($run),
         ];
     }
@@ -73,6 +75,14 @@ final class SelectedRunSnapshot
     }
 
     /**
+     * @return array{source: string, timers: list<array<string, mixed>>}
+     */
+    public static function timers(WorkflowRun $run): array
+    {
+        return RunTimerProjector::snapshotForRun($run);
+    }
+
+    /**
      * @return array{
      *     source: string,
      *     parents: list<array<string, mixed>>,
@@ -98,6 +108,14 @@ final class SelectedRunSnapshot
     public static function timelineDriftStatus(WorkflowRun $run): array
     {
         return RunTimelineProjector::driftStatusForRun($run);
+    }
+
+    /**
+     * @return array{has_projection: bool, has_canonical: bool, missing: bool, stale: bool}
+     */
+    public static function timerDriftStatus(WorkflowRun $run): array
+    {
+        return RunTimerProjector::driftStatusForRun($run);
     }
 
     /**

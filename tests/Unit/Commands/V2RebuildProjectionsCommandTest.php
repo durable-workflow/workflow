@@ -16,6 +16,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTimelineEntry;
@@ -80,6 +81,23 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'summary' => 'Deleted run timeline row.',
             'recorded_at' => now(),
         ]);
+        WorkflowRunTimerEntry::query()->create([
+            'id' => 'projection-command-stale-timer',
+            'workflow_run_id' => $staleRunId,
+            'workflow_instance_id' => $instance->id,
+            'timer_id' => 'deleted-timer',
+            'position' => 0,
+            'status' => 'pending',
+            'source_status' => 'pending',
+            'history_authority' => 'typed_history',
+            'payload' => [
+                'id' => 'deleted-timer',
+                'status' => 'pending',
+                'source_status' => 'pending',
+                'history_authority' => 'typed_history',
+                'history_event_types' => [],
+            ],
+        ]);
         WorkflowRunLineageEntry::query()->create([
             'id' => 'projection-command-stale-lineage',
             'workflow_run_id' => $staleRunId,
@@ -100,6 +118,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             ->expectsOutput('Pruned 1 stale run-summary projection row(s).')
             ->expectsOutput('Pruned 1 stale wait projection row(s).')
             ->expectsOutput('Pruned 1 stale timeline projection row(s).')
+            ->expectsOutput('Pruned 1 stale timer projection row(s).')
             ->expectsOutput('Pruned 1 stale lineage projection row(s).')
             ->assertSuccessful();
 
@@ -135,6 +154,9 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         $this->assertDatabaseMissing('workflow_run_timeline_entries', [
             'id' => 'projection-command-stale-timeline',
         ]);
+        $this->assertDatabaseMissing('workflow_run_timer_entries', [
+            'id' => 'projection-command-stale-timer',
+        ]);
         $this->assertDatabaseMissing('workflow_run_lineage_entries', [
             'id' => 'projection-command-stale-lineage',
         ]);
@@ -155,6 +177,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'run_waits_would_prune' => 0,
             'run_timeline_entries_pruned' => 0,
             'run_timeline_entries_would_prune' => 0,
+            'run_timer_entries_pruned' => 0,
+            'run_timer_entries_would_prune' => 0,
             'run_lineage_entries_pruned' => 0,
             'run_lineage_entries_would_prune' => 0,
             'failures' => [],

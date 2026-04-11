@@ -124,6 +124,13 @@ class WorkflowRun extends Model
             ->orderBy('history_event_id');
     }
 
+    public function timerEntries(): HasMany
+    {
+        return $this->hasMany(WorkflowRunTimerEntry::class, 'workflow_run_id')
+            ->orderBy('position')
+            ->orderBy('timer_id');
+    }
+
     public function lineageEntries(): HasMany
     {
         return $this->hasMany(WorkflowRunLineageEntry::class, 'workflow_run_id')
