@@ -52,6 +52,8 @@ final class CommandContractBackfillSweep
                     $report['backfilled']++;
                 }
             } catch (Throwable $throwable) {
+                report($throwable);
+
                 $report['failures'][] = [
                     'run_id' => $run->id,
                     'message' => $throwable->getMessage(),

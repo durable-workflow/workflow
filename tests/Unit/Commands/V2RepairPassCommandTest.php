@@ -7,6 +7,7 @@ namespace Tests\Unit\Commands;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -327,6 +328,72 @@ final class V2RepairPassCommandTest extends TestCase
         $this->assertSame(['mark-approved'], $started->payload['declared_updates'] ?? null);
         $this->assertSame('mark-approved', $started->payload['declared_update_contracts'][0]['name'] ?? null);
         Queue::assertNothingPushed();
+    }
+
+    public function testItFailsRepairPassWhenMissingTaskRepairThrows(): void
+    {
+        Queue::fake();
+
+        WorkflowRunSummary::query()->create([
+            'id' => '01JREPAIRPASSMISSINGFAIL001',
+            'workflow_instance_id' => 'repair-pass-missing-failure',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'test-command-target-workflow',
+            'status' => RunStatus::Waiting->value,
+            'status_bucket' => 'running',
+            'connection' => 'redis',
+            'queue' => 'default',
+            'liveness_state' => 'repair_needed',
+            'liveness_reason' => 'Repair candidate is missing its durable run row.',
+            'started_at' => now()->subMinute(),
+            'created_at' => now()->subMinute(),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        $report = TaskWatchdog::runPass(runIds: ['01JREPAIRPASSMISSINGFAIL001']);
+
+        $this->assertSame([], $report['existing_task_failures']);
+        $this->assertCount(1, $report['missing_run_failures']);
+        $this->assertSame('01JREPAIRPASSMISSINGFAIL001', $report['missing_run_failures'][0]['run_id']);
+        $this->assertStringContainsString(
+            'No query results for model',
+            $report['missing_run_failures'][0]['message'],
+        );
+
+        $this->artisan('workflow:v2:repair-pass', [
+            '--run-id' => ['01JREPAIRPASSMISSINGFAIL001'],
+            '--json' => true,
+        ])->assertFailed();
+    }
+
+    public function testItFailsRepairPassWhenCommandContractBackfillThrows(): void
+    {
+        Queue::fake();
+        config()->set('workflows.v2.history_event_model', ThrowingWorkflowHistoryEvent::class);
+
+        $run = $this->createLegacyContractRun('repair-pass-command-contract-failure');
+
+        $report = TaskWatchdog::runPass(runIds: [$run->id]);
+
+        $this->assertSame([], $report['existing_task_failures']);
+        $this->assertSame([], $report['missing_run_failures']);
+        $this->assertSame(1, $report['selected_command_contract_candidates']);
+        $this->assertSame(0, $report['backfilled_command_contracts']);
+        $this->assertSame(0, $report['command_contract_backfill_unavailable']);
+        $this->assertCount(1, $report['command_contract_failures']);
+        $this->assertSame($run->id, $report['command_contract_failures'][0]['run_id']);
+        $this->assertSame(
+            'Simulated command-contract backfill write failure.',
+            $report['command_contract_failures'][0]['message'],
+        );
+
+        $this->artisan('workflow:v2:repair-pass', [
+            '--run-id' => [$run->id],
+            '--json' => true,
+        ])->assertFailed();
     }
 
     public function testItBackfillsLegacySignalLifecyclesBeforeRepairingMissingTasks(): void
@@ -714,5 +781,13 @@ final class V2RepairPassCommandTest extends TestCase
         ]);
 
         return $run->refresh();
+    }
+}
+
+final class ThrowingWorkflowHistoryEvent extends WorkflowHistoryEvent
+{
+    public function save(array $options = []): bool
+    {
+        throw new RuntimeException('Simulated command-contract backfill write failure.');
     }
 }

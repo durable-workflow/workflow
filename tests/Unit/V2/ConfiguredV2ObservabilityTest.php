@@ -445,6 +445,14 @@ final class ConfiguredV2ObservabilityTest extends TestCase
                 ->nullable();
             $table->string('repair_blocked_reason')
                 ->nullable();
+            $table->string('declared_entry_mode')
+                ->nullable();
+            $table->string('declared_contract_source')
+                ->nullable();
+            $table->boolean('declared_contract_backfill_needed')
+                ->default(false);
+            $table->boolean('declared_contract_backfill_available')
+                ->default(false);
             $table->unsignedInteger('history_event_count')
                 ->default(0);
             $table->unsignedBigInteger('history_size_bytes')

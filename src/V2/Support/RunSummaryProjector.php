@@ -253,6 +253,8 @@ final class RunSummaryProjector
 
         $statusBucket = $run->status->statusBucket();
         $historyBudget = HistoryBudget::forRun($run);
+        $commandContract = RunCommandContract::forRun($run);
+        $commandContractBackfill = RunCommandContract::historyBackfillState($run);
 
         $durationMs = null;
 
@@ -279,6 +281,10 @@ final class RunSummaryProjector
                 'business_key' => $run->business_key ?? $run->instance?->business_key,
                 'visibility_labels' => $run->visibility_labels ?? $run->instance?->visibility_labels,
                 'compatibility' => $run->compatibility,
+                'declared_entry_mode' => $commandContract['entry_mode'],
+                'declared_contract_source' => $commandContract['source'],
+                'declared_contract_backfill_needed' => $commandContractBackfill['needed'],
+                'declared_contract_backfill_available' => $commandContractBackfill['available'],
                 'status' => $run->status->value,
                 'status_bucket' => $statusBucket->value,
                 'closed_reason' => $run->closed_reason,

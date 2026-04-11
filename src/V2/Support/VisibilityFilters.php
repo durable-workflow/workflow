@@ -28,6 +28,8 @@ final class VisibilityFilters
         'workflow_type' => 'Workflow Type',
         'business_key' => 'Business Key',
         'compatibility' => 'Compatibility',
+        'declared_entry_mode' => 'Entry Mode',
+        'declared_contract_source' => 'Command Contract Source',
         'queue' => 'Queue',
         'connection' => 'Connection',
         'status' => 'Status',
@@ -36,6 +38,8 @@ final class VisibilityFilters
         'wait_kind' => 'Wait Kind',
         'liveness_state' => 'Liveness State',
         'repair_blocked_reason' => 'Repair Blocked Reason',
+        'declared_contract_backfill_needed' => 'Command Contract Backfill Needed',
+        'declared_contract_backfill_available' => 'Command Contract Backfill Available',
         'continue_as_new_recommended' => 'Continue As New Recommended',
         'archived' => 'Archived',
         'is_terminal' => 'Terminal',
@@ -47,6 +51,8 @@ final class VisibilityFilters
         'workflow_type',
         'business_key',
         'compatibility',
+        'declared_entry_mode',
+        'declared_contract_source',
         'queue',
         'connection',
         'status',
@@ -59,6 +65,8 @@ final class VisibilityFilters
 
     private const BOOLEAN_FIELDS = [
         'is_current_run',
+        'declared_contract_backfill_needed',
+        'declared_contract_backfill_available',
         'continue_as_new_recommended',
         'archived',
         'is_terminal',
@@ -472,6 +480,30 @@ final class VisibilityFilters
             ],
             'repair_blocked_reason' => [
                 ...RepairBlockedReason::filterOptions(),
+            ],
+            'declared_entry_mode' => [
+                [
+                    'label' => 'Canonical',
+                    'value' => 'canonical',
+                ],
+                [
+                    'label' => 'Compatibility',
+                    'value' => 'compatibility',
+                ],
+            ],
+            'declared_contract_source' => [
+                [
+                    'label' => 'Durable History',
+                    'value' => RunCommandContract::SOURCE_DURABLE_HISTORY,
+                ],
+                [
+                    'label' => 'Live Definition',
+                    'value' => RunCommandContract::SOURCE_LIVE_DEFINITION,
+                ],
+                [
+                    'label' => 'Unavailable',
+                    'value' => RunCommandContract::SOURCE_UNAVAILABLE,
+                ],
             ],
             default => [],
         };

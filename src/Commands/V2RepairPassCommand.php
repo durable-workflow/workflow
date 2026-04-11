@@ -46,6 +46,7 @@ class V2RepairPassCommand extends Command
 
         return $report['existing_task_failures'] === []
             && $report['missing_run_failures'] === []
+            && $report['command_contract_failures'] === []
             ? self::SUCCESS
             : self::FAILURE;
     }

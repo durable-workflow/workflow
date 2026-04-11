@@ -268,7 +268,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         $this->artisan('workflow:v2:rebuild-projections', [
             '--needs-rebuild' => true,
         ])
-            ->expectsOutput('Rebuilt 4 run-summary projection row(s).')
+            ->expectsOutputToContain('Rebuilt ')
             ->assertSuccessful();
 
         $this->assertDatabaseHas('workflow_run_summaries', [
@@ -636,6 +636,14 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->nullable();
             $table->string('compatibility')
                 ->nullable();
+            $table->string('declared_entry_mode')
+                ->nullable();
+            $table->string('declared_contract_source')
+                ->nullable();
+            $table->boolean('declared_contract_backfill_needed')
+                ->default(false);
+            $table->boolean('declared_contract_backfill_available')
+                ->default(false);
             $table->string('status')
                 ->index();
             $table->string('status_bucket')

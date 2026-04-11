@@ -167,6 +167,8 @@ final class TaskWatchdog
                 TaskDispatcher::dispatch($task);
             }
         } catch (Throwable $throwable) {
+            report($throwable);
+
             WorkflowTask::query()
                 ->whereKey($candidateId)
                 ->update([
@@ -216,12 +218,12 @@ final class TaskWatchdog
             if ($task instanceof WorkflowTask) {
                 TaskDispatcher::dispatch($task);
             }
-        } catch (Throwable) {
-            // A later worker loop will retry the same durable run summary candidate.
+        } catch (Throwable $throwable) {
+            report($throwable);
 
             return [
                 'task' => null,
-                'error' => null,
+                'error' => $throwable->getMessage(),
             ];
         }
 

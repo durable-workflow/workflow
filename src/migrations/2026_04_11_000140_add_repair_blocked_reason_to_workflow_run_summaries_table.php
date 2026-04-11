@@ -19,6 +19,10 @@ return new class() extends Migration {
 
     public function down(): void
     {
+        if (Schema::getConnection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
             $table->dropIndex('workflow_run_summaries_repair_blocked_reason_index');
             $table->dropColumn('repair_blocked_reason');

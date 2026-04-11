@@ -19,11 +19,15 @@ final class VisibilityFiltersTest extends TestCase
             'workflow_type' => ' billing.invoice-sync ',
             'business_key' => '',
             'compatibility' => 'build-a',
+            'declared_entry_mode' => ' compatibility ',
+            'declared_contract_source' => ' durable_history ',
             'queue' => str_repeat('x', 192),
             'connection' => 'redis',
             'wait_kind' => ' signal ',
             'liveness_state' => ' waiting_for_signal ',
             'repair_blocked_reason' => ' unsupported_history ',
+            'declared_contract_backfill_needed' => 'yes',
+            'declared_contract_backfill_available' => '0',
             'archived' => 'true',
             'is_terminal' => '0',
             'labels' => [
@@ -41,11 +45,15 @@ final class VisibilityFiltersTest extends TestCase
             'run_id' => 'run-visibility',
             'workflow_type' => 'billing.invoice-sync',
             'compatibility' => 'build-a',
+            'declared_entry_mode' => 'compatibility',
+            'declared_contract_source' => 'durable_history',
             'connection' => 'redis',
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
             'is_current_run' => true,
+            'declared_contract_backfill_needed' => true,
+            'declared_contract_backfill_available' => false,
             'archived' => true,
             'is_terminal' => false,
             'labels' => [
@@ -107,6 +115,10 @@ final class VisibilityFiltersTest extends TestCase
                 'region' => 'us-east',
             ],
             'compatibility' => 'build-a',
+            'declared_entry_mode' => 'compatibility',
+            'declared_contract_source' => 'live_definition',
+            'declared_contract_backfill_needed' => true,
+            'declared_contract_backfill_available' => true,
             'queue' => 'workflow',
             'connection' => 'redis',
             'status' => 'waiting',
@@ -130,6 +142,10 @@ final class VisibilityFiltersTest extends TestCase
                 'region' => 'us-east',
             ],
             'compatibility' => 'build-a',
+            'declared_entry_mode' => 'canonical',
+            'declared_contract_source' => 'durable_history',
+            'declared_contract_backfill_needed' => false,
+            'declared_contract_backfill_available' => false,
             'queue' => 'workflow',
             'connection' => 'redis',
             'status' => 'waiting',
@@ -147,9 +163,13 @@ final class VisibilityFiltersTest extends TestCase
             'is_current_run' => true,
             'workflow_type' => 'billing.invoice-sync',
             'business_key' => 'order-123',
+            'declared_entry_mode' => 'compatibility',
+            'declared_contract_source' => 'live_definition',
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
+            'declared_contract_backfill_needed' => true,
+            'declared_contract_backfill_available' => true,
             'continue_as_new_recommended' => true,
             'archived' => false,
             'is_terminal' => false,
@@ -175,6 +195,40 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame('string', $definition['fields']['run_id']['type']);
         $this->assertSame('boolean', $definition['fields']['is_current_run']['type']);
         $this->assertSame('boolean_select', $definition['fields']['is_current_run']['input']);
+        $this->assertSame('Entry Mode', $definition['fields']['declared_entry_mode']['label']);
+        $this->assertSame('string', $definition['fields']['declared_entry_mode']['type']);
+        $this->assertSame('select', $definition['fields']['declared_entry_mode']['input']);
+        $this->assertSame('Canonical', $definition['fields']['declared_entry_mode']['options'][0]['label']);
+        $this->assertSame('canonical', $definition['fields']['declared_entry_mode']['options'][0]['value']);
+        $this->assertSame('Command Contract Source', $definition['fields']['declared_contract_source']['label']);
+        $this->assertSame('string', $definition['fields']['declared_contract_source']['type']);
+        $this->assertSame('select', $definition['fields']['declared_contract_source']['input']);
+        $this->assertSame(
+            'Durable History',
+            $definition['fields']['declared_contract_source']['options'][0]['label'],
+        );
+        $this->assertSame(
+            'durable_history',
+            $definition['fields']['declared_contract_source']['options'][0]['value'],
+        );
+        $this->assertSame(
+            'Command Contract Backfill Needed',
+            $definition['fields']['declared_contract_backfill_needed']['label'],
+        );
+        $this->assertSame('boolean', $definition['fields']['declared_contract_backfill_needed']['type']);
+        $this->assertSame(
+            'boolean_select',
+            $definition['fields']['declared_contract_backfill_needed']['input'],
+        );
+        $this->assertSame(
+            'Command Contract Backfill Available',
+            $definition['fields']['declared_contract_backfill_available']['label'],
+        );
+        $this->assertSame('boolean', $definition['fields']['declared_contract_backfill_available']['type']);
+        $this->assertSame(
+            'boolean_select',
+            $definition['fields']['declared_contract_backfill_available']['input'],
+        );
         $this->assertSame('Continue As New Recommended', $definition['fields']['continue_as_new_recommended']['label']);
         $this->assertSame('boolean', $definition['fields']['continue_as_new_recommended']['type']);
         $this->assertSame('boolean_select', $definition['fields']['continue_as_new_recommended']['input']);

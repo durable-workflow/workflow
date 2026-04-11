@@ -27,6 +27,8 @@ class WorkflowRunSummary extends Model
     protected $casts = [
         'is_current_run' => 'bool',
         'visibility_labels' => 'array',
+        'declared_contract_backfill_needed' => 'bool',
+        'declared_contract_backfill_available' => 'bool',
         'history_event_count' => 'integer',
         'history_size_bytes' => 'integer',
         'continue_as_new_recommended' => 'bool',

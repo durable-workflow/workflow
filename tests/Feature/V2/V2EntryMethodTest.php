@@ -21,6 +21,7 @@ use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Webhooks;
@@ -52,10 +53,15 @@ final class V2EntryMethodTest extends TestCase
         $this->assertSame('Hello, Taylor!', $workflow->output()['greeting']);
 
         $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId()));
+        $summary = WorkflowRunSummary::query()->findOrFail($workflow->runId());
 
         $this->assertSame('handle', $detail['declared_entry_method']);
         $this->assertSame('canonical', $detail['declared_entry_mode']);
         $this->assertSame(TestGreetingWorkflow::class, $detail['declared_entry_declaring_class']);
+        $this->assertSame('canonical', $summary->declared_entry_mode);
+        $this->assertSame('durable_history', $summary->declared_contract_source);
+        $this->assertFalse($summary->declared_contract_backfill_needed);
+        $this->assertFalse($summary->declared_contract_backfill_available);
     }
 
     public function testExecuteBasedV2WorkflowsRemainLoadableForCompatibility(): void
@@ -70,10 +76,15 @@ final class V2EntryMethodTest extends TestCase
         $this->assertSame('Hello, Jordan!', $workflow->query('greeting'));
 
         $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId()));
+        $summary = WorkflowRunSummary::query()->findOrFail($workflow->runId());
 
         $this->assertSame('execute', $detail['declared_entry_method']);
         $this->assertSame('compatibility', $detail['declared_entry_mode']);
         $this->assertSame(TestExecuteCompatibilityWorkflow::class, $detail['declared_entry_declaring_class']);
+        $this->assertSame('compatibility', $summary->declared_entry_mode);
+        $this->assertSame('durable_history', $summary->declared_contract_source);
+        $this->assertFalse($summary->declared_contract_backfill_needed);
+        $this->assertFalse($summary->declared_contract_backfill_available);
     }
 
     public function testWebhookStartStillSupportsExecuteBasedCompatibilityWorkflows(): void
