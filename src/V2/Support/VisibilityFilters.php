@@ -6,6 +6,8 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\StatusBucket;
 
 final class VisibilityFilters
 {
@@ -14,6 +16,7 @@ final class VisibilityFilters
     private const FIELD_LABELS = [
         'instance_id' => 'Instance ID',
         'run_id' => 'Run ID',
+        'is_current_run' => 'Current Run',
         'workflow_type' => 'Workflow Type',
         'business_key' => 'Business Key',
         'compatibility' => 'Compatibility',
@@ -25,6 +28,7 @@ final class VisibilityFilters
         'wait_kind' => 'Wait Kind',
         'liveness_state' => 'Liveness State',
         'repair_blocked_reason' => 'Repair Blocked Reason',
+        'continue_as_new_recommended' => 'Continue As New Recommended',
         'archived' => 'Archived',
         'is_terminal' => 'Terminal',
     ];
@@ -45,7 +49,12 @@ final class VisibilityFilters
         'repair_blocked_reason',
     ];
 
-    private const BOOLEAN_FIELDS = ['archived', 'is_terminal'];
+    private const BOOLEAN_FIELDS = [
+        'is_current_run',
+        'continue_as_new_recommended',
+        'archived',
+        'is_terminal',
+    ];
 
     private const LABEL_KEY_REGEX = '^[A-Za-z0-9_.:-]{1,64}$';
 
@@ -279,17 +288,33 @@ final class VisibilityFilters
      */
     private static function fieldDefinition(string $field, string $type, int $order): array
     {
+        $options = self::optionsForField($field, $type);
+
         $definition = [
             'label' => self::FIELD_LABELS[$field] ?? $field,
             'type' => $type,
-            'input' => $type === 'boolean' ? 'boolean_select' : 'text',
+            'input' => $type === 'boolean'
+                ? 'boolean_select'
+                : ($options === [] ? 'text' : 'select'),
             'operator' => 'exact',
             'order' => $order,
             'query_parameter' => $field,
         ];
 
+        if ($options !== []) {
+            $definition['options'] = $options;
+        }
+
+        return $definition;
+    }
+
+    /**
+     * @return array<int, array{label: string, value: string|bool}>
+     */
+    private static function optionsForField(string $field, string $type): array
+    {
         if ($type === 'boolean') {
-            $definition['options'] = [
+            return [
                 [
                     'label' => 'Yes',
                     'value' => true,
@@ -301,7 +326,97 @@ final class VisibilityFilters
             ];
         }
 
-        return $definition;
+        return match ($field) {
+            'status' => array_map(
+                static fn (RunStatus $status): array => [
+                    'label' => ucfirst($status->value),
+                    'value' => $status->value,
+                ],
+                RunStatus::cases(),
+            ),
+            'status_bucket' => array_map(
+                static fn (StatusBucket $bucket): array => [
+                    'label' => ucfirst($bucket->value),
+                    'value' => $bucket->value,
+                ],
+                StatusBucket::cases(),
+            ),
+            'closed_reason' => [
+                [
+                    'label' => 'Completed',
+                    'value' => 'completed',
+                ],
+                [
+                    'label' => 'Failed',
+                    'value' => 'failed',
+                ],
+                [
+                    'label' => 'Cancelled',
+                    'value' => 'cancelled',
+                ],
+                [
+                    'label' => 'Terminated',
+                    'value' => 'terminated',
+                ],
+                [
+                    'label' => 'Continued',
+                    'value' => 'continued',
+                ],
+            ],
+            'wait_kind' => [
+                [
+                    'label' => 'Activity',
+                    'value' => 'activity',
+                ],
+                [
+                    'label' => 'Update',
+                    'value' => 'update',
+                ],
+                [
+                    'label' => 'Signal',
+                    'value' => 'signal',
+                ],
+                [
+                    'label' => 'Timer',
+                    'value' => 'timer',
+                ],
+                [
+                    'label' => 'Condition',
+                    'value' => 'condition',
+                ],
+                [
+                    'label' => 'Workflow Task',
+                    'value' => 'workflow-task',
+                ],
+                [
+                    'label' => 'Child',
+                    'value' => 'child',
+                ],
+            ],
+            'repair_blocked_reason' => [
+                [
+                    'label' => 'Replay Blocked',
+                    'value' => 'unsupported_history',
+                ],
+                [
+                    'label' => 'Compat Blocked',
+                    'value' => 'waiting_for_compatible_worker',
+                ],
+                [
+                    'label' => 'Selected Run Not Current',
+                    'value' => 'selected_run_not_current',
+                ],
+                [
+                    'label' => 'Run Closed',
+                    'value' => 'run_closed',
+                ],
+                [
+                    'label' => 'Repair Not Needed',
+                    'value' => 'repair_not_needed',
+                ],
+            ],
+            default => [],
+        };
     }
 
     private static function columnForField(string $field): string
