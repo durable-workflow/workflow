@@ -43,7 +43,7 @@ final class RunDetailView
         $currentRun = $currentRunResolution['run'];
         $currentSummary = $currentRunResolution['summary'];
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
-        $commandContract = RunCommandContract::forRun($run);
+        $commandContract = RunCommandContract::forRun($run, persistBackfill: true);
         $tasks = RunTaskView::forRun($run);
         $cancelBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
         $terminateBlockedReason = self::actionBlockedReason($run, $isCurrentRun);

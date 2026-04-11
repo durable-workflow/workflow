@@ -31,8 +31,12 @@ final class RunCommandContract
      *     source: string
      * }
      */
-    public static function forRun(WorkflowRun $run): array
+    public static function forRun(WorkflowRun $run, bool $persistBackfill = false): array
     {
+        if ($persistBackfill) {
+            self::ensureHistoryBackfilled($run);
+        }
+
         $state = self::historySnapshotState($run);
         $contract = $state['contract'];
 
