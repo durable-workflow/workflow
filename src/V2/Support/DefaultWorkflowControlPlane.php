@@ -418,6 +418,94 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         }
     }
 
+    public function describe(string $instanceId, array $options = []): array
+    {
+        $runId = $options['run_id'] ?? null;
+
+        $notFound = [
+            'found' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_type' => null,
+            'workflow_class' => null,
+            'business_key' => null,
+            'run' => null,
+            'run_count' => 0,
+            'actions' => [
+                'can_signal' => false,
+                'can_query' => false,
+                'can_update' => false,
+                'can_cancel' => false,
+                'can_terminate' => false,
+            ],
+            'reason' => 'instance_not_found',
+        ];
+
+        try {
+            /** @var \Workflow\V2\Models\WorkflowInstance $instance */
+            $instance = $this->instanceQuery()
+                ->with('currentRun')
+                ->findOrFail($instanceId);
+        } catch (ModelNotFoundException) {
+            return $notFound;
+        }
+
+        try {
+            $run = is_string($runId)
+                ? SelectedRunLocator::forInstanceOrFail($instance, $runId, ['summary'])
+                : SelectedRunLocator::forInstanceOrFail($instance, null, ['summary']);
+        } catch (ModelNotFoundException) {
+            return array_merge($notFound, [
+                'found' => true,
+                'workflow_type' => $instance->workflow_type,
+                'workflow_class' => $instance->workflow_class,
+                'business_key' => $instance->business_key ?? null,
+                'run_count' => (int) $instance->run_count,
+                'reason' => 'run_not_found',
+            ]);
+        }
+
+        $summary = $run->summary;
+        $currentRun = $instance->currentRun;
+        $isCurrentRun = $currentRun !== null && $currentRun->id === $run->id;
+        $isOpen = ! $run->status->isTerminal();
+        $classResolvable = $this->tryResolveWorkflowClass(
+            $instance->workflow_type ?? $instance->workflow_class,
+        ) !== null;
+
+        return [
+            'found' => true,
+            'workflow_instance_id' => $instance->id,
+            'workflow_type' => $instance->workflow_type,
+            'workflow_class' => $instance->workflow_class,
+            'business_key' => $instance->business_key ?? null,
+            'run' => [
+                'workflow_run_id' => $run->id,
+                'run_number' => (int) $run->run_number,
+                'is_current_run' => $isCurrentRun,
+                'status' => $run->status->value,
+                'status_bucket' => $run->status->statusBucket()->value,
+                'closed_reason' => $summary?->closed_reason,
+                'compatibility' => $run->compatibility,
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'started_at' => $run->started_at?->toIso8601String(),
+                'closed_at' => $run->closed_at?->toIso8601String(),
+                'last_progress_at' => $run->last_progress_at?->toIso8601String(),
+                'wait_kind' => $summary?->wait_kind,
+                'wait_reason' => $summary?->wait_reason,
+            ],
+            'run_count' => (int) $instance->run_count,
+            'actions' => [
+                'can_signal' => $isCurrentRun && $isOpen,
+                'can_query' => $classResolvable && $isOpen,
+                'can_update' => $isCurrentRun && $isOpen && $classResolvable,
+                'can_cancel' => $isCurrentRun && $isOpen,
+                'can_terminate' => $isCurrentRun && $isOpen,
+            ],
+            'reason' => null,
+        ];
+    }
+
     private function tryResolveWorkflowClass(string $workflowType): ?string
     {
         try {

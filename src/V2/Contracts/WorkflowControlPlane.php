@@ -127,4 +127,50 @@ interface WorkflowControlPlane
      * }
      */
     public function terminate(string $instanceId, array $options = []): array;
+
+    /**
+     * Describe the current state of a workflow instance.
+     *
+     * Returns instance metadata, current run state, summary fields, and
+     * action availability without loading the full Waterline detail view.
+     * When a specific run_id is provided, that run is described instead
+     * of the current run.
+     *
+     * Options:
+     * - run_id: string|null — describe a specific run instead of current
+     *
+     * @return array{
+     *     found: bool,
+     *     workflow_instance_id: string,
+     *     workflow_type: string|null,
+     *     workflow_class: string|null,
+     *     business_key: string|null,
+     *     run: array{
+     *         workflow_run_id: string,
+     *         run_number: int,
+     *         is_current_run: bool,
+     *         status: string,
+     *         status_bucket: string|null,
+     *         closed_reason: string|null,
+     *         compatibility: string|null,
+     *         connection: string|null,
+     *         queue: string|null,
+     *         started_at: string|null,
+     *         closed_at: string|null,
+     *         last_progress_at: string|null,
+     *         wait_kind: string|null,
+     *         wait_reason: string|null,
+     *     }|null,
+     *     run_count: int,
+     *     actions: array{
+     *         can_signal: bool,
+     *         can_query: bool,
+     *         can_update: bool,
+     *         can_cancel: bool,
+     *         can_terminate: bool,
+     *     },
+     *     reason: string|null,
+     * }
+     */
+    public function describe(string $instanceId, array $options = []): array;
 }

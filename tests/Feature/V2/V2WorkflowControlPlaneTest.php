@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestQueryWorkflow;
+use Tests\Fixtures\V2\TestSignalWorkflow;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -334,5 +337,185 @@ final class V2WorkflowControlPlaneTest extends TestCase
 
         $polledTaskIds = array_column($polled, 'task_id');
         $this->assertContains($startResult['task_id'], $polledTaskIds);
+    }
+
+    // ── Describe ────────────────────────────────────────────────────
+
+    public function testDescribeActiveWorkflow(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-greeting-workflow' => TestGreetingWorkflow::class,
+        ]);
+
+        $start = $this->controlPlane->start('test-greeting-workflow', 'ctrl-plane-desc-1', [
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'business_key' => 'order-100',
+        ]);
+
+        $result = $this->controlPlane->describe('ctrl-plane-desc-1');
+
+        $this->assertTrue($result['found']);
+        $this->assertSame('ctrl-plane-desc-1', $result['workflow_instance_id']);
+        $this->assertSame('test-greeting-workflow', $result['workflow_type']);
+        $this->assertSame('order-100', $result['business_key']);
+        $this->assertSame(1, $result['run_count']);
+        $this->assertNull($result['reason']);
+
+        $this->assertNotNull($result['run']);
+        $this->assertSame($start['workflow_run_id'], $result['run']['workflow_run_id']);
+        $this->assertSame(1, $result['run']['run_number']);
+        $this->assertTrue($result['run']['is_current_run']);
+        $this->assertSame('running', $result['run']['status_bucket']);
+        $this->assertNull($result['run']['closed_at']);
+
+        $this->assertTrue($result['actions']['can_signal']);
+        $this->assertTrue($result['actions']['can_query']);
+        $this->assertTrue($result['actions']['can_update']);
+        $this->assertTrue($result['actions']['can_cancel']);
+        $this->assertTrue($result['actions']['can_terminate']);
+    }
+
+    public function testDescribeTerminatedWorkflow(): void
+    {
+        $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-desc-term-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $this->controlPlane->terminate('ctrl-plane-desc-term-1', [
+            'reason' => 'testing',
+        ]);
+
+        $result = $this->controlPlane->describe('ctrl-plane-desc-term-1');
+
+        $this->assertTrue($result['found']);
+        $this->assertNotNull($result['run']);
+        $this->assertSame('terminated', $result['run']['status']);
+        $this->assertSame('failed', $result['run']['status_bucket']);
+
+        $this->assertFalse($result['actions']['can_signal']);
+        $this->assertFalse($result['actions']['can_query']);
+        $this->assertFalse($result['actions']['can_update']);
+        $this->assertFalse($result['actions']['can_cancel']);
+        $this->assertFalse($result['actions']['can_terminate']);
+    }
+
+    public function testDescribeNonExistentInstance(): void
+    {
+        $result = $this->controlPlane->describe('nonexistent-desc-1');
+
+        $this->assertFalse($result['found']);
+        $this->assertSame('nonexistent-desc-1', $result['workflow_instance_id']);
+        $this->assertNull($result['run']);
+        $this->assertSame('instance_not_found', $result['reason']);
+    }
+
+    public function testDescribeRemoteOnlyWorkflow(): void
+    {
+        $start = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-desc-remote-1', [
+            'connection' => 'redis',
+            'queue' => 'remote-workers',
+        ]);
+
+        $result = $this->controlPlane->describe('ctrl-plane-desc-remote-1');
+
+        $this->assertTrue($result['found']);
+        $this->assertSame('remote-workflow-type', $result['workflow_type']);
+        $this->assertNotNull($result['run']);
+        $this->assertTrue($result['run']['is_current_run']);
+
+        // Remote-only workflows cannot serve queries or updates locally.
+        $this->assertTrue($result['actions']['can_signal']);
+        $this->assertFalse($result['actions']['can_query']);
+        $this->assertFalse($result['actions']['can_update']);
+        $this->assertTrue($result['actions']['can_cancel']);
+        $this->assertTrue($result['actions']['can_terminate']);
+    }
+
+    // ── Signal happy path ───────────────────────────────────────────
+
+    public function testSignalAcceptedForDeclaredSignal(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-signal-workflow' => TestSignalWorkflow::class,
+        ]);
+
+        $this->controlPlane->start('test-signal-workflow', 'ctrl-plane-sig-ok-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        // Execute the initial workflow task so the run enters Waiting state.
+        $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
+        $polled = $bridge->poll('redis', 'default');
+        $this->assertNotEmpty($polled);
+        $bridge->execute($polled[0]['task_id']);
+
+        $result = $this->controlPlane->signal('ctrl-plane-sig-ok-1', 'name-provided', [
+            'arguments' => ['Taylor'],
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame('ctrl-plane-sig-ok-1', $result['workflow_instance_id']);
+        $this->assertNotNull($result['workflow_command_id']);
+        $this->assertNull($result['reason']);
+    }
+
+    // ── Query happy path ────────────────────────────────────────────
+
+    public function testQueryReturnsResult(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-query-workflow' => TestQueryWorkflow::class,
+        ]);
+
+        $this->controlPlane->start('test-query-workflow', 'ctrl-plane-query-ok-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        // Execute the initial workflow task so the run advances and has state.
+        $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
+        $polled = $bridge->poll('redis', 'default');
+        $this->assertNotEmpty($polled);
+        $bridge->execute($polled[0]['task_id']);
+
+        $result = $this->controlPlane->query('ctrl-plane-query-ok-1', 'currentStage');
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('ctrl-plane-query-ok-1', $result['workflow_instance_id']);
+        $this->assertSame('waiting-for-name', $result['result']);
+        $this->assertNull($result['reason']);
+    }
+
+    // ── Update happy path ───────────────────────────────────────────
+
+    public function testUpdateAccepted(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-update-workflow' => TestUpdateWorkflow::class,
+        ]);
+
+        $this->controlPlane->start('test-update-workflow', 'ctrl-plane-update-ok-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        // Execute the initial workflow task so the run advances.
+        $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
+        $polled = $bridge->poll('redis', 'default');
+        $this->assertNotEmpty($polled);
+        $bridge->execute($polled[0]['task_id']);
+
+        $result = $this->controlPlane->update('ctrl-plane-update-ok-1', 'approve', [
+            'arguments' => [true, 'control-plane'],
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame('ctrl-plane-update-ok-1', $result['workflow_instance_id']);
+        $this->assertNotNull($result['update_id']);
+        $this->assertNull($result['reason']);
     }
 }
