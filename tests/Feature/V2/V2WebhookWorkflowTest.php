@@ -2696,6 +2696,76 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testWorkflowTaskCompleteWebhookAppliesMetadataCommands(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-complete-metadata');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $this->postJson("/webhooks/workflow-tasks/{$task->id}/claim", [
+            'lease_owner' => 'server-metadata-worker',
+        ])->assertOk();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
+            'commands' => [
+                ['type' => 'record_side_effect', 'result' => Serializer::serialize(['seed' => 123])],
+                [
+                    'type' => 'upsert_search_attributes',
+                    'attributes' => ['env' => 'staging', 'tenant' => 'acme'],
+                ],
+                [
+                    'type' => 'record_version_marker',
+                    'change_id' => 'external-step',
+                    'version' => 2,
+                    'min_supported' => 1,
+                    'max_supported' => 2,
+                ],
+                ['type' => 'complete_workflow', 'result' => serialize('done')],
+            ],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('completed', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('workflow_run_id', $workflow->runId())
+            ->assertJsonPath('run_status', 'completed')
+            ->assertJsonPath('reason', null);
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'SideEffectRecorded',
+        ]);
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'SearchAttributesUpserted',
+        ]);
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'VersionMarkerRecorded',
+        ]);
+
+        $summary = WorkflowRunSummary::query()
+            ->whereKey($workflow->runId())
+            ->first();
+
+        $this->assertNotNull($summary);
+        $this->assertSame([
+            'env' => 'staging',
+            'tenant' => 'acme',
+        ], $summary->search_attributes);
+    }
+
     public function testWorkflowTaskCompleteWebhookAppliesTerminalCommand(): void
     {
         config()->set('queue.default', 'redis');

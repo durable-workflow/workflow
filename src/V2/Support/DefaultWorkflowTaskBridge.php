@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use LogicException;
 use RuntimeException;
 use Throwable;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -28,7 +29,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 {
     private const TERMINAL_TYPES = ['complete_workflow', 'fail_workflow', 'continue_as_new'];
 
-    private const NON_TERMINAL_TYPES = ['schedule_activity', 'start_timer', 'start_child_workflow'];
+    private const NON_TERMINAL_TYPES = [
+        'schedule_activity',
+        'start_timer',
+        'start_child_workflow',
+        'record_side_effect',
+        'record_version_marker',
+        'upsert_search_attributes',
+    ];
 
     public function __construct(
         private readonly WorkflowExecutor $executor,
@@ -705,6 +713,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'schedule_activity' => $this->applyScheduleActivity($run, $task, $command, $sequence, $createdTaskIds),
             'start_timer' => $this->applyStartTimer($run, $task, $command, $sequence, $createdTaskIds),
             'start_child_workflow' => $this->applyStartChildWorkflow($run, $task, $command, $sequence, $createdTaskIds),
+            'record_side_effect' => $this->applyRecordSideEffect($run, $task, $command, $sequence),
+            'record_version_marker' => $this->applyRecordVersionMarker($run, $task, $command, $sequence),
+            'upsert_search_attributes' => $this->applyUpsertSearchAttributes($run, $task, $command, $sequence),
             default => $sequence,
         };
     }
@@ -925,6 +936,80 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
+     * @param array{type: string, result: string} $command
+     */
+    private function applyRecordSideEffect(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+            'sequence' => $sequence,
+            'result' => $command['result'],
+        ], $task);
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, change_id: string, version: int, min_supported: int, max_supported: int} $command
+     */
+    private function applyRecordVersionMarker(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        WorkflowHistoryEvent::record($run, HistoryEventType::VersionMarkerRecorded, [
+            'sequence' => $sequence,
+            'change_id' => $command['change_id'],
+            'version' => $command['version'],
+            'min_supported' => $command['min_supported'],
+            'max_supported' => $command['max_supported'],
+        ], $task);
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, attributes: array<string, scalar|null>} $command
+     */
+    private function applyUpsertSearchAttributes(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
+        $merged = $existing;
+
+        foreach ($command['attributes'] as $key => $value) {
+            if ($value === null) {
+                unset($merged[$key]);
+
+                continue;
+            }
+
+            $merged[$key] = $value;
+        }
+
+        ksort($merged);
+
+        $run->forceFill([
+            'search_attributes' => $merged,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SearchAttributesUpserted, [
+            'sequence' => $sequence,
+            'attributes' => $command['attributes'],
+            'merged' => $merged,
+        ], $task);
+
+        return $sequence + 1;
+    }
+
+    /**
      * @param array{type: string, arguments?: string|null, workflow_type?: string|null} $command
      * @param list<string> $createdTaskIds
      */
@@ -1095,8 +1180,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $terminal = null;
 
         foreach ($commands as $command) {
-            if (! is_array($command) || ! is_string($command['type'] ?? null)) {
-                continue;
+            if (! is_array($command)) {
+                return null;
+            }
+
+            $command = self::normalizeCommand($command);
+
+            if ($command === null) {
+                return null;
             }
 
             if (in_array($command['type'], self::TERMINAL_TYPES, true)) {
@@ -1117,6 +1208,259 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'non_terminal' => $nonTerminal,
             'terminal' => $terminal,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, ...}|null
+     */
+    private static function normalizeCommand(array $command): ?array
+    {
+        $type = is_string($command['type'] ?? null) ? $command['type'] : null;
+
+        if ($type === null) {
+            return null;
+        }
+
+        return match ($type) {
+            'complete_workflow' => [
+                'type' => $type,
+                'result' => $command['result'] ?? null,
+            ],
+            'fail_workflow' => self::normalizeFailWorkflowCommand($command),
+            'schedule_activity' => self::normalizeScheduleActivityCommand($command),
+            'start_timer' => self::normalizeStartTimerCommand($command),
+            'start_child_workflow' => self::normalizeStartChildWorkflowCommand($command),
+            'continue_as_new' => self::normalizeContinueAsNewCommand($command),
+            'record_side_effect' => self::normalizeRecordSideEffectCommand($command),
+            'record_version_marker' => self::normalizeRecordVersionMarkerCommand($command),
+            'upsert_search_attributes' => self::normalizeUpsertSearchAttributesCommand($command),
+            default => null,
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, message: string, exception_class?: string, exception_type?: string}|null
+     */
+    private static function normalizeFailWorkflowCommand(array $command): ?array
+    {
+        $message = self::normalizeRequiredString($command['message'] ?? null);
+
+        if ($message === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'fail_workflow',
+            'message' => $message,
+            'exception_class' => self::normalizeOptionalString($command['exception_class'] ?? null),
+            'exception_type' => self::normalizeOptionalString($command['exception_type'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, activity_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}|null
+     */
+    private static function normalizeScheduleActivityCommand(array $command): ?array
+    {
+        $activityType = self::normalizeRequiredString($command['activity_type'] ?? null);
+
+        if ($activityType === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'schedule_activity',
+            'activity_type' => $activityType,
+            'arguments' => self::normalizeNullableString($command['arguments'] ?? null),
+            'connection' => self::normalizeOptionalString($command['connection'] ?? null),
+            'queue' => self::normalizeOptionalString($command['queue'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, delay_seconds: int}|null
+     */
+    private static function normalizeStartTimerCommand(array $command): ?array
+    {
+        if (! is_int($command['delay_seconds'] ?? null) || (int) $command['delay_seconds'] < 0) {
+            return null;
+        }
+
+        return [
+            'type' => 'start_timer',
+            'delay_seconds' => (int) $command['delay_seconds'],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}|null
+     */
+    private static function normalizeStartChildWorkflowCommand(array $command): ?array
+    {
+        $workflowType = self::normalizeRequiredString($command['workflow_type'] ?? null);
+
+        if ($workflowType === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'start_child_workflow',
+            'workflow_type' => $workflowType,
+            'arguments' => self::normalizeNullableString($command['arguments'] ?? null),
+            'connection' => self::normalizeOptionalString($command['connection'] ?? null),
+            'queue' => self::normalizeOptionalString($command['queue'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, arguments?: string|null, workflow_type?: string}|null
+     */
+    private static function normalizeContinueAsNewCommand(array $command): ?array
+    {
+        $workflowType = self::normalizeOptionalString($command['workflow_type'] ?? null);
+        $arguments = self::normalizeNullableString($command['arguments'] ?? null);
+
+        if (($command['workflow_type'] ?? null) !== null && $workflowType === null) {
+            return null;
+        }
+
+        if (($command['arguments'] ?? null) !== null && $arguments === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'continue_as_new',
+            'arguments' => $arguments,
+            'workflow_type' => $workflowType,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, result: string}|null
+     */
+    private static function normalizeRecordSideEffectCommand(array $command): ?array
+    {
+        $result = self::normalizeRequiredString($command['result'] ?? null);
+
+        if ($result === null) {
+            return null;
+        }
+
+        return [
+            'type' => 'record_side_effect',
+            'result' => $result,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, change_id: string, version: int, min_supported: int, max_supported: int}|null
+     */
+    private static function normalizeRecordVersionMarkerCommand(array $command): ?array
+    {
+        $changeId = self::normalizeRequiredString($command['change_id'] ?? null);
+
+        if ($changeId === null) {
+            return null;
+        }
+
+        if (! is_int($command['version'] ?? null)) {
+            return null;
+        }
+
+        if (! is_int($command['min_supported'] ?? null)) {
+            return null;
+        }
+
+        if (! is_int($command['max_supported'] ?? null)) {
+            return null;
+        }
+
+        try {
+            $versionCall = new VersionCall(
+                $changeId,
+                (int) $command['min_supported'],
+                (int) $command['max_supported'],
+            );
+        } catch (LogicException) {
+            return null;
+        }
+
+        $version = (int) $command['version'];
+
+        if ($version < $versionCall->minSupported || $version > $versionCall->maxSupported) {
+            return null;
+        }
+
+        return [
+            'type' => 'record_version_marker',
+            'change_id' => $versionCall->changeId,
+            'version' => $version,
+            'min_supported' => $versionCall->minSupported,
+            'max_supported' => $versionCall->maxSupported,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, attributes: array<string, scalar|null>}|null
+     */
+    private static function normalizeUpsertSearchAttributesCommand(array $command): ?array
+    {
+        if (! is_array($command['attributes'] ?? null)) {
+            return null;
+        }
+
+        try {
+            $call = new UpsertSearchAttributesCall($command['attributes']);
+        } catch (LogicException) {
+            return null;
+        }
+
+        return [
+            'type' => 'upsert_search_attributes',
+            'attributes' => $call->attributes,
+        ];
+    }
+
+    private static function normalizeRequiredString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+
+    private static function normalizeOptionalString(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return self::normalizeRequiredString($value);
+    }
+
+    private static function normalizeNullableString(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        return $value;
     }
 
     /**

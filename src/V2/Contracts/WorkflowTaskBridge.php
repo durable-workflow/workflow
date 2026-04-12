@@ -179,6 +179,15 @@ interface WorkflowTaskBridge
      *   Starts a child workflow instance. workflow_type is a registered type key.
      *   arguments is a codec-tagged serialized payload.
      *
+     * - record_side_effect: {type: 'record_side_effect', result: string}
+     *   Records a deterministic side-effect result using the workflow payload codec.
+     *
+     * - record_version_marker: {type: 'record_version_marker', change_id: string, version: int, min_supported: int, max_supported: int}
+     *   Records the resolved getVersion() decision for replay-safe workflow upgrades.
+     *
+     * - upsert_search_attributes: {type: 'upsert_search_attributes', attributes: array<string, scalar|null>}
+     *   Upserts indexed operator-visible metadata on the workflow run.
+     *
      * Terminal command types (at most one):
      *
      * - complete_workflow: {type: 'complete_workflow', result?: string|null}

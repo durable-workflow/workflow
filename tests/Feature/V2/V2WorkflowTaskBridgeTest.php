@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
@@ -769,6 +770,140 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     }
 
     // --- complete() with non-terminal commands ---
+
+    public function testCompleteRecordsSideEffectHistory(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+        $serialized = Serializer::serialize(['seed' => 123]);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'record_side_effect',
+                'result' => $serialized,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertSame([], $result['created_task_ids']);
+
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SideEffectRecorded->value)
+            ->first();
+
+        $this->assertNotNull($event);
+        $this->assertSame(1, $event->payload['sequence']);
+        $this->assertSame($serialized, $event->payload['result']);
+    }
+
+    public function testCompleteRecordsVersionMarkerBeforeWorkflowCompletion(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'record_version_marker',
+                'change_id' => 'external-step',
+                'version' => 2,
+                'min_supported' => 1,
+                'max_supported' => 2,
+            ],
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('done'),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('completed', $result['run_status']);
+
+        $events = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $events);
+        $this->assertSame(HistoryEventType::VersionMarkerRecorded, $events[0]->event_type);
+        $this->assertSame('external-step', $events[0]->payload['change_id']);
+        $this->assertSame(2, $events[0]->payload['version']);
+        $this->assertSame(HistoryEventType::WorkflowCompleted, $events[1]->event_type);
+    }
+
+    public function testCompleteUpsertsSearchAttributesAndProjectsSummary(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->forceFill([
+            'search_attributes' => [
+                'remove_me' => 'legacy',
+                'tenant' => 'acme',
+            ],
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'upsert_search_attributes',
+                'attributes' => [
+                    'env' => 'staging',
+                    'remove_me' => null,
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+
+        $run->refresh();
+        $this->assertSame([
+            'env' => 'staging',
+            'tenant' => 'acme',
+        ], $run->search_attributes);
+
+        $summary = WorkflowRunSummary::query()
+            ->whereKey($run->id)
+            ->first();
+
+        $this->assertNotNull($summary);
+        $this->assertSame($run->search_attributes, $summary->search_attributes);
+
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SearchAttributesUpserted->value)
+            ->first();
+
+        $this->assertNotNull($event);
+        $this->assertSame(1, $event->payload['sequence']);
+        $this->assertSame([
+            'env' => 'staging',
+            'remove_me' => null,
+        ], $event->payload['attributes']);
+        $this->assertSame($run->search_attributes, $event->payload['merged']);
+    }
+
+    public function testCompleteRejectsMalformedRecordVersionMarkerCommand(): void
+    {
+        $result = $this->bridge->complete('any-task', [
+            [
+                'type' => 'record_version_marker',
+                'change_id' => 'external-step',
+                'version' => 3,
+                'min_supported' => 1,
+                'max_supported' => 2,
+            ],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('invalid_commands', $result['reason']);
+    }
 
     public function testCompleteSchedulesActivity(): void
     {
