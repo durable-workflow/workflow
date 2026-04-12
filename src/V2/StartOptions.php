@@ -6,6 +6,7 @@ namespace Workflow\V2;
 
 use LogicException;
 use Workflow\V2\Enums\DuplicateStartPolicy;
+use Workflow\V2\Support\WorkflowInstanceId;
 
 final class StartOptions
 {
@@ -177,8 +178,11 @@ final class StartOptions
 
         $businessKey = trim($businessKey);
 
-        if ($businessKey === '' || strlen($businessKey) > 191) {
-            throw new LogicException('Workflow v2 business keys must be non-empty strings up to 191 characters.');
+        if ($businessKey === '' || strlen($businessKey) > WorkflowInstanceId::MAX_LENGTH) {
+            throw new LogicException(sprintf(
+                'Workflow v2 business keys must be non-empty strings up to %d characters.',
+                WorkflowInstanceId::MAX_LENGTH,
+            ));
         }
 
         return $businessKey;
@@ -212,10 +216,11 @@ final class StartOptions
 
             $stringValue = trim((string) $value);
 
-            if ($stringValue === '' || strlen($stringValue) > 191) {
+            if ($stringValue === '' || strlen($stringValue) > WorkflowInstanceId::MAX_LENGTH) {
                 throw new LogicException(sprintf(
-                    'Workflow v2 visibility label [%s] must be a non-empty string up to 191 characters.',
-                    $key
+                    'Workflow v2 visibility label [%s] must be a non-empty string up to %d characters.',
+                    $key,
+                    WorkflowInstanceId::MAX_LENGTH,
                 ));
             }
 
@@ -311,10 +316,11 @@ final class StartOptions
 
             $stringValue = is_bool($value) ? ($value ? '1' : '0') : trim((string) $value);
 
-            if ($stringValue !== '' && strlen($stringValue) > 191) {
+            if ($stringValue !== '' && strlen($stringValue) > WorkflowInstanceId::MAX_LENGTH) {
                 throw new LogicException(sprintf(
-                    'Workflow v2 search attribute [%s] must be up to 191 characters when cast to string.',
+                    'Workflow v2 search attribute [%s] must be up to %d characters when cast to string.',
                     $key,
+                    WorkflowInstanceId::MAX_LENGTH,
                 ));
             }
 
