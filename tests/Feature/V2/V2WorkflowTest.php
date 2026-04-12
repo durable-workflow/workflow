@@ -2501,9 +2501,7 @@ final class V2WorkflowTest extends TestCase
     public function testMakeRejectsBlankCallerSuppliedInstanceId(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage(
-            'Workflow instance ids must be non-empty URL-safe strings up to 128 characters using only letters, numbers, ".", "_", "-", and ":".'
-        );
+        $this->expectExceptionMessage(WorkflowInstanceId::requirementMessage());
 
         WorkflowStub::make(TestGreetingWorkflow::class, '   ');
     }
@@ -2511,9 +2509,7 @@ final class V2WorkflowTest extends TestCase
     public function testMakeRejectsOverlongCallerSuppliedInstanceIdWithoutCreatingReservation(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage(
-            'Workflow instance ids must be non-empty URL-safe strings up to 128 characters using only letters, numbers, ".", "_", "-", and ":".'
-        );
+        $this->expectExceptionMessage(WorkflowInstanceId::requirementMessage());
 
         try {
             WorkflowStub::make(TestGreetingWorkflow::class, str_repeat('a', WorkflowInstanceId::MAX_LENGTH + 1));
@@ -2526,15 +2522,15 @@ final class V2WorkflowTest extends TestCase
     public function testMakeRejectsCallerSuppliedInstanceIdWithUnsupportedCharacters(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage(
-            'Workflow instance ids must be non-empty URL-safe strings up to 128 characters using only letters, numbers, ".", "_", "-", and ":".'
-        );
+        $this->expectExceptionMessage(WorkflowInstanceId::requirementMessage());
 
         WorkflowStub::make(TestGreetingWorkflow::class, 'order/123');
     }
 
     public function testMakeAcceptsLongRouteSafeCallerSuppliedInstanceId(): void
     {
+        config()->set('queue.default', 'redis');
+
         $instanceId = 'tenant.alpha:' . str_repeat('a', WorkflowInstanceId::MAX_LENGTH - strlen('tenant.alpha:'));
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, $instanceId);

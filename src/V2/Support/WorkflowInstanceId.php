@@ -8,7 +8,7 @@ use LogicException;
 
 final class WorkflowInstanceId
 {
-    public const MAX_LENGTH = 128;
+    public const MAX_LENGTH = 191;
 
     private const PATTERN = '/\A[A-Za-z0-9._:-]+\z/';
 
