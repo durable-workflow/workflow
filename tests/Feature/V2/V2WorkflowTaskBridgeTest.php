@@ -12,6 +12,8 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -462,6 +464,246 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertFalse($result['claimed']);
         $this->assertSame('task_not_workflow', $result['reason']);
+    }
+
+    // --- poll() compatibility filter ---
+
+    public function testPollFiltersByCompatibility(): void
+    {
+        $run = $this->createWaitingRun();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-b',
+        ]);
+
+        $results = $this->bridge->poll(null, null, 10, 'build-a');
+
+        $this->assertCount(1, $results);
+        $this->assertSame('build-a', $results[0]['compatibility']);
+    }
+
+    public function testPollWithNullCompatibilityReturnsAll(): void
+    {
+        $run = $this->createWaitingRun();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-b',
+        ]);
+
+        $results = $this->bridge->poll(null, null, 10, null);
+
+        $this->assertCount(2, $results);
+    }
+
+    // --- complete() ---
+
+    public function testCompleteWithWorkflowCompletionClosesRun(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'external-worker-1',
+            'lease_expires_at' => now()->addMinutes(5),
+        ]);
+
+        $result = $this->bridge->complete($task->id, [
+            ['type' => 'complete_workflow', 'result' => Serializer::serialize('Hello, Taylor')],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame($run->id, $result['workflow_run_id']);
+        $this->assertSame('completed', $result['run_status']);
+        $this->assertNull($result['reason']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Completed, $run->status);
+        $this->assertSame('completed', $run->closed_reason);
+        $this->assertNotNull($run->closed_at);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Completed, $task->status);
+        $this->assertNull($task->lease_expires_at);
+
+        $completionEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->first();
+
+        $this->assertNotNull($completionEvent);
+    }
+
+    public function testCompleteWithWorkflowFailureFailsRun(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'external-worker-1',
+            'lease_expires_at' => now()->addMinutes(5),
+        ]);
+
+        $result = $this->bridge->complete($task->id, [
+            ['type' => 'fail_workflow', 'message' => 'Determinism violation', 'exception_class' => RuntimeException::class],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('failed', $result['run_status']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Failed, $run->status);
+        $this->assertSame('failed', $run->closed_reason);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Failed, $task->status);
+
+        $failureEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->first();
+
+        $this->assertNotNull($failureEvent);
+        $this->assertSame('Determinism violation', $failureEvent->payload['message']);
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        $this->assertNotNull($failure);
+        $this->assertSame('Determinism violation', $failure->message);
+        $this->assertSame(RuntimeException::class, $failure->exception_class);
+    }
+
+    public function testCompleteRejectsNonLeasedTask(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $result = $this->bridge->complete($task->id, [
+            ['type' => 'complete_workflow'],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('task_not_leased', $result['reason']);
+    }
+
+    public function testCompleteRejectsWithoutTerminalCommand(): void
+    {
+        $result = $this->bridge->complete('any-task', []);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('missing_terminal_command', $result['reason']);
+    }
+
+    public function testCompleteRejectsMultipleTerminalCommands(): void
+    {
+        $result = $this->bridge->complete('any-task', [
+            ['type' => 'complete_workflow'],
+            ['type' => 'fail_workflow', 'message' => 'oops'],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('missing_terminal_command', $result['reason']);
+    }
+
+    public function testCompleteRejectsTerminalRun(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->forceFill(['status' => RunStatus::Completed->value])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->addMinutes(5),
+        ]);
+
+        $result = $this->bridge->complete($task->id, [
+            ['type' => 'complete_workflow', 'result' => '"done"'],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('run_already_closed', $result['reason']);
+    }
+
+    public function testCompleteRejectsNonExistentTask(): void
+    {
+        $result = $this->bridge->complete('nonexistent', [
+            ['type' => 'complete_workflow'],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('task_not_found', $result['reason']);
     }
 
     private function createWaitingRun(): WorkflowRun

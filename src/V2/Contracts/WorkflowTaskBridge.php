@@ -35,7 +35,7 @@ interface WorkflowTaskBridge
      *     available_at: string|null,
      * }>
      */
-    public function poll(?string $connection, ?string $queue, int $limit = 1): array;
+    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array;
 
     /**
      * Claim a specific workflow task with detailed status.
@@ -159,4 +159,33 @@ interface WorkflowTaskBridge
      * }
      */
     public function heartbeat(string $taskId): array;
+
+    /**
+     * Complete a claimed workflow task with commands from an external worker.
+     *
+     * The external worker replayed the workflow and produced a list of commands.
+     * Each command is a typed array with a 'type' key and type-specific fields.
+     *
+     * Supported command types:
+     *
+     * - complete_workflow: {type: 'complete_workflow', result?: string|null}
+     *   Marks the workflow run as completed with an optional serialized result.
+     *
+     * - fail_workflow: {type: 'fail_workflow', message: string, exception_class?: string, exception_type?: string}
+     *   Marks the workflow run as failed with a failure record.
+     *
+     * Exactly one terminal command (complete_workflow or fail_workflow) must be
+     * present. Additional command types for scheduling activities, timers, and
+     * child workflows are reserved for a future release.
+     *
+     * @param list<array{type: string, ...}> $commands
+     * @return array{
+     *     completed: bool,
+     *     task_id: string,
+     *     workflow_run_id: string|null,
+     *     run_status: string|null,
+     *     reason: string|null,
+     * }
+     */
+    public function complete(string $taskId, array $commands): array;
 }

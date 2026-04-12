@@ -12,7 +12,9 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -22,7 +24,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         private readonly WorkflowExecutor $executor,
     ) {}
 
-    public function poll(?string $connection, ?string $queue, int $limit = 1): array
+    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array
     {
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Workflow->value)
@@ -41,6 +43,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         if ($queue !== null) {
             $query->where('queue', $queue);
+        }
+
+        if ($compatibility !== null) {
+            $query->where('compatibility', $compatibility);
         }
 
         $tasks = $query->get();
@@ -452,6 +458,256 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'reason' => null,
             ];
         });
+    }
+
+    public function complete(string $taskId, array $commands): array
+    {
+        $terminal = self::extractTerminalCommand($commands);
+
+        if ($terminal === null) {
+            return [
+                'completed' => false,
+                'task_id' => $taskId,
+                'workflow_run_id' => null,
+                'run_status' => null,
+                'reason' => 'missing_terminal_command',
+            ];
+        }
+
+        return DB::transaction(function () use ($taskId, $terminal): array {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+
+            if ($task === null || $task->task_type !== TaskType::Workflow) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => null,
+                    'run_status' => null,
+                    'reason' => $task === null ? 'task_not_found' : 'task_not_workflow',
+                ];
+            }
+
+            if ($task->status !== TaskStatus::Leased) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $task->workflow_run_id,
+                    'run_status' => null,
+                    'reason' => 'task_not_leased',
+                ];
+            }
+
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($task->workflow_run_id);
+
+            if ($run === null) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $task->workflow_run_id,
+                    'run_status' => null,
+                    'reason' => 'run_not_found',
+                ];
+            }
+
+            if ($run->status->isTerminal()) {
+                $task->forceFill([
+                    'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                ])->save();
+
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'reason' => 'run_already_closed',
+                ];
+            }
+
+            if ($terminal['type'] === 'complete_workflow') {
+                $this->applyWorkflowCompletion($run, $task, $terminal);
+            } else {
+                $this->applyWorkflowFailure($run, $task, $terminal);
+            }
+
+            return [
+                'completed' => true,
+                'task_id' => $taskId,
+                'workflow_run_id' => $run->id,
+                'run_status' => $run->status->value,
+                'reason' => null,
+            ];
+        });
+    }
+
+    /**
+     * @param array{type: string, result?: string|null} $command
+     */
+    private function applyWorkflowCompletion(WorkflowRun $run, WorkflowTask $task, array $command): void
+    {
+        $result = $command['result'] ?? null;
+
+        $run->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_reason' => 'completed',
+            'output' => $result,
+            'closed_at' => now(),
+            'last_progress_at' => now(),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
+            'output' => $result,
+        ], $task);
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        $this->dispatchParentResumeTasksForRun($run);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
+    /**
+     * @param array{type: string, message: string, exception_class?: string, exception_type?: string} $command
+     */
+    private function applyWorkflowFailure(WorkflowRun $run, WorkflowTask $task, array $command): void
+    {
+        $message = is_string($command['message'] ?? null) ? $command['message'] : 'External workflow task failed';
+        $exceptionClass = is_string($command['exception_class'] ?? null) ? $command['exception_class'] : RuntimeException::class;
+        $exceptionType = is_string($command['exception_type'] ?? null) ? $command['exception_type'] : null;
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()->create([
+            'workflow_run_id' => $run->id,
+            'source_kind' => 'workflow_run',
+            'source_id' => $run->id,
+            'propagation_kind' => 'terminal',
+            'handled' => false,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'file' => '',
+            'line' => 0,
+            'trace_preview' => '',
+        ]);
+
+        $run->forceFill([
+            'status' => RunStatus::Failed,
+            'closed_reason' => 'failed',
+            'closed_at' => now(),
+            'last_progress_at' => now(),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, [
+            'failure_id' => $failure->id,
+            'source_kind' => 'workflow_run',
+            'source_id' => $run->id,
+            'exception_type' => $exceptionType,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'exception' => [
+                'class' => $exceptionClass,
+                'type' => $exceptionType,
+                'message' => $message,
+                'code' => 0,
+                'file' => '',
+                'line' => 0,
+                'trace' => [],
+                'properties' => [],
+            ],
+        ], $task);
+
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        $this->dispatchParentResumeTasksForRun($run);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
+    /**
+     * Dispatch parent resume tasks when a child run closes through the bridge.
+     */
+    private function dispatchParentResumeTasksForRun(WorkflowRun $childRun): void
+    {
+        $parentLinks = WorkflowLink::query()
+            ->where('child_workflow_run_id', $childRun->id)
+            ->where('link_type', 'child_workflow')
+            ->get();
+
+        foreach ($parentLinks as $parentLink) {
+            if (! is_string($parentLink->parent_workflow_run_id) || $parentLink->parent_workflow_run_id === '') {
+                continue;
+            }
+
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->find($parentLink->parent_workflow_run_id);
+
+            if ($parentRun === null || $parentRun->status->isTerminal()) {
+                continue;
+            }
+
+            $existingTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->where('workflow_run_id', $parentRun->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->first();
+
+            if ($existingTask !== null) {
+                continue;
+            }
+
+            WorkflowTask::query()->create([
+                'workflow_run_id' => $parentRun->id,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => [],
+                'connection' => $parentRun->connection,
+                'queue' => $parentRun->queue,
+                'compatibility' => $parentRun->compatibility,
+            ]);
+        }
+    }
+
+    /**
+     * Extract the single terminal command from the command list.
+     *
+     * @param list<array{type: string, ...}> $commands
+     * @return array{type: string, ...}|null
+     */
+    private static function extractTerminalCommand(array $commands): ?array
+    {
+        $terminal = null;
+
+        foreach ($commands as $command) {
+            if (! is_array($command) || ! is_string($command['type'] ?? null)) {
+                continue;
+            }
+
+            if (in_array($command['type'], ['complete_workflow', 'fail_workflow'], true)) {
+                if ($terminal !== null) {
+                    return null; // Multiple terminal commands — reject.
+                }
+                $terminal = $command;
+            }
+        }
+
+        return $terminal;
     }
 
     /**
