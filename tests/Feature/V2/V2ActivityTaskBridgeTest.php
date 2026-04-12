@@ -9,12 +9,10 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ActivityTaskBridge;
-use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -29,8 +27,10 @@ final class V2ActivityTaskBridgeTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         $this->bridge = $this->app->make(ActivityTaskBridge::class);
     }
@@ -64,7 +64,8 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -83,8 +84,11 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->addMinutes(5),
-            'payload' => ['activity_execution_id' => $execution->id],
+            'available_at' => now()
+                ->addMinutes(5),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
             'connection' => 'redis',
             'queue' => 'default',
         ]);
@@ -105,7 +109,9 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
     public function testPollFiltersByCompatibility(): void
     {
-        $this->createActivityTask(['compatibility' => 'build-a']);
+        $this->createActivityTask([
+            'compatibility' => 'build-a',
+        ]);
 
         $results = $this->bridge->poll(null, null, 1, 'build-b');
 
@@ -162,7 +168,8 @@ final class V2ActivityTaskBridgeTest extends TestCase
         [$run, $execution, $task] = $this->createActivityTask([
             'status' => TaskStatus::Leased->value,
             'lease_owner' => 'other-worker',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         $result = $this->bridge->claimStatus($task->id);
@@ -305,7 +312,9 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $claim = $this->bridge->claim($task->id, 'worker-1');
         $this->assertNotNull($claim);
 
-        $run->forceFill(['status' => RunStatus::Cancelled->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Cancelled->value,
+        ])->save();
 
         $result = $this->bridge->heartbeat($claim['activity_attempt_id']);
 
@@ -320,7 +329,9 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $claim = $this->bridge->claim($task->id, 'worker-1');
         $this->assertNotNull($claim);
 
-        $run->forceFill(['status' => RunStatus::Terminated->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Terminated->value,
+        ])->save();
 
         $result = $this->bridge->heartbeat($claim['activity_attempt_id']);
 
@@ -343,8 +354,11 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
-            'payload' => ['activity_execution_id' => $execution->id],
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
             'connection' => 'redis',
             'queue' => 'default',
             'attempt_count' => 0,
@@ -384,8 +398,10 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -399,8 +415,10 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([

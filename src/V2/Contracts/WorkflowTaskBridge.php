@@ -166,7 +166,20 @@ interface WorkflowTaskBridge
      * The external worker replayed the workflow and produced a list of commands.
      * Each command is a typed array with a 'type' key and type-specific fields.
      *
-     * Supported command types:
+     * Non-terminal command types (zero or more, processed in order):
+     *
+     * - schedule_activity: {type: 'schedule_activity', activity_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}
+     *   Schedules an activity task for execution. activity_type is a registered type key.
+     *   arguments is a codec-tagged serialized payload. connection and queue override run defaults.
+     *
+     * - start_timer: {type: 'start_timer', delay_seconds: int}
+     *   Schedules a durable timer that fires after delay_seconds.
+     *
+     * - start_child_workflow: {type: 'start_child_workflow', workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}
+     *   Starts a child workflow instance. workflow_type is a registered type key.
+     *   arguments is a codec-tagged serialized payload.
+     *
+     * Terminal command types (at most one):
      *
      * - complete_workflow: {type: 'complete_workflow', result?: string|null}
      *   Marks the workflow run as completed with an optional serialized result.
@@ -174,9 +187,13 @@ interface WorkflowTaskBridge
      * - fail_workflow: {type: 'fail_workflow', message: string, exception_class?: string, exception_type?: string}
      *   Marks the workflow run as failed with a failure record.
      *
-     * Exactly one terminal command (complete_workflow or fail_workflow) must be
-     * present. Additional command types for scheduling activities, timers, and
-     * child workflows are reserved for a future release.
+     * - continue_as_new: {type: 'continue_as_new', arguments?: string|null, workflow_type?: string|null}
+     *   Closes the current run as continued and starts a new run in the same instance.
+     *   workflow_type defaults to the current run's type if omitted.
+     *
+     * At least one command must be present. At most one terminal command is allowed.
+     * When only non-terminal commands are present, the run transitions to Waiting
+     * and the workflow task is marked Completed.
      *
      * @param list<array{type: string, ...}> $commands
      * @return array{

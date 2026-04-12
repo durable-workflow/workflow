@@ -38,15 +38,9 @@ final class WorkflowServiceProvider extends ServiceProvider
             DefaultOperatorObservabilityRepository::class,
         );
 
-        $this->app->singleton(
-            WorkflowTaskBridge::class,
-            DefaultWorkflowTaskBridge::class,
-        );
+        $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
 
-        $this->app->singleton(
-            ActivityTaskBridge::class,
-            DefaultActivityTaskBridge::class,
-        );
+        $this->app->singleton(ActivityTaskBridge::class, DefaultActivityTaskBridge::class);
     }
 
     public function boot(): void

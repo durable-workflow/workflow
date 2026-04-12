@@ -2417,7 +2417,9 @@ final class WorkflowStub
             }
 
             $commandPayload = $reason !== null && $reason !== ''
-                ? Serializer::serialize(['reason' => $reason])
+                ? Serializer::serialize([
+                    'reason' => $reason,
+                ])
                 : null;
 
             /** @var WorkflowCommand $command */

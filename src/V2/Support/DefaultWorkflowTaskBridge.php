@@ -5,31 +5,42 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 
 final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 {
+    private const TERMINAL_TYPES = ['complete_workflow', 'fail_workflow', 'continue_as_new'];
+
+    private const NON_TERMINAL_TYPES = ['schedule_activity', 'start_timer', 'start_child_workflow'];
+
     public function __construct(
         private readonly WorkflowExecutor $executor,
-    ) {}
+    ) {
+    }
 
     public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array
     {
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)
-            ->where(function ($q) {
+            ->where(static function ($q) {
                 $q->whereNull('available_at')
                     ->orWhere('available_at', '<=', now());
             })
@@ -51,7 +62,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $tasks = $query->get();
 
-        return $tasks->map(function (WorkflowTask $task) {
+        return $tasks->map(static function (WorkflowTask $task) {
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->find($task->workflow_run_id);
@@ -67,12 +78,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'compatibility' => self::nonEmptyString($task->compatibility),
                 'available_at' => $task->available_at?->toJSON(),
             ];
-        })->values()->all();
+        })->values()
+            ->all();
     }
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
     {
-        return DB::transaction(function () use ($taskId, $leaseOwner): array {
+        return DB::transaction(static function () use ($taskId, $leaseOwner): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -104,19 +116,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             if ($run->status->isTerminal()) {
-                return self::claimRejected(
-                    $taskId,
-                    'run_closed',
-                    "The workflow run is {$run->status->value}.",
-                );
+                return self::claimRejected($taskId, 'run_closed', "The workflow run is {$run->status->value}.");
             }
 
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                RunSummaryProjector::project(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures'])
-                );
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return self::claimRejected(
                     $taskId,
@@ -126,9 +132,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures'])
-                );
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 $mismatch = TaskCompatibility::mismatchReason($task, $run);
 
@@ -140,7 +144,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             $resolvedLeaseOwner = $leaseOwner ?? $taskId;
-            $leaseExpiresAt = now()->addMinutes(5);
+            $leaseExpiresAt = now()
+                ->addMinutes(5);
 
             $task->forceFill([
                 'status' => TaskStatus::Leased,
@@ -152,9 +157,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'last_claim_error' => null,
             ])->save();
 
-            RunSummaryProjector::project(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures'])
-            );
+            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return [
                 'claimed' => true,
@@ -231,7 +234,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'arguments' => self::nonEmptyString($run->arguments),
             'run_status' => $run->status->value,
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
-            'history_events' => $historyEvents->map(fn (WorkflowHistoryEvent $event) => [
+            'history_events' => $historyEvents->map(static fn (WorkflowHistoryEvent $event) => [
                 'id' => $event->id,
                 'sequence' => (int) $event->sequence,
                 'event_type' => $event->event_type->value,
@@ -239,7 +242,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'workflow_task_id' => self::nonEmptyString($event->workflow_task_id),
                 'workflow_command_id' => self::nonEmptyString($event->workflow_command_id),
                 'recorded_at' => $event->recorded_at?->toJSON(),
-            ])->values()->all(),
+            ])->values()
+                ->all(),
         ];
     }
 
@@ -288,7 +292,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 return $this->executor->run($run, $task);
             });
         } catch (Throwable $throwable) {
-            DB::transaction(function () use ($taskId, $throwable): void {
+            DB::transaction(static function () use ($taskId, $throwable): void {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -307,9 +311,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 /** @var WorkflowRun $run */
                 $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                     ->findOrFail($task->workflow_run_id);
-                RunSummaryProjector::project(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures'])
-                );
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
             });
 
             return [
@@ -343,7 +345,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function fail(string $taskId, Throwable|array|string $failure): array
     {
-        return DB::transaction(function () use ($taskId, $failure): array {
+        return DB::transaction(static function () use ($taskId, $failure): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -385,9 +387,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->findOrFail($task->workflow_run_id);
 
-            RunSummaryProjector::project(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures'])
-            );
+            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return [
                 'recorded' => true,
@@ -399,7 +399,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function heartbeat(string $taskId): array
     {
-        return DB::transaction(function () use ($taskId): array {
+        return DB::transaction(static function () use ($taskId): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -443,7 +443,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ];
             }
 
-            $leaseExpiresAt = now()->addMinutes(5);
+            $leaseExpiresAt = now()
+                ->addMinutes(5);
 
             $task->forceFill([
                 'lease_expires_at' => $leaseExpiresAt,
@@ -462,19 +463,19 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function complete(string $taskId, array $commands): array
     {
-        $terminal = self::extractTerminalCommand($commands);
+        $parsed = self::parseCommands($commands);
 
-        if ($terminal === null) {
+        if ($parsed === null) {
             return [
                 'completed' => false,
                 'task_id' => $taskId,
                 'workflow_run_id' => null,
                 'run_status' => null,
-                'reason' => 'missing_terminal_command',
+                'reason' => 'invalid_commands',
             ];
         }
 
-        return DB::transaction(function () use ($taskId, $terminal): array {
+        return DB::transaction(function () use ($taskId, $parsed): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -530,10 +531,28 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ];
             }
 
-            if ($terminal['type'] === 'complete_workflow') {
-                $this->applyWorkflowCompletion($run, $task, $terminal);
+            $sequence = ($run->last_history_sequence ?? 0) + 1;
+
+            foreach ($parsed['non_terminal'] as $command) {
+                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence);
+            }
+
+            $run->forceFill([
+                'last_history_sequence' => $sequence - 1,
+            ])->save();
+
+            $terminal = $parsed['terminal'];
+
+            if ($terminal !== null) {
+                if ($terminal['type'] === 'continue_as_new') {
+                    $this->applyContinueAsNew($run, $task, $sequence, $terminal);
+                } elseif ($terminal['type'] === 'complete_workflow') {
+                    $this->applyWorkflowCompletion($run, $task, $terminal);
+                } else {
+                    $this->applyWorkflowFailure($run, $task, $terminal);
+                }
             } else {
-                $this->applyWorkflowFailure($run, $task, $terminal);
+                $this->markRunWaiting($run, $task);
             }
 
             return [
@@ -583,7 +602,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     private function applyWorkflowFailure(WorkflowRun $run, WorkflowTask $task, array $command): void
     {
         $message = is_string($command['message'] ?? null) ? $command['message'] : 'External workflow task failed';
-        $exceptionClass = is_string($command['exception_class'] ?? null) ? $command['exception_class'] : RuntimeException::class;
+        $exceptionClass = is_string(
+            $command['exception_class'] ?? null
+        ) ? $command['exception_class'] : RuntimeException::class;
         $exceptionType = is_string($command['exception_type'] ?? null) ? $command['exception_type'] : null;
 
         /** @var WorkflowFailure $failure */
@@ -638,6 +659,347 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         );
     }
 
+    private function markRunWaiting(WorkflowRun $run, WorkflowTask $task): void
+    {
+        $run->forceFill([
+            'status' => RunStatus::Waiting,
+            'last_progress_at' => now(),
+        ])->save();
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
+    /**
+     * Apply a single non-terminal command and return the next sequence number.
+     *
+     * @param array{type: string, ...} $command
+     */
+    private function applyNonTerminalCommand(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        return match ($command['type']) {
+            'schedule_activity' => $this->applyScheduleActivity($run, $task, $command, $sequence),
+            'start_timer' => $this->applyStartTimer($run, $task, $command, $sequence),
+            'start_child_workflow' => $this->applyStartChildWorkflow($run, $task, $command, $sequence),
+            default => $sequence,
+        };
+    }
+
+    /**
+     * @param array{type: string, activity_type: string, arguments?: string|null, connection?: string|null, queue?: string|null} $command
+     */
+    private function applyScheduleActivity(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        $activityType = $command['activity_type'];
+        $arguments = $command['arguments'] ?? null;
+        $connection = $command['connection'] ?? $run->connection;
+        $queue = $command['queue'] ?? $run->queue;
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'activity_class' => $activityType,
+            'activity_type' => $activityType,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'arguments' => $arguments,
+            'connection' => $connection,
+            'queue' => $queue,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $activityType,
+            'activity_type' => $activityType,
+            'sequence' => $sequence,
+        ], $task);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
+            'connection' => $connection,
+            'queue' => $queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, delay_seconds: int} $command
+     */
+    private function applyStartTimer(WorkflowRun $run, WorkflowTask $task, array $command, int $sequence): int
+    {
+        $delaySeconds = max(0, (int) ($command['delay_seconds'] ?? 0));
+        $fireAt = now()
+            ->addSeconds($delaySeconds);
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => $delaySeconds,
+            'fire_at' => $fireAt,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $delaySeconds,
+            'fire_at' => $fireAt->toJSON(),
+        ], $task);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $fireAt,
+            'payload' => [
+                'timer_id' => $timer->id,
+            ],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null} $command
+     */
+    private function applyStartChildWorkflow(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        $workflowType = $command['workflow_type'];
+        $arguments = $command['arguments'] ?? null;
+        $connection = $command['connection'] ?? $run->connection;
+        $queue = $command['queue'] ?? $run->queue;
+        $now = now();
+
+        /** @var WorkflowInstance $childInstance */
+        $childInstance = WorkflowInstance::query()->create([
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'reserved_at' => $now,
+            'started_at' => $now,
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $childInstance->id,
+            'run_number' => 1,
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'status' => RunStatus::Pending->value,
+            'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
+            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+            'arguments' => $arguments,
+            'connection' => $connection,
+            'queue' => $queue,
+            'started_at' => $now,
+            'last_progress_at' => $now,
+            'last_history_sequence' => 0,
+        ]);
+
+        $childInstance->forceFill([
+            'current_run_id' => $childRun->id,
+        ])->save();
+
+        $childCallId = (string) Str::ulid();
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()->create([
+            'id' => $childCallId,
+            'link_type' => 'child_workflow',
+            'sequence' => $sequence,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'is_primary_parent' => true,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, [
+            'sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $workflowType,
+            'child_workflow_type' => $workflowType,
+        ], $task);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
+            'sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $childInstance->id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $workflowType,
+            'child_workflow_type' => $workflowType,
+            'child_run_number' => 1,
+        ], $task);
+
+        WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'workflow_instance_id' => $childRun->workflow_instance_id,
+            'workflow_run_id' => $childRun->id,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'parent_sequence' => $sequence,
+            'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+        ]);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $childRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $now,
+            'payload' => [],
+            'connection' => $connection,
+            'queue' => $queue,
+            'compatibility' => $childRun->compatibility,
+        ]);
+
+        RunSummaryProjector::project(
+            $childRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{type: string, arguments?: string|null, workflow_type?: string|null} $command
+     */
+    private function applyContinueAsNew(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        array $command,
+    ): void {
+        $now = now();
+        $arguments = $command['arguments'] ?? $run->arguments;
+        $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()
+            ->lockForUpdate()
+            ->findOrFail($run->workflow_instance_id);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'run_number' => $run->run_number + 1,
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'business_key' => $run->business_key,
+            'visibility_labels' => $run->visibility_labels,
+            'memo' => $run->memo,
+            'status' => RunStatus::Pending->value,
+            'compatibility' => $run->compatibility,
+            'payload_codec' => $run->payload_codec,
+            'arguments' => $arguments,
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'started_at' => $now,
+            'last_progress_at' => $now,
+            'last_history_sequence' => 0,
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $continuedRun->id,
+            'run_count' => $continuedRun->run_number,
+            'workflow_class' => $workflowType,
+        ])->save();
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()->create([
+            'link_type' => 'continue_as_new',
+            'sequence' => $sequence,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'parent_workflow_run_id' => $run->id,
+            'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+            'child_workflow_run_id' => $continuedRun->id,
+            'is_primary_parent' => true,
+        ]);
+
+        $run->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_reason' => 'continued',
+            'closed_at' => $now,
+            'last_progress_at' => $now,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowContinuedAsNew, [
+            'sequence' => $sequence,
+            'continued_to_run_id' => $continuedRun->id,
+            'continued_to_run_number' => $continuedRun->run_number,
+            'workflow_link_id' => $link->id,
+            'closed_reason' => 'continued',
+        ], $task);
+
+        WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $workflowType,
+            'workflow_type' => $workflowType,
+            'workflow_instance_id' => $continuedRun->workflow_instance_id,
+            'workflow_run_id' => $continuedRun->id,
+            'continued_from_run_id' => $run->id,
+            'workflow_link_id' => $link->id,
+        ]);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $continuedRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $now,
+            'payload' => [],
+            'connection' => $continuedRun->connection,
+            'queue' => $continuedRun->queue,
+            'compatibility' => $continuedRun->compatibility,
+        ]);
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        RunSummaryProjector::project(
+            $continuedRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+    }
+
     /**
      * Dispatch parent resume tasks when a child run closes through the bridge.
      */
@@ -685,13 +1047,17 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * Extract the single terminal command from the command list.
+     * Parse the command list into non-terminal and terminal commands.
+     *
+     * Returns null when the command list is invalid: empty, contains multiple
+     * terminal commands, or contains only unrecognized command types.
      *
      * @param list<array{type: string, ...}> $commands
-     * @return array{type: string, ...}|null
+     * @return array{non_terminal: list<array{type: string, ...}>, terminal: array{type: string, ...}|null}|null
      */
-    private static function extractTerminalCommand(array $commands): ?array
+    private static function parseCommands(array $commands): ?array
     {
+        $nonTerminal = [];
         $terminal = null;
 
         foreach ($commands as $command) {
@@ -699,15 +1065,24 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 continue;
             }
 
-            if (in_array($command['type'], ['complete_workflow', 'fail_workflow'], true)) {
+            if (in_array($command['type'], self::TERMINAL_TYPES, true)) {
                 if ($terminal !== null) {
                     return null; // Multiple terminal commands — reject.
                 }
                 $terminal = $command;
+            } elseif (in_array($command['type'], self::NON_TERMINAL_TYPES, true)) {
+                $nonTerminal[] = $command;
             }
         }
 
-        return $terminal;
+        if ($terminal === null && $nonTerminal === []) {
+            return null; // No recognized commands at all.
+        }
+
+        return [
+            'non_terminal' => $nonTerminal,
+            'terminal' => $terminal,
+        ];
     }
 
     /**
@@ -716,7 +1091,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      */
     private function claimIfReady(string $taskId): bool
     {
-        return DB::transaction(function () use ($taskId): bool {
+        return DB::transaction(static function () use ($taskId): bool {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -742,17 +1117,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                RunSummaryProjector::project(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures'])
-                );
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return false;
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures'])
-                );
+                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return false;
             }
@@ -761,15 +1132,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
                 'lease_owner' => $taskId,
-                'lease_expires_at' => now()->addMinutes(5),
+                'lease_expires_at' => now()
+                    ->addMinutes(5),
                 'attempt_count' => $task->attempt_count + 1,
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,
             ])->save();
 
-            RunSummaryProjector::project(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures'])
-            );
+            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return true;
         });

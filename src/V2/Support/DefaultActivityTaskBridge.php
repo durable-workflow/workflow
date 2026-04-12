@@ -28,7 +28,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Activity->value)
             ->where('status', TaskStatus::Ready->value)
-            ->where(function ($q) {
+            ->where(static function ($q) {
                 $q->whereNull('available_at')
                     ->orWhere('available_at', '<=', now());
             })
@@ -50,7 +50,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
         $tasks = $query->get();
 
-        return $tasks->map(function (WorkflowTask $task) {
+        return $tasks->map(static function (WorkflowTask $task) {
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->find($task->workflow_run_id);
@@ -74,7 +74,8 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
                 'compatibility' => self::nonEmptyString($task->compatibility),
                 'available_at' => $task->available_at?->toJSON(),
             ];
-        })->values()->all();
+        })->values()
+            ->all();
     }
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array

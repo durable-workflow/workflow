@@ -9,15 +9,20 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 
 final class V2WorkflowTaskBridgeTest extends TestCase
@@ -28,8 +33,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         $this->bridge = $this->app->make(WorkflowTaskBridge::class);
     }
@@ -49,7 +56,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -73,7 +81,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -92,7 +101,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->addMinutes(5),
+            'available_at' => now()
+                ->addMinutes(5),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -112,7 +122,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -132,7 +143,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -153,7 +165,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -191,7 +204,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -207,14 +221,17 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testClaimStatusRejectsTaskOnTerminalRun(): void
     {
         $run = $this->createWaitingRun();
-        $run->forceFill(['status' => RunStatus::Completed->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Completed->value,
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -243,7 +260,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -267,7 +285,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -305,7 +324,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -332,7 +352,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -357,7 +378,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Completed->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -379,12 +401,14 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'lease_expires_at' => now()->addMinute(),
+            'lease_expires_at' => now()
+                ->addMinute(),
         ]);
 
         $result = $this->bridge->heartbeat($task->id);
@@ -407,7 +431,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -423,19 +448,23 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testHeartbeatRejectsTaskOnTerminalRun(): void
     {
         $run = $this->createWaitingRun();
-        $run->forceFill(['status' => RunStatus::Cancelled->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Cancelled->value,
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'lease_expires_at' => now()->addMinute(),
+            'lease_expires_at' => now()
+                ->addMinute(),
         ]);
 
         $result = $this->bridge->heartbeat($task->id);
@@ -454,7 +483,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -476,7 +506,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -487,7 +518,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -508,7 +540,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -519,7 +552,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -542,17 +576,22 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
             'lease_owner' => 'external-worker-1',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         $result = $this->bridge->complete($task->id, [
-            ['type' => 'complete_workflow', 'result' => Serializer::serialize('Hello, Taylor')],
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('Hello, Taylor'),
+            ],
         ]);
 
         $this->assertTrue($result['completed']);
@@ -586,17 +625,23 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
             'lease_owner' => 'external-worker-1',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         $result = $this->bridge->complete($task->id, [
-            ['type' => 'fail_workflow', 'message' => 'Determinism violation', 'exception_class' => RuntimeException::class],
+            [
+                'type' => 'fail_workflow',
+                'message' => 'Determinism violation',
+                'exception_class' => RuntimeException::class,
+            ],
         ]);
 
         $this->assertTrue($result['completed']);
@@ -635,7 +680,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -643,53 +689,67 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ]);
 
         $result = $this->bridge->complete($task->id, [
-            ['type' => 'complete_workflow'],
+            [
+                'type' => 'complete_workflow',
+            ],
         ]);
 
         $this->assertFalse($result['completed']);
         $this->assertSame('task_not_leased', $result['reason']);
     }
 
-    public function testCompleteRejectsWithoutTerminalCommand(): void
+    public function testCompleteRejectsEmptyCommands(): void
     {
         $result = $this->bridge->complete('any-task', []);
 
         $this->assertFalse($result['completed']);
-        $this->assertSame('missing_terminal_command', $result['reason']);
+        $this->assertSame('invalid_commands', $result['reason']);
     }
 
     public function testCompleteRejectsMultipleTerminalCommands(): void
     {
         $result = $this->bridge->complete('any-task', [
-            ['type' => 'complete_workflow'],
-            ['type' => 'fail_workflow', 'message' => 'oops'],
+            [
+                'type' => 'complete_workflow',
+            ],
+            [
+                'type' => 'fail_workflow',
+                'message' => 'oops',
+            ],
         ]);
 
         $this->assertFalse($result['completed']);
-        $this->assertSame('missing_terminal_command', $result['reason']);
+        $this->assertSame('invalid_commands', $result['reason']);
     }
 
     public function testCompleteRejectsTerminalRun(): void
     {
         $run = $this->createWaitingRun();
-        $run->forceFill(['status' => RunStatus::Completed->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Completed->value,
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         $result = $this->bridge->complete($task->id, [
-            ['type' => 'complete_workflow', 'result' => '"done"'],
+            [
+                'type' => 'complete_workflow',
+                'result' => '"done"',
+            ],
         ]);
 
         $this->assertFalse($result['completed']);
@@ -699,11 +759,361 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testCompleteRejectsNonExistentTask(): void
     {
         $result = $this->bridge->complete('nonexistent', [
-            ['type' => 'complete_workflow'],
+            [
+                'type' => 'complete_workflow',
+            ],
         ]);
 
         $this->assertFalse($result['completed']);
         $this->assertSame('task_not_found', $result['reason']);
+    }
+
+    // --- complete() with non-terminal commands ---
+
+    public function testCompleteSchedulesActivity(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'test-greeting-activity',
+                'arguments' => Serializer::serialize(['Taylor']),
+                'queue' => 'activities',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame($run->id, $result['workflow_run_id']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertNull($result['reason']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Waiting, $run->status);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Completed, $task->status);
+        $this->assertNull($task->lease_expires_at);
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        $this->assertNotNull($execution);
+        $this->assertSame('test-greeting-activity', $execution->activity_type);
+        $this->assertSame(ActivityStatus::Pending->value, $execution->status);
+        $this->assertSame('activities', $execution->queue);
+
+        $activityTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Activity->value)
+            ->first();
+
+        $this->assertNotNull($activityTask);
+        $this->assertSame(TaskStatus::Ready->value, $activityTask->status);
+        $this->assertSame('activities', $activityTask->queue);
+
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityScheduled->value)
+            ->first();
+
+        $this->assertNotNull($scheduledEvent);
+        $this->assertSame($execution->id, $scheduledEvent->payload['activity_execution_id']);
+    }
+
+    public function testCompleteSchedulesTimer(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 300,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Waiting, $run->status);
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        $this->assertNotNull($timer);
+        $this->assertSame(TimerStatus::Pending->value, $timer->status);
+        $this->assertSame(300, $timer->delay_seconds);
+        $this->assertNotNull($timer->fire_at);
+
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->first();
+
+        $this->assertNotNull($timerTask);
+        $this->assertSame(TaskStatus::Ready->value, $timerTask->status);
+
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerScheduled->value)
+            ->first();
+
+        $this->assertNotNull($scheduledEvent);
+        $this->assertSame($timer->id, $scheduledEvent->payload['timer_id']);
+    }
+
+    public function testCompleteStartsChildWorkflow(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Waiting, $run->status);
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->first();
+
+        $this->assertNotNull($link);
+
+        $childRun = WorkflowRun::query()->find($link->child_workflow_run_id);
+        $this->assertNotNull($childRun);
+        $this->assertSame(RunStatus::Pending->value, $childRun->status);
+        $this->assertSame('test-greeting-workflow', $childRun->workflow_type);
+
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $childRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->first();
+
+        $this->assertNotNull($childTask);
+        $this->assertSame(TaskStatus::Ready->value, $childTask->status);
+
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled->value)
+            ->first();
+
+        $this->assertNotNull($scheduledEvent);
+        $this->assertSame($link->child_workflow_run_id, $scheduledEvent->payload['child_workflow_run_id']);
+
+        $childStartedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $childRun->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->first();
+
+        $this->assertNotNull($childStartedEvent);
+    }
+
+    public function testCompleteContinuesAsNew(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'continue_as_new',
+                'arguments' => Serializer::serialize(['new-args']),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('completed', $result['run_status']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Completed, $run->status);
+        $this->assertSame('continued', $run->closed_reason);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Completed, $task->status);
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'continue_as_new')
+            ->first();
+
+        $this->assertNotNull($link);
+
+        $continuedRun = WorkflowRun::query()->find($link->child_workflow_run_id);
+        $this->assertNotNull($continuedRun);
+        $this->assertSame(RunStatus::Pending->value, $continuedRun->status);
+        $this->assertSame($run->run_number + 1, $continuedRun->run_number);
+        $this->assertSame($run->workflow_instance_id, $continuedRun->workflow_instance_id);
+
+        $continuedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->first();
+
+        $this->assertNotNull($continuedTask);
+        $this->assertSame(TaskStatus::Ready->value, $continuedTask->status);
+
+        $continuedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowContinuedAsNew->value)
+            ->first();
+
+        $this->assertNotNull($continuedEvent);
+        $this->assertSame($continuedRun->id, $continuedEvent->payload['continued_to_run_id']);
+    }
+
+    public function testCompleteWithMultipleNonTerminalCommands(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'activity-a',
+            ],
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'activity-b',
+            ],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 60,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+
+        $activityExecutions = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->get();
+
+        $this->assertCount(2, $activityExecutions);
+
+        $activityTasks = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Activity->value)
+            ->get();
+
+        $this->assertCount(2, $activityTasks);
+
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->first();
+
+        $this->assertNotNull($timerTask);
+    }
+
+    public function testCompleteWithNonTerminalAndTerminalCommands(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'fire-and-forget-activity',
+            ],
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('done'),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('completed', $result['run_status']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Completed, $run->status);
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        $this->assertNotNull($execution);
+    }
+
+    public function testCompleteRejectsOnlyUnrecognizedCommands(): void
+    {
+        $result = $this->bridge->complete('any-task', [
+            [
+                'type' => 'unknown_command',
+            ],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('invalid_commands', $result['reason']);
+    }
+
+    public function testScheduleActivityUsesRunDefaultsForConnectionAndQueue(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'test-activity',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        $this->assertSame($run->connection, $execution->connection);
+        $this->assertSame($run->queue, $execution->queue);
+    }
+
+    private function createLeasedTask(WorkflowRun $run): WorkflowTask
+    {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'external-worker-1',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ]);
+
+        return $task;
     }
 
     private function createWaitingRun(): WorkflowRun
@@ -713,8 +1123,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -728,8 +1140,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
         $instance->forceFill([

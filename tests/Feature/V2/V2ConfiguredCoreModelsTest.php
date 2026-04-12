@@ -4,14 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Tests\Fixtures\V2\TestConfiguredStorageWorkflow;
 use Tests\TestCase;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -25,9 +25,12 @@ final class V2ConfiguredCoreModelsTest extends TestCase
         $this->createConfiguredRunsTable();
         $this->createConfiguredTasksTable();
 
-        config()->set('workflows.v2.instance_model', ConfiguredCoreWorkflowInstance::class);
-        config()->set('workflows.v2.run_model', ConfiguredCoreWorkflowRun::class);
-        config()->set('workflows.v2.task_model', ConfiguredCoreWorkflowTask::class);
+        config()
+            ->set('workflows.v2.instance_model', ConfiguredCoreWorkflowInstance::class);
+        config()
+            ->set('workflows.v2.run_model', ConfiguredCoreWorkflowRun::class);
+        config()
+            ->set('workflows.v2.task_model', ConfiguredCoreWorkflowTask::class);
 
         WorkflowStub::fake();
 
@@ -63,29 +66,32 @@ final class V2ConfiguredCoreModelsTest extends TestCase
         $this->assertSame('completed', $configuredRun->status->value);
         $this->assertSame('completed', $configuredTask->status->value);
 
-        $this->assertSame(
-            $workflow->output(),
-            WorkflowStub::load($workflow->id())->output(),
-        );
-        $this->assertSame(
-            $workflow->output(),
-            WorkflowStub::loadRun((string) $workflow->runId())->output(),
-        );
+        $this->assertSame($workflow->output(), WorkflowStub::load($workflow->id())->output());
+        $this->assertSame($workflow->output(), WorkflowStub::loadRun((string) $workflow->runId())->output());
     }
 
     private function createConfiguredInstancesTable(): void
     {
         Schema::create('configured_core_workflow_instances', static function (Blueprint $table): void {
-            $table->string('id', 191)->primary();
+            $table->string('id', 191)
+                ->primary();
             $table->string('workflow_class');
             $table->string('workflow_type');
-            $table->string('business_key', 191)->nullable();
-            $table->json('visibility_labels')->nullable();
-            $table->json('memo')->nullable();
-            $table->string('current_run_id', 26)->nullable()->index();
-            $table->unsignedInteger('run_count')->default(0);
-            $table->timestamp('reserved_at', 6)->nullable();
-            $table->timestamp('started_at', 6)->nullable();
+            $table->string('business_key', 191)
+                ->nullable();
+            $table->json('visibility_labels')
+                ->nullable();
+            $table->json('memo')
+                ->nullable();
+            $table->string('current_run_id', 26)
+                ->nullable()
+                ->index();
+            $table->unsignedInteger('run_count')
+                ->default(0);
+            $table->timestamp('reserved_at', 6)
+                ->nullable();
+            $table->timestamp('started_at', 6)
+                ->nullable();
             $table->timestamps(6);
         });
     }
@@ -93,30 +99,50 @@ final class V2ConfiguredCoreModelsTest extends TestCase
     private function createConfiguredRunsTable(): void
     {
         Schema::create('configured_core_workflow_runs', static function (Blueprint $table): void {
-            $table->string('id', 26)->primary();
-            $table->string('workflow_instance_id', 191)->index();
+            $table->string('id', 26)
+                ->primary();
+            $table->string('workflow_instance_id', 191)
+                ->index();
             $table->unsignedInteger('run_number');
             $table->string('workflow_class');
             $table->string('workflow_type');
-            $table->string('business_key', 191)->nullable();
-            $table->json('visibility_labels')->nullable();
-            $table->json('memo')->nullable();
+            $table->string('business_key', 191)
+                ->nullable();
+            $table->json('visibility_labels')
+                ->nullable();
+            $table->json('memo')
+                ->nullable();
             $table->string('status');
-            $table->string('closed_reason')->nullable();
-            $table->string('compatibility')->nullable();
-            $table->string('payload_codec')->nullable();
-            $table->longText('arguments')->nullable();
-            $table->longText('output')->nullable();
-            $table->string('connection')->nullable();
-            $table->string('queue')->nullable();
-            $table->unsignedInteger('last_history_sequence')->default(0);
-            $table->unsignedInteger('last_command_sequence')->default(0);
-            $table->timestamp('started_at', 6)->nullable();
-            $table->timestamp('closed_at', 6)->nullable();
-            $table->timestamp('archived_at', 6)->nullable();
-            $table->string('archive_command_id', 26)->nullable();
-            $table->string('archive_reason')->nullable();
-            $table->timestamp('last_progress_at', 6)->nullable();
+            $table->string('closed_reason')
+                ->nullable();
+            $table->string('compatibility')
+                ->nullable();
+            $table->string('payload_codec')
+                ->nullable();
+            $table->longText('arguments')
+                ->nullable();
+            $table->longText('output')
+                ->nullable();
+            $table->string('connection')
+                ->nullable();
+            $table->string('queue')
+                ->nullable();
+            $table->unsignedInteger('last_history_sequence')
+                ->default(0);
+            $table->unsignedInteger('last_command_sequence')
+                ->default(0);
+            $table->timestamp('started_at', 6)
+                ->nullable();
+            $table->timestamp('closed_at', 6)
+                ->nullable();
+            $table->timestamp('archived_at', 6)
+                ->nullable();
+            $table->string('archive_command_id', 26)
+                ->nullable();
+            $table->string('archive_reason')
+                ->nullable();
+            $table->timestamp('last_progress_at', 6)
+                ->nullable();
             $table->timestamps(6);
 
             $table->unique(['workflow_instance_id', 'run_number']);
@@ -126,27 +152,46 @@ final class V2ConfiguredCoreModelsTest extends TestCase
     private function createConfiguredTasksTable(): void
     {
         Schema::create('configured_core_workflow_tasks', static function (Blueprint $table): void {
-            $table->string('id', 26)->primary();
-            $table->string('workflow_run_id', 26)->index();
+            $table->string('id', 26)
+                ->primary();
+            $table->string('workflow_run_id', 26)
+                ->index();
             $table->string('task_type');
             $table->string('status');
-            $table->json('payload')->nullable();
-            $table->string('connection')->nullable();
-            $table->string('queue')->nullable();
-            $table->string('compatibility')->nullable();
-            $table->timestamp('available_at', 6)->nullable();
-            $table->timestamp('leased_at', 6)->nullable();
-            $table->string('lease_owner')->nullable();
-            $table->timestamp('lease_expires_at', 6)->nullable();
-            $table->unsignedInteger('attempt_count')->default(0);
-            $table->timestamp('last_dispatch_attempt_at', 6)->nullable();
-            $table->timestamp('last_dispatched_at', 6)->nullable();
-            $table->text('last_dispatch_error')->nullable();
-            $table->timestamp('last_claim_failed_at', 6)->nullable();
-            $table->text('last_claim_error')->nullable();
-            $table->unsignedInteger('repair_count')->default(0);
-            $table->timestamp('repair_available_at', 6)->nullable();
-            $table->text('last_error')->nullable();
+            $table->json('payload')
+                ->nullable();
+            $table->string('connection')
+                ->nullable();
+            $table->string('queue')
+                ->nullable();
+            $table->string('compatibility')
+                ->nullable();
+            $table->timestamp('available_at', 6)
+                ->nullable();
+            $table->timestamp('leased_at', 6)
+                ->nullable();
+            $table->string('lease_owner')
+                ->nullable();
+            $table->timestamp('lease_expires_at', 6)
+                ->nullable();
+            $table->unsignedInteger('attempt_count')
+                ->default(0);
+            $table->timestamp('last_dispatch_attempt_at', 6)
+                ->nullable();
+            $table->timestamp('last_dispatched_at', 6)
+                ->nullable();
+            $table->text('last_dispatch_error')
+                ->nullable();
+            $table->timestamp('last_claim_failed_at', 6)
+                ->nullable();
+            $table->text('last_claim_error')
+                ->nullable();
+            $table->unsignedInteger('repair_count')
+                ->default(0);
+            $table->timestamp('repair_available_at', 6)
+                ->nullable();
+            $table->text('last_error')
+                ->nullable();
             $table->timestamps(6);
 
             $table->index(['status', 'available_at']);

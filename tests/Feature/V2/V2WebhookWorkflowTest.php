@@ -225,7 +225,8 @@ final class V2WebhookWorkflowTest extends TestCase
     {
         $this->configureAsyncRedisTaskConnection();
 
-        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
         config()
             ->set('workflows.v2.compatibility.supported', ['build-a']);
 
@@ -244,7 +245,8 @@ final class V2WebhookWorkflowTest extends TestCase
             'compatibility' => 'build-a',
         ])->save();
 
-        config()->set('workflows.v2.compatibility.current', 'build-b');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-b');
         config()
             ->set('workflows.v2.compatibility.supported', ['build-b']);
 

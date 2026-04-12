@@ -33,8 +33,12 @@ final class ActivityTaskBridge
      *     available_at: string|null,
      * }>
      */
-    public static function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array
-    {
+    public static function poll(
+        ?string $connection,
+        ?string $queue,
+        int $limit = 1,
+        ?string $compatibility = null
+    ): array {
         return self::resolve()->poll($connection, $queue, $limit, $compatibility);
     }
 
