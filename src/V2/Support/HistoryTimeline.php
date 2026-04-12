@@ -381,6 +381,10 @@ final class HistoryTimeline
             HistoryEventType::TimerCancelled => $timerKind === 'condition_timeout'
                 ? 'Condition timeout cancelled.'
                 : 'Timer cancelled.',
+            HistoryEventType::MessageCursorAdvanced => sprintf(
+                'Message cursor advanced to %d.',
+                self::intValue($payload['new_position'] ?? null) ?? 0,
+            ),
             HistoryEventType::WorkflowCompleted => 'Workflow completed.',
             HistoryEventType::WorkflowFailed => $message === null
                 ? 'Workflow failed.'
