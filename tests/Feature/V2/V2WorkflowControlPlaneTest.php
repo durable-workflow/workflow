@@ -4,17 +4,21 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -443,13 +447,12 @@ final class V2WorkflowControlPlaneTest extends TestCase
         ]);
 
         $this->controlPlane->start('test-signal-workflow', 'ctrl-plane-sig-ok-1', [
-            'connection' => 'redis',
             'queue' => 'default',
         ]);
 
         // Execute the initial workflow task so the run enters Waiting state.
         $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
-        $polled = $bridge->poll('redis', 'default');
+        $polled = $bridge->poll(null, 'default');
         $this->assertNotEmpty($polled);
         $bridge->execute($polled[0]['task_id']);
 
@@ -463,6 +466,49 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertNull($result['reason']);
     }
 
+    public function testSignalSupportsCommandContextAndDetailedResponsePayload(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-signal-workflow' => TestSignalWorkflow::class,
+        ]);
+
+        $this->controlPlane->start('test-signal-workflow', 'ctrl-plane-sig-detailed-1', [
+            'queue' => 'default',
+        ]);
+
+        $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
+        $polled = $bridge->poll(null, 'default');
+        $this->assertNotEmpty($polled);
+        $bridge->execute($polled[0]['task_id']);
+
+        $result = $this->controlPlane->signal('ctrl-plane-sig-detailed-1', 'name-provided', [
+            'arguments' => ['Taylor'],
+            'command_context' => CommandContext::controlPlane()->with([
+                'caller' => [
+                    'type' => 'server',
+                    'label' => 'Standalone Server',
+                ],
+                'server' => [
+                    'namespace' => 'default',
+                    'command' => 'signal',
+                ],
+            ]),
+            'strict_configured_type_validation' => true,
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(202, $result['status']);
+        $this->assertSame('name-provided', $result['signal_name']);
+        $this->assertSame('accepted', $result['command_status']);
+        $this->assertSame('control_plane', $result['command_source']);
+        $this->assertIsString($result['command_id']);
+
+        $command = WorkflowCommand::query()->findOrFail($result['command_id']);
+
+        $this->assertSame('server', $command->commandContext()['caller']['type'] ?? null);
+        $this->assertSame('default', $command->commandContext()['server']['namespace'] ?? null);
+    }
+
     // ── Query happy path ────────────────────────────────────────────
 
     public function testQueryReturnsResult(): void
@@ -472,13 +518,12 @@ final class V2WorkflowControlPlaneTest extends TestCase
         ]);
 
         $this->controlPlane->start('test-query-workflow', 'ctrl-plane-query-ok-1', [
-            'connection' => 'redis',
             'queue' => 'default',
         ]);
 
         // Execute the initial workflow task so the run advances and has state.
         $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
-        $polled = $bridge->poll('redis', 'default');
+        $polled = $bridge->poll(null, 'default');
         $this->assertNotEmpty($polled);
         $bridge->execute($polled[0]['task_id']);
 
@@ -490,6 +535,45 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertNull($result['reason']);
     }
 
+    public function testQueryReturnsDetailedPayloadAndValidationErrors(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-query-workflow' => TestQueryWorkflow::class,
+        ]);
+
+        $this->controlPlane->start('test-query-workflow', 'ctrl-plane-query-detail-1', [
+            'queue' => 'default',
+        ]);
+
+        $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
+        $polled = $bridge->poll(null, 'default');
+        $this->assertNotEmpty($polled);
+        $bridge->execute($polled[0]['task_id']);
+
+        $result = $this->controlPlane->query('ctrl-plane-query-detail-1', 'currentStage', [
+            'strict_configured_type_validation' => true,
+        ]);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame(200, $result['status']);
+        $this->assertSame('ctrl-plane-query-detail-1', $result['workflow_id']);
+        $this->assertSame('currentStage', $result['query_name']);
+        $this->assertSame('instance', $result['target_scope']);
+        $this->assertSame('waiting-for-name', $result['result']);
+
+        $invalid = $this->controlPlane->query('ctrl-plane-query-detail-1', 'events-starting-with', [
+            'arguments' => ['extra' => 'start'],
+            'strict_configured_type_validation' => true,
+        ]);
+
+        $this->assertFalse($invalid['success']);
+        $this->assertSame(422, $invalid['status']);
+        $this->assertSame('events-starting-with', $invalid['query_name']);
+        $this->assertSame('invalid_query_arguments', $invalid['reason']);
+        $this->assertArrayHasKey('prefix', $invalid['validation_errors']);
+        $this->assertArrayHasKey('extra', $invalid['validation_errors']);
+    }
+
     // ── Update happy path ───────────────────────────────────────────
 
     public function testUpdateAccepted(): void
@@ -498,14 +582,16 @@ final class V2WorkflowControlPlaneTest extends TestCase
             'test-update-workflow' => TestUpdateWorkflow::class,
         ]);
 
+        $this->ensureJobsTable();
+
         $this->controlPlane->start('test-update-workflow', 'ctrl-plane-update-ok-1', [
-            'connection' => 'redis',
+            'connection' => 'database',
             'queue' => 'default',
         ]);
 
         // Execute the initial workflow task so the run advances.
         $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
-        $polled = $bridge->poll('redis', 'default');
+        $polled = $bridge->poll('database', 'default');
         $this->assertNotEmpty($polled);
         $bridge->execute($polled[0]['task_id']);
 
@@ -517,5 +603,58 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertSame('ctrl-plane-update-ok-1', $result['workflow_instance_id']);
         $this->assertNotNull($result['update_id']);
         $this->assertNull($result['reason']);
+    }
+
+    public function testUpdateCanWaitForCompletionAndReturnATimeoutPayloadWithoutAWorker(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-update-workflow' => TestUpdateWorkflow::class,
+        ]);
+
+        $this->ensureJobsTable();
+
+        $this->controlPlane->start('test-update-workflow', 'ctrl-plane-update-detail-1', [
+            'connection' => 'database',
+            'queue' => 'default',
+        ]);
+
+        $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
+        $polled = $bridge->poll('database', 'default');
+        $this->assertNotEmpty($polled);
+        $bridge->execute($polled[0]['task_id']);
+
+        $result = $this->controlPlane->update('ctrl-plane-update-detail-1', 'approve', [
+            'arguments' => [true, 'control-plane'],
+            'wait_for' => 'completed',
+            'wait_timeout_seconds' => 1,
+            'strict_configured_type_validation' => true,
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(202, $result['status']);
+        $this->assertSame('accepted', $result['command_status']);
+        $this->assertSame('accepted', $result['update_status']);
+        $this->assertSame('completed', $result['wait_for']);
+        $this->assertTrue($result['wait_timed_out']);
+        $this->assertSame(1, $result['wait_timeout_seconds']);
+        $this->assertSame('approve', $result['update_name']);
+        $this->assertNull($result['result']);
+    }
+
+    private function ensureJobsTable(): void
+    {
+        if (Schema::hasTable('jobs')) {
+            return;
+        }
+
+        Schema::create('jobs', function (Blueprint $table): void {
+            $table->id();
+            $table->string('queue')->index();
+            $table->longText('payload');
+            $table->unsignedTinyInteger('attempts');
+            $table->unsignedInteger('reserved_at')->nullable();
+            $table->unsignedInteger('available_at');
+            $table->unsignedInteger('created_at');
+        });
     }
 }

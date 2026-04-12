@@ -19,12 +19,14 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\UpdateResult;
 use Workflow\V2\WorkflowStub;
 
 final class DefaultWorkflowControlPlane implements WorkflowControlPlane
@@ -38,6 +40,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         $businessKey = $options['business_key'] ?? null;
         $labels = $options['labels'] ?? null;
         $memo = $options['memo'] ?? null;
+        $searchAttributes = $options['search_attributes'] ?? null;
         $duplicatePolicy = ($options['duplicate_start_policy'] ?? null) === 'return_existing_active'
             ? DuplicateStartPolicy::ReturnExistingActive
             : DuplicateStartPolicy::RejectDuplicate;
@@ -60,6 +63,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $businessKey,
             $labels,
             $memo,
+            $searchAttributes,
             $duplicatePolicy,
             &$command,
             &$task,
@@ -106,6 +110,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                         'business_key' => $currentRun->business_key,
                         'visibility_labels' => $currentRun->visibility_labels,
                         'memo' => $currentRun->memo,
+                        'search_attributes' => $currentRun->search_attributes,
                         'outcome' => $command->outcome?->value,
                         'rejection_reason' => $command->rejection_reason,
                     ], null, $command);
@@ -146,6 +151,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'business_key' => $businessKey ?? $instance->business_key,
                 'visibility_labels' => $labels ?? (is_array($instance->visibility_labels) ? $instance->visibility_labels : null),
                 'memo' => $memo ?? (is_array($instance->memo) ? $instance->memo : null),
+                'search_attributes' => is_array($searchAttributes) && $searchAttributes !== [] ? $searchAttributes : null,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => config('workflows.serializer'),
@@ -186,6 +192,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
+                'search_attributes' => $run->search_attributes,
                 'outcome' => $command->outcome?->value,
             ], null, $command);
 
@@ -198,6 +205,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
+                'search_attributes' => $run->search_attributes,
                 'workflow_definition_fingerprint' => $fingerprint,
             ], static fn (mixed $v): bool => $v !== null);
 
@@ -258,164 +266,246 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 
     public function signal(string $instanceId, string $name, array $options = []): array
     {
-        $arguments = $options['arguments'] ?? [];
+        $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
-        try {
-            $stub = WorkflowStub::load($instanceId);
-            $result = $stub->signal($name, ...$arguments);
+        if (($loaded['error'] ?? null) !== null) {
+            return $loaded['error'];
+        }
 
-            return [
-                'accepted' => true,
+        $stub = $loaded['workflow'] ?? null;
+
+        if (! $stub instanceof WorkflowStub) {
+            return $this->notFoundControlPlaneResult($instanceId, 'workflow_command_id');
+        }
+
+        $arguments = $this->commandArguments($options);
+
+        $result = $stub
+            ->withCommandContext($this->commandContext($options))
+            ->attemptSignalWithArguments($name, $arguments);
+
+        return array_merge(
+            CommandResponse::payload($result),
+            [
+                'accepted' => $result->accepted(),
                 'workflow_instance_id' => $instanceId,
                 'workflow_command_id' => $result->commandId(),
-                'reason' => null,
-            ];
-        } catch (ModelNotFoundException $e) {
-            return [
-                'accepted' => false,
-                'workflow_instance_id' => $instanceId,
-                'workflow_command_id' => null,
-                'reason' => 'instance_not_found',
-            ];
-        } catch (LogicException $e) {
-            return [
-                'accepted' => false,
-                'workflow_instance_id' => $instanceId,
-                'workflow_command_id' => null,
-                'reason' => $e->getMessage(),
-            ];
-        }
+                'signal_name' => $name,
+                'command_reason' => $result->reason(),
+                'reason' => $result->rejected() ? $result->rejectionReason() : null,
+                'status' => $this->signalStatus($result),
+            ],
+        );
     }
 
     public function query(string $instanceId, string $name, array $options = []): array
     {
-        $arguments = $options['arguments'] ?? [];
+        $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
-        try {
-            $stub = WorkflowStub::load($instanceId);
-            $result = $stub->query($name, ...$arguments);
+        if (($loaded['error'] ?? null) !== null) {
+            return $loaded['error'];
+        }
 
-            return [
-                'success' => true,
-                'workflow_instance_id' => $instanceId,
-                'result' => $result,
-                'reason' => null,
-            ];
-        } catch (ModelNotFoundException $e) {
+        $stub = $loaded['workflow'] ?? null;
+
+        if (! $stub instanceof WorkflowStub) {
             return [
                 'success' => false,
                 'workflow_instance_id' => $instanceId,
+                'workflow_id' => $instanceId,
                 'result' => null,
                 'reason' => 'instance_not_found',
-            ];
-        } catch (WorkflowExecutionUnavailableException $e) {
-            return [
-                'success' => false,
-                'workflow_instance_id' => $instanceId,
-                'result' => null,
-                'reason' => $e->getMessage(),
-            ];
-        } catch (LogicException $e) {
-            return [
-                'success' => false,
-                'workflow_instance_id' => $instanceId,
-                'result' => null,
-                'reason' => $e->getMessage(),
+                'status' => 404,
             ];
         }
+
+        $queryName = $stub->resolveQueryTarget($name)['name'] ?? null;
+
+        if ($queryName === null) {
+            return [
+                'success' => false,
+                'workflow_instance_id' => $instanceId,
+                'workflow_id' => $instanceId,
+                'run_id' => $stub->runId(),
+                'target_scope' => 'instance',
+                'query_name' => $name,
+                'result' => null,
+                'reason' => 'query_not_found',
+                'message' => sprintf(
+                    'Workflow query [%s] is not declared on workflow [%s].',
+                    $name,
+                    $instanceId,
+                ),
+                'status' => 404,
+            ];
+        }
+
+        try {
+            $result = $stub->queryWithArguments($name, $this->commandArguments($options));
+        } catch (InvalidQueryArgumentsException $exception) {
+            return [
+                'success' => false,
+                'workflow_instance_id' => $instanceId,
+                'workflow_id' => $instanceId,
+                'run_id' => $stub->runId(),
+                'target_scope' => 'instance',
+                'query_name' => $exception->queryName(),
+                'result' => null,
+                'reason' => 'invalid_query_arguments',
+                'message' => $exception->getMessage(),
+                'validation_errors' => $exception->validationErrors(),
+                'status' => 422,
+            ];
+        } catch (WorkflowExecutionUnavailableException $exception) {
+            return [
+                'success' => false,
+                'workflow_instance_id' => $instanceId,
+                'workflow_id' => $instanceId,
+                'run_id' => $stub->runId(),
+                'target_scope' => 'instance',
+                'query_name' => $exception->targetName(),
+                'result' => null,
+                'reason' => $exception->blockedReason(),
+                'blocked_reason' => $exception->blockedReason(),
+                'message' => $exception->getMessage(),
+                'status' => 409,
+            ];
+        } catch (LogicException $exception) {
+            return [
+                'success' => false,
+                'workflow_instance_id' => $instanceId,
+                'workflow_id' => $instanceId,
+                'run_id' => $stub->runId(),
+                'target_scope' => 'instance',
+                'query_name' => $queryName,
+                'result' => null,
+                'reason' => 'query_rejected',
+                'message' => $exception->getMessage(),
+                'status' => 409,
+            ];
+        }
+
+        return [
+            'success' => true,
+            'workflow_instance_id' => $instanceId,
+            'workflow_id' => $instanceId,
+            'run_id' => $stub->runId(),
+            'target_scope' => 'instance',
+            'query_name' => $queryName,
+            'result' => $result,
+            'reason' => null,
+            'status' => 200,
+        ];
     }
 
     public function update(string $instanceId, string $name, array $options = []): array
     {
-        $arguments = $options['arguments'] ?? [];
+        $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
-        try {
-            $stub = WorkflowStub::load($instanceId);
-            $result = $stub->submitUpdate($name, ...$arguments);
+        if (($loaded['error'] ?? null) !== null) {
+            return $loaded['error'];
+        }
 
-            return [
+        $stub = $loaded['workflow'] ?? null;
+
+        if (! $stub instanceof WorkflowStub) {
+            return $this->notFoundControlPlaneResult($instanceId, 'update_id');
+        }
+
+        $waitFor = array_key_exists('wait_for', $options)
+            ? UpdateWaitPolicy::requestedWaitFor($options['wait_for'])
+            : UpdateWaitPolicy::WAIT_FOR_ACCEPTED;
+
+        $stub = $stub->withCommandContext($this->commandContext($options));
+
+        if (($options['wait_timeout_seconds'] ?? null) !== null && $waitFor !== UpdateWaitPolicy::WAIT_FOR_ACCEPTED) {
+            $stub = $stub->withUpdateWaitTimeout(
+                UpdateWaitPolicy::requestedTimeoutSeconds($options['wait_timeout_seconds'] ?? null),
+            );
+        }
+
+        $result = $waitFor === UpdateWaitPolicy::WAIT_FOR_ACCEPTED
+            ? $stub->submitUpdateWithArguments($name, $this->commandArguments($options))
+            : $stub->attemptUpdateWithArguments($name, $this->commandArguments($options));
+
+        return array_merge(
+            CommandResponse::payload($result),
+            [
                 'accepted' => $result->accepted(),
                 'workflow_instance_id' => $instanceId,
                 'update_id' => $result->updateId(),
+                'update_name' => $result->updateName() ?? $name,
+                'command_reason' => $result->reason(),
                 'reason' => $result->rejected() ? $result->rejectionReason() : null,
-            ];
-        } catch (ModelNotFoundException $e) {
-            return [
-                'accepted' => false,
-                'workflow_instance_id' => $instanceId,
-                'update_id' => null,
-                'reason' => 'instance_not_found',
-            ];
-        } catch (LogicException $e) {
-            return [
-                'accepted' => false,
-                'workflow_instance_id' => $instanceId,
-                'update_id' => null,
-                'reason' => $e->getMessage(),
-            ];
-        }
+                'status' => $this->updateStatus($result),
+            ],
+        );
     }
 
     public function cancel(string $instanceId, array $options = []): array
     {
-        $reason = $options['reason'] ?? null;
+        $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
-        try {
-            $stub = WorkflowStub::load($instanceId);
-            $result = $stub->attemptCancel(is_string($reason) ? $reason : null);
+        if (($loaded['error'] ?? null) !== null) {
+            return $loaded['error'];
+        }
 
-            return [
+        $stub = $loaded['workflow'] ?? null;
+
+        if (! $stub instanceof WorkflowStub) {
+            return $this->notFoundControlPlaneResult($instanceId, 'workflow_command_id');
+        }
+
+        $reason = is_string($options['reason'] ?? null) ? $options['reason'] : null;
+
+        $result = $stub
+            ->withCommandContext($this->commandContext($options))
+            ->attemptCancel($reason);
+
+        return array_merge(
+            CommandResponse::payload($result),
+            [
                 'accepted' => $result->accepted(),
                 'workflow_instance_id' => $instanceId,
                 'workflow_command_id' => $result->commandId(),
+                'command_reason' => $result->reason(),
                 'reason' => $result->rejected() ? $result->rejectionReason() : null,
-            ];
-        } catch (ModelNotFoundException $e) {
-            return [
-                'accepted' => false,
-                'workflow_instance_id' => $instanceId,
-                'workflow_command_id' => null,
-                'reason' => 'instance_not_found',
-            ];
-        } catch (LogicException $e) {
-            return [
-                'accepted' => false,
-                'workflow_instance_id' => $instanceId,
-                'workflow_command_id' => null,
-                'reason' => $e->getMessage(),
-            ];
-        }
+                'status' => $result->accepted() ? 200 : 409,
+            ],
+        );
     }
 
     public function terminate(string $instanceId, array $options = []): array
     {
-        $reason = $options['reason'] ?? null;
+        $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
-        try {
-            $stub = WorkflowStub::load($instanceId);
-            $result = $stub->attemptTerminate(is_string($reason) ? $reason : null);
+        if (($loaded['error'] ?? null) !== null) {
+            return $loaded['error'];
+        }
 
-            return [
+        $stub = $loaded['workflow'] ?? null;
+
+        if (! $stub instanceof WorkflowStub) {
+            return $this->notFoundControlPlaneResult($instanceId, 'workflow_command_id');
+        }
+
+        $reason = is_string($options['reason'] ?? null) ? $options['reason'] : null;
+
+        $result = $stub
+            ->withCommandContext($this->commandContext($options))
+            ->attemptTerminate($reason);
+
+        return array_merge(
+            CommandResponse::payload($result),
+            [
                 'accepted' => $result->accepted(),
                 'workflow_instance_id' => $instanceId,
                 'workflow_command_id' => $result->commandId(),
+                'command_reason' => $result->reason(),
                 'reason' => $result->rejected() ? $result->rejectionReason() : null,
-            ];
-        } catch (ModelNotFoundException $e) {
-            return [
-                'accepted' => false,
-                'workflow_instance_id' => $instanceId,
-                'workflow_command_id' => null,
-                'reason' => 'instance_not_found',
-            ];
-        } catch (LogicException $e) {
-            return [
-                'accepted' => false,
-                'workflow_instance_id' => $instanceId,
-                'workflow_command_id' => null,
-                'reason' => $e->getMessage(),
-            ];
-        }
+                'status' => $result->accepted() ? 200 : 409,
+            ],
+        );
     }
 
     public function describe(string $instanceId, array $options = []): array
@@ -584,6 +674,138 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     private function commandAttributes(array $attributes): array
     {
         return array_merge(CommandContext::controlPlane()->attributes(), $attributes);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array{
+     *     workflow: WorkflowStub|null,
+     *     error: array<string, mixed>|null,
+     * }
+     */
+    private function loadControlPlaneWorkflow(string $instanceId, array $options): array
+    {
+        try {
+            /** @var WorkflowInstance $instance */
+            $instance = $this->instanceQuery()->findOrFail($instanceId);
+        } catch (ModelNotFoundException) {
+            return [
+                'workflow' => null,
+                'error' => null,
+            ];
+        }
+
+        if (($options['strict_configured_type_validation'] ?? false) === true) {
+            $run = CurrentRunResolver::forInstance($instance);
+
+            if ($run instanceof WorkflowRun) {
+                $message = is_string($run->workflow_type)
+                    ? $this->configuredWorkflowValidationMessage($run->workflow_type)
+                    : null;
+
+                if ($message !== null) {
+                    return [
+                        'workflow' => null,
+                        'error' => [
+                            'workflow_instance_id' => $instanceId,
+                            'workflow_id' => $instanceId,
+                            'run_id' => $run->id,
+                            'workflow_type' => $run->workflow_type,
+                            'blocked_reason' => 'configured_workflow_type_invalid',
+                            'reason' => 'configured_workflow_type_invalid',
+                            'message' => $message,
+                            'status' => 409,
+                        ],
+                    ];
+                }
+            }
+        }
+
+        return [
+            'workflow' => WorkflowStub::load($instanceId),
+            'error' => null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<int|string, mixed>
+     */
+    private function commandArguments(array $options): array
+    {
+        $arguments = $options['arguments'] ?? [];
+
+        return is_array($arguments) ? $arguments : [];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    private function commandContext(array $options): CommandContext
+    {
+        $commandContext = $options['command_context'] ?? null;
+
+        return $commandContext instanceof CommandContext
+            ? $commandContext
+            : CommandContext::controlPlane();
+    }
+
+    private function configuredWorkflowValidationMessage(string $workflowType): ?string
+    {
+        if (class_exists($workflowType) && is_subclass_of($workflowType, \Workflow\V2\Workflow::class)) {
+            return null;
+        }
+
+        $configured = config('workflows.v2.types.workflows', []);
+
+        if (! is_array($configured) || ! array_key_exists($workflowType, $configured)) {
+            return null;
+        }
+
+        $workflowClass = $configured[$workflowType];
+
+        if (! is_string($workflowClass) || ! class_exists($workflowClass) || ! is_subclass_of($workflowClass, \Workflow\V2\Workflow::class)) {
+            return sprintf(
+                'Configured durable workflow type [%s] points to [%s], which is not a loadable workflow class.',
+                $workflowType,
+                is_scalar($workflowClass) ? (string) $workflowClass : get_debug_type($workflowClass),
+            );
+        }
+
+        return null;
+    }
+
+    private function notFoundControlPlaneResult(string $instanceId, string $idField): array
+    {
+        return [
+            'accepted' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_id' => $instanceId,
+            $idField => null,
+            'reason' => 'instance_not_found',
+            'status' => 404,
+        ];
+    }
+
+    private function signalStatus(\Workflow\V2\CommandResult $result): int
+    {
+        return match ($result->outcome()) {
+            CommandOutcome::RejectedUnknownSignal->value => 404,
+            CommandOutcome::RejectedInvalidArguments->value => 422,
+            default => $result->accepted() ? 202 : 409,
+        };
+    }
+
+    private function updateStatus(UpdateResult $result): int
+    {
+        return match (true) {
+            $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
+            $result->outcome() === CommandOutcome::RejectedInvalidArguments->value => 422,
+            $result->rejected() => 409,
+            $result->failed() => 422,
+            $result->updateStatus() === 'accepted' => 202,
+            default => 200,
+        };
     }
 
     private function instanceQuery(): \Illuminate\Database\Eloquent\Builder

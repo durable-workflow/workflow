@@ -54,12 +54,25 @@ interface WorkflowControlPlane
      *
      * Options:
      * - arguments: array<int, mixed> — positional signal arguments
+     * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
+     * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
      * @return array{
      *     accepted: bool,
      *     workflow_instance_id: string,
      *     workflow_command_id: string|null,
      *     reason: string|null,
+     *     status?: int,
+     *     workflow_id?: string,
+     *     run_id?: string|null,
+     *     command_id?: string|null,
+     *     command_status?: string|null,
+     *     command_source?: string|null,
+     *     target_scope?: string|null,
+     *     signal_name?: string,
+     *     outcome?: string|null,
+     *     rejection_reason?: string|null,
+     *     validation_errors?: array<string, list<string>>,
      * }
      */
     public function signal(string $instanceId, string $name, array $options = []): array;
@@ -72,13 +85,22 @@ interface WorkflowControlPlane
      * the result indicates the query cannot be served.
      *
      * Options:
-     * - arguments: array<int, mixed> — positional query arguments
+     * - arguments: array<int|string, mixed> — positional or named query arguments
+     * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
      * @return array{
      *     success: bool,
      *     workflow_instance_id: string,
      *     result: mixed,
      *     reason: string|null,
+     *     status?: int,
+     *     workflow_id?: string,
+     *     run_id?: string|null,
+     *     target_scope?: string,
+     *     query_name?: string,
+     *     blocked_reason?: string,
+     *     message?: string,
+     *     validation_errors?: array<string, list<string>>,
      * }
      */
     public function query(string $instanceId, string $name, array $options = []): array;
@@ -87,13 +109,36 @@ interface WorkflowControlPlane
      * Submit an update to a workflow instance.
      *
      * Options:
-     * - arguments: array<int, mixed> — positional update arguments
+     * - arguments: array<int|string, mixed> — positional or named update arguments
+     * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
+     * - wait_for: 'accepted'|'completed'|null — accepted-only submit or completion wait
+     * - wait_timeout_seconds: int|null — completion wait timeout
+     * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
      * @return array{
      *     accepted: bool,
      *     workflow_instance_id: string,
      *     update_id: string|null,
      *     reason: string|null,
+     *     status?: int,
+     *     workflow_id?: string,
+     *     run_id?: string|null,
+     *     command_id?: string|null,
+     *     command_status?: string|null,
+     *     command_source?: string|null,
+     *     target_scope?: string|null,
+     *     workflow_type?: string|null,
+     *     outcome?: string|null,
+     *     rejection_reason?: string|null,
+     *     validation_errors?: array<string, list<string>>,
+     *     update_name?: string|null,
+     *     update_status?: string|null,
+     *     workflow_sequence?: int|null,
+     *     failure_id?: string|null,
+     *     failure_message?: string|null,
+     *     wait_for?: string|null,
+     *     wait_timed_out?: bool,
+     *     wait_timeout_seconds?: int|null,
      * }
      */
     public function update(string $instanceId, string $name, array $options = []): array;
@@ -103,12 +148,24 @@ interface WorkflowControlPlane
      *
      * Options:
      * - reason: string|null — cancellation reason
+     * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
+     * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
      * @return array{
      *     accepted: bool,
      *     workflow_instance_id: string,
      *     workflow_command_id: string|null,
      *     reason: string|null,
+     *     status?: int,
+     *     workflow_id?: string,
+     *     run_id?: string|null,
+     *     command_id?: string|null,
+     *     command_status?: string|null,
+     *     command_source?: string|null,
+     *     target_scope?: string|null,
+     *     workflow_type?: string|null,
+     *     outcome?: string|null,
+     *     rejection_reason?: string|null,
      * }
      */
     public function cancel(string $instanceId, array $options = []): array;
@@ -118,12 +175,24 @@ interface WorkflowControlPlane
      *
      * Options:
      * - reason: string|null — termination reason
+     * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
+     * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
      * @return array{
      *     accepted: bool,
      *     workflow_instance_id: string,
      *     workflow_command_id: string|null,
      *     reason: string|null,
+     *     status?: int,
+     *     workflow_id?: string,
+     *     run_id?: string|null,
+     *     command_id?: string|null,
+     *     command_status?: string|null,
+     *     command_source?: string|null,
+     *     target_scope?: string|null,
+     *     workflow_type?: string|null,
+     *     outcome?: string|null,
+     *     rejection_reason?: string|null,
      * }
      */
     public function terminate(string $instanceId, array $options = []): array;

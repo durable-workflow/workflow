@@ -862,6 +862,7 @@ final class WorkflowStub
                         'business_key' => $run->business_key,
                         'visibility_labels' => $run->visibility_labels,
                         'memo' => $run->memo,
+                        'search_attributes' => $run->search_attributes,
                         'outcome' => $command->outcome?->value,
                         'rejection_reason' => $command->rejection_reason,
                     ], null, $command);
@@ -882,6 +883,9 @@ final class WorkflowStub
             $memo = $startOptions->memo !== []
                 ? $startOptions->memo
                 : (is_array($instance->memo) ? $instance->memo : null);
+            $searchAttributes = $startOptions->searchAttributes !== []
+                ? $startOptions->searchAttributes
+                : null;
 
             if ($instance->workflow_class !== $workflowClass) {
                 $instance->forceFill([
@@ -898,6 +902,7 @@ final class WorkflowStub
                 'business_key' => $businessKey,
                 'visibility_labels' => $visibilityLabels,
                 'memo' => $memo,
+                'search_attributes' => $searchAttributes,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => config('workflows.serializer'),
@@ -939,6 +944,7 @@ final class WorkflowStub
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
+                'search_attributes' => $run->search_attributes,
                 'outcome' => $command->outcome?->value,
             ], null, $command);
 
@@ -951,6 +957,7 @@ final class WorkflowStub
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
+                'search_attributes' => $run->search_attributes,
                 'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
                 'declared_queries' => $commandContract['queries'],
                 'declared_query_contracts' => $commandContract['query_contracts'],
@@ -2336,6 +2343,9 @@ final class WorkflowStub
             $memo = $startOptions->memo !== []
                 ? $startOptions->memo
                 : (is_array($instance->memo) ? $instance->memo : null);
+            $searchAttributes = $startOptions->searchAttributes !== []
+                ? $startOptions->searchAttributes
+                : null;
 
             if ($instance->workflow_class !== $workflowClass) {
                 $instance->forceFill([
@@ -2352,6 +2362,7 @@ final class WorkflowStub
                 'business_key' => $businessKey,
                 'visibility_labels' => $visibilityLabels,
                 'memo' => $memo,
+                'search_attributes' => $searchAttributes,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => config('workflows.serializer'),
@@ -2396,6 +2407,7 @@ final class WorkflowStub
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
+                'search_attributes' => $run->search_attributes,
                 'outcome' => $startCommand->outcome?->value,
             ], null, $startCommand);
 
@@ -2408,6 +2420,7 @@ final class WorkflowStub
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
+                'search_attributes' => $run->search_attributes,
                 'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
                 'declared_queries' => $commandContract['queries'],
                 'declared_query_contracts' => $commandContract['query_contracts'],

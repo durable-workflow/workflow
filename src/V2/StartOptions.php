@@ -24,19 +24,27 @@ final class StartOptions
     public readonly array $memo;
 
     /**
+     * @var array<string, scalar|null>
+     */
+    public readonly array $searchAttributes;
+
+    /**
      * @param array<string, scalar|null> $labels
      * @param array<string, mixed> $memo
+     * @param array<string, scalar|null> $searchAttributes
      */
     public function __construct(
         DuplicateStartPolicy $duplicateStartPolicy = DuplicateStartPolicy::RejectDuplicate,
         ?string $businessKey = null,
         array $labels = [],
         array $memo = [],
+        array $searchAttributes = [],
     ) {
         $this->duplicateStartPolicy = $duplicateStartPolicy;
         $this->businessKey = self::normalizeBusinessKey($businessKey);
         $this->labels = self::normalizeLabels($labels);
         $this->memo = self::normalizeMemo($memo);
+        $this->searchAttributes = self::normalizeSearchAttributes($searchAttributes);
     }
 
     public static function rejectDuplicate(): self
@@ -62,7 +70,7 @@ final class StartOptions
 
     public function withBusinessKey(?string $businessKey): self
     {
-        return new self($this->duplicateStartPolicy, $businessKey, $this->labels, $this->memo);
+        return new self($this->duplicateStartPolicy, $businessKey, $this->labels, $this->memo, $this->searchAttributes);
     }
 
     /**
@@ -70,7 +78,7 @@ final class StartOptions
      */
     public function withLabels(array $labels): self
     {
-        return new self($this->duplicateStartPolicy, $this->businessKey, $labels, $this->memo);
+        return new self($this->duplicateStartPolicy, $this->businessKey, $labels, $this->memo, $this->searchAttributes);
     }
 
     /**
@@ -78,7 +86,15 @@ final class StartOptions
      */
     public function withMemo(array $memo): self
     {
-        return new self($this->duplicateStartPolicy, $this->businessKey, $this->labels, $memo);
+        return new self($this->duplicateStartPolicy, $this->businessKey, $this->labels, $memo, $this->searchAttributes);
+    }
+
+    /**
+     * @param array<string, scalar|null> $searchAttributes
+     */
+    public function withSearchAttributes(array $searchAttributes): self
+    {
+        return new self($this->duplicateStartPolicy, $this->businessKey, $this->labels, $this->memo, $searchAttributes);
     }
 
     private static function normalizeBusinessKey(?string $businessKey): ?string
@@ -193,5 +209,50 @@ final class StartOptions
         }
 
         return self::normalizeMemoObject($value, $path);
+    }
+
+    /**
+     * @param array<string, scalar|null> $searchAttributes
+     * @return array<string, scalar|null>
+     */
+    private static function normalizeSearchAttributes(array $searchAttributes): array
+    {
+        $normalized = [];
+
+        foreach ($searchAttributes as $key => $value) {
+            if (! is_string($key) || preg_match('/^[A-Za-z0-9_.:-]{1,64}$/', $key) !== 1) {
+                throw new LogicException(
+                    'Workflow v2 search attribute keys must be 1-64 URL-safe characters using letters, numbers, ".", "_", "-", and ":".'
+                );
+            }
+
+            if ($value !== null && ! is_scalar($value)) {
+                throw new LogicException(sprintf(
+                    'Workflow v2 search attribute [%s] must be a scalar value or null.',
+                    $key,
+                ));
+            }
+
+            if ($value === null) {
+                continue;
+            }
+
+            $stringValue = is_bool($value) ? ($value ? '1' : '0') : trim((string) $value);
+
+            if ($stringValue !== '' && strlen($stringValue) > 191) {
+                throw new LogicException(sprintf(
+                    'Workflow v2 search attribute [%s] must be up to 191 characters when cast to string.',
+                    $key,
+                ));
+            }
+
+            if ($stringValue !== '') {
+                $normalized[$key] = $stringValue;
+            }
+        }
+
+        ksort($normalized);
+
+        return $normalized;
     }
 }
