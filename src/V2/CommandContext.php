@@ -31,6 +31,20 @@ final class CommandContext
         ]);
     }
 
+    public static function controlPlane(): self
+    {
+        return new self('control_plane', [
+            'caller' => [
+                'type' => 'control_plane',
+                'label' => 'Control Plane',
+            ],
+            'auth' => [
+                'status' => 'not_applicable',
+                'method' => 'none',
+            ],
+        ]);
+    }
+
     public static function webhook(Request $request, string $authMethod): self
     {
         return new self('webhook', [

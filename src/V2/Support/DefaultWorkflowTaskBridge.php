@@ -37,12 +37,17 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array
     {
+        // Use a 1-second ceiling on the availability cutoff so that tasks created
+        // in the same request tick are reliably surfaced across all backends,
+        // including SQLite where timestamp precision can vary.
+        $availabilityCutoff = now()->addSecond();
+
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)
-            ->where(static function ($q) {
+            ->where(static function ($q) use ($availabilityCutoff) {
                 $q->whereNull('available_at')
-                    ->orWhere('available_at', '<=', now());
+                    ->orWhere('available_at', '<=', $availabilityCutoff);
             })
             ->orderBy('available_at')
             ->orderBy('id')

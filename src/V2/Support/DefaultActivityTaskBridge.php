@@ -29,8 +29,12 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             ->where('task_type', TaskType::Activity->value)
             ->where('status', TaskStatus::Ready->value)
             ->where(static function ($q) {
+                // Use a 1-second ceiling on the availability cutoff so that tasks created
+                // in the same request tick are reliably surfaced across all backends,
+                // including SQLite where timestamp precision can vary.
+                $availabilityCutoff = now()->addSecond();
                 $q->whereNull('available_at')
-                    ->orWhere('available_at', '<=', now());
+                    ->orWhere('available_at', '<=', $availabilityCutoff);
             })
             ->orderBy('available_at')
             ->orderBy('id')

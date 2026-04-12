@@ -20,9 +20,11 @@ use Workflow\Commands\V2RepairPassCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
+use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
@@ -41,6 +43,8 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
 
         $this->app->singleton(ActivityTaskBridge::class, DefaultActivityTaskBridge::class);
+
+        $this->app->singleton(WorkflowControlPlane::class, DefaultWorkflowControlPlane::class);
     }
 
     public function boot(): void
