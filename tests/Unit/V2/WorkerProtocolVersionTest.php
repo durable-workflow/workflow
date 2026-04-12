@@ -85,4 +85,66 @@ final class WorkerProtocolVersionTest extends TestCase
             WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
         );
     }
+
+    public function testSupportedHistoryEncodingsAreFrozen(): void
+    {
+        $this->assertSame(['gzip', 'deflate'], WorkerProtocolVersion::supportedHistoryEncodings());
+    }
+
+    public function testCompressionThresholdIsPositive(): void
+    {
+        $this->assertGreaterThan(0, WorkerProtocolVersion::COMPRESSION_THRESHOLD);
+    }
+
+    public function testLongPollSemanticsContainsAllFields(): void
+    {
+        $semantics = WorkerProtocolVersion::longPollSemantics();
+
+        $this->assertArrayHasKey('default_timeout_seconds', $semantics);
+        $this->assertArrayHasKey('min_timeout_seconds', $semantics);
+        $this->assertArrayHasKey('max_timeout_seconds', $semantics);
+        $this->assertGreaterThan(0, $semantics['default_timeout_seconds']);
+        $this->assertGreaterThan(0, $semantics['min_timeout_seconds']);
+        $this->assertGreaterThanOrEqual($semantics['min_timeout_seconds'], $semantics['default_timeout_seconds']);
+        $this->assertLessThanOrEqual($semantics['max_timeout_seconds'], $semantics['default_timeout_seconds']);
+    }
+
+    public function testClampLongPollTimeoutClampsBelowMinimum(): void
+    {
+        $this->assertSame(
+            WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT,
+            WorkerProtocolVersion::clampLongPollTimeout(0),
+        );
+    }
+
+    public function testClampLongPollTimeoutClampsAboveMaximum(): void
+    {
+        $this->assertSame(
+            WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT,
+            WorkerProtocolVersion::clampLongPollTimeout(999),
+        );
+    }
+
+    public function testClampLongPollTimeoutPassesThroughValidValue(): void
+    {
+        $this->assertSame(15, WorkerProtocolVersion::clampLongPollTimeout(15));
+    }
+
+    public function testDescribeIncludesCompressionAndLongPoll(): void
+    {
+        $summary = WorkerProtocolVersion::describe();
+
+        $this->assertArrayHasKey('history_compression', $summary);
+        $this->assertSame(
+            WorkerProtocolVersion::supportedHistoryEncodings(),
+            $summary['history_compression']['supported_encodings'],
+        );
+        $this->assertSame(
+            WorkerProtocolVersion::COMPRESSION_THRESHOLD,
+            $summary['history_compression']['compression_threshold'],
+        );
+
+        $this->assertArrayHasKey('long_poll', $summary);
+        $this->assertSame(WorkerProtocolVersion::longPollSemantics(), $summary['long_poll']);
+    }
 }
