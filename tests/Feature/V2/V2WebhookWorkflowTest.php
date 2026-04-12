@@ -193,6 +193,104 @@ final class V2WebhookWorkflowTest extends TestCase
         ]);
     }
 
+    public function testActivityTaskClaimWebhookReturnsBackendUnavailableReasonForUnsupportedConnection(): void
+    {
+        $this->configureUnsupportedSyncTaskConnection();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-claim-backend');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+        $task->forceFill([
+            'connection' => 'sync',
+        ])->save();
+
+        $response = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim");
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('claimed', false)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', 'backend_unavailable')
+            ->assertJsonPath('reason_detail', null)
+            ->assertJsonPath('compatibility_reason', null);
+
+        $backendError = $response->json('backend_error');
+
+        $this->assertIsString($backendError);
+        $this->assertStringContainsString('queue_sync_unsupported', $backendError);
+    }
+
+    public function testActivityTaskClaimWebhookReturnsCompatibilityBlockedReasonForIncompatibleWorker(): void
+    {
+        $this->configureAsyncRedisTaskConnection();
+
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-claim-compatibility');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+
+        WorkflowRun::query()->findOrFail($workflow->runId())
+            ->forceFill([
+                'compatibility' => 'build-a',
+            ])
+            ->save();
+
+        $task->forceFill([
+            'compatibility' => 'build-a',
+        ])->save();
+
+        config()->set('workflows.v2.compatibility.current', 'build-b');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-b']);
+
+        $response = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim");
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('claimed', false)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', 'compatibility_blocked')
+            ->assertJsonPath('reason_detail', null)
+            ->assertJsonPath('backend_error', null)
+            ->assertJsonPath(
+                'compatibility_reason',
+                'Requires compatibility [build-a]; this worker supports [build-b].',
+            );
+    }
+
+    public function testActivityTaskClaimWebhookReturnsTaskNotClaimableReasonForDriftedTaskPayload(): void
+    {
+        $this->configureAsyncRedisTaskConnection();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-claim-drifted');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+        $payload = $task->payload;
+
+        unset($payload['activity_execution_id']);
+
+        $task->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        $response = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim");
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('claimed', false)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', 'task_not_claimable')
+            ->assertJsonPath('reason_detail', 'activity_execution_missing')
+            ->assertJsonPath('backend_error', null)
+            ->assertJsonPath('compatibility_reason', null);
+    }
+
     public function testActivityAttemptHeartbeatWebhookValidatesProgressPayload(): void
     {
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-heartbeat-invalid');
@@ -2263,6 +2361,24 @@ final class V2WebhookWorkflowTest extends TestCase
         }
 
         $this->fail('Timed out waiting for workflow to settle.');
+    }
+
+    private function configureUnsupportedSyncTaskConnection(): void
+    {
+        $this->configureAsyncRedisTaskConnection();
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+    }
+
+    private function configureAsyncRedisTaskConnection(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
     }
 
     private function stageFirstActivityTask(WorkflowStub $workflow): WorkflowTask

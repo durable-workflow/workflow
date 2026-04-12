@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
+use Workflow\V2\Support\ActivityWorkerBridgeReason;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\ActivityTaskClaim;
 use Workflow\V2\Support\ActivityTaskClaimer;
@@ -51,6 +52,7 @@ final class ActivityTaskBridge
      *     lease_owner: string|null,
      *     lease_expires_at: string|null,
      *     reason: string|null,
+     *     reason_detail: string|null,
      *     retry_after_seconds: int|null,
      *     backend_error: string|null,
      *     compatibility_reason: string|null
@@ -62,6 +64,8 @@ final class ActivityTaskBridge
         $claim = $result['claim'];
 
         if (! $claim instanceof ActivityTaskClaim) {
+            $reason = ActivityWorkerBridgeReason::claim($result['reason']);
+
             return [
                 'claimed' => false,
                 'task_id' => $taskId,
@@ -80,7 +84,8 @@ final class ActivityTaskBridge
                 'queue' => null,
                 'lease_owner' => null,
                 'lease_expires_at' => null,
-                'reason' => $result['reason'],
+                'reason' => $reason,
+                'reason_detail' => ActivityWorkerBridgeReason::claimDetail($result['reason']),
                 'retry_after_seconds' => $result['retry_after_seconds'],
                 'backend_error' => $result['backend_error'],
                 'compatibility_reason' => $result['compatibility_reason'],
@@ -110,6 +115,7 @@ final class ActivityTaskBridge
             'lease_owner' => self::nonEmptyString($task->lease_owner),
             'lease_expires_at' => $task->lease_expires_at?->toJSON(),
             'reason' => null,
+            'reason_detail' => null,
             'retry_after_seconds' => null,
             'backend_error' => null,
             'compatibility_reason' => null,
