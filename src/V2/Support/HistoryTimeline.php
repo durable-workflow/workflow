@@ -353,6 +353,7 @@ final class HistoryTimeline
                 : sprintf('Handled failure: %s.', $message),
             HistoryEventType::SideEffectRecorded => 'Recorded side effect.',
             HistoryEventType::SearchAttributesUpserted => 'Search attributes upserted.',
+            HistoryEventType::MemoUpserted => 'Memo upserted.',
             HistoryEventType::VersionMarkerRecorded => match (true) {
                 $changeId !== null && $version !== null => sprintf(
                     'Recorded version marker %s = %d.',

@@ -18,6 +18,7 @@ use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
+use Workflow\V2\Support\UpsertMemoCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
 use Workflow\V2\Support\WorkflowFiberContext;
@@ -149,6 +150,24 @@ if (! function_exists(__NAMESPACE__ . '\\continueAsNew')) {
     function continueAsNew(...$arguments): mixed
     {
         return WorkflowFiberContext::suspend(new ContinueAsNewCall($arguments));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\upsertMemo')) {
+    /**
+     * Upsert non-indexed memo metadata on the current workflow run.
+     *
+     * Memos are eventually consistent describe/list metadata, not replay
+     * authority and not a safe place for workflow-branching truth. They are
+     * excluded from filter and sort semantics by contract.
+     *
+     * Setting a key to null removes it from the active memo.
+     *
+     * @param array<string, mixed> $entries
+     */
+    function upsertMemo(array $entries): void
+    {
+        WorkflowFiberContext::suspend(new UpsertMemoCall($entries));
     }
 }
 

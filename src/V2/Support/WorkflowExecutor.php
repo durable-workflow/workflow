@@ -457,6 +457,36 @@ final class WorkflowExecutor
                 continue;
             }
 
+            if ($current instanceof UpsertMemoCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
+
+                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::MEMO_UPSERT)) {
+                    return null;
+                }
+
+                $memoEvent = $this->memoUpsertedEvent($run, $sequence);
+
+                try {
+                    if ($memoEvent === null) {
+                        $memoEvent = $this->recordMemoUpserted($run, $task, $sequence, $current);
+                    }
+
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    $current = $workflowExecution->send(null);
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
+                ++$sequence;
+                continue;
+            }
+
             if ($current instanceof TimerCall) {
                 $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
 
@@ -2799,6 +2829,56 @@ final class WorkflowExecutor
             [
                 'sequence' => $sequence,
                 'attributes' => $call->attributes,
+                'merged' => $merged,
+            ],
+            $task,
+        );
+
+        $run->historyEvents->push($event);
+
+        return $event;
+    }
+
+    private function memoUpsertedEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::MemoUpserted
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function recordMemoUpserted(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        UpsertMemoCall $call,
+    ): WorkflowHistoryEvent {
+        $existing = is_array($run->memo) ? $run->memo : [];
+
+        $merged = $existing;
+
+        foreach ($call->entries as $key => $value) {
+            if ($value === null) {
+                unset($merged[$key]);
+            } else {
+                $merged[$key] = $value;
+            }
+        }
+
+        ksort($merged);
+
+        $run->memo = $merged;
+        $run->save();
+
+        $event = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::MemoUpserted,
+            [
+                'sequence' => $sequence,
+                'entries' => $call->entries,
                 'merged' => $merged,
             ],
             $task,
