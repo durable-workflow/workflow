@@ -24,6 +24,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
@@ -674,6 +675,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'lease_expires_at' => null,
         ])->save();
 
+        LifecycleEventDispatcher::workflowCompleted($run);
+
         $this->dispatchParentResumeTasksForRun($run);
 
         RunSummaryProjector::project(
@@ -736,6 +739,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'status' => TaskStatus::Failed,
             'lease_expires_at' => null,
         ])->save();
+
+        LifecycleEventDispatcher::workflowFailed($run, $exceptionClass, $message);
+        LifecycleEventDispatcher::failureRecorded(
+            $run,
+            (string) $failure->id,
+            'workflow_run',
+            (string) $run->id,
+            $exceptionClass,
+            $message,
+        );
 
         $this->dispatchParentResumeTasksForRun($run);
 
@@ -1176,6 +1189,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'status' => TaskStatus::Completed,
             'lease_expires_at' => null,
         ])->save();
+
+        LifecycleEventDispatcher::workflowStarted($continuedRun);
 
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])

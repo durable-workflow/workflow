@@ -17,6 +17,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -152,6 +153,15 @@ final class ActivityOutcomeRecorder
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $parallelMetadata ?? []), $task);
 
+                LifecycleEventDispatcher::activityCompleted(
+                    $run,
+                    (string) $lockedExecution->id,
+                    (string) ($lockedExecution->activity_type ?? $lockedExecution->activity_class),
+                    (string) $lockedExecution->activity_class,
+                    (int) $lockedExecution->sequence,
+                    $attemptCount,
+                );
+
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
             } elseif (self::shouldRetry($throwable, $attemptCount, $maxAttempts)) {
                 $exceptionPayload = FailureFactory::payload($throwable);
@@ -253,6 +263,25 @@ final class ActivityOutcomeRecorder
                     'exception' => $exceptionPayload,
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $parallelMetadata ?? []), $task);
+
+                LifecycleEventDispatcher::activityFailed(
+                    $run,
+                    (string) $lockedExecution->id,
+                    (string) ($lockedExecution->activity_type ?? $lockedExecution->activity_class),
+                    (string) $lockedExecution->activity_class,
+                    (int) $lockedExecution->sequence,
+                    $attemptCount,
+                    $failure->exception_class,
+                    $failure->message,
+                );
+                LifecycleEventDispatcher::failureRecorded(
+                    $run,
+                    (string) $failure->id,
+                    'activity_execution',
+                    (string) $lockedExecution->id,
+                    $failure->exception_class,
+                    $failure->message,
+                );
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Failed);
             }

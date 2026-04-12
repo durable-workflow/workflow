@@ -38,6 +38,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Workflow;
+use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -2035,6 +2036,8 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
+        LifecycleEventDispatcher::workflowStarted($continuedRun);
+
         RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
@@ -2085,6 +2088,8 @@ final class WorkflowExecutor
             'status' => TaskStatus::Completed,
             'lease_expires_at' => null,
         ])->save();
+
+        LifecycleEventDispatcher::workflowCompleted($run);
 
         $this->dispatchParentResumeTasks($run);
 
@@ -2194,6 +2199,16 @@ final class WorkflowExecutor
             'status' => TaskStatus::Failed,
             'lease_expires_at' => null,
         ])->save();
+
+        LifecycleEventDispatcher::workflowFailed($run, $failure->exception_class, $failure->message);
+        LifecycleEventDispatcher::failureRecorded(
+            $run,
+            (string) $failure->id,
+            $sourceKind,
+            $sourceId,
+            $failure->exception_class,
+            $failure->message,
+        );
 
         $this->dispatchParentResumeTasks($run);
 

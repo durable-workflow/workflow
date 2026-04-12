@@ -43,6 +43,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityCancellation;
+use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\CurrentRunResolver;
@@ -1006,6 +1007,8 @@ final class WorkflowStub
                 'queue' => $run->queue,
                 'compatibility' => $run->compatibility,
             ]);
+
+            LifecycleEventDispatcher::workflowStarted($run);
 
             RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents'])
@@ -2521,6 +2524,8 @@ final class WorkflowStub
                 'signal_name' => $name,
                 'signal_wait_id' => $signalWaitId,
             ], static fn (mixed $value): bool => $value !== null), null, $signalCommand);
+
+            LifecycleEventDispatcher::workflowStarted($run);
 
             RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])

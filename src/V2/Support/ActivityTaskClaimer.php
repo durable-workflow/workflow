@@ -14,6 +14,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -163,6 +164,15 @@ final class ActivityTaskClaimer
                 'attempt_number' => $attemptCount,
                 'activity' => ActivitySnapshot::fromExecution($execution),
             ], $parallelMetadata ?? []), $task);
+
+            LifecycleEventDispatcher::activityStarted(
+                $run,
+                (string) $execution->id,
+                (string) ($execution->activity_type ?? $execution->activity_class),
+                (string) $execution->activity_class,
+                (int) $execution->sequence,
+                $attemptCount,
+            );
 
             RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
