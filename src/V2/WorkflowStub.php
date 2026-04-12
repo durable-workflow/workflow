@@ -72,6 +72,10 @@ final class WorkflowStub
 
     private const DISPATCHED_LIST = 'workflow.v2.dispatched';
 
+    private const SIGNALS_SENT_LIST = 'workflow.v2.signals_sent';
+
+    private const UPDATES_SENT_LIST = 'workflow.v2.updates_sent';
+
     private const MOCKS_LIST = 'workflow.v2.mocks';
 
     private ?WorkflowRun $run = null;
@@ -121,6 +125,8 @@ final class WorkflowStub
     {
         App::instance(self::MOCKS_LIST, []);
         App::instance(self::DISPATCHED_LIST, []);
+        App::instance(self::SIGNALS_SENT_LIST, []);
+        App::instance(self::UPDATES_SENT_LIST, []);
     }
 
     /**
@@ -281,6 +287,170 @@ final class WorkflowStub
             0,
             array_sum(array_map(static fn (array $entries): int => count($entries), $dispatched)),
             'An unexpected activity was dispatched.',
+        );
+    }
+
+    /**
+     * Record that a signal was sent in fake mode.
+     *
+     * @param array<int, mixed> $arguments
+     */
+    public static function recordSignalSent(string $instanceId, string $signal, array $arguments): void
+    {
+        if (! self::faked()) {
+            return;
+        }
+
+        /** @var array<string, list<array{instance_id: string, signal: string, arguments: array<int, mixed>}>> $sent */
+        $sent = App::bound(self::SIGNALS_SENT_LIST)
+            ? App::make(self::SIGNALS_SENT_LIST)
+            : [];
+
+        $sent[$signal] ??= [];
+        $sent[$signal][] = ['instance_id' => $instanceId, 'signal' => $signal, 'arguments' => $arguments];
+
+        App::instance(self::SIGNALS_SENT_LIST, $sent);
+    }
+
+    /**
+     * @param callable(string $instanceId, mixed ...$arguments): bool|null $callback
+     * @return Collection<int, array{instance_id: string, signal: string, arguments: array<int, mixed>}>
+     */
+    public static function signalsSent(string $signal, ?callable $callback = null): Collection
+    {
+        /** @var array<string, list<array{instance_id: string, signal: string, arguments: array<int, mixed>}>> $sent */
+        $sent = App::bound(self::SIGNALS_SENT_LIST)
+            ? App::make(self::SIGNALS_SENT_LIST)
+            : [];
+
+        if (! array_key_exists($signal, $sent)) {
+            return collect();
+        }
+
+        $callback ??= static fn (): bool => true;
+
+        return collect($sent[$signal])
+            ->filter(static fn (array $entry): bool => $callback($entry['instance_id'], ...$entry['arguments']))
+            ->values();
+    }
+
+    public static function assertSignalSent(string $signal, callable|int|null $callback = null): void
+    {
+        if (is_int($callback)) {
+            self::assertSignalSentTimes($signal, $callback);
+
+            return;
+        }
+
+        \PHPUnit\Framework\Assert::assertTrue(
+            self::signalsSent($signal, $callback)->isNotEmpty(),
+            sprintf('The expected [%s] signal was not sent.', $signal),
+        );
+    }
+
+    public static function assertSignalSentTimes(string $signal, int $times = 1): void
+    {
+        $count = self::signalsSent($signal)->count();
+
+        \PHPUnit\Framework\Assert::assertSame(
+            $times,
+            $count,
+            sprintf(
+                'The expected [%s] signal was sent %d times instead of %d times.',
+                $signal,
+                $count,
+                $times,
+            ),
+        );
+    }
+
+    public static function assertSignalNotSent(string $signal, ?callable $callback = null): void
+    {
+        \PHPUnit\Framework\Assert::assertTrue(
+            self::signalsSent($signal, $callback)->isEmpty(),
+            sprintf('The unexpected [%s] signal was sent.', $signal),
+        );
+    }
+
+    /**
+     * Record that an update was sent in fake mode.
+     *
+     * @param array<int, mixed> $arguments
+     */
+    public static function recordUpdateSent(string $instanceId, string $update, array $arguments): void
+    {
+        if (! self::faked()) {
+            return;
+        }
+
+        /** @var array<string, list<array{instance_id: string, update: string, arguments: array<int, mixed>}>> $sent */
+        $sent = App::bound(self::UPDATES_SENT_LIST)
+            ? App::make(self::UPDATES_SENT_LIST)
+            : [];
+
+        $sent[$update] ??= [];
+        $sent[$update][] = ['instance_id' => $instanceId, 'update' => $update, 'arguments' => $arguments];
+
+        App::instance(self::UPDATES_SENT_LIST, $sent);
+    }
+
+    /**
+     * @param callable(string $instanceId, mixed ...$arguments): bool|null $callback
+     * @return Collection<int, array{instance_id: string, update: string, arguments: array<int, mixed>}>
+     */
+    public static function updatesSent(string $update, ?callable $callback = null): Collection
+    {
+        /** @var array<string, list<array{instance_id: string, update: string, arguments: array<int, mixed>}>> $sent */
+        $sent = App::bound(self::UPDATES_SENT_LIST)
+            ? App::make(self::UPDATES_SENT_LIST)
+            : [];
+
+        if (! array_key_exists($update, $sent)) {
+            return collect();
+        }
+
+        $callback ??= static fn (): bool => true;
+
+        return collect($sent[$update])
+            ->filter(static fn (array $entry): bool => $callback($entry['instance_id'], ...$entry['arguments']))
+            ->values();
+    }
+
+    public static function assertUpdateSent(string $update, callable|int|null $callback = null): void
+    {
+        if (is_int($callback)) {
+            self::assertUpdateSentTimes($update, $callback);
+
+            return;
+        }
+
+        \PHPUnit\Framework\Assert::assertTrue(
+            self::updatesSent($update, $callback)->isNotEmpty(),
+            sprintf('The expected [%s] update was not sent.', $update),
+        );
+    }
+
+    public static function assertUpdateSentTimes(string $update, int $times = 1): void
+    {
+        $count = self::updatesSent($update)->count();
+
+        \PHPUnit\Framework\Assert::assertSame(
+            $times,
+            $count,
+            sprintf(
+                'The expected [%s] update was sent %d times instead of %d times.',
+                $update,
+                $count,
+                $times,
+            ),
+        );
+    }
+
+    public static function assertUpdateNotSent(string $update, ?callable $callback = null): void
+    {
+        \PHPUnit\Framework\Assert::assertTrue(
+            self::updatesSent($update, $callback)->isEmpty(),
+            sprintf('The unexpected [%s] update was sent.', $update),
         );
     }
 
@@ -989,6 +1159,10 @@ final class WorkflowStub
             ));
         }
 
+        if ($command->status !== CommandStatus::Rejected) {
+            self::recordUpdateSent($this->instance->id, $method, $arguments);
+        }
+
         return UpdateResult::fromCommand($command, null, null, $update, 'accepted');
     }
 
@@ -1010,6 +1184,10 @@ final class WorkflowStub
                 'Workflow instance [%s] failed to record an update command.',
                 $this->instance->id,
             ));
+        }
+
+        if ($command->status !== CommandStatus::Rejected) {
+            self::recordUpdateSent($this->instance->id, $method, $arguments);
         }
 
         if (! $update instanceof WorkflowUpdate || $command->status === CommandStatus::Rejected) {
@@ -1935,7 +2113,13 @@ final class WorkflowStub
             ));
         }
 
-        return new CommandResult($command);
+        $result = new CommandResult($command);
+
+        if ($result->accepted()) {
+            self::recordSignalSent($this->instance->id, $name, $arguments);
+        }
+
+        return $result;
     }
 
     /**
@@ -2288,7 +2472,13 @@ final class WorkflowStub
             ));
         }
 
-        return SignalWithStartResult::fromCommands($signalCommand, $startCommand, $intakeGroupId);
+        $signalWithStartResult = SignalWithStartResult::fromCommands($signalCommand, $startCommand, $intakeGroupId);
+
+        if ($signalWithStartResult->accepted()) {
+            self::recordSignalSent($this->instance->id, $name, $signalArguments);
+        }
+
+        return $signalWithStartResult;
     }
 
     /**

@@ -8,7 +8,9 @@ use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
+use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -19,8 +21,10 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Testing\ActivityFakeContext;
 use Workflow\V2\WorkflowStub;
 
@@ -250,5 +254,125 @@ final class V2WorkflowStubFakeTest extends TestCase
             ->pluck('event_type')
             ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
             ->all());
+    }
+
+    public function testFakeModeSignalResumesWaitingWorkflowInline(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'fake-signal');
+        $workflow->start();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $signal = WorkflowSignal::query()
+            ->where('workflow_instance_id', 'fake-signal')
+            ->first();
+
+        $this->assertNull($signal);
+
+        $result = $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertTrue($result->accepted());
+        $this->assertTrue($workflow->refresh()->completed());
+
+        $this->assertSame([
+            'name' => 'Taylor',
+            'greeting' => 'Hello, Taylor!',
+            'workflow_id' => 'fake-signal',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+
+        $signal = WorkflowSignal::query()
+            ->where('workflow_instance_id', 'fake-signal')
+            ->firstOrFail();
+
+        $this->assertSame('name-provided', $signal->signal_name);
+
+        WorkflowStub::assertSignalSent('name-provided');
+        WorkflowStub::assertSignalSentTimes('name-provided', 1);
+        WorkflowStub::assertSignalNotSent('other-signal');
+        WorkflowStub::assertDispatched(TestGreetingActivity::class);
+
+        $this->assertSame([
+            HistoryEventType::StartAccepted->value,
+            HistoryEventType::WorkflowStarted->value,
+            HistoryEventType::SignalWaitOpened->value,
+            HistoryEventType::SignalReceived->value,
+            HistoryEventType::SignalApplied->value,
+            HistoryEventType::ActivityScheduled->value,
+            HistoryEventType::ActivityStarted->value,
+            HistoryEventType::ActivityCompleted->value,
+            HistoryEventType::WorkflowCompleted->value,
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
+            ->all());
+    }
+
+    public function testFakeModeSignalAssertionCallbackReceivesInstanceIdAndArguments(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'fake-signal-assert');
+        $workflow->start();
+        $workflow->signal('name-provided', 'Taylor');
+
+        WorkflowStub::assertSignalSent(
+            'name-provided',
+            static fn (string $instanceId, string $name): bool => $instanceId === 'fake-signal-assert' && $name === 'Taylor'
+        );
+    }
+
+    public function testFakeModeUpdateAppliesMutationInline(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'fake-update');
+        $workflow->start();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $updateResult = $workflow->attemptUpdate('approve', true, 'webhook');
+
+        $this->assertTrue($updateResult->accepted());
+
+        $update = WorkflowUpdate::query()
+            ->where('workflow_instance_id', 'fake-update')
+            ->firstOrFail();
+
+        $this->assertSame('approve', $update->update_name);
+
+        WorkflowStub::assertUpdateSent('approve');
+        WorkflowStub::assertUpdateSentTimes('approve', 1);
+        WorkflowStub::assertUpdateNotSent('explode');
+
+        WorkflowStub::assertUpdateSent(
+            'approve',
+            static fn (string $instanceId, bool $approved, string $source): bool => $instanceId === 'fake-update'
+                && $approved === true
+                && $source === 'webhook'
+        );
+
+        $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $output = $workflow->output();
+
+        $this->assertTrue($output['approved']);
+        $this->assertContains('approved:yes:webhook', $output['events']);
+        $this->assertContains('signal:Taylor', $output['events']);
+    }
+
+    public function testFakeModeSignalAndUpdateAssertionsStartClean(): void
+    {
+        WorkflowStub::fake();
+
+        WorkflowStub::assertSignalNotSent('name-provided');
+        WorkflowStub::assertUpdateNotSent('approve');
     }
 }
