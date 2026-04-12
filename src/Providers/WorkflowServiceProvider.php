@@ -19,7 +19,9 @@ use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\V2RepairPassCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
 
@@ -32,6 +34,11 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->app->singleton(
             OperatorObservabilityRepository::class,
             DefaultOperatorObservabilityRepository::class,
+        );
+
+        $this->app->singleton(
+            WorkflowTaskBridge::class,
+            DefaultWorkflowTaskBridge::class,
         );
     }
 
