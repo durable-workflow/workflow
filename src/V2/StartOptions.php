@@ -29,6 +29,16 @@ final class StartOptions
     public readonly array $searchAttributes;
 
     /**
+     * Seconds for the logical workflow execution timeout (spans retries and continue-as-new).
+     */
+    public readonly ?int $executionTimeoutSeconds;
+
+    /**
+     * Seconds for the current run timeout (resets on continue-as-new).
+     */
+    public readonly ?int $runTimeoutSeconds;
+
+    /**
      * @param array<string, scalar|null> $labels
      * @param array<string, mixed> $memo
      * @param array<string, scalar|null> $searchAttributes
@@ -39,12 +49,16 @@ final class StartOptions
         array $labels = [],
         array $memo = [],
         array $searchAttributes = [],
+        ?int $executionTimeoutSeconds = null,
+        ?int $runTimeoutSeconds = null,
     ) {
         $this->duplicateStartPolicy = $duplicateStartPolicy;
         $this->businessKey = self::normalizeBusinessKey($businessKey);
         $this->labels = self::normalizeLabels($labels);
         $this->memo = self::normalizeMemo($memo);
         $this->searchAttributes = self::normalizeSearchAttributes($searchAttributes);
+        $this->executionTimeoutSeconds = self::normalizeTimeout($executionTimeoutSeconds, 'execution');
+        $this->runTimeoutSeconds = self::normalizeTimeout($runTimeoutSeconds, 'run');
     }
 
     public static function rejectDuplicate(): self
@@ -70,7 +84,15 @@ final class StartOptions
 
     public function withBusinessKey(?string $businessKey): self
     {
-        return new self($this->duplicateStartPolicy, $businessKey, $this->labels, $this->memo, $this->searchAttributes);
+        return new self(
+            $this->duplicateStartPolicy,
+            $businessKey,
+            $this->labels,
+            $this->memo,
+            $this->searchAttributes,
+            $this->executionTimeoutSeconds,
+            $this->runTimeoutSeconds
+        );
     }
 
     /**
@@ -78,7 +100,15 @@ final class StartOptions
      */
     public function withLabels(array $labels): self
     {
-        return new self($this->duplicateStartPolicy, $this->businessKey, $labels, $this->memo, $this->searchAttributes);
+        return new self(
+            $this->duplicateStartPolicy,
+            $this->businessKey,
+            $labels,
+            $this->memo,
+            $this->searchAttributes,
+            $this->executionTimeoutSeconds,
+            $this->runTimeoutSeconds
+        );
     }
 
     /**
@@ -86,7 +116,15 @@ final class StartOptions
      */
     public function withMemo(array $memo): self
     {
-        return new self($this->duplicateStartPolicy, $this->businessKey, $this->labels, $memo, $this->searchAttributes);
+        return new self(
+            $this->duplicateStartPolicy,
+            $this->businessKey,
+            $this->labels,
+            $memo,
+            $this->searchAttributes,
+            $this->executionTimeoutSeconds,
+            $this->runTimeoutSeconds
+        );
     }
 
     /**
@@ -94,7 +132,41 @@ final class StartOptions
      */
     public function withSearchAttributes(array $searchAttributes): self
     {
-        return new self($this->duplicateStartPolicy, $this->businessKey, $this->labels, $this->memo, $searchAttributes);
+        return new self(
+            $this->duplicateStartPolicy,
+            $this->businessKey,
+            $this->labels,
+            $this->memo,
+            $searchAttributes,
+            $this->executionTimeoutSeconds,
+            $this->runTimeoutSeconds
+        );
+    }
+
+    public function withExecutionTimeout(?int $seconds): self
+    {
+        return new self(
+            $this->duplicateStartPolicy,
+            $this->businessKey,
+            $this->labels,
+            $this->memo,
+            $this->searchAttributes,
+            $seconds,
+            $this->runTimeoutSeconds
+        );
+    }
+
+    public function withRunTimeout(?int $seconds): self
+    {
+        return new self(
+            $this->duplicateStartPolicy,
+            $this->businessKey,
+            $this->labels,
+            $this->memo,
+            $this->searchAttributes,
+            $this->executionTimeoutSeconds,
+            $seconds
+        );
     }
 
     private static function normalizeBusinessKey(?string $businessKey): ?string
@@ -254,5 +326,18 @@ final class StartOptions
         ksort($normalized);
 
         return $normalized;
+    }
+
+    private static function normalizeTimeout(?int $seconds, string $kind): ?int
+    {
+        if ($seconds === null) {
+            return null;
+        }
+
+        if ($seconds < 1) {
+            throw new LogicException(sprintf('Workflow v2 %s timeout must be at least 1 second.', $kind));
+        }
+
+        return $seconds;
     }
 }

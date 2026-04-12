@@ -307,7 +307,11 @@ final class WorkflowStub
             : [];
 
         $sent[$signal] ??= [];
-        $sent[$signal][] = ['instance_id' => $instanceId, 'signal' => $signal, 'arguments' => $arguments];
+        $sent[$signal][] = [
+            'instance_id' => $instanceId,
+            'signal' => $signal,
+            'arguments' => $arguments,
+        ];
 
         App::instance(self::SIGNALS_SENT_LIST, $sent);
     }
@@ -355,12 +359,7 @@ final class WorkflowStub
         \PHPUnit\Framework\Assert::assertSame(
             $times,
             $count,
-            sprintf(
-                'The expected [%s] signal was sent %d times instead of %d times.',
-                $signal,
-                $count,
-                $times,
-            ),
+            sprintf('The expected [%s] signal was sent %d times instead of %d times.', $signal, $count, $times),
         );
     }
 
@@ -389,7 +388,11 @@ final class WorkflowStub
             : [];
 
         $sent[$update] ??= [];
-        $sent[$update][] = ['instance_id' => $instanceId, 'update' => $update, 'arguments' => $arguments];
+        $sent[$update][] = [
+            'instance_id' => $instanceId,
+            'update' => $update,
+            'arguments' => $arguments,
+        ];
 
         App::instance(self::UPDATES_SENT_LIST, $sent);
     }
@@ -437,12 +440,7 @@ final class WorkflowStub
         \PHPUnit\Framework\Assert::assertSame(
             $times,
             $count,
-            sprintf(
-                'The expected [%s] update was sent %d times instead of %d times.',
-                $update,
-                $count,
-                $times,
-            ),
+            sprintf('The expected [%s] update was sent %d times instead of %d times.', $update, $count, $times),
         );
     }
 
@@ -886,12 +884,24 @@ final class WorkflowStub
             $searchAttributes = $startOptions->searchAttributes !== []
                 ? $startOptions->searchAttributes
                 : null;
+            $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
+            $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
 
             if ($instance->workflow_class !== $workflowClass) {
                 $instance->forceFill([
                     'workflow_class' => $workflowClass,
                 ])->save();
             }
+
+            $startedAt = now();
+            $executionDeadlineAt = $executionTimeoutSeconds !== null
+                ? $startedAt->copy()
+                    ->addSeconds($executionTimeoutSeconds)
+                : null;
+            $runDeadlineAt = $runTimeoutSeconds !== null
+                ? $startedAt->copy()
+                    ->addSeconds($runTimeoutSeconds)
+                : null;
 
             /** @var WorkflowRun $run */
             $run = self::runQuery()->create([
@@ -903,14 +913,17 @@ final class WorkflowStub
                 'visibility_labels' => $visibilityLabels,
                 'memo' => $memo,
                 'search_attributes' => $searchAttributes,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'execution_deadline_at' => $executionDeadlineAt,
+                'run_deadline_at' => $runDeadlineAt,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => config('workflows.serializer'),
                 'arguments' => \Workflow\Serializers\Serializer::serialize($metadata->arguments),
                 'connection' => RoutingResolver::workflowConnection($workflowClass, $metadata),
                 'queue' => RoutingResolver::workflowQueue($workflowClass, $metadata),
-                'started_at' => now(),
-                'last_progress_at' => now(),
+                'started_at' => $startedAt,
+                'last_progress_at' => $startedAt,
                 'last_history_sequence' => 0,
             ]);
 
@@ -931,7 +944,8 @@ final class WorkflowStub
                 'business_key' => $businessKey,
                 'visibility_labels' => $visibilityLabels,
                 'memo' => $memo,
-                'started_at' => now(),
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'started_at' => $startedAt,
                 'run_count' => $run->run_number,
             ])->save();
 
@@ -958,6 +972,10 @@ final class WorkflowStub
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
                 'search_attributes' => $run->search_attributes,
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+                'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
                 'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
                 'declared_queries' => $commandContract['queries'],
                 'declared_query_contracts' => $commandContract['query_contracts'],
@@ -2346,12 +2364,24 @@ final class WorkflowStub
             $searchAttributes = $startOptions->searchAttributes !== []
                 ? $startOptions->searchAttributes
                 : null;
+            $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
+            $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
 
             if ($instance->workflow_class !== $workflowClass) {
                 $instance->forceFill([
                     'workflow_class' => $workflowClass,
                 ])->save();
             }
+
+            $startedAt = now();
+            $executionDeadlineAt = $executionTimeoutSeconds !== null
+                ? $startedAt->copy()
+                    ->addSeconds($executionTimeoutSeconds)
+                : null;
+            $runDeadlineAt = $runTimeoutSeconds !== null
+                ? $startedAt->copy()
+                    ->addSeconds($runTimeoutSeconds)
+                : null;
 
             /** @var WorkflowRun $run */
             $run = self::runQuery()->create([
@@ -2363,14 +2393,17 @@ final class WorkflowStub
                 'visibility_labels' => $visibilityLabels,
                 'memo' => $memo,
                 'search_attributes' => $searchAttributes,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'execution_deadline_at' => $executionDeadlineAt,
+                'run_deadline_at' => $runDeadlineAt,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => config('workflows.serializer'),
                 'arguments' => Serializer::serialize($metadata->arguments),
                 'connection' => RoutingResolver::workflowConnection($workflowClass, $metadata),
                 'queue' => RoutingResolver::workflowQueue($workflowClass, $metadata),
-                'started_at' => now(),
-                'last_progress_at' => now(),
+                'started_at' => $startedAt,
+                'last_progress_at' => $startedAt,
                 'last_history_sequence' => 0,
             ]);
 
@@ -2394,7 +2427,8 @@ final class WorkflowStub
                 'business_key' => $businessKey,
                 'visibility_labels' => $visibilityLabels,
                 'memo' => $memo,
-                'started_at' => now(),
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'started_at' => $startedAt,
                 'run_count' => $run->run_number,
             ])->save();
 
@@ -2421,6 +2455,10 @@ final class WorkflowStub
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
                 'search_attributes' => $run->search_attributes,
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+                'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
                 'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
                 'declared_queries' => $commandContract['queries'],
                 'declared_query_contracts' => $commandContract['query_contracts'],

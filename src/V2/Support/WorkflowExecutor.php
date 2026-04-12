@@ -434,7 +434,12 @@ final class WorkflowExecutor
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
-                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT)) {
+                if (! $this->ensureStepHistoryCompatible(
+                    $run,
+                    $task,
+                    $sequence,
+                    WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT
+                )) {
                     return null;
                 }
 
@@ -1815,6 +1820,13 @@ final class WorkflowExecutor
             ])->save();
         }
 
+        $runTimeoutSeconds = $run->run_timeout_seconds;
+        $executionDeadlineAt = $run->execution_deadline_at;
+        $runDeadlineAt = $runTimeoutSeconds !== null
+            ? $now->copy()
+                ->addSeconds((int) $runTimeoutSeconds)
+            : null;
+
         /** @var WorkflowRun $continuedRun */
         $continuedRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $run->workflow_instance_id,
@@ -1825,6 +1837,9 @@ final class WorkflowExecutor
             'visibility_labels' => $run->visibility_labels,
             'memo' => $run->memo,
             'search_attributes' => $run->search_attributes,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,

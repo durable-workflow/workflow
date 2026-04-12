@@ -8,7 +8,6 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use LogicException;
 use Throwable;
-use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\CommandOutcome;
@@ -41,6 +40,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         $labels = $options['labels'] ?? null;
         $memo = $options['memo'] ?? null;
         $searchAttributes = $options['search_attributes'] ?? null;
+        $executionTimeoutSeconds = isset($options['execution_timeout_seconds']) ? (int) $options['execution_timeout_seconds'] : null;
+        $runTimeoutSeconds = isset($options['run_timeout_seconds']) ? (int) $options['run_timeout_seconds'] : null;
         $duplicatePolicy = ($options['duplicate_start_policy'] ?? null) === 'return_existing_active'
             ? DuplicateStartPolicy::ReturnExistingActive
             : DuplicateStartPolicy::RejectDuplicate;
@@ -64,23 +65,25 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $labels,
             $memo,
             $searchAttributes,
+            $executionTimeoutSeconds,
+            $runTimeoutSeconds,
             $duplicatePolicy,
             &$command,
             &$task,
             &$instance,
         ): void {
-            $instance = $this->resolveOrCreateInstance(
-                $workflowType,
-                $workflowClass,
-                $instanceId,
-            );
+            $instance = $this->resolveOrCreateInstance($workflowType, $workflowClass, $instanceId);
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
             CurrentRunResolver::syncPointer($instance, $currentRun);
 
             if ($currentRun instanceof WorkflowRun) {
                 $canReturnExisting = $duplicatePolicy === DuplicateStartPolicy::ReturnExistingActive
-                    && in_array($currentRun->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
+                    && in_array(
+                        $currentRun->status,
+                        [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting],
+                        true
+                    );
 
                 $command = WorkflowCommand::record($instance, $currentRun, $this->commandAttributes([
                     'command_type' => CommandType::Start->value,
@@ -116,7 +119,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     ], null, $command);
 
                 RunSummaryProjector::project(
-                    $currentRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                    $currentRun->fresh(
+                        ['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']
+                    )
                 );
 
                 return;
@@ -139,29 +144,45 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             }
 
             if ($instance->workflow_class !== $workflowClass) {
-                $instance->forceFill(['workflow_class' => $workflowClass])->save();
+                $instance->forceFill([
+                    'workflow_class' => $workflowClass,
+                ])->save();
             }
 
+            $startedAt = now();
+            $executionDeadlineAt = $executionTimeoutSeconds !== null && $executionTimeoutSeconds > 0
+                ? $startedAt->copy()
+                    ->addSeconds($executionTimeoutSeconds)
+                : null;
+            $runDeadlineAt = $runTimeoutSeconds !== null && $runTimeoutSeconds > 0
+                ? $startedAt->copy()
+                    ->addSeconds($runTimeoutSeconds)
+                : null;
+
             /** @var WorkflowRun $run */
-            $run = $this->runQuery()->create([
-                'workflow_instance_id' => $instance->id,
-                'run_number' => $instance->run_count + 1,
-                'workflow_class' => $workflowClass,
-                'workflow_type' => $workflowType,
-                'business_key' => $businessKey ?? $instance->business_key,
-                'visibility_labels' => $labels ?? (is_array($instance->visibility_labels) ? $instance->visibility_labels : null),
-                'memo' => $memo ?? (is_array($instance->memo) ? $instance->memo : null),
-                'search_attributes' => is_array($searchAttributes) && $searchAttributes !== [] ? $searchAttributes : null,
-                'status' => RunStatus::Pending->value,
-                'compatibility' => WorkerCompatibility::current(),
-                'payload_codec' => config('workflows.serializer'),
-                'arguments' => is_string($arguments) ? $arguments : null,
-                'connection' => $connection,
-                'queue' => $queue,
-                'started_at' => now(),
-                'last_progress_at' => now(),
-                'last_history_sequence' => 0,
-            ]);
+            $run = $this->runQuery()
+                ->create([
+                    'workflow_instance_id' => $instance->id,
+                    'run_number' => $instance->run_count + 1,
+                    'workflow_class' => $workflowClass,
+                    'workflow_type' => $workflowType,
+                    'business_key' => $businessKey ?? $instance->business_key,
+                    'visibility_labels' => $labels ?? (is_array($instance->visibility_labels) ? $instance->visibility_labels : null),
+                    'memo' => $memo ?? (is_array($instance->memo) ? $instance->memo : null),
+                    'search_attributes' => is_array($searchAttributes) && $searchAttributes !== [] ? $searchAttributes : null,
+                    'run_timeout_seconds' => $runTimeoutSeconds,
+                    'execution_deadline_at' => $executionDeadlineAt,
+                    'run_deadline_at' => $runDeadlineAt,
+                    'status' => RunStatus::Pending->value,
+                    'compatibility' => WorkerCompatibility::current(),
+                    'payload_codec' => config('workflows.serializer'),
+                    'arguments' => is_string($arguments) ? $arguments : null,
+                    'connection' => $connection,
+                    'queue' => $queue,
+                    'started_at' => $startedAt,
+                    'last_progress_at' => $startedAt,
+                    'last_history_sequence' => 0,
+                ]);
 
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Start->value,
@@ -179,7 +200,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
-                'started_at' => now(),
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'started_at' => $startedAt,
                 'run_count' => $run->run_number,
             ])->save();
 
@@ -206,6 +228,10 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'visibility_labels' => $run->visibility_labels,
                 'memo' => $run->memo,
                 'search_attributes' => $run->search_attributes,
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+                'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
                 'workflow_definition_fingerprint' => $fingerprint,
             ], static fn (mixed $v): bool => $v !== null);
 
@@ -224,16 +250,17 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, $startedPayload, null, $command);
 
             /** @var WorkflowTask $task */
-            $task = $this->taskQuery()->create([
-                'workflow_run_id' => $run->id,
-                'task_type' => TaskType::Workflow->value,
-                'status' => TaskStatus::Ready->value,
-                'available_at' => now(),
-                'payload' => [],
-                'connection' => $run->connection,
-                'queue' => $run->queue,
-                'compatibility' => $run->compatibility,
-            ]);
+            $task = $this->taskQuery()
+                ->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => now(),
+                    'payload' => [],
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
+                ]);
 
             RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents'])
@@ -331,11 +358,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'query_name' => $name,
                 'result' => null,
                 'reason' => 'query_not_found',
-                'message' => sprintf(
-                    'Workflow query [%s] is not declared on workflow [%s].',
-                    $name,
-                    $instanceId,
-                ),
+                'message' => sprintf('Workflow query [%s] is not declared on workflow [%s].', $name, $instanceId),
                 'status' => 404,
             ];
         }
@@ -568,16 +591,25 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             'workflow_type' => $instance->workflow_type,
             'workflow_class' => $instance->workflow_class,
             'business_key' => $instance->business_key ?? null,
+            'execution_timeout_seconds' => $instance->execution_timeout_seconds !== null
+                ? (int) $instance->execution_timeout_seconds
+                : null,
             'run' => [
                 'workflow_run_id' => $run->id,
                 'run_number' => (int) $run->run_number,
                 'is_current_run' => $isCurrentRun,
                 'status' => $run->status->value,
-                'status_bucket' => $run->status->statusBucket()->value,
+                'status_bucket' => $run->status->statusBucket()
+->value,
                 'closed_reason' => $summary?->closed_reason,
                 'compatibility' => $run->compatibility,
                 'connection' => $run->connection,
                 'queue' => $run->queue,
+                'run_timeout_seconds' => $run->run_timeout_seconds !== null
+                    ? (int) $run->run_timeout_seconds
+                    : null,
+                'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
+                'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
                 'started_at' => $run->started_at?->toIso8601String(),
                 'closed_at' => $run->closed_at?->toIso8601String(),
                 'last_progress_at' => $run->last_progress_at?->toIso8601String(),
@@ -612,12 +644,13 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     ): WorkflowInstance {
         if ($instanceId === null) {
             /** @var WorkflowInstance $instance */
-            $instance = $this->instanceQuery()->create([
-                'workflow_class' => $workflowClass,
-                'workflow_type' => $workflowType,
-                'reserved_at' => now(),
-                'run_count' => 0,
-            ]);
+            $instance = $this->instanceQuery()
+                ->create([
+                    'workflow_class' => $workflowClass,
+                    'workflow_type' => $workflowType,
+                    'reserved_at' => now(),
+                    'run_count' => 0,
+                ]);
 
             return $instance->fresh();
         }
@@ -626,15 +659,16 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 
         $now = now();
 
-        $this->instanceQuery()->insertOrIgnore([
-            'id' => $instanceId,
-            'workflow_class' => $workflowClass,
-            'workflow_type' => $workflowType,
-            'reserved_at' => $now,
-            'run_count' => 0,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
+        $this->instanceQuery()
+            ->insertOrIgnore([
+                'id' => $instanceId,
+                'workflow_class' => $workflowClass,
+                'workflow_type' => $workflowType,
+                'reserved_at' => $now,
+                'run_count' => 0,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
 
         /** @var WorkflowInstance $instance */
         $instance = $this->instanceQuery()
@@ -652,7 +686,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         }
 
         if ($instance->workflow_class !== $workflowClass) {
-            $instance->forceFill(['workflow_class' => $workflowClass])->save();
+            $instance->forceFill([
+                'workflow_class' => $workflowClass,
+            ])->save();
         }
 
         return $instance;
@@ -687,7 +723,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     {
         try {
             /** @var WorkflowInstance $instance */
-            $instance = $this->instanceQuery()->findOrFail($instanceId);
+            $instance = $this->instanceQuery()
+                ->findOrFail($instanceId);
         } catch (ModelNotFoundException) {
             return [
                 'workflow' => null,
@@ -764,7 +801,10 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 
         $workflowClass = $configured[$workflowType];
 
-        if (! is_string($workflowClass) || ! class_exists($workflowClass) || ! is_subclass_of($workflowClass, \Workflow\V2\Workflow::class)) {
+        if (! is_string($workflowClass) || ! class_exists($workflowClass) || ! is_subclass_of(
+            $workflowClass,
+            \Workflow\V2\Workflow::class
+        )) {
             return sprintf(
                 'Configured durable workflow type [%s] points to [%s], which is not a loadable workflow class.',
                 $workflowType,
@@ -799,8 +839,10 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     private function updateStatus(UpdateResult $result): int
     {
         return match (true) {
-            $result->outcome() === CommandOutcome::RejectedUnknownUpdate->value => 404,
-            $result->outcome() === CommandOutcome::RejectedInvalidArguments->value => 422,
+            $result->outcome() === CommandOutcome::RejectedUnknownUpdate
+->value => 404,
+            $result->outcome() === CommandOutcome::RejectedInvalidArguments
+->value => 422,
             $result->rejected() => 409,
             $result->failed() => 422,
             $result->updateStatus() === 'accepted' => 202,

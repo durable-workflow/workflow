@@ -160,6 +160,14 @@ final class RunDetailView
             'arguments' => serialize($run->workflowArguments()),
             'connection' => $run->connection,
             'queue' => $run->queue,
+            'execution_timeout_seconds' => $run->instance?->execution_timeout_seconds !== null
+                ? (int) $run->instance->execution_timeout_seconds
+                : null,
+            'run_timeout_seconds' => $run->run_timeout_seconds !== null
+                ? (int) $run->run_timeout_seconds
+                : null,
+            'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
+            'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
             'output' => $run->output === null ? serialize(null) : serialize($run->workflowOutput()),
             'status' => $run->status->value,
             'is_terminal' => $run->status->isTerminal(),

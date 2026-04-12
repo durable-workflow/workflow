@@ -48,6 +48,7 @@ enum HistoryEventType: string
     case TimerCancelled = 'TimerCancelled';
     case SearchAttributesUpserted = 'SearchAttributesUpserted';
     case MemoUpserted = 'MemoUpserted';
+    case WorkflowTimedOut = 'WorkflowTimedOut';
     case WorkflowCompleted = 'WorkflowCompleted';
     case WorkflowFailed = 'WorkflowFailed';
 }
