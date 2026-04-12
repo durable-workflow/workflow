@@ -953,6 +953,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'business_key' => $run->business_key,
             'visibility_labels' => $run->visibility_labels,
             'memo' => $run->memo,
+            'search_attributes' => $run->search_attributes,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,

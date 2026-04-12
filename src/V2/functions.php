@@ -18,6 +18,7 @@ use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
+use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
 use Workflow\V2\Support\WorkflowFiberContext;
 
@@ -148,6 +149,24 @@ if (! function_exists(__NAMESPACE__ . '\\continueAsNew')) {
     function continueAsNew(...$arguments): mixed
     {
         return WorkflowFiberContext::suspend(new ContinueAsNewCall($arguments));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\upsertSearchAttributes')) {
+    /**
+     * Upsert indexed search attributes on the current workflow run.
+     *
+     * Search attributes are typed operator-visible metadata used for filtering,
+     * sorting, and saved views. They are plain-text values and must not contain
+     * secrets or PII.
+     *
+     * Setting a key to null removes it from the active search attributes.
+     *
+     * @param array<string, scalar|null> $attributes
+     */
+    function upsertSearchAttributes(array $attributes): void
+    {
+        WorkflowFiberContext::suspend(new UpsertSearchAttributesCall($attributes));
     }
 }
 

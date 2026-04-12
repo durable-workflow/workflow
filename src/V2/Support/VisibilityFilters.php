@@ -11,7 +11,7 @@ use Workflow\V2\Enums\StatusBucket;
 
 final class VisibilityFilters
 {
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     private const FIELD_LABELS = [
         'instance_id' => 'Instance ID',
@@ -77,7 +77,7 @@ final class VisibilityFilters
      */
     public static function supportedVersions(): array
     {
-        return [1, 2, self::VERSION];
+        return [1, 2, 3, self::VERSION];
     }
 
     /**
@@ -119,7 +119,20 @@ final class VisibilityFilters
                 'key_pattern' => self::LABEL_KEY_REGEX,
                 'key_value_separator' => '=',
                 'placeholder' => "tenant=acme\nregion=us-east",
-                'help' => 'One exact-match label per line in key=value format. Labels are indexed operator metadata and saved-view compatible.',
+                'help' => 'One exact-match label per line in key=value format. Labels are indexed operator metadata set at start and saved-view compatible.',
+            ],
+            'search_attributes' => [
+                'label' => 'Search Attributes',
+                'type' => 'map<string,string>',
+                'input' => 'key_value_textarea',
+                'operator' => 'exact',
+                'filterable' => true,
+                'saved_view_compatible' => true,
+                'query_parameters' => ['search_attribute[key]', 'search_attributes[key]'],
+                'key_pattern' => self::LABEL_KEY_REGEX,
+                'key_value_separator' => '=',
+                'placeholder' => "status=processing\npriority=high",
+                'help' => 'One exact-match search attribute per line in key=value format. Search attributes are indexed operator metadata that workflows can upsert during execution.',
             ],
             'indexed_metadata' => self::indexedMetadataDefinition(),
             'detail_metadata' => self::detailMetadataDefinition(),
@@ -184,6 +197,12 @@ final class VisibilityFilters
             $normalized['labels'] = $labels;
         }
 
+        $searchAttributes = self::normalizeLabels($filters['search_attributes'] ?? $filters['search_attribute'] ?? []);
+
+        if ($searchAttributes !== []) {
+            $normalized['search_attributes'] = $searchAttributes;
+        }
+
         return $normalized;
     }
 
@@ -199,6 +218,7 @@ final class VisibilityFilters
         }
 
         $filters['labels'] = $request->query('label', $request->query('labels', []));
+        $filters['search_attributes'] = $request->query('search_attribute', $request->query('search_attributes', []));
 
         return self::normalize($filters);
     }
@@ -223,10 +243,18 @@ final class VisibilityFilters
             if (isset($normalized['labels']) && is_array($normalized['labels'])) {
                 $merged['labels'] = [...($merged['labels'] ?? []), ...$normalized['labels']];
             }
+
+            if (isset($normalized['search_attributes']) && is_array($normalized['search_attributes'])) {
+                $merged['search_attributes'] = [...($merged['search_attributes'] ?? []), ...$normalized['search_attributes']];
+            }
         }
 
         if (isset($merged['labels'])) {
             ksort($merged['labels']);
+        }
+
+        if (isset($merged['search_attributes'])) {
+            ksort($merged['search_attributes']);
         }
 
         return self::normalize($merged);
@@ -269,6 +297,10 @@ final class VisibilityFilters
 
         foreach ($normalized['labels'] ?? [] as $key => $value) {
             $query->where("visibility_labels->{$key}", $value);
+        }
+
+        foreach ($normalized['search_attributes'] ?? [] as $key => $value) {
+            $query->where("search_attributes->{$key}", $value);
         }
 
         return $query;
@@ -441,7 +473,17 @@ final class VisibilityFilters
                 'filterable' => true,
                 'saved_view_compatible' => true,
                 'returned_in' => ['list', 'detail', 'history_export'],
-                'description' => 'Exact-match searchable key/value operator metadata copied onto the run-summary projection.',
+                'description' => 'Exact-match searchable key/value operator metadata set at start and copied onto the run-summary projection.',
+            ],
+            'search_attributes' => [
+                'label' => 'Search Attributes',
+                'filter_field' => 'search_attributes',
+                'query_parameters' => ['search_attribute[key]', 'search_attributes[key]'],
+                'indexed' => true,
+                'filterable' => true,
+                'saved_view_compatible' => true,
+                'returned_in' => ['list', 'detail', 'history_export'],
+                'description' => 'Exact-match searchable key/value operator metadata that workflows can upsert during execution via upsertSearchAttributes().',
             ],
         ];
     }

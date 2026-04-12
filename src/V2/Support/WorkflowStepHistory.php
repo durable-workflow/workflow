@@ -25,6 +25,8 @@ final class WorkflowStepHistory
 
     public const SIGNAL_WAIT = 'signal wait';
 
+    public const SEARCH_ATTRIBUTES_UPSERT = 'search attributes upsert';
+
     public const SIDE_EFFECT = 'side effect';
 
     public const TIMER = 'timer';
@@ -164,6 +166,7 @@ final class WorkflowStepHistory
                 HistoryEventType::SignalWaitOpened,
                 HistoryEventType::SignalApplied,
             ], true),
+            self::SEARCH_ATTRIBUTES_UPSERT => $event->event_type === HistoryEventType::SearchAttributesUpserted,
             self::SIDE_EFFECT => $event->event_type === HistoryEventType::SideEffectRecorded,
             self::TIMER => self::isPureTimerEvent($event),
             self::VERSION_MARKER => $event->event_type === HistoryEventType::VersionMarkerRecorded,
@@ -239,6 +242,7 @@ final class WorkflowStepHistory
             HistoryEventType::ConditionWaitTimedOut,
             HistoryEventType::SignalWaitOpened,
             HistoryEventType::SignalApplied,
+            HistoryEventType::SearchAttributesUpserted,
             HistoryEventType::SideEffectRecorded,
             HistoryEventType::VersionMarkerRecorded,
             HistoryEventType::TimerScheduled,

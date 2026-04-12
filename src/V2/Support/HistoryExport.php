@@ -84,6 +84,7 @@ final class HistoryExport
                 'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,
                 'visibility_labels' => $summary?->visibility_labels ?? $run->visibility_labels ?? $run->instance?->visibility_labels ?? [],
                 'memo' => $run->memo ?? $run->instance?->memo ?? [],
+                'search_attributes' => $summary?->search_attributes ?? $run->search_attributes ?? [],
                 'status' => $run->status->value,
                 'status_bucket' => $run->status->statusBucket()
 ->value,
@@ -689,6 +690,7 @@ final class HistoryExport
             'archive_reason' => $summary->archive_reason,
             'business_key' => $summary->business_key,
             'visibility_labels' => $summary->visibility_labels ?? [],
+            'search_attributes' => $summary->search_attributes ?? [],
             'is_current_run' => (bool) $summary->is_current_run,
             'started_at' => self::timestamp($summary->started_at),
             'closed_at' => self::timestamp($summary->closed_at),

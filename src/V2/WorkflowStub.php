@@ -610,6 +610,16 @@ final class WorkflowStub
         return is_array($memo) ? $memo : [];
     }
 
+    /**
+     * @return array<string, string>
+     */
+    public function searchAttributes(): array
+    {
+        $attributes = $this->run?->search_attributes ?? [];
+
+        return is_array($attributes) ? $attributes : [];
+    }
+
     public function status(): string
     {
         return $this->run?->status->value ?? 'reserved';

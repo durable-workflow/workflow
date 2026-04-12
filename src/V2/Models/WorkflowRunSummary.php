@@ -38,6 +38,7 @@ class WorkflowRunSummary extends Model
         'repair_attention' => 'bool',
         'task_problem' => 'bool',
         'visibility_labels' => 'array',
+        'search_attributes' => 'array',
         'declared_contract_backfill_needed' => 'bool',
         'declared_contract_backfill_available' => 'bool',
         'history_event_count' => 'integer',

@@ -427,6 +427,36 @@ final class WorkflowExecutor
                 continue;
             }
 
+            if ($current instanceof UpsertSearchAttributesCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
+
+                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT)) {
+                    return null;
+                }
+
+                $upsertEvent = $this->searchAttributesUpsertedEvent($run, $sequence);
+
+                try {
+                    if ($upsertEvent === null) {
+                        $upsertEvent = $this->recordSearchAttributesUpserted($run, $task, $sequence, $current);
+                    }
+
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    $current = $workflowExecution->send(null);
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
+                ++$sequence;
+                continue;
+            }
+
             if ($current instanceof TimerCall) {
                 $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
 
@@ -1761,6 +1791,7 @@ final class WorkflowExecutor
             'business_key' => $run->business_key,
             'visibility_labels' => $run->visibility_labels,
             'memo' => $run->memo,
+            'search_attributes' => $run->search_attributes,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,
@@ -1900,6 +1931,7 @@ final class WorkflowExecutor
             'business_key' => $continuedRun->business_key,
             'visibility_labels' => $continuedRun->visibility_labels,
             'memo' => $continuedRun->memo,
+            'search_attributes' => $continuedRun->search_attributes,
             'outcome' => $startCommand->outcome?->value,
         ], null, $startCommand);
 
@@ -1912,6 +1944,7 @@ final class WorkflowExecutor
             'business_key' => $continuedRun->business_key,
             'visibility_labels' => $continuedRun->visibility_labels,
             'memo' => $continuedRun->memo,
+            'search_attributes' => $continuedRun->search_attributes,
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($continuedRun->workflow_class),
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
@@ -2717,6 +2750,56 @@ final class WorkflowExecutor
                 'version' => $version,
                 'min_supported' => $versionCall->minSupported,
                 'max_supported' => $versionCall->maxSupported,
+            ],
+            $task,
+        );
+
+        $run->historyEvents->push($event);
+
+        return $event;
+    }
+
+    private function searchAttributesUpsertedEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SearchAttributesUpserted
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function recordSearchAttributesUpserted(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        UpsertSearchAttributesCall $call,
+    ): WorkflowHistoryEvent {
+        $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
+
+        $merged = $existing;
+
+        foreach ($call->attributes as $key => $value) {
+            if ($value === null) {
+                unset($merged[$key]);
+            } else {
+                $merged[$key] = $value;
+            }
+        }
+
+        ksort($merged);
+
+        $run->search_attributes = $merged;
+        $run->save();
+
+        $event = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::SearchAttributesUpserted,
+            [
+                'sequence' => $sequence,
+                'attributes' => $call->attributes,
+                'merged' => $merged,
             ],
             $task,
         );

@@ -233,6 +233,25 @@ final class QueryStateReplayer
                 continue;
             }
 
+            if ($current instanceof UpsertSearchAttributesCall) {
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT);
+
+                $upsertEvent = $this->searchAttributesUpsertedEvent($run, $sequence);
+
+                if ($upsertEvent === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+                $current = $workflowExecution->send(null);
+
+                ++$sequence;
+
+                continue;
+            }
+
             if ($current instanceof SignalCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
                 WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SIGNAL_WAIT);
@@ -647,6 +666,17 @@ final class QueryStateReplayer
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::VersionMarkerRecorded
+                && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function searchAttributesUpsertedEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SearchAttributesUpserted
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
 
