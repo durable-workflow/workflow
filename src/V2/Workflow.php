@@ -7,6 +7,7 @@ namespace Workflow\V2;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildWorkflowHandles;
+use Workflow\V2\Support\HistoryBudget;
 
 abstract class Workflow
 {
@@ -52,6 +53,21 @@ abstract class Workflow
     public function children(): array
     {
         return ChildWorkflowHandles::forRun($this->run, $this->visibleSequence, $this->commandDispatchEnabled);
+    }
+
+    public function historyLength(): int
+    {
+        return HistoryBudget::forRun($this->run)['history_event_count'];
+    }
+
+    public function historySize(): int
+    {
+        return HistoryBudget::forRun($this->run)['history_size_bytes'];
+    }
+
+    public function shouldContinueAsNew(): bool
+    {
+        return HistoryBudget::forRun($this->run)['continue_as_new_recommended'];
     }
 
     public function syncExecutionCursor(int $visibleSequence): void

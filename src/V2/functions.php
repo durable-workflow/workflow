@@ -10,6 +10,7 @@ use ReflectionFunction;
 use ReflectionMethod;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\AllCall;
 use Workflow\V2\Support\AwaitCall;
 use Workflow\V2\Support\AwaitWithTimeoutCall;
@@ -24,16 +25,28 @@ use Workflow\V2\Support\VersionCall;
 use Workflow\V2\Support\WorkflowFiberContext;
 
 if (! function_exists(__NAMESPACE__ . '\\activity')) {
-    function activity(string $activity, ...$arguments): mixed
+    function activity(string $activity, mixed ...$arguments): mixed
     {
-        return WorkflowFiberContext::suspend(new ActivityCall($activity, $arguments));
+        $options = null;
+
+        if (($arguments[0] ?? null) instanceof ActivityOptions) {
+            $options = array_shift($arguments);
+        }
+
+        return WorkflowFiberContext::suspend(new ActivityCall($activity, $arguments, $options));
     }
 }
 
 if (! function_exists(__NAMESPACE__ . '\\startActivity')) {
-    function startActivity(string $activity, ...$arguments): ActivityCall
+    function startActivity(string $activity, mixed ...$arguments): ActivityCall
     {
-        return new ActivityCall($activity, $arguments);
+        $options = null;
+
+        if (($arguments[0] ?? null) instanceof ActivityOptions) {
+            $options = array_shift($arguments);
+        }
+
+        return new ActivityCall($activity, $arguments, $options);
     }
 }
 

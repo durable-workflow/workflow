@@ -14,6 +14,12 @@ final class ActivityCall implements YieldedCommand
     public function __construct(
         public readonly string $activity,
         public readonly array $arguments,
+        public readonly ?ActivityOptions $options = null,
     ) {
+    }
+
+    public function withOptions(ActivityOptions $options): self
+    {
+        return new self($this->activity, $this->arguments, $options);
     }
 }

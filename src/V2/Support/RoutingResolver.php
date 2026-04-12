@@ -52,8 +52,12 @@ final class RoutingResolver
     /**
      * @param class-string $activity
      */
-    public static function activityConnection(string $activity, WorkflowRun $run): ?string
+    public static function activityConnection(string $activity, WorkflowRun $run, ?ActivityOptions $options = null): ?string
     {
+        if ($options?->connection !== null) {
+            return $options->connection;
+        }
+
         $defaults = DefaultPropertyCache::for($activity);
 
         if (isset($defaults['connection']) && is_string($defaults['connection']) && $defaults['connection'] !== '') {
@@ -66,15 +70,19 @@ final class RoutingResolver
     /**
      * @param class-string $activity
      */
-    public static function activityQueue(string $activity, WorkflowRun $run): ?string
+    public static function activityQueue(string $activity, WorkflowRun $run, ?ActivityOptions $options = null): ?string
     {
+        if ($options?->queue !== null) {
+            return $options->queue;
+        }
+
         $defaults = DefaultPropertyCache::for($activity);
 
         if (isset($defaults['queue']) && is_string($defaults['queue']) && $defaults['queue'] !== '') {
             return $defaults['queue'];
         }
 
-        $connection = self::activityConnection($activity, $run) ?? config('queue.default');
+        $connection = self::activityConnection($activity, $run, $options) ?? config('queue.default');
 
         return $run->queue
             ?? config('queue.connections.' . $connection . '.queue', 'default');

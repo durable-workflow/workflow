@@ -1113,6 +1113,8 @@ final class WorkflowExecutor
     ): WorkflowTask {
         EntryMethod::describeActivity($activityCall->activity);
 
+        $options = $activityCall->options;
+
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
@@ -1122,15 +1124,16 @@ final class WorkflowExecutor
             'status' => ActivityStatus::Pending->value,
             'attempt_count' => 0,
             'arguments' => Serializer::serialize($activityCall->arguments),
-            'connection' => RoutingResolver::activityConnection($activityCall->activity, $run),
-            'queue' => RoutingResolver::activityQueue($activityCall->activity, $run),
+            'connection' => RoutingResolver::activityConnection($activityCall->activity, $run, $options),
+            'queue' => RoutingResolver::activityQueue($activityCall->activity, $run, $options),
             'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
+            'activity_options' => $options?->toSnapshot(),
         ]);
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = new $activityClass($execution, $run, $task->id);
 
         $execution->forceFill([
-            'retry_policy' => ActivityRetryPolicy::snapshot($activity),
+            'retry_policy' => ActivityRetryPolicy::snapshot($activity, $options),
         ])->save();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, array_merge([

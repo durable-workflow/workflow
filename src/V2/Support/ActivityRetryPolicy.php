@@ -12,16 +12,27 @@ final class ActivityRetryPolicy
     public const SNAPSHOT_VERSION = 1;
 
     /**
-     * @return array{snapshot_version: int, max_attempts: int|null, backoff_seconds: list<int>}
+     * @return array{snapshot_version: int, max_attempts: int|null, backoff_seconds: list<int>, start_to_close_timeout: int|null, schedule_to_start_timeout: int|null}
      */
-    public static function snapshot(Activity $activity): array
+    public static function snapshot(Activity $activity, ?ActivityOptions $options = null): array
     {
-        $maxAttempts = self::maxAttemptsFromActivity($activity);
+        $maxAttempts = $options?->maxAttempts ?? null;
+
+        if ($maxAttempts === null) {
+            $maxAttempts = self::maxAttemptsFromActivity($activity);
+            $maxAttempts = $maxAttempts === PHP_INT_MAX ? null : $maxAttempts;
+        }
+
+        $backoff = $options?->backoff !== null
+            ? self::normalizeBackoff($options->backoff)
+            : self::backoffSecondsFromActivity($activity);
 
         return [
             'snapshot_version' => self::SNAPSHOT_VERSION,
-            'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
-            'backoff_seconds' => self::backoffSecondsFromActivity($activity),
+            'max_attempts' => $maxAttempts,
+            'backoff_seconds' => $backoff,
+            'start_to_close_timeout' => $options?->startToCloseTimeout,
+            'schedule_to_start_timeout' => $options?->scheduleToStartTimeout,
         ];
     }
 
