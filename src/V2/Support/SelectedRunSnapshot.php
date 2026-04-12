@@ -18,7 +18,7 @@ final class SelectedRunSnapshot
      *     },
      *     waits: array{source: string, waits: list<array<string, mixed>>},
      *     timeline: array{source: string, timeline: list<array<string, mixed>>},
-     *     timers: array{source: string, timers: list<array<string, mixed>>},
+     *     timers: array{source: string, timers: list<array<string, mixed>>, rebuild_reasons: list<string>},
      *     lineage: array{
      *         source: string,
      *         parents: list<array<string, mixed>>,
@@ -75,7 +75,7 @@ final class SelectedRunSnapshot
     }
 
     /**
-     * @return array{source: string, timers: list<array<string, mixed>>}
+     * @return array{source: string, timers: list<array<string, mixed>>, rebuild_reasons: list<string>}
      */
     public static function timers(WorkflowRun $run): array
     {
@@ -111,7 +111,14 @@ final class SelectedRunSnapshot
     }
 
     /**
-     * @return array{has_projection: bool, has_canonical: bool, missing: bool, stale: bool}
+     * @return array{
+     *     has_projection: bool,
+     *     has_canonical: bool,
+     *     missing: bool,
+     *     stale: bool,
+     *     legacy_schema: bool,
+     *     reasons: list<string>
+     * }
      */
     public static function timerDriftStatus(WorkflowRun $run): array
     {

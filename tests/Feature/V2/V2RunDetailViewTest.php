@@ -676,6 +676,7 @@ final class V2RunDetailViewTest extends TestCase
         $detail = RunDetailView::forRun($run);
 
         $this->assertSame('workflow_run_timer_entries', $detail['timers_projection_source']);
+        $this->assertSame([], $detail['timers_projection_rebuild_reasons']);
         $this->assertCount(1, $detail['timers']);
         $this->assertDatabaseHas('workflow_run_timer_entries', [
             'workflow_run_id' => $runId,
@@ -697,6 +698,7 @@ final class V2RunDetailViewTest extends TestCase
         );
 
         $this->assertSame('workflow_run_timer_entries_rebuilt', $projectedDetail['timers_projection_source']);
+        $this->assertSame(['stale_projection'], $projectedDetail['timers_projection_rebuild_reasons']);
         $this->assertCount(1, $projectedDetail['timers']);
         $this->assertSame($detail['timers'][0]['id'], $projectedDetail['timers'][0]['id']);
         $this->assertSame('pending', $projectedDetail['timers'][0]['status']);
@@ -709,6 +711,7 @@ final class V2RunDetailViewTest extends TestCase
         $fallbackDetail = RunDetailView::forRun(WorkflowRun::query() ->with('summary') ->findOrFail($runId));
 
         $this->assertSame('workflow_run_timer_entries_rebuilt', $fallbackDetail['timers_projection_source']);
+        $this->assertSame(['missing_projection'], $fallbackDetail['timers_projection_rebuild_reasons']);
         $this->assertCount(1, $fallbackDetail['timers']);
         $this->assertDatabaseHas('workflow_run_timer_entries', [
             'workflow_run_id' => $runId,
@@ -798,6 +801,7 @@ final class V2RunDetailViewTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary', 'timerEntries']));
 
         $this->assertSame('workflow_run_timer_entries_rebuilt', $detail['timers_projection_source']);
+        $this->assertSame(['legacy_schema'], $detail['timers_projection_rebuild_reasons']);
         $this->assertCount(1, $detail['timers']);
         $this->assertSame('pending', $detail['timers'][0]['status']);
         $this->assertSame('pending', $detail['timers'][0]['source_status']);

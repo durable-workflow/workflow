@@ -115,6 +115,7 @@ final class HistoryExport
                 'waits_projection_source' => $waitSnapshot['source'],
                 'timeline_projection_source' => $timelineSnapshot['source'],
                 'timers_projection_source' => $timerSnapshot['source'],
+                'timers_projection_rebuild_reasons' => $timerSnapshot['rebuild_reasons'],
                 'lineage_projection_source' => $lineageSnapshot['source'],
             ],
             'history_events' => $run->historyEvents

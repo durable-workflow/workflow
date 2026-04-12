@@ -513,6 +513,8 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['projections']['run_timer_entries']['projected_runs_with_timers']);
         $this->assertSame(1, $snapshot['projections']['run_timer_entries']['missing_runs_with_timers']);
         $this->assertSame(1, $snapshot['projections']['run_timer_entries']['stale_projected_runs']);
+        $this->assertSame(1, $snapshot['projections']['run_timer_entries']['legacy_schema_runs']);
+        $this->assertSame(2, $snapshot['projections']['run_timer_entries']['legacy_schema_rows']);
         $this->assertSame(1, $snapshot['projections']['run_timer_entries']['orphaned']);
         $this->assertSame(3, $snapshot['projections']['run_timer_entries']['needs_rebuild']);
 

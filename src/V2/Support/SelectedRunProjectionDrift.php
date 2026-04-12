@@ -128,21 +128,20 @@ final class SelectedRunProjectionDrift
      *     runs_with_timers: int,
      *     projected_runs_with_timers: int,
      *     missing_runs_with_timers: int,
-     *     stale_projected_runs: int
+     *     stale_projected_runs: int,
+     *     legacy_schema_runs: int
      * }
      */
     public static function timerMetrics(array $runIds = [], ?string $instanceId = null): array
     {
-        $analysis = self::analyze(
-            self::runQuery(['timerEntries', 'timers', 'historyEvents'], $runIds, $instanceId),
-            static fn (WorkflowRun $run): array => SelectedRunSnapshot::timerDriftStatus($run),
-        );
+        $analysis = self::timerAnalysis($runIds, $instanceId);
 
         return [
             'runs_with_timers' => $analysis['runs_with_canonical'],
             'projected_runs_with_timers' => $analysis['projected_runs_with_canonical'],
             'missing_runs_with_timers' => count($analysis['missing_run_ids']),
             'stale_projected_runs' => count($analysis['stale_run_ids']),
+            'legacy_schema_runs' => count($analysis['legacy_schema_run_ids']),
         ];
     }
 
@@ -152,12 +151,7 @@ final class SelectedRunProjectionDrift
      */
     public static function timerRunIdsNeedingRebuild(array $runIds = [], ?string $instanceId = null): array
     {
-        return self::runIdsNeedingRebuild(
-            self::analyze(
-                self::runQuery(['timerEntries', 'timers', 'historyEvents'], $runIds, $instanceId),
-                static fn (WorkflowRun $run): array => SelectedRunSnapshot::timerDriftStatus($run),
-            ),
-        );
+        return self::runIdsNeedingRebuild(self::timerAnalysis($runIds, $instanceId));
     }
 
     /**
@@ -293,6 +287,66 @@ final class SelectedRunProjectionDrift
     private static function runIdsNeedingRebuild(array $analysis): array
     {
         return array_values(array_unique(array_merge($analysis['missing_run_ids'], $analysis['stale_run_ids'])));
+    }
+
+    /**
+     * @param list<string> $runIds
+     * @return array{
+     *     runs_with_canonical: int,
+     *     projected_runs_with_canonical: int,
+     *     missing_run_ids: list<string>,
+     *     stale_run_ids: list<string>,
+     *     legacy_schema_run_ids: list<string>
+     * }
+     */
+    private static function timerAnalysis(array $runIds, ?string $instanceId): array
+    {
+        $runsWithCanonical = 0;
+        $projectedRunsWithCanonical = 0;
+        $missingRunIds = [];
+        $staleRunIds = [];
+        $legacySchemaRunIds = [];
+
+        self::runQuery(['timerEntries', 'timers', 'historyEvents'], $runIds, $instanceId)
+            ->chunkById(100, static function ($runs) use (
+                &$legacySchemaRunIds,
+                &$missingRunIds,
+                &$projectedRunsWithCanonical,
+                &$runsWithCanonical,
+                &$staleRunIds,
+            ): void {
+                foreach ($runs as $run) {
+                    $status = SelectedRunSnapshot::timerDriftStatus($run);
+
+                    if ($status['has_canonical']) {
+                        $runsWithCanonical++;
+                    }
+
+                    if ($status['has_canonical'] && $status['has_projection']) {
+                        $projectedRunsWithCanonical++;
+                    }
+
+                    if ($status['missing']) {
+                        $missingRunIds[] = $run->id;
+                    }
+
+                    if ($status['stale']) {
+                        $staleRunIds[] = $run->id;
+                    }
+
+                    if ($status['legacy_schema']) {
+                        $legacySchemaRunIds[] = $run->id;
+                    }
+                }
+            }, 'id');
+
+        return [
+            'runs_with_canonical' => $runsWithCanonical,
+            'projected_runs_with_canonical' => $projectedRunsWithCanonical,
+            'missing_run_ids' => array_values(array_unique($missingRunIds)),
+            'stale_run_ids' => array_values(array_unique($staleRunIds)),
+            'legacy_schema_run_ids' => array_values(array_unique($legacySchemaRunIds)),
+        ];
     }
 
     /**

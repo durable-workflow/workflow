@@ -82,31 +82,34 @@ final class RunTimerProjector
     }
 
     /**
-     * @return array{source: string, timers: list<array<string, mixed>>}
+     * @return array{
+     *     source: string,
+     *     timers: list<array<string, mixed>>,
+     *     rebuild_reasons: list<string>
+     * }
      */
     public static function snapshotForRun(WorkflowRun $run): array
     {
         $projected = self::projectedRows($run);
         $canonicalTimers = RunTimerView::timersForRun($run);
+        $rebuildReasons = self::rebuildReasons($projected, $canonicalTimers);
 
         if ($projected->isEmpty() && $canonicalTimers === []) {
             return [
                 'source' => 'workflow_run_timer_entries',
                 'timers' => [],
+                'rebuild_reasons' => [],
             ];
         }
 
-        if (
-            $projected->isNotEmpty()
-            && self::projectedRowsUseCurrentSchema($projected)
-            && self::projectionMatchesSnapshot($projected, $canonicalTimers)
-        ) {
+        if ($rebuildReasons === []) {
             return [
                 'source' => 'workflow_run_timer_entries',
                 'timers' => $projected
                     ->map(static fn (WorkflowRunTimerEntry $entry): array => $entry->toTimerPayload())
                     ->values()
                     ->all(),
+                'rebuild_reasons' => [],
             ];
         }
 
@@ -118,6 +121,7 @@ final class RunTimerProjector
                 ->map(static fn (WorkflowRunTimerEntry $entry): array => $entry->toTimerPayload())
                 ->values()
                 ->all(),
+            'rebuild_reasons' => $rebuildReasons,
         ];
     }
 
@@ -126,7 +130,9 @@ final class RunTimerProjector
      *     has_projection: bool,
      *     has_canonical: bool,
      *     missing: bool,
-     *     stale: bool
+     *     stale: bool,
+     *     legacy_schema: bool,
+     *     reasons: list<string>
      * }
      */
     public static function driftStatusForRun(WorkflowRun $run): array
@@ -135,16 +141,16 @@ final class RunTimerProjector
         $canonicalTimers = RunTimerView::timersForRun($run);
         $hasProjection = $projected->isNotEmpty();
         $hasCanonical = $canonicalTimers !== [];
+        $reasons = self::rebuildReasons($projected, $canonicalTimers);
+        $legacySchema = in_array('legacy_schema', $reasons, true);
 
         return [
             'has_projection' => $hasProjection,
             'has_canonical' => $hasCanonical,
             'missing' => $hasCanonical && ! $hasProjection,
-            'stale' => $hasProjection
-                && (
-                    ! self::projectedRowsUseCurrentSchema($projected)
-                    || ! self::projectionMatchesSnapshot($projected, $canonicalTimers)
-                ),
+            'stale' => $hasProjection && $reasons !== [],
+            'legacy_schema' => $legacySchema,
+            'reasons' => $reasons,
         ];
     }
 
@@ -203,6 +209,30 @@ final class RunTimerProjector
     private static function projectedRowsUseCurrentSchema(EloquentCollection $projected): bool
     {
         return $projected->every(static fn (WorkflowRunTimerEntry $entry): bool => $entry->usesCurrentSchema());
+    }
+
+    /**
+     * @param EloquentCollection<int, WorkflowRunTimerEntry> $projected
+     * @param list<array<string, mixed>> $canonical
+     * @return list<string>
+     */
+    private static function rebuildReasons(EloquentCollection $projected, array $canonical): array
+    {
+        $reasons = [];
+
+        if ($canonical !== [] && $projected->isEmpty()) {
+            $reasons[] = 'missing_projection';
+        }
+
+        if ($projected->isNotEmpty() && ! self::projectedRowsUseCurrentSchema($projected)) {
+            $reasons[] = 'legacy_schema';
+        }
+
+        if ($projected->isNotEmpty() && ! self::projectionMatchesSnapshot($projected, $canonical)) {
+            $reasons[] = 'stale_projection';
+        }
+
+        return $reasons;
     }
 
     /**

@@ -304,6 +304,8 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(2, $projection['data']['timer_needs_rebuild']);
         $this->assertSame(1, $projection['data']['timer_missing_runs_with_timers']);
         $this->assertSame(0, $projection['data']['timer_stale_projected_runs']);
+        $this->assertSame(0, $projection['data']['timer_legacy_schema_runs']);
+        $this->assertSame(1, $projection['data']['timer_legacy_schema_rows']);
         $this->assertSame(1, $projection['data']['timer_orphaned']);
         $this->assertSame(2, $projection['data']['lineage_needs_rebuild']);
         $this->assertSame(1, $projection['data']['lineage_missing_runs_with_lineage']);

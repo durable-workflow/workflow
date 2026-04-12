@@ -1160,6 +1160,7 @@ final class HistoryExportTest extends TestCase
         $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'timers', 'timerEntries']));
 
         $this->assertSame('workflow_run_timer_entries_rebuilt', $bundle['selected_run']['timers_projection_source']);
+        $this->assertSame(['legacy_schema'], $bundle['selected_run']['timers_projection_rebuild_reasons']);
         $this->assertCount(1, $bundle['timers']);
         $this->assertSame($timer->id, $bundle['timers'][0]['id']);
         $this->assertSame('unsupported', $bundle['timers'][0]['status']);
