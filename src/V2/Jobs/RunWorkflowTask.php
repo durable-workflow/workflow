@@ -15,6 +15,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
@@ -53,12 +54,12 @@ final class RunWorkflowTask implements ShouldQueue
         try {
             $nextTask = DB::transaction(function () use ($executor): ?WorkflowTask {
                 /** @var WorkflowTask $task */
-                $task = WorkflowTask::query()
+                $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
                     ->findOrFail($this->taskId);
 
                 /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
+                $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                     ->lockForUpdate()
                     ->findOrFail($task->workflow_run_id);
 
@@ -82,7 +83,7 @@ final class RunWorkflowTask implements ShouldQueue
         } catch (Throwable $throwable) {
             DB::transaction(function () use ($throwable): void {
                 /** @var WorkflowTask|null $task */
-                $task = WorkflowTask::query()
+                $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
                     ->find($this->taskId);
 
@@ -97,7 +98,7 @@ final class RunWorkflowTask implements ShouldQueue
                 ])->save();
 
                 /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()->findOrFail($task->workflow_run_id);
+                $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->findOrFail($task->workflow_run_id);
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
             });
 
@@ -113,7 +114,7 @@ final class RunWorkflowTask implements ShouldQueue
     {
         return DB::transaction(function (): bool {
             /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
                 ->find($this->taskId);
 
@@ -122,7 +123,7 @@ final class RunWorkflowTask implements ShouldQueue
             }
 
             /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()->findOrFail($task->workflow_run_id);
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->findOrFail($task->workflow_run_id);
 
             TaskCompatibility::sync($task, $run);
 

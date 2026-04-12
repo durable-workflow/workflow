@@ -12,7 +12,7 @@ final class CommandSequence
     public static function reserveNext(WorkflowRun $run): int
     {
         /** @var WorkflowRun $lockedRun */
-        $lockedRun = WorkflowRun::query()
+        $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
             ->lockForUpdate()
             ->findOrFail($run->id);
 

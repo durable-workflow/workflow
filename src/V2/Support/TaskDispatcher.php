@@ -33,7 +33,7 @@ final class TaskDispatcher
     private static function publish(string $taskId): void
     {
         /** @var WorkflowTask|null $task */
-        $task = WorkflowTask::query()->find($taskId);
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
 
         if (! $task instanceof WorkflowTask || $task->status !== TaskStatus::Ready) {
             return;
@@ -126,7 +126,7 @@ final class TaskDispatcher
     private static function refreshRunSummary(WorkflowTask $task): void
     {
         /** @var WorkflowRun|null $run */
-        $run = WorkflowRun::query()->find($task->workflow_run_id);
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($task->workflow_run_id);
 
         if ($run instanceof WorkflowRun) {
             RunSummaryProjector::project($run);

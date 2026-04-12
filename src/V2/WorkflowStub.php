@@ -44,6 +44,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ChildRunHistory;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
@@ -297,7 +298,7 @@ final class WorkflowStub
 
         while ($processed < $limit) {
             /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
+            $task = self::taskQuery()
                 ->where('status', TaskStatus::Ready->value)
                 ->where(static function ($query): void {
                     $query->whereNull('available_at')
@@ -340,7 +341,7 @@ final class WorkflowStub
 
         if ($instanceId === null) {
             /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()->create([
+            $instance = self::instanceQuery()->create([
                 'workflow_class' => $workflow,
                 'workflow_type' => $workflowType,
                 'reserved_at' => now(),
@@ -364,7 +365,7 @@ final class WorkflowStub
     public static function load(string $instanceId): self
     {
         /** @var WorkflowInstance $instance */
-        $instance = WorkflowInstance::query()
+        $instance = self::instanceQuery()
             ->findOrFail($instanceId);
 
         return new self($instance);
@@ -373,7 +374,7 @@ final class WorkflowStub
     public static function loadSelection(string $instanceId, ?string $runId = null): self
     {
         /** @var WorkflowInstance $instance */
-        $instance = WorkflowInstance::query()
+        $instance = self::instanceQuery()
             ->findOrFail($instanceId);
 
         if ($runId === null) {
@@ -577,12 +578,12 @@ final class WorkflowStub
 
     public function refresh(): self
     {
-        $this->instance = WorkflowInstance::query()
+        $this->instance = self::instanceQuery()
             ->findOrFail($this->instance->id);
 
         if ($this->runTargeted && $this->selectedRunId !== null) {
             /** @var WorkflowRun $selectedRun */
-            $selectedRun = WorkflowRun::query()->findOrFail($this->selectedRunId);
+            $selectedRun = self::runQuery()->findOrFail($this->selectedRunId);
             $this->run = $selectedRun;
         } else {
             $this->run = $this->currentRunForInstance($this->instance);
@@ -634,7 +635,7 @@ final class WorkflowStub
 
         DB::transaction(function () use ($metadata, $startOptions, &$task, &$command): void {
             /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
+            $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
@@ -709,7 +710,7 @@ final class WorkflowStub
             }
 
             /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()->create([
+            $run = self::runQuery()->create([
                 'workflow_instance_id' => $instance->id,
                 'run_number' => $instance->run_count + 1,
                 'workflow_class' => $workflowClass,
@@ -783,7 +784,7 @@ final class WorkflowStub
             ], null, $command);
 
             /** @var WorkflowTask $task */
-            $task = WorkflowTask::query()->create([
+            $task = self::taskQuery()->create([
                 'workflow_run_id' => $run->id,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
@@ -1082,7 +1083,7 @@ final class WorkflowStub
 
         DB::transaction(function () use (&$command, &$task): void {
             /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
+            $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
@@ -1102,7 +1103,7 @@ final class WorkflowStub
 
             if ($this->runTargeted) {
                 /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
+                $run = self::runQuery()
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
 
@@ -1144,7 +1145,7 @@ final class WorkflowStub
             $run->setRelation('instance', $instance);
             $run->setRelation(
                 'tasks',
-                WorkflowTask::query()
+                self::taskQuery()
                     ->where('workflow_run_id', $run->id)
                     ->orderBy('available_at')
                     ->lockForUpdate()
@@ -1312,7 +1313,7 @@ final class WorkflowStub
 
         DB::transaction(function () use (&$command, $reason): void {
             /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
+            $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
@@ -1333,7 +1334,7 @@ final class WorkflowStub
 
             if ($this->runTargeted) {
                 /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
+                $run = self::runQuery()
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
             } else {
@@ -1430,7 +1431,7 @@ final class WorkflowStub
 
         DB::transaction(function () use ($method, $arguments, &$command, &$update, &$resumeTask): void {
             /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
+            $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
@@ -1453,7 +1454,7 @@ final class WorkflowStub
 
             if ($this->runTargeted) {
                 /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
+                $run = self::runQuery()
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
                 $updateName = $method;
@@ -1614,7 +1615,7 @@ final class WorkflowStub
 
             if (! $resumeTask instanceof WorkflowTask && ! $this->hasOpenWorkflowTask($run->id)) {
                 /** @var WorkflowTask $resumeTask */
-                $resumeTask = WorkflowTask::query()->create([
+                $resumeTask = self::taskQuery()->create([
                     'workflow_run_id' => $run->id,
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
@@ -1656,7 +1657,7 @@ final class WorkflowStub
             }
 
             /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
+            $task = self::taskQuery()
                 ->where('workflow_run_id', $runId)
                 ->where('task_type', TaskType::Workflow->value)
                 ->where('status', TaskStatus::Ready->value)
@@ -1775,7 +1776,7 @@ final class WorkflowStub
 
         DB::transaction(function () use ($name, $arguments, &$command, &$task): void {
             /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
+            $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
@@ -1797,7 +1798,7 @@ final class WorkflowStub
 
             if ($this->runTargeted) {
                 /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
+                $run = self::runQuery()
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
 
@@ -1902,7 +1903,7 @@ final class WorkflowStub
 
             if (! $this->hasOpenTask($run->id)) {
                 /** @var WorkflowTask $task */
-                $task = WorkflowTask::query()->create([
+                $task = self::taskQuery()->create([
                     'workflow_run_id' => $run->id,
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
@@ -1969,7 +1970,7 @@ final class WorkflowStub
             &$task,
         ): void {
             /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
+            $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
@@ -2075,7 +2076,7 @@ final class WorkflowStub
 
                 if (! $this->hasOpenTask($run->id)) {
                     /** @var WorkflowTask $task */
-                    $task = WorkflowTask::query()->create([
+                    $task = self::taskQuery()->create([
                         'workflow_run_id' => $run->id,
                         'task_type' => TaskType::Workflow->value,
                         'status' => TaskStatus::Ready->value,
@@ -2147,7 +2148,7 @@ final class WorkflowStub
             }
 
             /** @var WorkflowRun $run */
-            $run = WorkflowRun::query()->create([
+            $run = self::runQuery()->create([
                 'workflow_instance_id' => $instance->id,
                 'run_number' => $instance->run_count + 1,
                 'workflow_class' => $workflowClass,
@@ -2224,7 +2225,7 @@ final class WorkflowStub
             ], null, $startCommand);
 
             /** @var WorkflowTask $task */
-            $task = WorkflowTask::query()->create([
+            $task = self::taskQuery()->create([
                 'workflow_run_id' => $run->id,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
@@ -2331,7 +2332,7 @@ final class WorkflowStub
             $closedReason,
         ): void {
             /** @var WorkflowInstance $instance */
-            $instance = WorkflowInstance::query()
+            $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
@@ -2351,7 +2352,7 @@ final class WorkflowStub
 
             if ($this->runTargeted) {
                 /** @var WorkflowRun $run */
-                $run = WorkflowRun::query()
+                $run = self::runQuery()
                     ->lockForUpdate()
                     ->findOrFail($this->selectedRunId);
 
@@ -2373,7 +2374,7 @@ final class WorkflowStub
                 $run = $currentRun;
             }
 
-            $openTasks = WorkflowTask::query()
+            $openTasks = self::taskQuery()
                 ->where('workflow_run_id', $run->id)
                 ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
                 ->orderBy('id')
@@ -3381,7 +3382,7 @@ final class WorkflowStub
 
     private function hasOpenTask(string $runId): bool
     {
-        return WorkflowTask::query()
+        return self::taskQuery()
             ->where('workflow_run_id', $runId)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
             ->exists();
@@ -3389,7 +3390,7 @@ final class WorkflowStub
 
     private function hasOpenWorkflowTask(string $runId): bool
     {
-        return WorkflowTask::query()
+        return self::taskQuery()
             ->where('workflow_run_id', $runId)
             ->where('task_type', TaskType::Workflow->value)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
@@ -3404,7 +3405,7 @@ final class WorkflowStub
     private function readyWorkflowTaskForDispatch(string $runId): ?WorkflowTask
     {
         /** @var WorkflowTask|null $task */
-        $task = WorkflowTask::query()
+        $task = self::taskQuery()
             ->where('workflow_run_id', $runId)
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)
@@ -3452,7 +3453,7 @@ final class WorkflowStub
         $run->setRelation('instance', $instance);
         $run->setRelation(
             'tasks',
-            WorkflowTask::query()
+            self::taskQuery()
                 ->where('workflow_run_id', $run->id)
                 ->orderBy('available_at')
                 ->lockForUpdate()
@@ -3576,7 +3577,7 @@ final class WorkflowStub
 
         foreach ($parentReferences as $parentReference) {
             /** @var WorkflowRun|null $parentRun */
-            $parentRun = WorkflowRun::query()
+            $parentRun = self::runQuery()
                 ->lockForUpdate()
                 ->find($parentReference['parent_workflow_run_id']);
 
@@ -3590,7 +3591,7 @@ final class WorkflowStub
             }
 
             /** @var WorkflowInstance|null $parentInstance */
-            $parentInstance = WorkflowInstance::query()
+            $parentInstance = self::instanceQuery()
                 ->lockForUpdate()
                 ->find($parentRun->workflow_instance_id);
 
@@ -3634,7 +3635,7 @@ final class WorkflowStub
                 }
             }
 
-            $hasOpenWorkflowTask = WorkflowTask::query()
+            $hasOpenWorkflowTask = self::taskQuery()
                 ->where('workflow_run_id', $parentRun->id)
                 ->where('task_type', TaskType::Workflow->value)
                 ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
@@ -3645,7 +3646,7 @@ final class WorkflowStub
             }
 
             /** @var WorkflowTask $task */
-            $task = WorkflowTask::query()->create([
+            $task = self::taskQuery()->create([
                 'workflow_run_id' => $parentRun->id,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
@@ -3685,7 +3686,7 @@ final class WorkflowStub
     ): WorkflowInstance {
         $now = now();
 
-        WorkflowInstance::query()->insertOrIgnore([
+        self::instanceQuery()->insertOrIgnore([
             'id' => $instanceId,
             'workflow_class' => $workflow,
             'workflow_type' => $workflowType,
@@ -3696,7 +3697,7 @@ final class WorkflowStub
         ]);
 
         /** @var WorkflowInstance $instance */
-        $instance = WorkflowInstance::query()
+        $instance = self::instanceQuery()
             ->with('currentRun')
             ->findOrFail($instanceId);
 
@@ -3716,5 +3717,20 @@ final class WorkflowStub
         }
 
         return $instance;
+    }
+
+    private static function instanceQuery()
+    {
+        return ConfiguredV2Models::query('instance_model', WorkflowInstance::class);
+    }
+
+    private static function runQuery()
+    {
+        return ConfiguredV2Models::query('run_model', WorkflowRun::class);
+    }
+
+    private static function taskQuery()
+    {
+        return ConfiguredV2Models::query('task_model', WorkflowTask::class);
     }
 }
