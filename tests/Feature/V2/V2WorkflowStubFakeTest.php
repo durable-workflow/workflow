@@ -300,6 +300,7 @@ final class V2WorkflowStubFakeTest extends TestCase
             HistoryEventType::WorkflowStarted->value,
             HistoryEventType::SignalWaitOpened->value,
             HistoryEventType::SignalReceived->value,
+            HistoryEventType::MessageCursorAdvanced->value,
             HistoryEventType::SignalApplied->value,
             HistoryEventType::ActivityScheduled->value,
             HistoryEventType::ActivityStarted->value,
@@ -374,5 +375,33 @@ final class V2WorkflowStubFakeTest extends TestCase
 
         WorkflowStub::assertSignalNotSent('name-provided');
         WorkflowStub::assertUpdateNotSent('approve');
+    }
+
+    public function testMockRejectsWorkflowSubclass(): void
+    {
+        WorkflowStub::fake();
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('does not support mocking workflow classes');
+
+        WorkflowStub::mock(TestGreetingWorkflow::class, ['greeting' => 'fake']);
+    }
+
+    public function testMockAcceptsActivityClass(): void
+    {
+        WorkflowStub::fake();
+
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+
+        $this->assertTrue(WorkflowStub::hasMock(TestGreetingActivity::class));
+    }
+
+    public function testMockAcceptsUnknownStringAsActivityKey(): void
+    {
+        WorkflowStub::fake();
+
+        WorkflowStub::mock('App\\Activities\\UnregisteredActivity', 'result');
+
+        $this->assertTrue(WorkflowStub::hasMock('App\\Activities\\UnregisteredActivity'));
     }
 }

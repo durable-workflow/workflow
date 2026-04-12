@@ -27,6 +27,7 @@ use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkflowModeGuard;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
 
@@ -76,6 +77,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         ]);
 
         TypeRegistry::validateTypeMap();
+        WorkflowModeGuard::check();
 
         Event::listen(Looping::class, static function (Looping $event): void {
             Watchdog::wake($event->connectionName, $event->queue);

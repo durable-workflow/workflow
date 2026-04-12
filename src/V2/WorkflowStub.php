@@ -146,6 +146,13 @@ final class WorkflowStub
 
     public static function mock(string $activity, mixed $result): void
     {
+        if (class_exists($activity) && is_subclass_of($activity, Workflow::class)) {
+            throw new LogicException(sprintf(
+                'WorkflowStub::mock() does not support mocking workflow classes. [%s] is a Workflow, not an Activity. Child workflows execute as real nested V2 runs under fake mode — test them through their observable output instead.',
+                $activity,
+            ));
+        }
+
         if (! self::faked()) {
             self::fake();
         }

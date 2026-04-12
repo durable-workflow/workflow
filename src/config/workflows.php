@@ -69,6 +69,9 @@ return [
             'completion_timeout_seconds' => (int) env('WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS', 10),
             'poll_interval_milliseconds' => (int) env('WORKFLOW_V2_UPDATE_WAIT_POLL_INTERVAL_MS', 50),
         ],
+        'guardrails' => [
+            'boot' => env('WORKFLOW_V2_GUARDRAILS_BOOT', 'warn'),
+        ],
         'task_repair' => [
             'redispatch_after_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 3),
             'loop_throttle_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS', 5),
