@@ -2,24 +2,24 @@
 
 declare(strict_types=1);
 
-namespace Workflow\V2;
+namespace Workflow\V2\Contracts;
 
 use Throwable;
-use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 
 /**
- * Static convenience facade for the ActivityTaskBridge contract.
+ * Public contract for external activity-task workers.
  *
- * Delegates all calls to the container-resolved singleton so callers
- * that already use the static API continue to work unchanged.
- *
- * New consumers should resolve the contract interface directly:
- *
- *     app(ActivityTaskBridgeContract::class)->poll(...)
+ * Lets an adapter poll for ready durable activity tasks, claim a task by id,
+ * execute the activity in-process or record completion/failure from an
+ * external worker, all without reimplementing activity lifecycle internals.
  */
-final class ActivityTaskBridge
+interface ActivityTaskBridge
 {
     /**
+     * Find ready activity tasks matching the given queue criteria.
+     *
+     * Returns an array of task summaries ordered by availability.
+     *
      * @return list<array{
      *     task_id: string,
      *     workflow_run_id: string,
@@ -33,12 +33,14 @@ final class ActivityTaskBridge
      *     available_at: string|null,
      * }>
      */
-    public static function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array
-    {
-        return self::resolve()->poll($connection, $queue, $limit, $compatibility);
-    }
+    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array;
 
     /**
+     * Claim a specific activity task with detailed status.
+     *
+     * Always returns a result array. When the task cannot be claimed,
+     * claimed is false and reason/reason_detail explain why.
+     *
      * @return array{
      *     claimed: bool,
      *     task_id: string,
@@ -64,12 +66,13 @@ final class ActivityTaskBridge
      *     compatibility_reason: string|null,
      * }
      */
-    public static function claimStatus(string $taskId, ?string $leaseOwner = null): array
-    {
-        return self::resolve()->claimStatus($taskId, $leaseOwner);
-    }
+    public function claimStatus(string $taskId, ?string $leaseOwner = null): array;
 
     /**
+     * Claim a specific activity task.
+     *
+     * Returns the claim payload on success, or null if the task cannot be claimed.
+     *
      * @return array{
      *     task_id: string,
      *     workflow_instance_id: string|null,
@@ -89,29 +92,40 @@ final class ActivityTaskBridge
      *     lease_expires_at: string|null,
      * }|null
      */
-    public static function claim(string $taskId, ?string $leaseOwner = null): ?array
-    {
-        return self::resolve()->claim($taskId, $leaseOwner);
-    }
+    public function claim(string $taskId, ?string $leaseOwner = null): ?array;
 
     /**
-     * @return array{recorded: bool, task_id: string, reason: string|null, next_task_id: string|null}
+     * Record activity task completion from an external worker.
+     *
+     * @param mixed $result The serialized activity result.
+     * @return array{
+     *     recorded: bool,
+     *     task_id: string,
+     *     reason: string|null,
+     *     next_task_id: string|null,
+     * }
      */
-    public static function complete(string $attemptId, mixed $result): array
-    {
-        return self::resolve()->complete($attemptId, $result);
-    }
+    public function complete(string $attemptId, mixed $result): array;
 
     /**
+     * Record activity task failure from an external worker.
+     *
      * @param Throwable|array<string, mixed>|string $failure
-     * @return array{recorded: bool, task_id: string, reason: string|null, next_task_id: string|null}
+     * @return array{
+     *     recorded: bool,
+     *     task_id: string,
+     *     reason: string|null,
+     *     next_task_id: string|null,
+     * }
      */
-    public static function fail(string $attemptId, Throwable|array|string $failure): array
-    {
-        return self::resolve()->fail($attemptId, $failure);
-    }
+    public function fail(string $attemptId, Throwable|array|string $failure): array;
 
     /**
+     * Get the current status of an activity attempt.
+     *
+     * Returns liveness, cancellation, and lease metadata for the attempt
+     * without renewing the lease or recording a heartbeat.
+     *
      * @return array{
      *     can_continue: bool,
      *     cancel_requested: bool,
@@ -132,13 +146,15 @@ final class ActivityTaskBridge
      *     last_heartbeat_at: string|null,
      * }
      */
-    public static function status(string $attemptId): array
-    {
-        return self::resolve()->status($attemptId);
-    }
+    public function status(string $attemptId): array;
 
     /**
-     * @param array<string, mixed> $progress
+     * Heartbeat to extend the lease on a claimed activity task.
+     *
+     * Returns liveness, cancellation, and lease metadata. When the activity
+     * has been cancelled, can_continue is false and cancel_requested is true.
+     *
+     * @param array<string, mixed> $progress Optional progress payload.
      * @return array{
      *     can_continue: bool,
      *     cancel_requested: bool,
@@ -159,21 +175,5 @@ final class ActivityTaskBridge
      *     last_heartbeat_at: string|null,
      * }
      */
-    public static function heartbeatStatus(string $attemptId, array $progress = []): array
-    {
-        return self::resolve()->heartbeat($attemptId, $progress);
-    }
-
-    /**
-     * @param array<string, mixed> $progress
-     */
-    public static function heartbeat(string $attemptId, array $progress = []): bool
-    {
-        return self::resolve()->heartbeat($attemptId, $progress)['can_continue'];
-    }
-
-    private static function resolve(): ActivityTaskBridgeContract
-    {
-        return app(ActivityTaskBridgeContract::class);
-    }
+    public function heartbeat(string $attemptId, array $progress = []): array;
 }

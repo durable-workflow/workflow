@@ -18,8 +18,10 @@ use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\V2RepairPassCommand;
 use Workflow\Commands\WorkflowMakeCommand;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\TaskWatchdog;
@@ -39,6 +41,11 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->app->singleton(
             WorkflowTaskBridge::class,
             DefaultWorkflowTaskBridge::class,
+        );
+
+        $this->app->singleton(
+            ActivityTaskBridge::class,
+            DefaultActivityTaskBridge::class,
         );
     }
 
