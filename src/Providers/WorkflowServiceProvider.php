@@ -26,6 +26,7 @@ use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
 
@@ -73,6 +74,8 @@ final class WorkflowServiceProvider extends ServiceProvider
             V2RepairPassCommand::class,
             V2RebuildProjectionsCommand::class,
         ]);
+
+        TypeRegistry::validateTypeMap();
 
         Event::listen(Looping::class, static function (Looping $event): void {
             Watchdog::wake($event->connectionName, $event->queue);

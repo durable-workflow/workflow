@@ -115,6 +115,71 @@ final class TypeRegistry
         return null;
     }
 
+    /**
+     * Validate configured type maps for ambiguous or conflicting registrations.
+     *
+     * Checks that no class appears as the target of multiple different type keys
+     * and that configured type keys do not conflict with #[Type] attributes on
+     * the mapped class.
+     *
+     * @throws LogicException when a conflict is detected
+     */
+    public static function validateTypeMap(): void
+    {
+        foreach (['workflows' => Workflow::class, 'activities' => Activity::class] as $configKey => $baseClass) {
+            /** @var array<string, class-string>|null $types */
+            $types = config("workflows.v2.types.{$configKey}");
+
+            if (! is_array($types) || $types === []) {
+                continue;
+            }
+
+            // Detect the same class registered under multiple type keys.
+            $classCounts = array_count_values(
+                array_filter($types, 'is_string'),
+            );
+
+            foreach ($classCounts as $class => $count) {
+                if ($count > 1) {
+                    $keys = array_keys(array_filter($types, static fn ($v) => $v === $class));
+
+                    throw new LogicException(sprintf(
+                        'Durable %s class [%s] is registered under multiple type keys [%s]. Each class must map to exactly one canonical type key.',
+                        rtrim($configKey, 's'),
+                        $class,
+                        implode(', ', $keys),
+                    ));
+                }
+            }
+
+            // Detect config key that disagrees with the class's #[Type] attribute.
+            foreach ($types as $configuredKey => $class) {
+                if (! is_string($class) || ! self::isValidClass($class, $baseClass)) {
+                    continue;
+                }
+
+                $reflection = new ReflectionClass($class);
+                $attributes = $reflection->getAttributes(Type::class);
+
+                if ($attributes === []) {
+                    continue;
+                }
+
+                $attributeKey = $attributes[0]->newInstance()->key;
+
+                if ($attributeKey !== $configuredKey) {
+                    throw new LogicException(sprintf(
+                        'Durable %s type key conflict: class [%s] has #[Type(\'%s\')] but is configured under key [%s]. The attribute and config key must agree.',
+                        rtrim($configKey, 's'),
+                        $class,
+                        $attributeKey,
+                        $configuredKey,
+                    ));
+                }
+            }
+        }
+    }
+
     private static function configuredTypeForClass(string $class): ?string
     {
         $configKey = match (true) {
