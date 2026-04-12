@@ -476,6 +476,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'task_id' => $taskId,
                 'workflow_run_id' => null,
                 'run_status' => null,
+                'created_task_ids' => [],
                 'reason' => 'invalid_commands',
             ];
         }
@@ -492,6 +493,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'task_id' => $taskId,
                     'workflow_run_id' => null,
                     'run_status' => null,
+                    'created_task_ids' => [],
                     'reason' => $task === null ? 'task_not_found' : 'task_not_workflow',
                 ];
             }
@@ -502,6 +504,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'task_id' => $taskId,
                     'workflow_run_id' => $task->workflow_run_id,
                     'run_status' => null,
+                    'created_task_ids' => [],
                     'reason' => 'task_not_leased',
                 ];
             }
@@ -517,6 +520,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'task_id' => $taskId,
                     'workflow_run_id' => $task->workflow_run_id,
                     'run_status' => null,
+                    'created_task_ids' => [],
                     'reason' => 'run_not_found',
                 ];
             }
@@ -532,14 +536,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'task_id' => $taskId,
                     'workflow_run_id' => $run->id,
                     'run_status' => $run->status->value,
+                    'created_task_ids' => [],
                     'reason' => 'run_already_closed',
                 ];
             }
 
             $sequence = ($run->last_history_sequence ?? 0) + 1;
+            $createdTaskIds = [];
 
             foreach ($parsed['non_terminal'] as $command) {
-                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence);
+                $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
             }
 
             $run->forceFill([
@@ -550,7 +556,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
             if ($terminal !== null) {
                 if ($terminal['type'] === 'continue_as_new') {
-                    $this->applyContinueAsNew($run, $task, $sequence, $terminal);
+                    $this->applyContinueAsNew($run, $task, $sequence, $terminal, $createdTaskIds);
                 } elseif ($terminal['type'] === 'complete_workflow') {
                     $this->applyWorkflowCompletion($run, $task, $terminal);
                 } else {
@@ -565,6 +571,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'task_id' => $taskId,
                 'workflow_run_id' => $run->id,
                 'run_status' => $run->status->value,
+                'created_task_ids' => $createdTaskIds,
                 'reason' => null,
             ];
         });
@@ -685,29 +692,33 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      * Apply a single non-terminal command and return the next sequence number.
      *
      * @param array{type: string, ...} $command
+     * @param list<string> $createdTaskIds
      */
     private function applyNonTerminalCommand(
         WorkflowRun $run,
         WorkflowTask $task,
         array $command,
         int $sequence,
+        array &$createdTaskIds,
     ): int {
         return match ($command['type']) {
-            'schedule_activity' => $this->applyScheduleActivity($run, $task, $command, $sequence),
-            'start_timer' => $this->applyStartTimer($run, $task, $command, $sequence),
-            'start_child_workflow' => $this->applyStartChildWorkflow($run, $task, $command, $sequence),
+            'schedule_activity' => $this->applyScheduleActivity($run, $task, $command, $sequence, $createdTaskIds),
+            'start_timer' => $this->applyStartTimer($run, $task, $command, $sequence, $createdTaskIds),
+            'start_child_workflow' => $this->applyStartChildWorkflow($run, $task, $command, $sequence, $createdTaskIds),
             default => $sequence,
         };
     }
 
     /**
      * @param array{type: string, activity_type: string, arguments?: string|null, connection?: string|null, queue?: string|null} $command
+     * @param list<string> $createdTaskIds
      */
     private function applyScheduleActivity(
         WorkflowRun $run,
         WorkflowTask $task,
         array $command,
         int $sequence,
+        array &$createdTaskIds,
     ): int {
         $activityType = $command['activity_type'];
         $arguments = $command['arguments'] ?? null;
@@ -734,7 +745,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'sequence' => $sequence,
         ], $task);
 
-        WorkflowTask::query()->create([
+        /** @var WorkflowTask $activityTask */
+        $activityTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
@@ -747,13 +759,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'compatibility' => $run->compatibility,
         ]);
 
+        $createdTaskIds[] = $activityTask->id;
+
         return $sequence + 1;
     }
 
     /**
      * @param array{type: string, delay_seconds: int} $command
+     * @param list<string> $createdTaskIds
      */
-    private function applyStartTimer(WorkflowRun $run, WorkflowTask $task, array $command, int $sequence): int
+    private function applyStartTimer(WorkflowRun $run, WorkflowTask $task, array $command, int $sequence, array &$createdTaskIds): int
     {
         $delaySeconds = max(0, (int) ($command['delay_seconds'] ?? 0));
         $fireAt = now()
@@ -775,7 +790,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'fire_at' => $fireAt->toJSON(),
         ], $task);
 
-        WorkflowTask::query()->create([
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Ready->value,
@@ -788,17 +804,21 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'compatibility' => $run->compatibility,
         ]);
 
+        $createdTaskIds[] = $timerTask->id;
+
         return $sequence + 1;
     }
 
     /**
      * @param array{type: string, workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null} $command
+     * @param list<string> $createdTaskIds
      */
     private function applyStartChildWorkflow(
         WorkflowRun $run,
         WorkflowTask $task,
         array $command,
         int $sequence,
+        array &$createdTaskIds,
     ): int {
         $workflowType = $command['workflow_type'];
         $arguments = $command['arguments'] ?? null;
@@ -883,7 +903,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'child_call_id' => $childCallId,
         ]);
 
-        WorkflowTask::query()->create([
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()->create([
             'workflow_run_id' => $childRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
@@ -894,6 +915,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'compatibility' => $childRun->compatibility,
         ]);
 
+        $createdTaskIds[] = $childTask->id;
+
         RunSummaryProjector::project(
             $childRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
@@ -903,12 +926,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * @param array{type: string, arguments?: string|null, workflow_type?: string|null} $command
+     * @param list<string> $createdTaskIds
      */
     private function applyContinueAsNew(
         WorkflowRun $run,
         WorkflowTask $task,
         int $sequence,
         array $command,
+        array &$createdTaskIds = [],
     ): void {
         $now = now();
         $arguments = $command['arguments'] ?? $run->arguments;
@@ -980,7 +1005,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_link_id' => $link->id,
         ]);
 
-        WorkflowTask::query()->create([
+        /** @var WorkflowTask $continuedTask */
+        $continuedTask = WorkflowTask::query()->create([
             'workflow_run_id' => $continuedRun->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
@@ -990,6 +1016,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'queue' => $continuedRun->queue,
             'compatibility' => $continuedRun->compatibility,
         ]);
+
+        $createdTaskIds[] = $continuedTask->id;
 
         $task->forceFill([
             'status' => TaskStatus::Completed,

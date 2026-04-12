@@ -284,4 +284,55 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertSame(['team' => 'payments', 'env' => 'staging'], $run->visibility_labels);
         $this->assertSame(['description' => 'Test workflow'], $run->memo);
     }
+
+    public function testStartResolvesDottedDurableTypeKey(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'tests.external-greeting-workflow' => TestGreetingWorkflow::class,
+        ]);
+
+        $result = $this->controlPlane->start('tests.external-greeting-workflow', 'ctrl-plane-dotted-1', [
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $this->assertTrue($result['started']);
+        $this->assertSame('ctrl-plane-dotted-1', $result['workflow_instance_id']);
+        $this->assertSame('tests.external-greeting-workflow', $result['workflow_type']);
+        $this->assertNotNull($result['task_id']);
+
+        $run = WorkflowRun::query()->find($result['workflow_run_id']);
+        $this->assertNotNull($run);
+        $this->assertSame(TestGreetingWorkflow::class, $run->workflow_class);
+        $this->assertSame('tests.external-greeting-workflow', $run->workflow_type);
+
+        // Dotted type key resolves to the real class, so command contract is captured.
+        $startedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->first();
+        $this->assertNotNull($startedEvent);
+        $this->assertArrayHasKey('declared_signals', $startedEvent->payload);
+    }
+
+    public function testStartThenPollReturnsSameTickTask(): void
+    {
+        $startResult = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-poll-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $this->assertTrue($startResult['started']);
+        $this->assertNotNull($startResult['task_id']);
+
+        // Poll immediately in the same request tick — task must be visible.
+        $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
+        $polled = $bridge->poll('redis', 'default');
+
+        $this->assertNotEmpty($polled, 'Same-tick workflow task must be visible to poll().');
+
+        $polledTaskIds = array_column($polled, 'task_id');
+        $this->assertContains($startResult['task_id'], $polledTaskIds);
+    }
 }

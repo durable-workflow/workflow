@@ -146,7 +146,17 @@ final class TypeRegistry
 
     private static function configuredClassForType(string $type, string $configKey, string $expectedBaseClass): ?string
     {
-        $mappedClass = config("workflows.v2.types.{$configKey}.{$type}");
+        // Fetch the entire type map as an array and look up the key directly
+        // so that dotted durable type keys like "tests.external-greeting-workflow"
+        // are matched as flat array keys instead of being interpreted as nested
+        // config paths by Laravel's dot-notation config helper.
+        $types = config("workflows.v2.types.{$configKey}");
+
+        if (! is_array($types)) {
+            return null;
+        }
+
+        $mappedClass = $types[$type] ?? null;
 
         if (! is_string($mappedClass)) {
             return null;

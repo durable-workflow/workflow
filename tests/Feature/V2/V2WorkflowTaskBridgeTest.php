@@ -790,6 +790,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($run->id, $result['workflow_run_id']);
         $this->assertSame('waiting', $result['run_status']);
         $this->assertNull($result['reason']);
+        $this->assertCount(1, $result['created_task_ids']);
 
         $run->refresh();
         $this->assertSame(RunStatus::Waiting, $run->status);
@@ -1093,6 +1094,78 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertSame($run->connection, $execution->connection);
         $this->assertSame($run->queue, $execution->queue);
+    }
+
+    public function testCompleteThenActivityPollReturnsSameTickTasks(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'test-greeting-activity',
+                'arguments' => Serializer::serialize(['Taylor']),
+                'queue' => 'default',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        // Poll for activity tasks immediately — same-tick tasks must be visible.
+        $activityBridge = $this->app->make(\Workflow\V2\Contracts\ActivityTaskBridge::class);
+        $polled = $activityBridge->poll('redis', 'default');
+
+        $this->assertNotEmpty($polled, 'Same-tick activity tasks must be visible to ActivityTaskBridge::poll().');
+
+        $polledTaskIds = array_column($polled, 'task_id');
+        $this->assertContains($result['created_task_ids'][0], $polledTaskIds);
+    }
+
+    public function testCompleteReturnsCreatedTaskIdsForMixedCommands(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'activity-a',
+            ],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 60,
+            ],
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'activity-b',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertCount(3, $result['created_task_ids']);
+
+        // Verify each created_task_id points to a real task.
+        foreach ($result['created_task_ids'] as $createdId) {
+            $this->assertNotNull(WorkflowTask::query()->find($createdId));
+        }
+    }
+
+    public function testCompleteReturnsEmptyCreatedTaskIdsOnRejection(): void
+    {
+        $run = $this->createWaitingRun();
+
+        $result = $this->bridge->complete('nonexistent-task', [
+            ['type' => 'complete_workflow', 'result' => null],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame([], $result['created_task_ids']);
     }
 
     private function createLeasedTask(WorkflowRun $run): WorkflowTask

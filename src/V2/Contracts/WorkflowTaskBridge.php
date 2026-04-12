@@ -201,6 +201,7 @@ interface WorkflowTaskBridge
      *     task_id: string,
      *     workflow_run_id: string|null,
      *     run_status: string|null,
+     *     created_task_ids: list<string>,
      *     reason: string|null,
      * }
      */
