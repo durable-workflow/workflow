@@ -6,9 +6,7 @@ namespace Workflow\V2\Support;
 
 use LogicException;
 use Workflow\Exceptions\VersionNotSupportedException;
-use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\WorkflowStub;
 
@@ -24,7 +22,7 @@ final class VersionResolver
             return VersionResolution::recorded(self::recordedVersion($event, $versionCall, $sequence));
         }
 
-        if (self::shouldUseLegacyDefault($run, $sequence)) {
+        if (self::shouldUseLegacyDefault($run)) {
             $version = WorkflowStub::DEFAULT_VERSION;
             self::assertSupported($version, $versionCall);
 
@@ -72,17 +70,27 @@ final class VersionResolver
         return $version;
     }
 
-    private static function shouldUseLegacyDefault(WorkflowRun $run, int $sequence): bool
+    private static function shouldUseLegacyDefault(WorkflowRun $run): bool
     {
         if (self::runCompatibilityDiffersFromCurrent($run)) {
             return true;
         }
 
-        if (self::runDefinitionFingerprintDiffersFromCurrent($run)) {
+        $fingerprintMatch = WorkflowDefinitionFingerprint::matchesCurrent($run);
+
+        if ($fingerprintMatch === false) {
             return true;
         }
 
-        return self::sequenceAlreadyOccupied($run, $sequence);
+        if ($fingerprintMatch === true) {
+            return false;
+        }
+
+        // Fingerprint unavailable: the run predates fingerprinting or the
+        // workflow class cannot be resolved.  Without durable evidence that
+        // the definition matches, conservatively treat missing version
+        // markers as belonging to an older definition.
+        return true;
     }
 
     private static function runCompatibilityDiffersFromCurrent(WorkflowRun $run): bool
@@ -93,57 +101,6 @@ final class VersionResolver
         return $runCompatibility !== null
             && $currentCompatibility !== null
             && $runCompatibility !== $currentCompatibility;
-    }
-
-    private static function sequenceAlreadyOccupied(WorkflowRun $run, int $sequence): bool
-    {
-        $historyEvents = $run->relationLoaded('historyEvents')
-            ? $run->historyEvents
-            : collect();
-
-        if ($historyEvents->contains(
-            static fn (WorkflowHistoryEvent $event): bool => $event->event_type !== HistoryEventType::VersionMarkerRecorded
-                && ($event->payload['sequence'] ?? null) === $sequence
-        )) {
-            return true;
-        }
-
-        $activityExecutions = $run->relationLoaded('activityExecutions')
-            ? $run->activityExecutions
-            : collect();
-
-        if ($activityExecutions->contains(
-            static fn (object $execution): bool => ($execution->sequence ?? null) === $sequence
-        )) {
-            return true;
-        }
-
-        $timers = $run->relationLoaded('timers')
-            ? $run->timers
-            : collect();
-
-        if ($timers->contains(static fn (object $timer): bool => ($timer->sequence ?? null) === $sequence)) {
-            return true;
-        }
-
-        $childLinks = $run->relationLoaded('childLinks')
-            ? $run->childLinks
-            : collect();
-
-        return $childLinks->contains(
-            static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow'
-                && $link->sequence === $sequence
-        );
-    }
-
-    private static function runDefinitionFingerprintDiffersFromCurrent(WorkflowRun $run): bool
-    {
-        $recordedFingerprint = WorkflowDefinitionFingerprint::recordedForRun($run);
-        $currentFingerprint = WorkflowDefinitionFingerprint::currentForRun($run);
-
-        return $recordedFingerprint !== null
-            && $currentFingerprint !== null
-            && ! hash_equals($recordedFingerprint, $currentFingerprint);
     }
 
     private static function assertSupported(int $version, VersionCall $versionCall): void

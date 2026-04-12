@@ -416,6 +416,40 @@ final class V2VersionWorkflowTest extends TestCase
         $this->assertStringContainsString("Version -1 for change ID 'step-1' is not supported", $failure->message);
     }
 
+    public function testPreFingerprintRunUsesLegacyDefaultEvenWithSameCompatibility(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-b');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-b']);
+        Queue::fake();
+
+        // Legacy run with same compatibility but no fingerprint in WorkflowStarted.
+        // The conservative pre-fingerprint policy should use DEFAULT_VERSION (-1),
+        // which is outside TestVersionMinSupportedWorkflow's supported range [1, 2].
+        $run = $this->createLegacyReadyRun(
+            instanceId: 'version-pre-fingerprint-same-compat',
+            workflowClass: TestVersionMinSupportedWorkflow::class,
+            workflowType: 'test-version-min-supported-workflow',
+            compatibility: 'build-b',
+        );
+
+        $this->drainReadyTasks();
+
+        $this->assertTrue(WorkflowStub::loadRun($run->id)->failed());
+        $this->assertNull(WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
+            ->first());
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(VersionNotSupportedException::class, $failure->exception_class);
+        $this->assertStringContainsString("Version -1 for change ID 'step-1' is not supported", $failure->message);
+    }
+
     /**
      * @param list<array{event_type: string, payload?: array<string, mixed>}> $historyEvents
      */
