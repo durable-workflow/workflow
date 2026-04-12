@@ -33,6 +33,7 @@ class WorkflowRun extends Model
         'memo' => 'array',
         'search_attributes' => 'array',
         'last_command_sequence' => 'integer',
+        'message_cursor_position' => 'integer',
         'run_timeout_seconds' => 'integer',
         'execution_deadline_at' => 'datetime',
         'run_deadline_at' => 'datetime',

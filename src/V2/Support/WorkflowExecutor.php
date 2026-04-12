@@ -1612,6 +1612,10 @@ final class WorkflowExecutor
             ])->save();
         }
 
+        if ($command->message_sequence !== null) {
+            MessageStreamCursor::advanceCursor($run, (int) $command->message_sequence, $task);
+        }
+
         return WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
             'workflow_command_id' => $command->id,
             'signal_id' => $signal?->id,
@@ -1855,6 +1859,9 @@ final class WorkflowExecutor
             'current_run_id' => $continuedRun->id,
             'run_count' => $continuedRun->run_number,
         ])->save();
+
+        MessageStreamCursor::transferCursor($run, $continuedRun);
+
         $childCallId = ChildRunHistory::childCallIdForRun($run);
 
         $startCommand = $this->recordWorkflowStartCommand(
@@ -3157,6 +3164,10 @@ final class WorkflowExecutor
                         'outcome' => CommandOutcome::UpdateCompleted->value,
                         'applied_at' => $update->applied_at,
                     ])->save();
+
+                    if ($command->message_sequence !== null) {
+                        MessageStreamCursor::advanceCursor($run, (int) $command->message_sequence, $task);
+                    }
                 }
             } catch (Throwable $throwable) {
                 $exceptionPayload = FailureFactory::payload($throwable);
@@ -3204,6 +3215,10 @@ final class WorkflowExecutor
                         'outcome' => CommandOutcome::UpdateFailed->value,
                         'applied_at' => $update->applied_at,
                     ])->save();
+
+                    if ($command->message_sequence !== null) {
+                        MessageStreamCursor::advanceCursor($run, (int) $command->message_sequence, $task);
+                    }
                 }
 
                 return false;

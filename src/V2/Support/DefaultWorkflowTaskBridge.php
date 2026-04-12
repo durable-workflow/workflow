@@ -1121,6 +1121,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_class' => $workflowType,
         ])->save();
 
+        MessageStreamCursor::transferCursor($run, $continuedRun);
+
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
             'link_type' => 'continue_as_new',

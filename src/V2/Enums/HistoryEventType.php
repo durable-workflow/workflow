@@ -51,4 +51,5 @@ enum HistoryEventType: string
     case WorkflowTimedOut = 'WorkflowTimedOut';
     case WorkflowCompleted = 'WorkflowCompleted';
     case WorkflowFailed = 'WorkflowFailed';
+    case MessageCursorAdvanced = 'MessageCursorAdvanced';
 }

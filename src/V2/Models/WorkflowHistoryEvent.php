@@ -137,6 +137,7 @@ class WorkflowHistoryEvent extends Model
         return array_filter([
             'id' => $command->id,
             'sequence' => $command->command_sequence,
+            'message_sequence' => $command->message_sequence,
             'type' => $command->command_type?->value,
             'target_scope' => $command->target_scope,
             'requested_run_id' => $command->requestedRunId(),

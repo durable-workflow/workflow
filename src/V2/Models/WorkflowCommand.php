@@ -15,6 +15,7 @@ use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Support\CommandSequence;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\MessageStreamCursor;
 
 class WorkflowCommand extends Model
 {
@@ -35,11 +36,14 @@ class WorkflowCommand extends Model
         'status' => CommandStatus::class,
         'outcome' => CommandOutcome::class,
         'command_sequence' => 'integer',
+        'message_sequence' => 'integer',
         'context' => 'array',
         'accepted_at' => 'datetime',
         'applied_at' => 'datetime',
         'rejected_at' => 'datetime',
     ];
+
+    private const MESSAGE_COMMAND_TYPES = ['signal', 'update'];
 
     /**
      * @param array<string, mixed> $attributes
@@ -48,6 +52,10 @@ class WorkflowCommand extends Model
     {
         if ($run !== null) {
             $attributes['command_sequence'] ??= CommandSequence::reserveNext($run);
+        }
+
+        if (in_array($attributes['command_type'] ?? null, self::MESSAGE_COMMAND_TYPES, true)) {
+            $attributes['message_sequence'] ??= MessageStreamCursor::reserveNextSequence($instance);
         }
 
         $targetScope = is_string($attributes['target_scope'] ?? null)
