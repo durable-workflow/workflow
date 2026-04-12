@@ -2377,6 +2377,448 @@ final class V2WebhookWorkflowTest extends TestCase
         $this->assertSame('Emergency maintenance window', $command->commandReason());
     }
 
+    public function testWorkflowTaskClaimWebhookReturnsStructuredClaimPayload(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-claim-webhook');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/claim", [
+            'lease_owner' => 'server-worker-1',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('claimed', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('workflow_instance_id', 'wf-task-claim-webhook')
+            ->assertJsonPath('workflow_run_id', $workflow->runId())
+            ->assertJsonPath('lease_owner', 'server-worker-1')
+            ->assertJsonPath('reason', null);
+
+        $this->assertDatabaseHas('workflow_tasks', [
+            'id' => $task->id,
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => 'server-worker-1',
+        ]);
+    }
+
+    public function testWorkflowTaskClaimWebhookReturns404ForMissingTask(): void
+    {
+        $response = $this->postJson('/webhooks/workflow-tasks/nonexistent-task-id/claim', [
+            'lease_owner' => 'server-worker-1',
+        ]);
+
+        $response
+            ->assertStatus(404)
+            ->assertJsonPath('claimed', false)
+            ->assertJsonPath('task_id', 'nonexistent-task-id')
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function testWorkflowTaskHistoryWebhookReturnsFullHistoryPayload(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-history-webhook');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $response = $this->getJson("/webhooks/workflow-tasks/{$task->id}/history");
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('workflow_run_id', $workflow->runId())
+            ->assertJsonPath('workflow_instance_id', 'wf-task-history-webhook')
+            ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('run_status', 'pending');
+
+        $events = $response->json('history_events');
+
+        $this->assertIsArray($events);
+        $this->assertNotEmpty($events);
+        $this->assertSame('StartAccepted', $events[0]['event_type']);
+    }
+
+    public function testWorkflowTaskHistoryWebhookReturns404ForMissingTask(): void
+    {
+        $response = $this->getJson('/webhooks/workflow-tasks/nonexistent-task-id/history');
+
+        $response
+            ->assertStatus(404)
+            ->assertJsonPath('task_id', 'nonexistent-task-id')
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function testWorkflowTaskExecuteWebhookClaimsAndExecutesTask(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-execute-webhook');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/execute");
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('executed', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('workflow_run_id', $workflow->runId())
+            ->assertJsonPath('reason', null);
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'ActivityScheduled',
+        ]);
+    }
+
+    public function testWorkflowTaskExecuteWebhookProceedsForAlreadyLeasedTask(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-execute-leased');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $task->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'other-worker',
+            'lease_expires_at' => now()->addMinutes(5),
+        ])->save();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/execute");
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('executed', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', null);
+    }
+
+    public function testWorkflowTaskExecuteWebhookReturns409ForCompletedTask(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-execute-completed');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+        ])->save();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/execute");
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('executed', false)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', 'claim_failed');
+    }
+
+    public function testWorkflowTaskCompleteWebhookAppliesNonTerminalCommands(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-complete-webhook');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $this->postJson("/webhooks/workflow-tasks/{$task->id}/claim", [
+            'lease_owner' => 'server-complete-worker',
+        ])->assertOk();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
+            'commands' => [
+                ['type' => 'schedule_activity', 'activity_type' => 'test-greeting-activity'],
+                ['type' => 'start_timer', 'delay_seconds' => 60],
+            ],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('completed', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('workflow_run_id', $workflow->runId())
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonPath('reason', null);
+
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'ActivityScheduled',
+        ]);
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'TimerScheduled',
+        ]);
+    }
+
+    public function testWorkflowTaskCompleteWebhookAppliesTerminalCommand(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-complete-terminal');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $this->postJson("/webhooks/workflow-tasks/{$task->id}/claim", [
+            'lease_owner' => 'server-terminal-worker',
+        ])->assertOk();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
+            'commands' => [
+                ['type' => 'complete_workflow', 'result' => serialize('Hello from external worker!')],
+            ],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('completed', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('workflow_run_id', $workflow->runId())
+            ->assertJsonPath('run_status', 'completed')
+            ->assertJsonPath('reason', null);
+
+        $this->assertDatabaseHas('workflow_runs', [
+            'id' => $workflow->runId(),
+            'status' => RunStatus::Completed->value,
+        ]);
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $workflow->runId(),
+            'event_type' => 'WorkflowCompleted',
+        ]);
+    }
+
+    public function testWorkflowTaskCompleteWebhookReturns422ForEmptyCommands(): void
+    {
+        $response = $this->postJson('/webhooks/workflow-tasks/some-task/complete', [
+            'commands' => [],
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['commands']);
+    }
+
+    public function testWorkflowTaskCompleteWebhookReturns422ForMissingCommands(): void
+    {
+        $response = $this->postJson('/webhooks/workflow-tasks/some-task/complete', []);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['commands']);
+    }
+
+    public function testWorkflowTaskFailWebhookRecordsTaskFailure(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-fail-webhook');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/fail", [
+            'failure' => 'Worker crashed during replay',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', null);
+
+        $this->assertDatabaseHas('workflow_tasks', [
+            'id' => $task->id,
+            'status' => TaskStatus::Failed->value,
+            'last_error' => 'Worker crashed during replay',
+        ]);
+    }
+
+    public function testWorkflowTaskFailWebhookAcceptsStructuredFailurePayload(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-fail-structured');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/fail", [
+            'failure' => [
+                'message' => 'History too large',
+                'class' => 'RuntimeException',
+            ],
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', null);
+
+        $this->assertDatabaseHas('workflow_tasks', [
+            'id' => $task->id,
+            'status' => TaskStatus::Failed->value,
+        ]);
+    }
+
+    public function testWorkflowTaskFailWebhookReturns404ForMissingTask(): void
+    {
+        $response = $this->postJson('/webhooks/workflow-tasks/nonexistent-task-id/fail', [
+            'failure' => 'Something broke',
+        ]);
+
+        $response
+            ->assertStatus(404)
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('task_id', 'nonexistent-task-id')
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function testWorkflowTaskFailWebhookReturns422ForMissingFailureField(): void
+    {
+        $response = $this->postJson('/webhooks/workflow-tasks/some-task/fail', []);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['failure']);
+    }
+
+    public function testWorkflowTaskHeartbeatWebhookExtendsLease(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-heartbeat-webhook');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $this->postJson("/webhooks/workflow-tasks/{$task->id}/claim", [
+            'lease_owner' => 'server-heartbeat-worker',
+        ])->assertOk();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/heartbeat");
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('renewed', true)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('task_status', TaskStatus::Leased->value)
+            ->assertJsonPath('reason', null);
+
+        $this->assertNotNull($response->json('lease_expires_at'));
+    }
+
+    public function testWorkflowTaskHeartbeatWebhookReturns404ForMissingTask(): void
+    {
+        $response = $this->postJson('/webhooks/workflow-tasks/nonexistent-task-id/heartbeat');
+
+        $response
+            ->assertStatus(404)
+            ->assertJsonPath('renewed', false)
+            ->assertJsonPath('task_id', 'nonexistent-task-id')
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function testWorkflowTaskHeartbeatWebhookReturns409ForUnleasedTask(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-heartbeat-unleased');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/heartbeat");
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('renewed', false)
+            ->assertJsonPath('task_id', $task->id)
+            ->assertJsonPath('reason', 'task_not_leased');
+    }
+
     private function runReadyWorkflowTask(string $runId): void
     {
         /** @var WorkflowTask $task */

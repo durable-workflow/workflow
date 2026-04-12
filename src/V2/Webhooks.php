@@ -22,6 +22,7 @@ use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\QueryResponse;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateWaitPolicy;
+use Workflow\V2\Contracts\WorkflowTaskBridge as WorkflowTaskBridgeContract;
 use Workflow\V2\Support\WorkflowInstanceId;
 
 final class Webhooks
@@ -135,6 +136,60 @@ final class Webhooks
                 ActivityTaskBridge::fail($attemptId, self::resolveActivityFailure($request->all())),
             );
         })->name('workflows.v2.activity-attempts.fail');
+
+        Route::post("{$basePath}/workflow-tasks/{taskId}/claim", static function (
+            Request $request,
+            string $taskId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::workflowTaskClaimResponse($taskId, self::resolveWorkflowLeaseOwner($request->all()));
+        })->name('workflows.v2.workflow-tasks.claim');
+
+        Route::get("{$basePath}/workflow-tasks/{taskId}/history", static function (
+            Request $request,
+            string $taskId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::workflowTaskHistoryResponse($taskId);
+        })->name('workflows.v2.workflow-tasks.history');
+
+        Route::post("{$basePath}/workflow-tasks/{taskId}/execute", static function (
+            Request $request,
+            string $taskId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::workflowTaskExecuteResponse($taskId);
+        })->name('workflows.v2.workflow-tasks.execute');
+
+        Route::post("{$basePath}/workflow-tasks/{taskId}/complete", static function (
+            Request $request,
+            string $taskId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::workflowTaskCompleteResponse($taskId, self::resolveWorkflowTaskCommands($request->all()));
+        })->name('workflows.v2.workflow-tasks.complete');
+
+        Route::post("{$basePath}/workflow-tasks/{taskId}/fail", static function (
+            Request $request,
+            string $taskId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::workflowTaskFailResponse($taskId, self::resolveWorkflowTaskFailure($request->all()));
+        })->name('workflows.v2.workflow-tasks.fail');
+
+        Route::post("{$basePath}/workflow-tasks/{taskId}/heartbeat", static function (
+            Request $request,
+            string $taskId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::workflowTaskHeartbeatResponse($taskId);
+        })->name('workflows.v2.workflow-tasks.heartbeat');
 
         Route::post("{$basePath}/instances/{workflowId}/runs/{runId}/queries/{query}", static function (
             Request $request,
@@ -803,6 +858,181 @@ final class Webhooks
         $status = match ($payload['reason'] ?? null) {
             null => 200,
             'attempt_not_found' => 404,
+            default => 409,
+        };
+
+        return response()->json($payload, $status);
+    }
+
+    private static function workflowTaskBridge(): WorkflowTaskBridgeContract
+    {
+        return app(WorkflowTaskBridgeContract::class);
+    }
+
+    private static function resolveWorkflowLeaseOwner(array $payload): ?string
+    {
+        if (! array_key_exists('lease_owner', $payload)) {
+            return null;
+        }
+
+        $leaseOwner = $payload['lease_owner'];
+
+        if (! is_string($leaseOwner)) {
+            throw ValidationException::withMessages([
+                'lease_owner' => ['The lease_owner field must be a non-empty string up to 255 characters.'],
+            ]);
+        }
+
+        $leaseOwner = trim($leaseOwner);
+
+        if ($leaseOwner === '' || mb_strlen($leaseOwner) > 255) {
+            throw ValidationException::withMessages([
+                'lease_owner' => ['The lease_owner field must be a non-empty string up to 255 characters.'],
+            ]);
+        }
+
+        return $leaseOwner;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return list<array{type: string, ...}>
+     */
+    private static function resolveWorkflowTaskCommands(array $payload): array
+    {
+        if (! array_key_exists('commands', $payload)) {
+            throw ValidationException::withMessages([
+                'commands' => ['The commands field is required and must be an array.'],
+            ]);
+        }
+
+        $commands = $payload['commands'];
+
+        if (! is_array($commands) || ! array_is_list($commands)) {
+            throw ValidationException::withMessages([
+                'commands' => ['The commands field must be an array of command objects.'],
+            ]);
+        }
+
+        if ($commands === []) {
+            throw ValidationException::withMessages([
+                'commands' => ['At least one command must be provided.'],
+            ]);
+        }
+
+        foreach ($commands as $index => $command) {
+            if (! is_array($command) || ! array_key_exists('type', $command) || ! is_string($command['type'])) {
+                throw ValidationException::withMessages([
+                    "commands.{$index}" => ['Each command must be an object with a string type field.'],
+                ]);
+            }
+        }
+
+        return $commands;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return \Throwable|array<string, mixed>|string
+     */
+    private static function resolveWorkflowTaskFailure(array $payload): array|string
+    {
+        if (! array_key_exists('failure', $payload)) {
+            throw ValidationException::withMessages([
+                'failure' => ['The failure field is required and must be a string or object.'],
+            ]);
+        }
+
+        $failure = $payload['failure'];
+
+        if (is_string($failure)) {
+            return $failure;
+        }
+
+        if (! is_array($failure) || ($failure !== [] && array_is_list($failure))) {
+            throw ValidationException::withMessages([
+                'failure' => ['The failure field must be a string or object.'],
+            ]);
+        }
+
+        return $failure;
+    }
+
+    private static function workflowTaskClaimResponse(string $taskId, ?string $leaseOwner)
+    {
+        $payload = self::workflowTaskBridge()->claimStatus($taskId, $leaseOwner);
+        $status = match ($payload['reason']) {
+            null => 200,
+            'task_not_found' => 404,
+            default => 409,
+        };
+
+        return response()->json($payload, $status);
+    }
+
+    private static function workflowTaskHistoryResponse(string $taskId)
+    {
+        $payload = self::workflowTaskBridge()->historyPayload($taskId);
+
+        if ($payload === null) {
+            return response()->json([
+                'task_id' => $taskId,
+                'reason' => 'task_not_found',
+            ], 404);
+        }
+
+        return response()->json($payload, 200);
+    }
+
+    private static function workflowTaskExecuteResponse(string $taskId)
+    {
+        $payload = self::workflowTaskBridge()->execute($taskId);
+        $status = $payload['executed'] ? 200 : 409;
+
+        if ($payload['reason'] === 'claim_failed') {
+            $status = 409;
+        }
+
+        return response()->json($payload, $status);
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    private static function workflowTaskCompleteResponse(string $taskId, array $commands)
+    {
+        $payload = self::workflowTaskBridge()->complete($taskId, $commands);
+        $status = match ($payload['reason']) {
+            null => 200,
+            'task_not_found' => 404,
+            'invalid_commands' => 422,
+            default => 409,
+        };
+
+        return response()->json($payload, $status);
+    }
+
+    /**
+     * @param array<string, mixed>|string $failure
+     */
+    private static function workflowTaskFailResponse(string $taskId, array|string $failure)
+    {
+        $payload = self::workflowTaskBridge()->fail($taskId, $failure);
+        $status = match ($payload['reason']) {
+            null => 200,
+            'task_not_found' => 404,
+            default => 409,
+        };
+
+        return response()->json($payload, $status);
+    }
+
+    private static function workflowTaskHeartbeatResponse(string $taskId)
+    {
+        $payload = self::workflowTaskBridge()->heartbeat($taskId);
+        $status = match ($payload['reason']) {
+            null => 200,
+            'task_not_found' => 404,
             default => 409,
         };
 
