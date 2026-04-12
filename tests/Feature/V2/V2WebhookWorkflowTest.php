@@ -2329,6 +2329,52 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('rejection_reason', 'run_not_active');
     }
 
+    public function testCancelWebhookAcceptsReasonInRequestBody(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-with-reason');
+        $workflow->start(5);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/cancel-with-reason/cancel', [
+            'reason' => 'Operator: duplicate order',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('outcome', 'cancelled')
+            ->assertJsonPath('reason', 'Operator: duplicate order')
+            ->assertJsonPath('workflow_id', 'cancel-with-reason')
+            ->assertJsonPath('command_status', 'accepted');
+
+        $command = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+
+        $this->assertSame('Operator: duplicate order', $command->commandReason());
+    }
+
+    public function testTerminateWebhookAcceptsReasonInRequestBody(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'terminate-with-reason');
+        $workflow->start(5);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/terminate-with-reason/terminate', [
+            'reason' => 'Emergency maintenance window',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('outcome', 'terminated')
+            ->assertJsonPath('reason', 'Emergency maintenance window')
+            ->assertJsonPath('workflow_id', 'terminate-with-reason')
+            ->assertJsonPath('command_status', 'accepted');
+
+        $command = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+
+        $this->assertSame('Emergency maintenance window', $command->commandReason());
+    }
+
     private function runReadyWorkflowTask(string $runId): void
     {
         /** @var WorkflowTask $task */

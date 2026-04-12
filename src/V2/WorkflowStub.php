@@ -862,9 +862,9 @@ final class WorkflowStub
         return $this->attemptSignalWithStartInternal($name, $signalArguments, $startArguments, $startOptions);
     }
 
-    public function cancel(): CommandResult
+    public function cancel(?string $reason = null): CommandResult
     {
-        $result = $this->attemptCancel();
+        $result = $this->attemptCancel($reason);
 
         if ($result->rejected()) {
             throw new LogicException(sprintf(
@@ -1254,7 +1254,7 @@ final class WorkflowStub
         return new CommandResult($command);
     }
 
-    public function attemptCancel(): CommandResult
+    public function attemptCancel(?string $reason = null): CommandResult
     {
         return $this->attemptTerminalCommand(
             CommandType::Cancel,
@@ -1262,12 +1262,13 @@ final class WorkflowStub
             HistoryEventType::CancelRequested,
             HistoryEventType::WorkflowCancelled,
             'cancelled',
+            $reason,
         );
     }
 
-    public function terminate(): CommandResult
+    public function terminate(?string $reason = null): CommandResult
     {
-        $result = $this->attemptTerminate();
+        $result = $this->attemptTerminate($reason);
 
         if ($result->rejected()) {
             throw new LogicException(sprintf(
@@ -1280,7 +1281,7 @@ final class WorkflowStub
         return $result;
     }
 
-    public function attemptTerminate(): CommandResult
+    public function attemptTerminate(?string $reason = null): CommandResult
     {
         return $this->attemptTerminalCommand(
             CommandType::Terminate,
@@ -1288,6 +1289,7 @@ final class WorkflowStub
             HistoryEventType::TerminateRequested,
             HistoryEventType::WorkflowTerminated,
             'terminated',
+            $reason,
         );
     }
 
@@ -2317,6 +2319,7 @@ final class WorkflowStub
         HistoryEventType $requestedEventType,
         HistoryEventType $terminalEventType,
         string $closedReason,
+        ?string $reason = null,
     ): CommandResult {
         /** @var WorkflowCommand|null $command */
         $command = null;
@@ -2330,6 +2333,7 @@ final class WorkflowStub
             $requestedEventType,
             $terminalEventType,
             $closedReason,
+            $reason,
         ): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
@@ -2412,6 +2416,10 @@ final class WorkflowStub
                 return;
             }
 
+            $commandPayload = $reason !== null && $reason !== ''
+                ? Serializer::serialize(['reason' => $reason])
+                : null;
+
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => $commandType->value,
@@ -2423,15 +2431,22 @@ final class WorkflowStub
                     default => null,
                 },
                 'payload_codec' => config('workflows.serializer'),
+                'payload' => $commandPayload,
                 'accepted_at' => now(),
             ]));
 
-            WorkflowHistoryEvent::record($run, $requestedEventType, [
+            $requestedHistoryPayload = [
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'command_type' => $commandType->value,
-            ], null, $command);
+            ];
+
+            if ($reason !== null && $reason !== '') {
+                $requestedHistoryPayload['reason'] = $reason;
+            }
+
+            WorkflowHistoryEvent::record($run, $requestedEventType, $requestedHistoryPayload, null, $command);
 
             foreach ($openTasks as $task) {
                 $task->forceFill([
@@ -2474,12 +2489,18 @@ final class WorkflowStub
                 'last_progress_at' => now(),
             ])->save();
 
-            WorkflowHistoryEvent::record($run, $terminalEventType, [
+            $terminalHistoryPayload = [
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'closed_reason' => $closedReason,
-            ], null, $command);
+            ];
+
+            if ($reason !== null && $reason !== '') {
+                $terminalHistoryPayload['reason'] = $reason;
+            }
+
+            WorkflowHistoryEvent::record($run, $terminalEventType, $terminalHistoryPayload, null, $command);
 
             $command->forceFill([
                 'applied_at' => now(),

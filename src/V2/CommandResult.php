@@ -125,4 +125,9 @@ class CommandResult
     {
         return $this->command->outcome === CommandOutcome::RejectedInvalidArguments;
     }
+
+    public function reason(): ?string
+    {
+        return $this->command->commandReason();
+    }
 }

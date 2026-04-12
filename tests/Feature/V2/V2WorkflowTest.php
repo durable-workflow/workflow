@@ -7804,6 +7804,180 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($childRun->id, $link->child_workflow_run_id);
     }
 
+    public function testWorkflowCanBeCancelledWithReasonWhileWaitingOnActivity(): void
+    {
+        $workflow = WorkflowStub::make(TestHeartbeatWorkflow::class, 'cancel-activity-wait');
+        $workflow->start();
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'activity');
+
+        $result = $workflow->cancel('Customer requested cancellation');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('cancel', $result->type());
+        $this->assertSame('cancelled', $result->outcome());
+        $this->assertSame('Customer requested cancellation', $result->reason());
+        $this->assertSame($workflow->id(), $result->instanceId());
+        $this->assertSame($runId, $result->runId());
+
+        $workflow->refresh();
+
+        $this->assertSame('cancelled', $workflow->status());
+        $this->assertTrue($workflow->cancelled());
+        $this->assertFalse($workflow->running());
+
+        $summary = $workflow->summary();
+
+        $this->assertNotNull($summary);
+        $this->assertSame('cancelled', $summary->status);
+        $this->assertSame('failed', $summary->status_bucket);
+        $this->assertTrue($summary->is_terminal);
+        $this->assertSame('cancelled', $summary->closed_reason);
+        $this->assertNull($summary->wait_kind);
+
+        $activityExecution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->first();
+
+        $this->assertNotNull($activityExecution);
+        $this->assertSame('cancelled', $activityExecution->status->value);
+
+        $cancelRequestedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::CancelRequested)
+            ->first();
+
+        $this->assertNotNull($cancelRequestedEvent);
+        $this->assertSame('Customer requested cancellation', $cancelRequestedEvent->payload['reason'] ?? null);
+
+        $cancelledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowCancelled)
+            ->first();
+
+        $this->assertNotNull($cancelledEvent);
+        $this->assertSame('Customer requested cancellation', $cancelledEvent->payload['reason'] ?? null);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'cancel-activity-wait',
+            'workflow_run_id' => $runId,
+            'command_type' => 'cancel',
+            'status' => 'accepted',
+            'outcome' => 'cancelled',
+        ]);
+
+        $command = WorkflowCommand::query()->findOrFail($result->commandId());
+
+        $this->assertSame('Customer requested cancellation', $command->commandReason());
+
+        $eventTypes = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all();
+
+        $this->assertContains('CancelRequested', $eventTypes);
+        $this->assertContains('ActivityCancelled', $eventTypes);
+        $this->assertContains('WorkflowCancelled', $eventTypes);
+    }
+
+    public function testWorkflowCanBeTerminatedWithReasonWhileWaitingOnActivity(): void
+    {
+        $workflow = WorkflowStub::make(TestHeartbeatWorkflow::class, 'terminate-activity-wait');
+        $workflow->start();
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'activity');
+
+        $result = $workflow->terminate('Operator emergency shutdown');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('terminate', $result->type());
+        $this->assertSame('terminated', $result->outcome());
+        $this->assertSame('Operator emergency shutdown', $result->reason());
+
+        $workflow->refresh();
+
+        $this->assertSame('terminated', $workflow->status());
+        $this->assertTrue($workflow->terminated());
+
+        $summary = $workflow->summary();
+
+        $this->assertNotNull($summary);
+        $this->assertSame('terminated', $summary->status);
+        $this->assertSame('failed', $summary->status_bucket);
+        $this->assertTrue($summary->is_terminal);
+        $this->assertSame('terminated', $summary->closed_reason);
+
+        $activityExecution = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->first();
+
+        $this->assertNotNull($activityExecution);
+        $this->assertSame('cancelled', $activityExecution->status->value);
+
+        $terminateRequestedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::TerminateRequested)
+            ->first();
+
+        $this->assertNotNull($terminateRequestedEvent);
+        $this->assertSame('Operator emergency shutdown', $terminateRequestedEvent->payload['reason'] ?? null);
+
+        $terminatedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowTerminated)
+            ->first();
+
+        $this->assertNotNull($terminatedEvent);
+        $this->assertSame('Operator emergency shutdown', $terminatedEvent->payload['reason'] ?? null);
+
+        $command = WorkflowCommand::query()->findOrFail($result->commandId());
+
+        $this->assertSame('Operator emergency shutdown', $command->commandReason());
+    }
+
+    public function testCancelWithoutReasonLeavesReasonNull(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-no-reason');
+        $workflow->start(2);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $result = $workflow->cancel();
+
+        $this->assertTrue($result->accepted());
+        $this->assertNull($result->reason());
+
+        $command = WorkflowCommand::query()->findOrFail($result->commandId());
+
+        $this->assertNull($command->commandReason());
+
+        $cancelRequestedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::CancelRequested)
+            ->first();
+
+        $this->assertNotNull($cancelRequestedEvent);
+        $this->assertArrayNotHasKey('reason', $cancelRequestedEvent->payload ?? []);
+    }
+
     private function waitFor(callable $condition): void
     {
         $deadline = microtime(true) + 10;

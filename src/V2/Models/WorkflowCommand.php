@@ -366,6 +366,19 @@ class WorkflowCommand extends Model
             : null;
     }
 
+    public function commandReason(): ?string
+    {
+        $payload = $this->payloadData();
+
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        $reason = $payload['reason'] ?? null;
+
+        return is_string($reason) && $reason !== '' ? $reason : null;
+    }
+
     /**
      * @return array<string, mixed>|null
      */

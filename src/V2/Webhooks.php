@@ -335,9 +335,11 @@ final class Webhooks
             static function (Request $request, string $workflowId, string $runId) {
                 $request = self::validateAuth($request);
 
+                $reason = is_string($request->input('reason')) ? $request->input('reason') : null;
+
                 $result = self::selectionStub($workflowId, $runId)
                     ->withCommandContext(self::commandContext($request))
-                    ->attemptCancel();
+                    ->attemptCancel($reason);
 
                 return self::commandResponse($result, $result->accepted() ? 200 : 409);
             }
@@ -348,9 +350,11 @@ final class Webhooks
             static function (Request $request, string $workflowId) {
                 $request = self::validateAuth($request);
 
+                $reason = is_string($request->input('reason')) ? $request->input('reason') : null;
+
                 $result = self::selectionStub($workflowId)
                     ->withCommandContext(self::commandContext($request))
-                    ->attemptCancel();
+                    ->attemptCancel($reason);
 
                 return self::commandResponse($result, $result->accepted() ? 200 : 409);
             }
@@ -361,9 +365,11 @@ final class Webhooks
             static function (Request $request, string $workflowId, string $runId) {
                 $request = self::validateAuth($request);
 
+                $reason = is_string($request->input('reason')) ? $request->input('reason') : null;
+
                 $result = self::selectionStub($workflowId, $runId)
                     ->withCommandContext(self::commandContext($request))
-                    ->attemptTerminate();
+                    ->attemptTerminate($reason);
 
                 return self::commandResponse($result, $result->accepted() ? 200 : 409);
             }
@@ -374,9 +380,11 @@ final class Webhooks
             static function (Request $request, string $workflowId) {
                 $request = self::validateAuth($request);
 
+                $reason = is_string($request->input('reason')) ? $request->input('reason') : null;
+
                 $result = self::selectionStub($workflowId)
                     ->withCommandContext(self::commandContext($request))
-                    ->attemptTerminate();
+                    ->attemptTerminate($reason);
 
                 return self::commandResponse($result, $result->accepted() ? 200 : 409);
             }
