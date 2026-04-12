@@ -2377,6 +2377,105 @@ final class V2WebhookWorkflowTest extends TestCase
         $this->assertSame('Emergency maintenance window', $command->commandReason());
     }
 
+    // ── Describe webhooks ────────────────────────────────────────────
+
+    public function testDescribeWebhookReturnsActiveWorkflowState(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-greeting-workflow' => TestGreetingWorkflow::class,
+        ]);
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'describe-active');
+        $workflow->start('Taylor');
+
+        $response = $this->getJson('/webhooks/instances/describe-active/describe');
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('found', true)
+            ->assertJsonPath('workflow_instance_id', 'describe-active')
+            ->assertJsonPath('workflow_type', 'test-greeting-workflow')
+            ->assertJsonPath('run.workflow_run_id', $workflow->runId())
+            ->assertJsonPath('run.run_number', 1)
+            ->assertJsonPath('run.is_current_run', true)
+            ->assertJsonPath('run.status_bucket', 'running')
+            ->assertJsonPath('run.closed_at', null)
+            ->assertJsonPath('actions.can_signal', true)
+            ->assertJsonPath('actions.can_query', true)
+            ->assertJsonPath('actions.can_update', true)
+            ->assertJsonPath('actions.can_cancel', true)
+            ->assertJsonPath('actions.can_terminate', true)
+            ->assertJsonPath('reason', null);
+    }
+
+    public function testDescribeWebhookReturnsTerminatedWorkflowState(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'describe-terminated');
+        $workflow->start(5);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $workflow->terminate();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->terminated());
+
+        $response = $this->getJson('/webhooks/instances/describe-terminated/describe');
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('found', true)
+            ->assertJsonPath('workflow_instance_id', 'describe-terminated')
+            ->assertJsonPath('run.status', 'terminated')
+            ->assertJsonPath('run.status_bucket', 'failed')
+            ->assertJsonPath('actions.can_signal', false)
+            ->assertJsonPath('actions.can_cancel', false)
+            ->assertJsonPath('actions.can_terminate', false);
+    }
+
+    public function testDescribeWebhookReturns404ForNonExistentInstance(): void
+    {
+        $response = $this->getJson('/webhooks/instances/nonexistent-describe/describe');
+
+        $response
+            ->assertStatus(404)
+            ->assertJsonPath('found', false)
+            ->assertJsonPath('workflow_instance_id', 'nonexistent-describe')
+            ->assertJsonPath('run', null)
+            ->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function testDescribeWebhookWithSpecificRunId(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'describe-run-select');
+        $workflow->start('Taylor');
+
+        $runId = $workflow->runId();
+
+        $response = $this->getJson("/webhooks/instances/describe-run-select/runs/{$runId}/describe");
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('found', true)
+            ->assertJsonPath('workflow_instance_id', 'describe-run-select')
+            ->assertJsonPath('run.workflow_run_id', $runId)
+            ->assertJsonPath('run.is_current_run', true);
+    }
+
+    public function testDescribeWebhookRunTargetedReturns404ForNonExistentRun(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'describe-bad-run');
+        $workflow->start('Taylor');
+
+        $response = $this->getJson('/webhooks/instances/describe-bad-run/runs/nonexistent-run-id/describe');
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('found', true)
+            ->assertJsonPath('workflow_instance_id', 'describe-bad-run')
+            ->assertJsonPath('run', null)
+            ->assertJsonPath('reason', 'run_not_found');
+    }
+
     public function testWorkflowTaskClaimWebhookReturnsStructuredClaimPayload(): void
     {
         config()->set('queue.default', 'redis');

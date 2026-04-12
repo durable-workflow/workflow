@@ -22,6 +22,7 @@ use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\QueryResponse;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateWaitPolicy;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge as WorkflowTaskBridgeContract;
 use Workflow\V2\Support\WorkflowInstanceId;
 
@@ -444,6 +445,25 @@ final class Webhooks
                 return self::commandResponse($result, $result->accepted() ? 200 : 409);
             }
         )->name('workflows.v2.terminate');
+
+        Route::get("{$basePath}/instances/{workflowId}/describe", static function (
+            Request $request,
+            string $workflowId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::describeResponse($workflowId);
+        })->name('workflows.v2.describe');
+
+        Route::get("{$basePath}/instances/{workflowId}/runs/{runId}/describe", static function (
+            Request $request,
+            string $workflowId,
+            string $runId,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::describeResponse($workflowId, $runId);
+        })->name('workflows.v2.runs.describe');
     }
 
     /**
@@ -1034,6 +1054,30 @@ final class Webhooks
             null => 200,
             'task_not_found' => 404,
             default => 409,
+        };
+
+        return response()->json($payload, $status);
+    }
+
+    private static function controlPlane(): WorkflowControlPlane
+    {
+        return app(WorkflowControlPlane::class);
+    }
+
+    private static function describeResponse(string $workflowId, ?string $runId = null)
+    {
+        $options = [];
+
+        if ($runId !== null) {
+            $options['run_id'] = $runId;
+        }
+
+        $payload = self::controlPlane()->describe($workflowId, $options);
+
+        $status = match (true) {
+            $payload['found'] && $payload['run'] !== null => 200,
+            $payload['found'] => 200,
+            default => 404,
         };
 
         return response()->json($payload, $status);
