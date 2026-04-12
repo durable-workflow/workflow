@@ -84,6 +84,17 @@ final class Webhooks
             })->name("workflows.v2.start-signal.{$alias}");
         }
 
+        Route::get("{$basePath}/activity-tasks/poll", static function (Request $request) {
+            $request = self::validateAuth($request);
+
+            return self::activityTaskPollResponse(
+                self::resolvePollConnection($request->all()),
+                self::resolvePollQueue($request->all()),
+                self::resolvePollLimit($request->all()),
+                self::resolvePollCompatibility($request->all()),
+            );
+        })->name('workflows.v2.activity-tasks.poll');
+
         Route::post("{$basePath}/activity-tasks/{taskId}/claim", static function (
             Request $request,
             string $taskId,
@@ -137,6 +148,17 @@ final class Webhooks
                 ActivityTaskBridge::fail($attemptId, self::resolveActivityFailure($request->all())),
             );
         })->name('workflows.v2.activity-attempts.fail');
+
+        Route::get("{$basePath}/workflow-tasks/poll", static function (Request $request) {
+            $request = self::validateAuth($request);
+
+            return self::workflowTaskPollResponse(
+                self::resolvePollConnection($request->all()),
+                self::resolvePollQueue($request->all()),
+                self::resolvePollLimit($request->all()),
+                self::resolvePollCompatibility($request->all()),
+            );
+        })->name('workflows.v2.workflow-tasks.poll');
 
         Route::post("{$basePath}/workflow-tasks/{taskId}/claim", static function (
             Request $request,
@@ -445,6 +467,12 @@ final class Webhooks
                 return self::commandResponse($result, $result->accepted() ? 200 : 409);
             }
         )->name('workflows.v2.terminate');
+
+        Route::post("{$basePath}/control-plane/start", static function (Request $request) {
+            $request = self::validateAuth($request);
+
+            return self::controlPlaneStartResponse($request->all());
+        })->name('workflows.v2.control-plane.start');
 
         Route::get("{$basePath}/instances/{workflowId}/describe", static function (
             Request $request,
@@ -1081,5 +1109,167 @@ final class Webhooks
         };
 
         return response()->json($payload, $status);
+    }
+
+    private static function activityTaskPollResponse(
+        ?string $connection,
+        ?string $queue,
+        int $limit,
+        ?string $compatibility,
+    ) {
+        $tasks = ActivityTaskBridge::poll($connection, $queue, $limit, $compatibility);
+
+        return response()->json([
+            'tasks' => $tasks,
+        ]);
+    }
+
+    private static function workflowTaskPollResponse(
+        ?string $connection,
+        ?string $queue,
+        int $limit,
+        ?string $compatibility,
+    ) {
+        $tasks = self::workflowTaskBridge()->poll($connection, $queue, $limit, $compatibility);
+
+        return response()->json([
+            'tasks' => $tasks,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function resolvePollConnection(array $payload): ?string
+    {
+        $connection = $payload['connection'] ?? null;
+
+        if ($connection !== null && ! is_string($connection)) {
+            throw ValidationException::withMessages([
+                'connection' => ['The connection field must be a string.'],
+            ]);
+        }
+
+        return is_string($connection) && $connection !== '' ? $connection : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function resolvePollQueue(array $payload): ?string
+    {
+        $queue = $payload['queue'] ?? null;
+
+        if ($queue !== null && ! is_string($queue)) {
+            throw ValidationException::withMessages([
+                'queue' => ['The queue field must be a string.'],
+            ]);
+        }
+
+        return is_string($queue) && $queue !== '' ? $queue : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function resolvePollLimit(array $payload): int
+    {
+        $limit = $payload['limit'] ?? 10;
+
+        if (! is_numeric($limit)) {
+            throw ValidationException::withMessages([
+                'limit' => ['The limit field must be an integer between 1 and 100.'],
+            ]);
+        }
+
+        return max(1, min((int) $limit, 100));
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function resolvePollCompatibility(array $payload): ?string
+    {
+        $compatibility = $payload['compatibility'] ?? null;
+
+        if ($compatibility !== null && ! is_string($compatibility)) {
+            throw ValidationException::withMessages([
+                'compatibility' => ['The compatibility field must be a string.'],
+            ]);
+        }
+
+        return is_string($compatibility) && $compatibility !== '' ? $compatibility : null;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function controlPlaneStartResponse(array $payload)
+    {
+        $workflowType = $payload['workflow_type'] ?? null;
+
+        if (! is_string($workflowType) || $workflowType === '') {
+            throw ValidationException::withMessages([
+                'workflow_type' => ['The workflow_type field is required and must be a non-empty string.'],
+            ]);
+        }
+
+        $instanceId = $payload['instance_id'] ?? null;
+
+        if ($instanceId !== null && ! is_string($instanceId)) {
+            throw ValidationException::withMessages([
+                'instance_id' => [WorkflowInstanceId::validationMessage('instance_id')],
+            ]);
+        }
+
+        if (is_string($instanceId)) {
+            try {
+                WorkflowInstanceId::assertValid($instanceId);
+            } catch (LogicException) {
+                throw ValidationException::withMessages([
+                    'instance_id' => [WorkflowInstanceId::validationMessage('instance_id')],
+                ]);
+            }
+        }
+
+        $options = [];
+
+        if (array_key_exists('arguments', $payload)) {
+            $options['arguments'] = $payload['arguments'];
+        }
+
+        if (is_string($payload['connection'] ?? null)) {
+            $options['connection'] = $payload['connection'];
+        }
+
+        if (is_string($payload['queue'] ?? null)) {
+            $options['queue'] = $payload['queue'];
+        }
+
+        if (is_string($payload['business_key'] ?? null)) {
+            $options['business_key'] = $payload['business_key'];
+        }
+
+        if (is_array($payload['labels'] ?? null)) {
+            $options['labels'] = $payload['labels'];
+        }
+
+        if (is_array($payload['memo'] ?? null)) {
+            $options['memo'] = $payload['memo'];
+        }
+
+        if (is_string($payload['duplicate_start_policy'] ?? null)) {
+            $options['duplicate_start_policy'] = $payload['duplicate_start_policy'];
+        }
+
+        $result = self::controlPlane()->start($workflowType, $instanceId, $options);
+
+        $status = match (true) {
+            $result['started'] && $result['outcome'] === 'started_new' => 202,
+            $result['started'] => 200,
+            default => 409,
+        };
+
+        return response()->json($result, $status);
     }
 }
