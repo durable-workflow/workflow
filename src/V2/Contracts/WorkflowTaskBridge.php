@@ -113,6 +113,42 @@ interface WorkflowTaskBridge
     public function historyPayload(string $taskId): ?array;
 
     /**
+     * Get a paginated slice of the replay/history payload for a claimed workflow task.
+     *
+     * Returns history events with sequence > $afterSequence, up to $pageSize events.
+     * Use this for large histories to avoid loading the full event list in one request.
+     *
+     * The response includes has_more and next_after_sequence to support cursor-based
+     * pagination. When has_more is false, all events have been returned.
+     *
+     * @return array{
+     *     task_id: string,
+     *     workflow_run_id: string,
+     *     workflow_instance_id: string,
+     *     workflow_type: string|null,
+     *     workflow_class: string|null,
+     *     payload_codec: string,
+     *     arguments: string|null,
+     *     run_status: string,
+     *     last_history_sequence: int,
+     *     after_sequence: int,
+     *     page_size: int,
+     *     has_more: bool,
+     *     next_after_sequence: int|null,
+     *     history_events: list<array{
+     *         id: string,
+     *         sequence: int,
+     *         event_type: string,
+     *         payload: array<string, mixed>,
+     *         workflow_task_id: string|null,
+     *         workflow_command_id: string|null,
+     *         recorded_at: string|null,
+     *     }>,
+     * }|null
+     */
+    public function historyPayloadPaginated(string $taskId, int $afterSequence = 0, int $pageSize = 200): ?array;
+
+    /**
      * Execute a claimed workflow task in-process using the package executor.
      *
      * Claims the task (if not already claimed), runs the full replay/execution

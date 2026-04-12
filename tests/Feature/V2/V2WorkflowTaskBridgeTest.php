@@ -316,6 +316,144 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNull($result);
     }
 
+    public function testHistoryPayloadPaginatedReturnsFirstPage(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        for ($i = 1; $i <= 5; $i++) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+                'sequence' => $i,
+                'result' => "value-{$i}",
+            ], $task);
+        }
+
+        $result = $this->bridge->historyPayloadPaginated($task->id, 0, 3);
+
+        $this->assertNotNull($result);
+        $this->assertSame($task->id, $result['task_id']);
+        $this->assertSame($run->id, $result['workflow_run_id']);
+        $this->assertSame(0, $result['after_sequence']);
+        $this->assertSame(3, $result['page_size']);
+        $this->assertTrue($result['has_more']);
+        $this->assertNotNull($result['next_after_sequence']);
+        $this->assertCount(3, $result['history_events']);
+        $this->assertSame(1, $result['history_events'][0]['sequence']);
+        $this->assertSame(3, $result['history_events'][2]['sequence']);
+    }
+
+    public function testHistoryPayloadPaginatedReturnsLastPage(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        for ($i = 1; $i <= 5; $i++) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+                'sequence' => $i,
+                'result' => "value-{$i}",
+            ], $task);
+        }
+
+        $result = $this->bridge->historyPayloadPaginated($task->id, 3, 3);
+
+        $this->assertNotNull($result);
+        $this->assertFalse($result['has_more']);
+        $this->assertNull($result['next_after_sequence']);
+        $this->assertCount(2, $result['history_events']);
+        $this->assertSame(4, $result['history_events'][0]['sequence']);
+        $this->assertSame(5, $result['history_events'][1]['sequence']);
+    }
+
+    public function testHistoryPayloadPaginatedReturnsEmptyPageBeyondEnd(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+        ], $task);
+
+        $result = $this->bridge->historyPayloadPaginated($task->id, 999, 10);
+
+        $this->assertNotNull($result);
+        $this->assertFalse($result['has_more']);
+        $this->assertNull($result['next_after_sequence']);
+        $this->assertCount(0, $result['history_events']);
+    }
+
+    public function testHistoryPayloadPaginatedReturnsNullForMissingTask(): void
+    {
+        $result = $this->bridge->historyPayloadPaginated('nonexistent');
+
+        $this->assertNull($result);
+    }
+
+    public function testHistoryPayloadPaginatedClampsPageSize(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+        ], $task);
+
+        // Request page_size of 5000, should be clamped to MAX_HISTORY_PAGE_SIZE
+        $result = $this->bridge->historyPayloadPaginated($task->id, 0, 5000);
+
+        $this->assertNotNull($result);
+        $this->assertSame(1000, $result['page_size']);
+    }
+
     public function testFailRecordsTaskFailure(): void
     {
         $run = $this->createWaitingRun();

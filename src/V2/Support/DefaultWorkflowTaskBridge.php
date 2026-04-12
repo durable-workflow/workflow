@@ -24,6 +24,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 {
@@ -247,6 +248,70 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'arguments' => self::nonEmptyString($run->arguments),
             'run_status' => $run->status->value,
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
+            'history_events' => $historyEvents->map(static fn (WorkflowHistoryEvent $event) => [
+                'id' => $event->id,
+                'sequence' => (int) $event->sequence,
+                'event_type' => $event->event_type->value,
+                'payload' => is_array($event->payload) ? $event->payload : [],
+                'workflow_task_id' => self::nonEmptyString($event->workflow_task_id),
+                'workflow_command_id' => self::nonEmptyString($event->workflow_command_id),
+                'recorded_at' => $event->recorded_at?->toJSON(),
+            ])->values()
+                ->all(),
+        ];
+    }
+
+    public function historyPayloadPaginated(string $taskId, int $afterSequence = 0, int $pageSize = 200): ?array
+    {
+        $pageSize = max(1, min($pageSize, WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE));
+
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->find($taskId);
+
+        if ($task === null || $task->task_type !== TaskType::Workflow) {
+            return null;
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->find($task->workflow_run_id);
+
+        if ($run === null) {
+            return null;
+        }
+
+        $historyEvents = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', '>', $afterSequence)
+            ->orderBy('sequence')
+            ->limit($pageSize + 1)
+            ->get();
+
+        $hasMore = $historyEvents->count() > $pageSize;
+
+        if ($hasMore) {
+            $historyEvents = $historyEvents->take($pageSize);
+        }
+
+        $lastEventSequence = $historyEvents->isNotEmpty()
+            ? (int) $historyEvents->last()->sequence
+            : null;
+
+        return [
+            'task_id' => $task->id,
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_type' => self::nonEmptyString($run->workflow_type),
+            'workflow_class' => self::nonEmptyString($run->workflow_class),
+            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+            'arguments' => self::nonEmptyString($run->arguments),
+            'run_status' => $run->status->value,
+            'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
+            'after_sequence' => $afterSequence,
+            'page_size' => $pageSize,
+            'has_more' => $hasMore,
+            'next_after_sequence' => $hasMore ? $lastEventSequence : null,
             'history_events' => $historyEvents->map(static fn (WorkflowHistoryEvent $event) => [
                 'id' => $event->id,
                 'sequence' => (int) $event->sequence,
