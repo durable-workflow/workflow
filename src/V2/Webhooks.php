@@ -65,7 +65,9 @@ final class Webhooks
 
                 if ($startOptions->duplicateStartPolicy !== DuplicateStartPolicy::ReturnExistingActive) {
                     throw ValidationException::withMessages([
-                        'on_duplicate' => ['The on_duplicate field must be return_existing_active for signal-with-start.'],
+                        'on_duplicate' => [
+                            'The on_duplicate field must be return_existing_active for signal-with-start.',
+                        ],
                     ]);
                 }
 
@@ -424,8 +426,7 @@ final class Webhooks
         string $workflow,
         array $payload,
         DuplicateStartPolicy $defaultDuplicateStartPolicy = DuplicateStartPolicy::RejectDuplicate,
-    ): array
-    {
+    ): array {
         $hasInstanceId = array_key_exists('workflow_id', $payload);
         $instanceId = $payload['workflow_id'] ?? null;
         $onDuplicate = $payload['on_duplicate'] ?? $defaultDuplicateStartPolicy->value;
@@ -764,7 +765,8 @@ final class Webhooks
             default => 409,
         };
 
-        $response = response()->json($payload, $status);
+        $response = response()
+            ->json($payload, $status);
 
         if (is_int($payload['retry_after_seconds'] ?? null)) {
             $response->header('Retry-After', (string) $payload['retry_after_seconds']);

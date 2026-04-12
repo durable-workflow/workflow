@@ -89,7 +89,7 @@ final class RunTaskLinkMap
     }
 
     /**
-     * @param array<string, array{
+     * @param array<string, $key array{
      *     task_ids: array<string, true>,
      *     current_task_id: string|null,
      *     current_task_status: string|null,
@@ -130,7 +130,7 @@ final class RunTaskLinkMap
     }
 
     /**
-     * @param array<string, array{
+     * @param array<string, $key array{
      *     task_ids: array<string, true>,
      *     current_task_id: string|null,
      *     current_task_status: string|null,
@@ -149,7 +149,7 @@ final class RunTaskLinkMap
     }
 
     /**
-     * @param array<string, array{
+     * @param array<string, $key array{
      *     task_ids: array<string, true>,
      *     current_task_id: string|null,
      *     current_task_status: string|null,

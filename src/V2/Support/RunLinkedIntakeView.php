@@ -25,7 +25,9 @@ final class RunLinkedIntakeView
             ->filter(static function (WorkflowCommand $command): bool {
                 return $command->intakeGroupId() !== null && $command->intakeMode() !== null;
             })
-            ->sort(static fn (WorkflowCommand $left, WorkflowCommand $right): int => self::compareCommands($left, $right))
+            ->sort(
+                static fn (WorkflowCommand $left, WorkflowCommand $right): int => self::compareCommands($left, $right)
+            )
             ->groupBy(static fn (WorkflowCommand $command): string => (string) $command->intakeGroupId());
 
         return $grouped
@@ -42,7 +44,8 @@ final class RunLinkedIntakeView
     private static function group(string $groupId, Collection $commands): array
     {
         $commands = $commands->values();
-        $mode = (string) $commands->firstOrFail()->intakeMode();
+        $mode = (string) $commands->firstOrFail()
+            ->intakeMode();
         $commandTypes = $commands
             ->map(static fn (WorkflowCommand $command): string => $command->command_type->value)
             ->values()
@@ -66,7 +69,9 @@ final class RunLinkedIntakeView
             'complete' => $missingExpectedTypes === [],
             'missing_expected_command_types' => $missingExpectedTypes,
             'command_count' => $commands->count(),
-            'command_ids' => $commands->pluck('id')->values()->all(),
+            'command_ids' => $commands->pluck('id')
+                ->values()
+                ->all(),
             'command_sequences' => $commands
                 ->pluck('command_sequence')
                 ->filter(static fn (mixed $sequence): bool => is_int($sequence))
@@ -112,10 +117,7 @@ final class RunLinkedIntakeView
     private static function expectedCommandTypes(string $mode): array
     {
         return match ($mode) {
-            'signal_with_start' => [
-                CommandType::Start->value,
-                CommandType::Signal->value,
-            ],
+            'signal_with_start' => [CommandType::Start->value, CommandType::Signal->value],
             default => [],
         };
     }

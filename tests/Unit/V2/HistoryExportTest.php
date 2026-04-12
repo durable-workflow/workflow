@@ -1169,10 +1169,7 @@ final class HistoryExportTest extends TestCase
         $this->assertTrue($bundle['timers'][0]['diagnostic_only']);
         $this->assertSame('unsupported_terminal_without_history', $bundle['timers'][0]['history_authority']);
 
-        $this->assertSame(
-            $initialBundle['timers'][0],
-            $bundle['timers'][0],
-        );
+        $this->assertSame($initialBundle['timers'][0], $bundle['timers'][0]);
 
         $this->assertDatabaseHas('workflow_run_timer_entries', [
             'workflow_run_id' => $run->id,

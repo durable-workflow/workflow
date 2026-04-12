@@ -2658,7 +2658,8 @@ final class V2WorkflowTest extends TestCase
                     'tier' => 'gold',
                 ],
             ],
-        ], $runs->map(static fn (WorkflowRun $run): ?array => $run->memo)->all());
+        ], $runs->map(static fn (WorkflowRun $run): ?array => $run->memo)
+            ->all());
         $this->assertSame(['completed', 'completed', 'completed'], $runs->pluck('status')->map(
             static fn (RunStatus $status): string => $status->value
         )->all());
@@ -4704,7 +4705,8 @@ final class V2WorkflowTest extends TestCase
     public function testSignalWithStartStartsNewRunAndOrdersSignalBeforeFirstWorkflowStep(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'signal-with-start-instance');
@@ -4790,7 +4792,8 @@ final class V2WorkflowTest extends TestCase
     public function testAttemptSignalWithStartRejectsUnknownSignalWithoutStartingNewRun(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'signal-with-start-unknown');

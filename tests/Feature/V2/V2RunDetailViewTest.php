@@ -397,7 +397,8 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailViewIncludesWaitAndLivenessMetadataForSignalWaitingRun(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal');
         $workflow->start();
@@ -480,7 +481,8 @@ final class V2RunDetailViewTest extends TestCase
     public function testRunDetailAndHistoryExportExposeGroupedSignalWithStartIntake(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-linked-intake');
@@ -510,7 +512,10 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame([], $linkedIntake['missing_expected_command_types']);
         $this->assertSame(2, $linkedIntake['command_count']);
         $this->assertSame([$result->startCommandId(), $result->commandId()], $linkedIntake['command_ids']);
-        $this->assertSame([$result->startCommandSequence(), $result->commandSequence()], $linkedIntake['command_sequences']);
+        $this->assertSame(
+            [$result->startCommandSequence(), $result->commandSequence()],
+            $linkedIntake['command_sequences']
+        );
         $this->assertSame($result->startCommandId(), $linkedIntake['start_command_id']);
         $this->assertSame($result->startCommandSequence(), $linkedIntake['start_command_sequence']);
         $this->assertSame($result->startStatus(), $linkedIntake['start_command_status']);
@@ -545,8 +550,10 @@ final class V2RunDetailViewTest extends TestCase
             'arguments' => Serializer::serialize([]),
             'connection' => 'redis',
             'queue' => 'default',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(15),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(15),
         ]);
 
         $instance->update([
@@ -568,7 +575,8 @@ final class V2RunDetailViewTest extends TestCase
                     'mode' => 'signal_with_start',
                 ],
             ],
-            'accepted_at' => now()->subSeconds(10),
+            'accepted_at' => now()
+                ->subSeconds(10),
         ]);
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));

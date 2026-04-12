@@ -8,15 +8,19 @@ use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
+use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Testing\ActivityFakeContext;
 use Workflow\V2\WorkflowStub;
 
@@ -26,8 +30,10 @@ final class V2WorkflowStubFakeTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
     }
 
     public function testFakeModeRunsActivitiesInlineOnUnsupportedSyncBackend(): void
@@ -47,7 +53,10 @@ final class V2WorkflowStubFakeTest extends TestCase
             'run_id' => $workflow->runId(),
         ], $workflow->output());
 
-        WorkflowStub::assertDispatched(TestGreetingActivity::class, static fn (string $name): bool => $name === 'Taylor');
+        WorkflowStub::assertDispatched(
+            TestGreetingActivity::class,
+            static fn (string $name): bool => $name === 'Taylor'
+        );
         WorkflowStub::assertDispatchedTimes(TestGreetingActivity::class, 1);
         WorkflowStub::assertNotDispatched('Tests\\Fixtures\\V2\\MissingActivity');
 
@@ -63,11 +72,8 @@ final class V2WorkflowStubFakeTest extends TestCase
             ->get();
 
         $this->assertCount(3, $tasks);
-        $this->assertSame([
-            TaskType::Workflow,
-            TaskType::Activity,
-            TaskType::Workflow,
-        ], $tasks->pluck('task_type')->all());
+        $this->assertSame([TaskType::Workflow, TaskType::Activity, TaskType::Workflow], $tasks->pluck('task_type')
+            ->all());
         $this->assertTrue($tasks->every(static fn (WorkflowTask $task): bool => $task->last_dispatched_at !== null));
         $this->assertTrue($tasks->every(static fn (WorkflowTask $task): bool => $task->last_dispatch_error === null));
 
@@ -92,7 +98,9 @@ final class V2WorkflowStubFakeTest extends TestCase
 
         $capturedContext = null;
 
-        WorkflowStub::mock(TestGreetingActivity::class, static function (ActivityFakeContext $context, string $name) use (&$capturedContext): string {
+        WorkflowStub::mock(TestGreetingActivity::class, static function (ActivityFakeContext $context, string $name) use (
+            &$capturedContext
+        ): string {
             $capturedContext = $context;
 
             return "Hello, {$name}!";
@@ -171,5 +179,76 @@ final class V2WorkflowStubFakeTest extends TestCase
             ->get();
 
         $this->assertCount(2, $runs);
+    }
+
+    public function testRunReadyTasksRequiresFakeMode(): void
+    {
+        $this->expectExceptionMessage('WorkflowStub::runReadyTasks() requires WorkflowStub::fake().');
+
+        WorkflowStub::runReadyTasks();
+    }
+
+    public function testFakeModeCanDrainDueTimerTasksAfterTimeTravel(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'fake-inline-timer');
+        $workflow->start(60);
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        $this->assertSame(TimerStatus::Pending, $timer->status);
+
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Timer->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Ready, $timerTask->status);
+        $this->assertTrue($timerTask->available_at?->isFuture() ?? false);
+        $this->assertSame(0, WorkflowStub::runReadyTasks());
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $this->travel(61)
+            ->seconds();
+
+        $this->assertSame(1, WorkflowStub::runReadyTasks());
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'waited' => true,
+            'workflow_id' => 'fake-inline-timer',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+
+        $timer->refresh();
+        $this->assertSame(TimerStatus::Fired, $timer->status);
+
+        $tasks = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('created_at')
+            ->get();
+
+        $this->assertCount(3, $tasks);
+        $this->assertSame([TaskType::Workflow, TaskType::Timer, TaskType::Workflow], $tasks->pluck('task_type')
+            ->all());
+        $this->assertTrue($tasks->every(static fn (WorkflowTask $task): bool => $task->last_dispatch_error === null));
+
+        $this->assertSame([
+            HistoryEventType::StartAccepted->value,
+            HistoryEventType::WorkflowStarted->value,
+            HistoryEventType::TimerScheduled->value,
+            HistoryEventType::TimerFired->value,
+            HistoryEventType::WorkflowCompleted->value,
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
+            ->all());
     }
 }

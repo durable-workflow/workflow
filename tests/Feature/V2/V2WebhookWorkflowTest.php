@@ -169,7 +169,8 @@ final class V2WebhookWorkflowTest extends TestCase
 
         $task = $this->stageFirstActivityTask($workflow);
         $task->forceFill([
-            'available_at' => now()->addSeconds(30),
+            'available_at' => now()
+                ->addSeconds(30),
         ])->save();
 
         $response = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim");
@@ -198,7 +199,8 @@ final class V2WebhookWorkflowTest extends TestCase
         $workflow->start('Taylor');
 
         $task = $this->stageFirstActivityTask($workflow);
-        $claim = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim")->assertOk();
+        $claim = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim")
+            ->assertOk();
 
         $attemptId = $claim->json('activity_attempt_id');
 
@@ -276,7 +278,10 @@ final class V2WebhookWorkflowTest extends TestCase
         $nextTaskId = $complete->json('next_task_id');
 
         $this->assertIsString($nextTaskId);
-        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $nextTaskId);
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $nextTaskId
+        );
 
         $this->assertDatabaseHas('activity_attempts', [
             'id' => $attemptId,
@@ -336,7 +341,10 @@ final class V2WebhookWorkflowTest extends TestCase
         $nextTaskId = $failed->json('next_task_id');
 
         $this->assertIsString($nextTaskId);
-        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->taskId === $nextTaskId);
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $nextTaskId
+        );
 
         /** @var WorkflowHistoryEvent $failedEvent */
         $failedEvent = WorkflowHistoryEvent::query()
@@ -558,10 +566,7 @@ final class V2WebhookWorkflowTest extends TestCase
         $response
             ->assertStatus(422)
             ->assertJsonValidationErrors(['workflow_id'])
-            ->assertJsonPath(
-                'errors.workflow_id.0',
-                WorkflowInstanceId::validationMessage('workflow_id'),
-            );
+            ->assertJsonPath('errors.workflow_id.0', WorkflowInstanceId::validationMessage('workflow_id'));
 
         $this->assertSame(0, WorkflowInstance::query()->count());
         $this->assertSame(0, WorkflowCommand::query()->count());
@@ -577,10 +582,7 @@ final class V2WebhookWorkflowTest extends TestCase
         $response
             ->assertStatus(422)
             ->assertJsonValidationErrors(['workflow_id'])
-            ->assertJsonPath(
-                'errors.workflow_id.0',
-                WorkflowInstanceId::validationMessage('workflow_id'),
-            );
+            ->assertJsonPath('errors.workflow_id.0', WorkflowInstanceId::validationMessage('workflow_id'));
 
         $this->assertSame(0, WorkflowInstance::query()->count());
         $this->assertSame(0, WorkflowCommand::query()->count());
@@ -596,10 +598,7 @@ final class V2WebhookWorkflowTest extends TestCase
         $response
             ->assertStatus(422)
             ->assertJsonValidationErrors(['workflow_id'])
-            ->assertJsonPath(
-                'errors.workflow_id.0',
-                WorkflowInstanceId::validationMessage('workflow_id'),
-            );
+            ->assertJsonPath('errors.workflow_id.0', WorkflowInstanceId::validationMessage('workflow_id'));
 
         $this->assertSame(0, WorkflowInstance::query()->count());
         $this->assertSame(0, WorkflowCommand::query()->count());
@@ -805,7 +804,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testSignalWithStartWebhookReturnsTypedStartedNewResponse(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $response = $this->postJson('/webhooks/start/test-signal-workflow/signals/name-provided', [
@@ -856,7 +856,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testSignalWithStartWebhookReturnsExistingActiveOutcomeAndSharedIngressMetadata(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-signal-with-start-existing');
@@ -901,7 +902,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testSignalWithStartWebhookRejectsUnknownSignalWithoutStartingARun(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $response = $this->postJson('/webhooks/start/test-signal-workflow/signals/missing-signal', [

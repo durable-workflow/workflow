@@ -188,9 +188,10 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         [, $timelineDriftRun] = $this->createCompletedRun('projection-command-timeline-drift');
         [, $waitDriftRun] = $this->createWaitingRun('projection-command-wait-drift');
         [, $alignedRun] = $this->createCompletedRun('projection-command-aligned');
+        $waitActivityId = (string) Str::ulid();
 
         ActivityExecution::query()->create([
-            'id' => 'projection-command-wait-activity',
+            'id' => $waitActivityId,
             'workflow_run_id' => $waitDriftRun->id,
             'sequence' => 1,
             'activity_class' => 'ProjectionWaitActivity',
@@ -254,7 +255,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'status' => RunStatus::Waiting->value,
             'status_bucket' => 'running',
             'started_at' => $waitDriftRun->started_at,
-            'open_wait_id' => 'activity:projection-command-wait-activity',
+            'open_wait_id' => "activity:{$waitActivityId}",
             'wait_kind' => 'activity',
             'wait_reason' => 'Waiting for activity projection.wait',
             'liveness_state' => 'waiting_for_activity',
@@ -306,7 +307,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
         $this->assertDatabaseHas('workflow_run_waits', [
             'workflow_run_id' => $waitDriftRun->id,
-            'wait_id' => 'activity:projection-command-wait-activity',
+            'wait_id' => "activity:{$waitActivityId}",
             'target_type' => 'projection.wait',
         ]);
     }

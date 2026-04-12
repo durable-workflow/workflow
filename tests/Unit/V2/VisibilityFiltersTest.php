@@ -232,7 +232,8 @@ final class VisibilityFiltersTest extends TestCase
             'repair_attention' => true,
             'task_problem' => true,
             'continue_as_new_recommended' => true,
-        ])->pluck('id')->all();
+        ])->pluck('id')
+            ->all();
 
         $this->assertSame(['01JVISBOOLMATCH00000000001'], $ids);
     }
@@ -278,10 +279,7 @@ final class VisibilityFiltersTest extends TestCase
             $definition['fields']['declared_contract_backfill_needed']['label'],
         );
         $this->assertSame('boolean', $definition['fields']['declared_contract_backfill_needed']['type']);
-        $this->assertSame(
-            'boolean_select',
-            $definition['fields']['declared_contract_backfill_needed']['input'],
-        );
+        $this->assertSame('boolean_select', $definition['fields']['declared_contract_backfill_needed']['input']);
         $this->assertSame(
             'Command Contract Backfill Available',
             $definition['fields']['declared_contract_backfill_available']['label'],
@@ -341,7 +339,10 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertTrue($definition['indexed_metadata']['business_key']['indexed']);
         $this->assertTrue($definition['indexed_metadata']['business_key']['filterable']);
         $this->assertTrue($definition['indexed_metadata']['business_key']['saved_view_compatible']);
-        $this->assertSame(['list', 'detail', 'history_export'], $definition['indexed_metadata']['business_key']['returned_in']);
+        $this->assertSame(
+            ['list', 'detail', 'history_export'],
+            $definition['indexed_metadata']['business_key']['returned_in']
+        );
         $this->assertSame('Labels', $definition['indexed_metadata']['labels']['label']);
         $this->assertSame(
             ['label[key]', 'labels[key]'],

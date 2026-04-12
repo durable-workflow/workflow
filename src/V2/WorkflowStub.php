@@ -6,8 +6,8 @@ namespace Workflow\V2;
 
 use BadMethodCallException;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\QueueFake;
@@ -42,7 +42,6 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
-use Workflow\V2\SignalWithStartResult;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\CurrentRunResolver;
@@ -282,6 +281,54 @@ final class WorkflowStub
             array_sum(array_map(static fn (array $entries): int => count($entries), $dispatched)),
             'An unexpected activity was dispatched.',
         );
+    }
+
+    public static function runReadyTasks(int $limit = 100): int
+    {
+        if (! self::faked()) {
+            throw new LogicException('WorkflowStub::runReadyTasks() requires WorkflowStub::fake().');
+        }
+
+        if ($limit < 1) {
+            throw new LogicException('WorkflowStub::runReadyTasks() requires a positive task limit.');
+        }
+
+        $processed = 0;
+
+        while ($processed < $limit) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->where(static function ($query): void {
+                    $query->whereNull('available_at')
+                        ->orWhere('available_at', '<=', now());
+                })
+                ->orderBy('available_at')
+                ->orderBy('created_at')
+                ->orderBy('id')
+                ->first();
+
+            if (! $task instanceof WorkflowTask) {
+                break;
+            }
+
+            TaskDispatcher::dispatch($task);
+            $task->refresh();
+
+            if (
+                $task->status === TaskStatus::Ready
+                && ($task->available_at === null || ! $task->available_at->isFuture())
+            ) {
+                throw new LogicException(sprintf(
+                    'WorkflowStub::runReadyTasks() could not drain ready task [%s].',
+                    $task->id,
+                ));
+            }
+
+            $processed++;
+        }
+
+        return $processed;
     }
 
     /**
@@ -768,8 +815,11 @@ final class WorkflowStub
         return StartResult::fromCommand($command);
     }
 
-    public function signalWithStart(string $name, array $signalArguments = [], ...$startArguments): SignalWithStartResult
-    {
+    public function signalWithStart(
+        string $name,
+        array $signalArguments = [],
+        ...$startArguments
+    ): SignalWithStartResult {
         $result = $this->attemptSignalWithStart($name, $signalArguments, ...$startArguments);
 
         if ($result->rejected()) {
@@ -1378,7 +1428,7 @@ final class WorkflowStub
         /** @var WorkflowTask|null $resumeTask */
         $resumeTask = null;
 
-        DB::transaction(function () use ($method, $arguments, &$command, &$update, &$resumeTask,): void {
+        DB::transaction(function () use ($method, $arguments, &$command, &$update, &$resumeTask): void {
             /** @var WorkflowInstance $instance */
             $instance = WorkflowInstance::query()
                 ->lockForUpdate()
@@ -2059,7 +2109,11 @@ final class WorkflowStub
                 return;
             }
 
-            $validatedSignalArguments = $this->validatedSignalArgumentsForWorkflow($workflowClass, $name, $signalArguments);
+            $validatedSignalArguments = $this->validatedSignalArgumentsForWorkflow(
+                $workflowClass,
+                $name,
+                $signalArguments
+            );
 
             if ($validatedSignalArguments['validation_errors'] !== []) {
                 $signalCommand = $this->rejectSignalCommandForContext(
@@ -2241,8 +2295,7 @@ final class WorkflowStub
     private function extractStartArguments(
         array $arguments,
         DuplicateStartPolicy $defaultDuplicateStartPolicy = DuplicateStartPolicy::RejectDuplicate,
-    ): array
-    {
+    ): array {
         $startOptions = null;
 
         foreach ($arguments as $index => $argument) {
@@ -3304,7 +3357,8 @@ final class WorkflowStub
 
     private function signalWithStartCommandContext(string $intakeGroupId): CommandContext
     {
-        return $this->resolvedCommandContext()->withIntake('signal_with_start', $intakeGroupId);
+        return $this->resolvedCommandContext()
+            ->withIntake('signal_with_start', $intakeGroupId);
     }
 
     private function currentRunForInstance(
@@ -3344,11 +3398,7 @@ final class WorkflowStub
 
     private function runIsActive(WorkflowRun $run): bool
     {
-        return in_array($run->status, [
-            RunStatus::Pending,
-            RunStatus::Running,
-            RunStatus::Waiting,
-        ], true);
+        return in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
     }
 
     private function readyWorkflowTaskForDispatch(string $runId): ?WorkflowTask

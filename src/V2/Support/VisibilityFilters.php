@@ -13,14 +13,6 @@ final class VisibilityFilters
 {
     public const VERSION = 3;
 
-    /**
-     * @return list<int>
-     */
-    public static function supportedVersions(): array
-    {
-        return [1, 2, self::VERSION];
-    }
-
     private const FIELD_LABELS = [
         'instance_id' => 'Instance ID',
         'run_id' => 'Run ID',
@@ -79,6 +71,14 @@ final class VisibilityFilters
     private const LABEL_KEY_REGEX = '^[A-Za-z0-9_.:-]{1,64}$';
 
     private const LABEL_KEY_PATTERN = '/^[A-Za-z0-9_.:-]{1,64}$/';
+
+    /**
+     * @return list<int>
+     */
+    public static function supportedVersions(): array
+    {
+        return [1, 2, self::VERSION];
+    }
 
     /**
      * @return array<int, string>
@@ -556,9 +556,7 @@ final class VisibilityFilters
                     'value' => 'child',
                 ],
             ],
-            'repair_blocked_reason' => [
-                ...RepairBlockedReason::filterOptions(),
-            ],
+            'repair_blocked_reason' => [...RepairBlockedReason::filterOptions()],
             'declared_entry_mode' => [
                 [
                     'label' => 'Canonical',

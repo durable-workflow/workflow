@@ -527,6 +527,7 @@ final class V2TaskDispatchTest extends TestCase
             ->set('queue.connections.sync.driver', 'sync');
         config()
             ->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
     }
 }

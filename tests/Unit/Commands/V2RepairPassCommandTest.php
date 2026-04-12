@@ -348,9 +348,12 @@ final class V2RepairPassCommandTest extends TestCase
             'queue' => 'default',
             'liveness_state' => 'repair_needed',
             'liveness_reason' => 'Repair candidate is missing its durable run row.',
-            'started_at' => now()->subMinute(),
-            'created_at' => now()->subMinute(),
-            'updated_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'created_at' => now()
+                ->subMinute(),
+            'updated_at' => now()
+                ->subMinute(),
         ]);
 
         $report = TaskWatchdog::runPass(runIds: ['01JREPAIRPASSMISSINGFAIL001']);
@@ -372,7 +375,8 @@ final class V2RepairPassCommandTest extends TestCase
     public function testItFailsRepairPassWhenCommandContractBackfillThrows(): void
     {
         Queue::fake();
-        config()->set('workflows.v2.history_event_model', ThrowingWorkflowHistoryEvent::class);
+        config()
+            ->set('workflows.v2.history_event_model', ThrowingWorkflowHistoryEvent::class);
 
         $run = $this->createLegacyContractRun('repair-pass-command-contract-failure');
 

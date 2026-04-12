@@ -23,7 +23,15 @@ class WorkflowRunSummary extends Model
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
-    protected $appends = ['instance_id', 'selected_run_id', 'run_id', 'exceptions_count', 'is_terminal', 'repair_blocked', 'task_problem_badge'];
+    protected $appends = [
+        'instance_id',
+        'selected_run_id',
+        'run_id',
+        'exceptions_count',
+        'is_terminal',
+        'repair_blocked',
+        'task_problem_badge',
+    ];
 
     protected $casts = [
         'is_current_run' => 'bool',

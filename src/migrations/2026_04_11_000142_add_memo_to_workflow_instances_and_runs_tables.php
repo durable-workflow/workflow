@@ -6,17 +6,16 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration
-{
+return new class() extends Migration {
     public function up(): void
     {
-        Schema::table('workflow_instances', function (Blueprint $table): void {
+        Schema::table('workflow_instances', static function (Blueprint $table): void {
             $table->json('memo')
                 ->nullable()
                 ->after('visibility_labels');
         });
 
-        Schema::table('workflow_runs', function (Blueprint $table): void {
+        Schema::table('workflow_runs', static function (Blueprint $table): void {
             $table->json('memo')
                 ->nullable()
                 ->after('visibility_labels');
@@ -29,11 +28,11 @@ return new class extends Migration
             return;
         }
 
-        Schema::table('workflow_runs', function (Blueprint $table): void {
+        Schema::table('workflow_runs', static function (Blueprint $table): void {
             $table->dropColumn('memo');
         });
 
-        Schema::table('workflow_instances', function (Blueprint $table): void {
+        Schema::table('workflow_instances', static function (Blueprint $table): void {
             $table->dropColumn('memo');
         });
     }
