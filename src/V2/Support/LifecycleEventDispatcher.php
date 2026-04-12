@@ -4,6 +4,16 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\Events\ActivityCompleted as LegacyActivityCompleted;
+use Workflow\Events\ActivityFailed as LegacyActivityFailed;
+use Workflow\Events\ActivityStarted as LegacyActivityStarted;
+use Workflow\Events\StateChanged;
+use Workflow\Events\WorkflowCompleted as LegacyWorkflowCompleted;
+use Workflow\Events\WorkflowFailed as LegacyWorkflowFailed;
+use Workflow\Events\WorkflowStarted as LegacyWorkflowStarted;
+use Workflow\States\WorkflowCompletedStatus;
+use Workflow\States\WorkflowFailedStatus;
+use Workflow\States\WorkflowRunningStatus;
 use Workflow\V2\Events\ActivityCompleted;
 use Workflow\V2\Events\ActivityFailed;
 use Workflow\V2\Events\ActivityStarted;
@@ -31,37 +41,71 @@ final class LifecycleEventDispatcher
 {
     public static function workflowStarted(WorkflowRun $run): void
     {
+        $instanceId = (string) $run->instance?->id;
+        $committedAt = now()->toIso8601String();
+
         WorkflowStarted::dispatch(
-            (string) $run->instance?->id,
+            $instanceId,
             (string) $run->id,
             (string) ($run->workflow_type ?? $run->workflow_class),
             (string) $run->workflow_class,
-            now()->toIso8601String(),
+            $committedAt,
         );
+
+        LegacyWorkflowStarted::dispatch(
+            $instanceId,
+            (string) $run->workflow_class,
+            '[]',
+            $committedAt,
+        );
+
+        self::dispatchStateChanged($run, null, new WorkflowRunningStatus($run));
     }
 
     public static function workflowCompleted(WorkflowRun $run): void
     {
+        $instanceId = (string) $run->instance?->id;
+        $committedAt = now()->toIso8601String();
+
         WorkflowCompleted::dispatch(
-            (string) $run->instance?->id,
+            $instanceId,
             (string) $run->id,
             (string) ($run->workflow_type ?? $run->workflow_class),
             (string) $run->workflow_class,
-            now()->toIso8601String(),
+            $committedAt,
         );
+
+        LegacyWorkflowCompleted::dispatch(
+            $instanceId,
+            '',
+            $committedAt,
+        );
+
+        self::dispatchStateChanged($run, new WorkflowRunningStatus($run), new WorkflowCompletedStatus($run));
     }
 
     public static function workflowFailed(WorkflowRun $run, string $exceptionClass, string $message): void
     {
+        $instanceId = (string) $run->instance?->id;
+        $committedAt = now()->toIso8601String();
+
         WorkflowFailed::dispatch(
-            (string) $run->instance?->id,
+            $instanceId,
             (string) $run->id,
             (string) ($run->workflow_type ?? $run->workflow_class),
             (string) $run->workflow_class,
             $exceptionClass,
             $message,
-            now()->toIso8601String(),
+            $committedAt,
         );
+
+        LegacyWorkflowFailed::dispatch(
+            $instanceId,
+            $exceptionClass . ': ' . $message,
+            $committedAt,
+        );
+
+        self::dispatchStateChanged($run, new WorkflowRunningStatus($run), new WorkflowFailedStatus($run));
     }
 
     public static function activityStarted(
@@ -72,15 +116,27 @@ final class LifecycleEventDispatcher
         int $sequence,
         int $attemptNumber,
     ): void {
+        $instanceId = (string) $run->instance?->id;
+        $committedAt = now()->toIso8601String();
+
         ActivityStarted::dispatch(
-            (string) $run->instance?->id,
+            $instanceId,
             (string) $run->id,
             $activityExecutionId,
             $activityType,
             $activityClass,
             $sequence,
             $attemptNumber,
-            now()->toIso8601String(),
+            $committedAt,
+        );
+
+        LegacyActivityStarted::dispatch(
+            $instanceId,
+            $activityExecutionId,
+            $activityClass,
+            $sequence,
+            '[]',
+            $committedAt,
         );
     }
 
@@ -92,15 +148,27 @@ final class LifecycleEventDispatcher
         int $sequence,
         int $attemptNumber,
     ): void {
+        $instanceId = (string) $run->instance?->id;
+        $committedAt = now()->toIso8601String();
+
         ActivityCompleted::dispatch(
-            (string) $run->instance?->id,
+            $instanceId,
             (string) $run->id,
             $activityExecutionId,
             $activityType,
             $activityClass,
             $sequence,
             $attemptNumber,
-            now()->toIso8601String(),
+            $committedAt,
+        );
+
+        LegacyActivityCompleted::dispatch(
+            $instanceId,
+            $activityExecutionId,
+            '',
+            $committedAt,
+            $activityClass,
+            $sequence,
         );
     }
 
@@ -114,8 +182,11 @@ final class LifecycleEventDispatcher
         string $exceptionClass,
         string $message,
     ): void {
+        $instanceId = (string) $run->instance?->id;
+        $committedAt = now()->toIso8601String();
+
         ActivityFailed::dispatch(
-            (string) $run->instance?->id,
+            $instanceId,
             (string) $run->id,
             $activityExecutionId,
             $activityType,
@@ -124,7 +195,16 @@ final class LifecycleEventDispatcher
             $attemptNumber,
             $exceptionClass,
             $message,
-            now()->toIso8601String(),
+            $committedAt,
+        );
+
+        LegacyActivityFailed::dispatch(
+            $instanceId,
+            $activityExecutionId,
+            $exceptionClass . ': ' . $message,
+            $committedAt,
+            $activityClass,
+            $sequence,
         );
     }
 
@@ -146,5 +226,25 @@ final class LifecycleEventDispatcher
             $message,
             now()->toIso8601String(),
         );
+    }
+
+    /**
+     * Dispatch a V1-compatible StateChanged event over a run-status transition.
+     *
+     * This is a compatibility adapter — V2 does not use V1 state machines, but
+     * apps listening for StateChanged continue to receive notifications when
+     * workflow status transitions occur.
+     */
+    private static function dispatchStateChanged(
+        WorkflowRun $run,
+        ?\Workflow\States\WorkflowStatus $initialState,
+        \Workflow\States\WorkflowStatus $finalState,
+    ): void {
+        event(new StateChanged(
+            $initialState,
+            $finalState,
+            $run,
+            'status',
+        ));
     }
 }
