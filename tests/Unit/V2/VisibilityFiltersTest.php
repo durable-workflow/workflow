@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\VisibilityFilters;
 
 final class VisibilityFiltersTest extends TestCase
@@ -609,5 +610,89 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertTrue($definition['indexed_metadata']['search_attributes']['indexed']);
         $this->assertTrue($definition['indexed_metadata']['search_attributes']['filterable']);
         $this->assertTrue($definition['indexed_metadata']['search_attributes']['saved_view_compatible']);
+    }
+
+    public function testDefinitionIncludesProjectionSchemaVersion(): void
+    {
+        $definition = VisibilityFilters::definition();
+
+        $this->assertSame(RunSummaryProjector::SCHEMA_VERSION, $definition['projection_schema_version']);
+        $this->assertIsInt($definition['projection_schema_version']);
+        $this->assertGreaterThanOrEqual(1, $definition['projection_schema_version']);
+    }
+
+    public function testMixedFleetPolicyExposesStableContract(): void
+    {
+        $policy = VisibilityFilters::mixedFleetPolicy();
+
+        $this->assertSame(RunSummaryProjector::SCHEMA_VERSION, $policy['projection_schema_version']);
+        $this->assertSame(VisibilityFilters::VERSION, $policy['filter_version']);
+        $this->assertIsArray($policy['invariants']);
+        $this->assertNotEmpty($policy['invariants']);
+
+        foreach ($policy['invariants'] as $invariant) {
+            $this->assertIsString($invariant);
+            $this->assertNotEmpty($invariant);
+        }
+
+        $this->assertArrayHasKey('projection_backfill_authority', $policy);
+        $backfill = $policy['projection_backfill_authority'];
+        $this->assertArrayHasKey('trigger', $backfill);
+        $this->assertArrayHasKey('mechanism', $backfill);
+        $this->assertArrayHasKey('scope', $backfill);
+        $this->assertArrayHasKey('safety', $backfill);
+
+        $this->assertIsString($policy['upgrade_path']);
+        $this->assertNotEmpty($policy['upgrade_path']);
+    }
+
+    public function testApplyFiltersExcludeRowsWithNullVisibilityFieldsFromFilteredViews(): void
+    {
+        WorkflowRunSummary::create([
+            'id' => '01JVISMIXEDFLEETMATCH00001',
+            'workflow_instance_id' => 'mixed-fleet-match',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION,
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'namespace' => 'production',
+            'status' => 'running',
+            'status_bucket' => 'running',
+            'liveness_state' => 'waiting_for_signal',
+        ]);
+        WorkflowRunSummary::create([
+            'id' => '01JVISMIXEDFLEET0NULL00001',
+            'workflow_instance_id' => 'mixed-fleet-null-ns',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'projection_schema_version' => null,
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'namespace' => null,
+            'status' => 'running',
+            'status_bucket' => 'running',
+            'liveness_state' => null,
+        ]);
+
+        $withNamespace = VisibilityFilters::apply(WorkflowRunSummary::query(), [
+            'namespace' => 'production',
+        ])->pluck('id')->all();
+
+        $this->assertSame(['01JVISMIXEDFLEETMATCH00001'], $withNamespace);
+
+        $withLiveness = VisibilityFilters::apply(WorkflowRunSummary::query(), [
+            'liveness_state' => 'waiting_for_signal',
+        ])->pluck('id')->all();
+
+        $this->assertSame(['01JVISMIXEDFLEETMATCH00001'], $withLiveness);
+
+        $noFilters = WorkflowRunSummary::query()
+            ->whereIn('workflow_instance_id', ['mixed-fleet-match', 'mixed-fleet-null-ns'])
+            ->pluck('id')->all();
+
+        $this->assertCount(2, $noFilters);
     }
 }

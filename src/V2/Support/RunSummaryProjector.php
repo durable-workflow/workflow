@@ -15,6 +15,15 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class RunSummaryProjector
 {
+    /**
+     * Projection schema version — bump when the derived-field set changes
+     * (new columns, new computed values, changed derivation logic).
+     *
+     * Summaries with a NULL or lower version are eligible for schema-upgrade
+     * rebuild via `workflow:v2:rebuild-projections --needs-rebuild`.
+     */
+    public const SCHEMA_VERSION = 1;
+
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
         $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
@@ -295,6 +304,7 @@ final class RunSummaryProjector
                 'run_number' => $run->run_number,
                 'is_current_run' => $currentRun?->id === $run->id,
                 'engine_source' => 'v2',
+                'projection_schema_version' => self::SCHEMA_VERSION,
                 'class' => $run->workflow_class,
                 'workflow_type' => $run->workflow_type,
                 'namespace' => $run->namespace ?? $run->instance?->namespace,

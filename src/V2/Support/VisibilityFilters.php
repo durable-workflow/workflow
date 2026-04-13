@@ -129,6 +129,35 @@ final class VisibilityFilters
     }
 
     /**
+     * Machine-readable policy describing how visibility filters behave when
+     * workers run different package versions concurrently and when projection
+     * rebuilds are authoritative for derived filter fields.
+     *
+     * @return array<string, mixed>
+     */
+    public static function mixedFleetPolicy(): array
+    {
+        return [
+            'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION,
+            'filter_version' => self::VERSION,
+            'invariants' => [
+                'Filter normalization is idempotent regardless of the worker package version that wrote the summary projection.',
+                'Summaries projected by older workers may have NULL for fields added in later schema versions; exact-match filters will not match NULL, so those rows are excluded from filtered views until re-projected.',
+                'The rebuild-projections command re-projects from durable runtime state, filling in any derived fields missing from older schema versions.',
+                'Saved views remain readable across filter version bumps; updating a deprecated saved view rewrites it onto the current version.',
+                'Boolean and string filter fields use exact-match semantics; no partial or range matching is applied.',
+            ],
+            'projection_backfill_authority' => [
+                'trigger' => 'Summaries with a NULL or lower projection_schema_version than the current build need re-projection.',
+                'mechanism' => 'workflow:v2:rebuild-projections --needs-rebuild detects schema-outdated rows and re-projects them from durable state.',
+                'scope' => 'Re-projection populates all current derived fields including namespace, search_attributes, visibility_labels, liveness_state, wait_kind, repair_blocked_reason, task_problem, and history budget.',
+                'safety' => 'Re-projection is idempotent. Running it on an already-current row produces the same output.',
+            ],
+            'upgrade_path' => 'Deploy the new package version to all workers, then run workflow:v2:rebuild-projections --needs-rebuild to backfill schema-outdated summaries. Mixed-fleet operation is safe during the rollout window — older workers continue projecting with their schema version, and the rebuild command brings all rows to the current schema after rollout completes.',
+        ];
+    }
+
+    /**
      * @return array<int, string>
      */
     public static function exactFields(): array
@@ -187,6 +216,7 @@ final class VisibilityFilters
             ],
             'indexed_metadata' => self::indexedMetadataDefinition(),
             'detail_metadata' => self::detailMetadataDefinition(),
+            'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION,
         ];
     }
 

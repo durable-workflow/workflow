@@ -12,7 +12,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 final class RunSummaryProjectionDrift
 {
     /**
-     * @return array{runs: int, summaries: int, missing: int, orphaned: int, stale: int, needs_rebuild: int}
+     * @return array{runs: int, summaries: int, missing: int, orphaned: int, stale: int, schema_outdated: int, needs_rebuild: int}
      */
     public static function metrics(): array
     {
@@ -21,6 +21,7 @@ final class RunSummaryProjectionDrift
         $missing = self::missingRunQuery()->count();
         $orphaned = self::orphanedSummaryQuery()->count();
         $stale = self::staleSummaryQuery()->count();
+        $schemaOutdated = self::schemaOutdatedQuery()->count();
 
         return [
             'runs' => $runModel::query()->count(),
@@ -28,8 +29,39 @@ final class RunSummaryProjectionDrift
             'missing' => $missing,
             'orphaned' => $orphaned,
             'stale' => $stale,
-            'needs_rebuild' => $missing + $orphaned + $stale,
+            'schema_outdated' => $schemaOutdated,
+            'needs_rebuild' => $missing + $orphaned + $stale + $schemaOutdated,
         ];
+    }
+
+    /**
+     * Summaries projected under an older (or unknown) schema version.
+     *
+     * These rows were written by a projector that did not populate the
+     * current derived-field set and should be re-projected so that
+     * visibility filters, saved views, and fleet search work correctly
+     * across mixed-fleet deployments.
+     */
+    public static function schemaOutdatedQuery(array $runIds = [], ?string $instanceId = null): Builder
+    {
+        $summaryModel = self::summaryModel();
+        $currentVersion = RunSummaryProjector::SCHEMA_VERSION;
+
+        $query = $summaryModel::query()
+            ->where(static function ($q) use ($currentVersion): void {
+                $q->whereNull('projection_schema_version')
+                    ->orWhere('projection_schema_version', '<', $currentVersion);
+            });
+
+        if ($runIds !== []) {
+            $query->whereIn('id', $runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->where('workflow_instance_id', $instanceId);
+        }
+
+        return $query;
     }
 
     public static function missingRunQuery(): Builder

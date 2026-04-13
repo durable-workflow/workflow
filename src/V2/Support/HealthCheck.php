@@ -78,12 +78,14 @@ final class HealthCheck
             $needsRebuild === 0 ? 'ok' : 'warning',
             $needsRebuild === 0
                 ? 'Run-summary projections are aligned with durable v2 runs.'
-                : 'Run-summary projections are missing, stale, or orphaned; rebuild them before trusting Waterline lists.',
+                : 'Run-summary projections are missing, stale, schema-outdated, or orphaned; rebuild them before trusting Waterline lists.',
             [
                 'needs_rebuild' => $needsRebuild,
                 'missing' => self::integer($projection['missing'] ?? 0),
                 'orphaned' => self::integer($projection['orphaned'] ?? 0),
                 'stale' => self::integer($projection['stale'] ?? 0),
+                'schema_outdated' => self::integer($projection['schema_outdated'] ?? 0),
+                'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION,
             ],
         );
     }

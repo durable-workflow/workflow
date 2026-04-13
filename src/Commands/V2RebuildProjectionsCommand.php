@@ -187,6 +187,8 @@ class V2RebuildProjectionsCommand extends Command
         if ($needsRebuildOnly) {
             $staleSummaryIds = RunSummaryProjectionDrift::staleSummaryQuery($runIds, $instanceId)
                 ->select(sprintf('%s.id', $summaryTable));
+            $schemaOutdatedIds = RunSummaryProjectionDrift::schemaOutdatedQuery($runIds, $instanceId)
+                ->select(sprintf('%s.id', $summaryTable));
             $selectedRunWaitIds = SelectedRunProjectionDrift::waitRunIdsNeedingRebuild($runIds, $instanceId);
             $selectedRunTimelineIds = SelectedRunProjectionDrift::timelineRunIdsNeedingRebuild($runIds, $instanceId);
             $selectedRunTimerIds = SelectedRunProjectionDrift::timerRunIdsNeedingRebuild($runIds, $instanceId);
@@ -201,10 +203,12 @@ class V2RebuildProjectionsCommand extends Command
                 $selectedRunWaitIds,
                 $summaryModel,
                 $staleSummaryIds,
+                $schemaOutdatedIds,
                 $runTable,
             ): void {
                 $query->whereNotIn(sprintf('%s.id', $runTable), $summaryModel::query()->select('id'))
-                    ->orWhereIn(sprintf('%s.id', $runTable), $staleSummaryIds);
+                    ->orWhereIn(sprintf('%s.id', $runTable), $staleSummaryIds)
+                    ->orWhereIn(sprintf('%s.id', $runTable), $schemaOutdatedIds);
 
                 if ($selectedRunWaitIds !== []) {
                     $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunWaitIds);

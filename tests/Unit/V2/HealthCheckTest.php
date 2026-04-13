@@ -138,6 +138,7 @@ final class HealthCheckTest extends TestCase
             'run_number' => 1,
             'is_current_run' => true,
             'engine_source' => 'v2',
+            'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION,
             'class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'status' => 'waiting',
@@ -525,6 +526,64 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(1, $resumePaths['data']['selected_missing_task_candidates']);
         $this->assertSame('2026-04-09T11:55:00.000000Z', $resumePaths['data']['oldest_missing_run_started_at']);
         $this->assertSame(300000, $resumePaths['data']['max_missing_run_age_ms']);
+    }
+
+    public function testSnapshotWarnsWhenRunSummaryProjectionSchemaIsOutdated(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'health-schema-outdated',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'id' => '01JHEALTHSCHEMAOUTDATED01',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'completed',
+            'closed_reason' => 'completed',
+            'started_at' => now()
+                ->subMinute(),
+            'closed_at' => now()
+                ->subSecond(),
+            'last_progress_at' => now()
+                ->subSecond(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        RunSummaryProjector::project($run->refresh());
+
+        WorkflowRunSummary::query()
+            ->where('id', $run->id)
+            ->update(['projection_schema_version' => null]);
+
+        $snapshot = HealthCheck::snapshot();
+        $projection = collect($snapshot['checks'])->firstWhere('name', 'run_summary_projection');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertTrue($snapshot['healthy']);
+        $this->assertSame(200, HealthCheck::httpStatus($snapshot));
+        $this->assertSame('warning', $projection['status']);
+        $this->assertSame(1, $projection['data']['needs_rebuild']);
+        $this->assertSame(0, $projection['data']['missing']);
+        $this->assertSame(0, $projection['data']['orphaned']);
+        $this->assertSame(0, $projection['data']['stale']);
+        $this->assertSame(1, $projection['data']['schema_outdated']);
+        $this->assertSame(RunSummaryProjector::SCHEMA_VERSION, $projection['data']['projection_schema_version']);
     }
 
     public function testSnapshotWarnsWhenCommandContractSnapshotsStillNeedBackfill(): void

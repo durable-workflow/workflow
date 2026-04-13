@@ -41,6 +41,7 @@ class WorkflowRunSummary extends Model
         'search_attributes' => 'array',
         'declared_contract_backfill_needed' => 'bool',
         'declared_contract_backfill_available' => 'bool',
+        'projection_schema_version' => 'integer',
         'history_event_count' => 'integer',
         'history_size_bytes' => 'integer',
         'continue_as_new_recommended' => 'bool',

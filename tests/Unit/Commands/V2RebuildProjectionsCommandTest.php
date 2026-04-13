@@ -312,6 +312,47 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
     }
 
+    public function testNeedsRebuildOptionIncludesSchemaOutdatedRunSummaries(): void
+    {
+        [$instance, $run] = $this->createCompletedRun('projection-command-schema-outdated');
+
+        WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'projection_schema_version' => null,
+            'class' => 'App\\Workflows\\ProjectionWorkflow',
+            'workflow_type' => 'projection.workflow',
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'closed_reason' => 'completed',
+            'started_at' => $run->started_at,
+            'closed_at' => $run->closed_at,
+            'duration_ms' => 240000,
+            'exception_count' => 0,
+            'history_event_count' => 2,
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinute(),
+        ]);
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--needs-rebuild' => true,
+        ])
+            ->expectsOutputToContain('Rebuilt ')
+            ->assertSuccessful();
+
+        $this->assertDatabaseHas('workflow_run_summaries', [
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'status' => RunStatus::Completed->value,
+            'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION,
+        ]);
+    }
+
     public function testNeedsRebuildOptionBackfillsLoadableCommandContractsForOtherwiseAlignedRuns(): void
     {
         $run = $this->createLegacyContractRun('projection-command-contract-drift');
@@ -658,12 +699,20 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->index();
             $table->string('engine_source')
                 ->default('v2');
+            $table->unsignedSmallInteger('projection_schema_version')
+                ->nullable()
+                ->index();
             $table->string('class');
             $table->string('workflow_type');
+            $table->string('namespace')
+                ->nullable()
+                ->index();
             $table->string('business_key')
                 ->nullable()
                 ->index();
             $table->json('visibility_labels')
+                ->nullable();
+            $table->json('search_attributes')
                 ->nullable();
             $table->string('compatibility')
                 ->nullable();
