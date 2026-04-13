@@ -47,6 +47,7 @@ use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
@@ -55,6 +56,7 @@ use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\SignalWaits;
+use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TimerCancellation;
@@ -1808,6 +1810,22 @@ final class WorkflowStub
                 return;
             }
 
+            try {
+                StructuralLimits::guardPendingUpdates($run);
+            } catch (StructuralLimitExceededException $e) {
+                [$command, $update] = $this->rejectUpdateCommand(
+                    $instance,
+                    $run,
+                    $updateName,
+                    $arguments,
+                    'structural_limit_exceeded',
+                    $this->commandTargetScope(),
+                    $updateCommandAttributes,
+                );
+
+                return;
+            }
+
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
                 'command_type' => CommandType::Update->value,
@@ -2117,6 +2135,22 @@ final class WorkflowStub
 
             $arguments = $validatedArguments['arguments'];
 
+            try {
+                StructuralLimits::guardPendingSignals($run);
+            } catch (StructuralLimitExceededException $e) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Signal,
+                    'structural_limit_exceeded',
+                    $this->commandTargetScope(),
+                    $this->signalCommandPayloadAttributes($name, $arguments),
+                );
+                $this->recordRejectedSignal($command, $name, $arguments);
+
+                return;
+            }
+
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Signal->value,
@@ -2258,6 +2292,22 @@ final class WorkflowStub
                 }
 
                 $signalArguments = $validatedSignalArguments['arguments'];
+
+                try {
+                    StructuralLimits::guardPendingSignals($run);
+                } catch (StructuralLimitExceededException $e) {
+                    $signalCommand = $this->rejectSignalCommandForContext(
+                        $commandContext,
+                        $instance,
+                        $run,
+                        $name,
+                        $signalArguments,
+                        'structural_limit_exceeded',
+                    );
+
+                    return;
+                }
+
                 $metadata = WorkflowMetadata::fromStartArguments($startArguments);
 
                 /** @var WorkflowCommand $startCommand */

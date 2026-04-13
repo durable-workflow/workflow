@@ -313,6 +313,42 @@ final class StructuralLimitsTest extends TestCase
         $this->assertNull($result);
     }
 
+    public function testCheckApproachingSignalCountReturnsWarningAtThreshold(): void
+    {
+        config(['workflows.v2.structural_limits.pending_signal_count' => 100]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingSignalCount, 85);
+
+        $this->assertNotNull($result);
+        $this->assertSame('pending_signal_count', $result['limit_kind']);
+        $this->assertSame(85, $result['current']);
+        $this->assertSame(100, $result['limit']);
+    }
+
+    public function testCheckApproachingUpdateCountReturnsWarningAtThreshold(): void
+    {
+        config(['workflows.v2.structural_limits.pending_update_count' => 100]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingUpdateCount, 90);
+
+        $this->assertNotNull($result);
+        $this->assertSame('pending_update_count', $result['limit_kind']);
+        $this->assertSame(90, $result['current']);
+        $this->assertSame(100, $result['limit']);
+    }
+
+    public function testCheckApproachingSignalCountReturnsNullBelowThreshold(): void
+    {
+        config(['workflows.v2.structural_limits.pending_signal_count' => 5000]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingSignalCount, 3999);
+
+        $this->assertNull($result);
+    }
+
     public function testWarnApproachingHistoryTransactionReturnsWarning(): void
     {
         config(['workflows.v2.structural_limits.history_transaction_size' => 100]);
@@ -422,6 +458,28 @@ final class StructuralLimitsTest extends TestCase
         $this->assertSame(StructuralLimitKind::PendingChildCount, $exception->limitKind);
         $this->assertSame(150, $exception->currentValue);
         $this->assertSame(100, $exception->configuredLimit);
+    }
+
+    public function testPendingSignalCountExceptionCarriesMetadata(): void
+    {
+        $exception = StructuralLimitExceededException::pendingSignalCount(5100, 5000);
+
+        $this->assertSame(StructuralLimitKind::PendingSignalCount, $exception->limitKind);
+        $this->assertSame(5100, $exception->currentValue);
+        $this->assertSame(5000, $exception->configuredLimit);
+        $this->assertStringContainsString('5100 pending signals', $exception->getMessage());
+        $this->assertStringContainsString('limit 5000', $exception->getMessage());
+    }
+
+    public function testPendingUpdateCountExceptionCarriesMetadata(): void
+    {
+        $exception = StructuralLimitExceededException::pendingUpdateCount(510, 500);
+
+        $this->assertSame(StructuralLimitKind::PendingUpdateCount, $exception->limitKind);
+        $this->assertSame(510, $exception->currentValue);
+        $this->assertSame(500, $exception->configuredLimit);
+        $this->assertStringContainsString('510 pending updates', $exception->getMessage());
+        $this->assertStringContainsString('limit 500', $exception->getMessage());
     }
 
     public function testHistoryTransactionSizeExceptionCarriesMetadata(): void

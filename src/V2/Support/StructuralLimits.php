@@ -185,6 +185,48 @@ final class StructuralLimits
     /**
      * @throws StructuralLimitExceededException
      */
+    public static function guardPendingSignals(WorkflowRun $run): void
+    {
+        $limit = self::pendingSignalLimit();
+
+        if ($limit <= 0) {
+            return;
+        }
+
+        $count = WorkflowSignal::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', SignalStatus::Received->value)
+            ->count();
+
+        if ($count >= $limit) {
+            throw StructuralLimitExceededException::pendingSignalCount($count, $limit);
+        }
+    }
+
+    /**
+     * @throws StructuralLimitExceededException
+     */
+    public static function guardPendingUpdates(WorkflowRun $run): void
+    {
+        $limit = self::pendingUpdateLimit();
+
+        if ($limit <= 0) {
+            return;
+        }
+
+        $count = WorkflowUpdate::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', UpdateStatus::Accepted->value)
+            ->count();
+
+        if ($count >= $limit) {
+            throw StructuralLimitExceededException::pendingUpdateCount($count, $limit);
+        }
+    }
+
+    /**
+     * @throws StructuralLimitExceededException
+     */
     public static function guardPayloadSize(string $serialized): void
     {
         $limit = self::payloadSizeLimit();
@@ -356,6 +398,32 @@ final class StructuralLimits
             ->count();
 
         return self::checkApproaching(StructuralLimitKind::PendingTimerCount, $count);
+    }
+
+    /**
+     * @return array{limit_kind: string, current: int, limit: int, threshold_percent: int, utilization_percent: int}|null
+     */
+    public static function warnApproachingPendingSignals(WorkflowRun $run): ?array
+    {
+        $count = WorkflowSignal::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', SignalStatus::Received->value)
+            ->count();
+
+        return self::checkApproaching(StructuralLimitKind::PendingSignalCount, $count);
+    }
+
+    /**
+     * @return array{limit_kind: string, current: int, limit: int, threshold_percent: int, utilization_percent: int}|null
+     */
+    public static function warnApproachingPendingUpdates(WorkflowRun $run): ?array
+    {
+        $count = WorkflowUpdate::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', UpdateStatus::Accepted->value)
+            ->count();
+
+        return self::checkApproaching(StructuralLimitKind::PendingUpdateCount, $count);
     }
 
     /**

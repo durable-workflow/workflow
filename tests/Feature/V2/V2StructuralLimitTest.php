@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Log;
+use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLargeMemoWorkflow;
@@ -13,13 +14,20 @@ use Tests\Fixtures\V2\TestLargePayloadWorkflow;
 use Tests\Fixtures\V2\TestLargeSearchAttributeWorkflow;
 use Tests\Fixtures\V2\TestManyActivitiesWorkflow;
 use Tests\Fixtures\V2\TestManySideEffectsWorkflow;
+use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\SignalStatus;
+use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\WorkflowStub;
@@ -496,5 +504,207 @@ final class V2StructuralLimitTest extends TestCase
         $snapshot = StructuralLimits::snapshot();
 
         $this->assertSame(90, $snapshot['warning_threshold_percent']);
+    }
+
+    // ---------------------------------------------------------------
+    //  Pending signal count enforcement
+    // ---------------------------------------------------------------
+
+    public function testPendingSignalLimitRejectsSignalCommand(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config(['workflows.v2.structural_limits.pending_signal_count' => 2]);
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-1');
+        $workflow->start();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-signal-1')
+            ->firstOrFail();
+
+        // Seed pending signals up to the limit via accepted commands.
+        for ($i = 0; $i < 2; $i++) {
+            $cmd = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'command_type' => 'signal',
+                'status' => 'accepted',
+                'target_scope' => 'instance',
+                'command_sequence' => 9000 + $i,
+            ]);
+
+            WorkflowSignal::query()->create([
+                'workflow_command_id' => $cmd->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'signal_name' => 'name-provided',
+                'status' => SignalStatus::Received->value,
+                'received_at' => now(),
+            ]);
+        }
+
+        // The next signal should be rejected.
+        $result = $workflow->attemptSignal('name-provided', 'overflow');
+
+        $this->assertTrue($result->rejected(), 'Signal should have been rejected due to structural limit.');
+        $this->assertSame('structural_limit_exceeded', $result->rejectionReason());
+
+        // Run should still be active (rejection doesn't fail the run).
+        $run->refresh();
+        $this->assertFalse(in_array($run->status, [RunStatus::Failed, RunStatus::Completed, RunStatus::Cancelled, RunStatus::Terminated], true));
+    }
+
+    public function testPendingSignalLimitAllowsWhenUnderLimit(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config(['workflows.v2.structural_limits.pending_signal_count' => 100]);
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-ok-1');
+        $workflow->start();
+
+        $result = $workflow->attemptSignal('name-provided', 'allowed');
+
+        $this->assertTrue($result->accepted(), 'Signal should have been accepted under limit.');
+    }
+
+    public function testDisabledPendingSignalLimitDoesNotBlock(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config(['workflows.v2.structural_limits.pending_signal_count' => 0]);
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-disabled-1');
+        $workflow->start();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-signal-disabled-1')
+            ->firstOrFail();
+
+        // Seed many pending signals via accepted commands.
+        for ($i = 0; $i < 10; $i++) {
+            $cmd = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'command_type' => 'signal',
+                'status' => 'accepted',
+                'target_scope' => 'instance',
+                'command_sequence' => 9000 + $i,
+            ]);
+
+            WorkflowSignal::query()->create([
+                'workflow_command_id' => $cmd->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'signal_name' => 'name-provided',
+                'status' => SignalStatus::Received->value,
+                'received_at' => now(),
+            ]);
+        }
+
+        $result = $workflow->attemptSignal('name-provided', 'allowed');
+
+        $this->assertTrue($result->accepted(), 'Signal should have been accepted with limit disabled.');
+    }
+
+    // ---------------------------------------------------------------
+    //  Pending update count enforcement
+    // ---------------------------------------------------------------
+
+    public function testPendingUpdateLimitRejectsUpdateCommand(): void
+    {
+        WorkflowStub::fake();
+
+        config(['workflows.v2.structural_limits.pending_update_count' => 2]);
+
+        $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-1');
+        $workflow->start();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-update-1')
+            ->firstOrFail();
+
+        // Seed pending updates up to the limit via accepted commands.
+        for ($i = 0; $i < 2; $i++) {
+            $cmd = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'command_type' => 'update',
+                'status' => 'accepted',
+                'target_scope' => 'instance',
+                'command_sequence' => 9000 + $i,
+            ]);
+
+            WorkflowUpdate::query()->create([
+                'workflow_command_id' => $cmd->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'update_name' => 'approve',
+                'status' => UpdateStatus::Accepted->value,
+                'accepted_at' => now(),
+            ]);
+        }
+
+        // The next update should be rejected.
+        $result = $workflow->submitUpdate('approve', true);
+
+        $this->assertTrue($result->rejected(), 'Update should have been rejected due to structural limit.');
+    }
+
+    public function testPendingUpdateLimitAllowsWhenUnderLimit(): void
+    {
+        WorkflowStub::fake();
+
+        config(['workflows.v2.structural_limits.pending_update_count' => 100]);
+
+        $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-ok-1');
+        $workflow->start();
+
+        $result = $workflow->submitUpdate('approve', true);
+
+        $this->assertTrue($result->accepted(), 'Update should have been accepted under limit.');
+    }
+
+    public function testDisabledPendingUpdateLimitDoesNotBlock(): void
+    {
+        WorkflowStub::fake();
+
+        config(['workflows.v2.structural_limits.pending_update_count' => 0]);
+
+        $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-disabled-1');
+        $workflow->start();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-update-disabled-1')
+            ->firstOrFail();
+
+        // Seed many pending updates via accepted commands.
+        for ($i = 0; $i < 10; $i++) {
+            $cmd = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'command_type' => 'update',
+                'status' => 'accepted',
+                'target_scope' => 'instance',
+                'command_sequence' => 9000 + $i,
+            ]);
+
+            WorkflowUpdate::query()->create([
+                'workflow_command_id' => $cmd->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'update_name' => 'approve',
+                'status' => UpdateStatus::Accepted->value,
+                'accepted_at' => now(),
+            ]);
+        }
+
+        $result = $workflow->submitUpdate('approve', true);
+
+        $this->assertTrue($result->accepted(), 'Update should have been accepted with limit disabled.');
     }
 }
