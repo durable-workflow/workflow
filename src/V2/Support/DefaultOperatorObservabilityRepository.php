@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 
 final class DefaultOperatorObservabilityRepository implements OperatorObservabilityRepository
 {
@@ -17,6 +18,14 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     public function runDetail(WorkflowRun $run): array
     {
         return RunDetailView::forRun($run);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function listItem(WorkflowRunSummary $summary): array
+    {
+        return RunListItemView::fromSummary($summary);
     }
 
     /**

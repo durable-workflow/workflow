@@ -6,6 +6,7 @@ namespace Workflow\V2\Contracts;
 
 use Carbon\CarbonInterface;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 
 interface OperatorObservabilityRepository
 {
@@ -13,6 +14,13 @@ interface OperatorObservabilityRepository
      * @return array<string, mixed>
      */
     public function runDetail(WorkflowRun $run): array;
+
+    /**
+     * Project a summary row into the typed list-item contract.
+     *
+     * @return array<string, mixed>
+     */
+    public function listItem(WorkflowRunSummary $summary): array;
 
     /**
      * @return array<string, mixed>
