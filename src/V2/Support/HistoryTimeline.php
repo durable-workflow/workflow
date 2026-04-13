@@ -756,6 +756,11 @@ final class HistoryTimeline
                 ?? self::stringValue($failure['source_id'] ?? null),
             'propagation_kind' => match ($event->event_type) {
                 HistoryEventType::ActivityFailed => 'activity',
+                HistoryEventType::ChildRunFailed => 'child',
+                HistoryEventType::ChildRunCancelled,
+                HistoryEventType::WorkflowCancelled => 'cancelled',
+                HistoryEventType::ChildRunTerminated,
+                HistoryEventType::WorkflowTerminated => 'terminated',
                 HistoryEventType::WorkflowFailed => 'terminal',
                 HistoryEventType::FailureHandled => self::stringValue($payload['propagation_kind'] ?? null)
                     ?? self::stringValue($failure['propagation_kind'] ?? null),
@@ -769,6 +774,10 @@ final class HistoryTimeline
                 ?? match ($event->event_type) {
                     HistoryEventType::ActivityFailed => 'activity',
                     HistoryEventType::ChildRunFailed => 'child_workflow',
+                    HistoryEventType::ChildRunCancelled,
+                    HistoryEventType::WorkflowCancelled => 'cancelled',
+                    HistoryEventType::ChildRunTerminated,
+                    HistoryEventType::WorkflowTerminated => 'terminated',
                     HistoryEventType::WorkflowFailed => 'application',
                     HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
                         ? null

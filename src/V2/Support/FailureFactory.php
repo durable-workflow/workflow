@@ -11,9 +11,14 @@ use ReflectionException;
 use ReflectionProperty;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Illuminate\Database\QueryException;
+use Illuminate\Queue\MaxAttemptsExceededException;
+use PDOException;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
+use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
+use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 
 final class FailureFactory
 {
@@ -58,8 +63,60 @@ final class FailureFactory
         return match ($propagationKind) {
             'activity' => FailureCategory::Activity,
             'child' => FailureCategory::ChildWorkflow,
+            'cancelled' => FailureCategory::Cancelled,
+            'terminated' => FailureCategory::Terminated,
+            'terminal', 'update' => self::classifyFromThrowable($throwable),
             default => FailureCategory::Application,
         };
+    }
+
+    /**
+     * Refine the failure category for terminal/update propagation by inspecting
+     * the throwable type. Falls back to Application for user-space exceptions.
+     */
+    private static function classifyFromThrowable(?Throwable $throwable): FailureCategory
+    {
+        if ($throwable === null) {
+            return FailureCategory::Application;
+        }
+
+        // Task-level failures: determinism violations, unsupported yields, replay shape errors.
+        if (
+            $throwable instanceof UnsupportedWorkflowYieldException
+            || $throwable instanceof StraightLineWorkflowRequiredException
+        ) {
+            return FailureCategory::TaskFailure;
+        }
+
+        // Infrastructure failures: database, PDO, queue exhaustion.
+        if (
+            $throwable instanceof QueryException
+            || $throwable instanceof PDOException
+            || $throwable instanceof MaxAttemptsExceededException
+        ) {
+            return FailureCategory::Internal;
+        }
+
+        // Timeout failures: check message convention for timeout-induced failures.
+        if (self::isTimeoutThrowable($throwable)) {
+            return FailureCategory::Timeout;
+        }
+
+        return FailureCategory::Application;
+    }
+
+    /**
+     * Detect throwables that represent timeout conditions. This checks for a
+     * conventional marker interface or a message pattern indicating a timeout.
+     */
+    private static function isTimeoutThrowable(Throwable $throwable): bool
+    {
+        $message = strtolower($throwable->getMessage());
+
+        return str_contains($message, 'timed out')
+            || str_contains($message, 'timeout exceeded')
+            || str_contains($message, 'execution deadline')
+            || str_contains($message, 'run deadline');
     }
 
     /**

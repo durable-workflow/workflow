@@ -11,6 +11,7 @@ use RuntimeException;
 use Throwable;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -695,12 +696,15 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ) ? $command['exception_class'] : RuntimeException::class;
         $exceptionType = is_string($command['exception_type'] ?? null) ? $command['exception_type'] : null;
 
+        $failureCategory = FailureFactory::classify('terminal', 'workflow_run');
+
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create([
             'workflow_run_id' => $run->id,
             'source_kind' => 'workflow_run',
             'source_id' => $run->id,
             'propagation_kind' => 'terminal',
+            'failure_category' => $failureCategory->value,
             'handled' => false,
             'exception_class' => $exceptionClass,
             'message' => $message,
@@ -720,6 +724,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'failure_id' => $failure->id,
             'source_kind' => 'workflow_run',
             'source_id' => $run->id,
+            'failure_category' => $failureCategory->value,
             'exception_type' => $exceptionType,
             'exception_class' => $exceptionClass,
             'message' => $message,
