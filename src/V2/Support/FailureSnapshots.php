@@ -146,6 +146,7 @@ final class FailureSnapshots
             'source_id' => $failure->source_id,
             'propagation_kind' => $failure->propagation_kind,
             'failure_category' => $failure->failure_category?->value ?? $failure->failure_category,
+            'non_retryable' => (bool) $failure->non_retryable,
             'handled' => (bool) $failure->handled,
             'history_authority' => self::HISTORY_AUTHORITY_FAILURE_ROW_FALLBACK,
             'diagnostic_only' => true,
@@ -223,6 +224,7 @@ final class FailureSnapshots
             'failure_category' => self::stringValue($event->payload['failure_category'] ?? null)
                 ?? ($failure?->failure_category?->value ?? $failure?->failure_category)
                 ?? self::failureCategoryForEvent($event),
+            'non_retryable' => (bool) ($event->payload['non_retryable'] ?? $failure?->non_retryable ?? false),
             'handled' => (bool) ($failure?->handled ?? false),
             'history_authority' => self::HISTORY_AUTHORITY_TYPED,
             'diagnostic_only' => false,

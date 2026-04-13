@@ -26,6 +26,7 @@ class WorkflowFailure extends Model
 
     protected $casts = [
         'handled' => 'bool',
+        'non_retryable' => 'bool',
         'failure_category' => FailureCategory::class,
     ];
 

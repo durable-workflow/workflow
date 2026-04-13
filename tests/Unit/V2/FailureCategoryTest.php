@@ -9,6 +9,8 @@ use Illuminate\Queue\MaxAttemptsExceededException;
 use PDOException;
 use RuntimeException;
 use Tests\TestCase;
+use Workflow\Exceptions\NonRetryableException;
+use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\StructuralLimitKind;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
@@ -488,5 +490,64 @@ final class FailureCategoryTest extends TestCase
         $this->assertSame(StructuralLimitKind::CommandBatchSize, $exception->limitKind);
         $this->assertSame(1500, $exception->currentValue);
         $this->assertSame(1000, $exception->configuredLimit);
+    }
+
+    // ---------------------------------------------------------------
+    //  FailureFactory::isNonRetryable() — throwable-based detection
+    // ---------------------------------------------------------------
+
+    public function testNonRetryableExceptionContractIsDetected(): void
+    {
+        $throwable = new NonRetryableException('Payment permanently declined');
+
+        $this->assertTrue(FailureFactory::isNonRetryable($throwable));
+    }
+
+    public function testRegularExceptionIsNotNonRetryable(): void
+    {
+        $throwable = new RuntimeException('Temporary network error');
+
+        $this->assertFalse(FailureFactory::isNonRetryable($throwable));
+    }
+
+    public function testNullThrowableIsNotNonRetryable(): void
+    {
+        $this->assertFalse(FailureFactory::isNonRetryable(null));
+    }
+
+    public function testCustomNonRetryableExceptionIsDetected(): void
+    {
+        $throwable = new class('Custom non-retryable') extends RuntimeException implements NonRetryableExceptionContract {};
+
+        $this->assertTrue(FailureFactory::isNonRetryable($throwable));
+    }
+
+    // ---------------------------------------------------------------
+    //  FailureFactory::isNonRetryableFromStrings() — string detection
+    // ---------------------------------------------------------------
+
+    public function testNonRetryableFromStringsDetectsKnownClass(): void
+    {
+        $this->assertTrue(FailureFactory::isNonRetryableFromStrings(NonRetryableException::class));
+    }
+
+    public function testNonRetryableFromStringsReturnsFalseForRegularException(): void
+    {
+        $this->assertFalse(FailureFactory::isNonRetryableFromStrings(RuntimeException::class));
+    }
+
+    public function testNonRetryableFromStringsReturnsFalseForNull(): void
+    {
+        $this->assertFalse(FailureFactory::isNonRetryableFromStrings(null));
+    }
+
+    public function testNonRetryableFromStringsReturnsFalseForEmptyString(): void
+    {
+        $this->assertFalse(FailureFactory::isNonRetryableFromStrings(''));
+    }
+
+    public function testNonRetryableFromStringsReturnsFalseForUnresolvableClass(): void
+    {
+        $this->assertFalse(FailureFactory::isNonRetryableFromStrings('App\\Exceptions\\DeletedExceptionClass'));
     }
 }

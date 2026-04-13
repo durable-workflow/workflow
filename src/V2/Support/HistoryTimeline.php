@@ -801,6 +801,7 @@ final class HistoryTimeline
                         : 'application',
                     default => null,
                 },
+            'non_retryable' => (bool) ($payload['non_retryable'] ?? $failure['non_retryable'] ?? false),
             'handled' => match ($event->event_type) {
                 HistoryEventType::FailureHandled => true,
                 HistoryEventType::ActivityFailed,

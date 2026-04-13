@@ -701,6 +701,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $exceptionType = is_string($command['exception_type'] ?? null) ? $command['exception_type'] : null;
 
         $failureCategory = FailureFactory::classifyFromStrings('terminal', 'workflow_run', $exceptionClass, $message);
+        $nonRetryable = (bool) ($command['non_retryable'] ?? FailureFactory::isNonRetryableFromStrings($exceptionClass));
 
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create([
@@ -709,6 +710,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'source_id' => $run->id,
             'propagation_kind' => 'terminal',
             'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
             'handled' => false,
             'exception_class' => $exceptionClass,
             'message' => $message,
@@ -729,6 +731,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'source_kind' => 'workflow_run',
             'source_id' => $run->id,
             'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
             'exception_type' => $exceptionType,
             'exception_class' => $exceptionClass,
             'message' => $message,

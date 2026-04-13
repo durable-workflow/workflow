@@ -2372,6 +2372,7 @@ final class WorkflowExecutor
         }
 
         $failureCategory = FailureFactory::classify('terminal', $sourceKind, $throwable);
+        $nonRetryable = FailureFactory::isNonRetryable($throwable);
 
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create(array_merge(
@@ -2382,6 +2383,7 @@ final class WorkflowExecutor
                 'source_id' => $sourceId,
                 'propagation_kind' => 'terminal',
                 'failure_category' => $failureCategory->value,
+                'non_retryable' => $nonRetryable,
                 'handled' => false,
             ],
         ));
@@ -2400,6 +2402,7 @@ final class WorkflowExecutor
             'source_kind' => $sourceKind,
             'source_id' => $sourceId,
             'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
             'exception_type' => $exceptionPayload['type'] ?? null,
             'exception_class' => $failure->exception_class,
             'message' => $failure->message,
@@ -3413,6 +3416,7 @@ final class WorkflowExecutor
             } catch (Throwable $throwable) {
                 $exceptionPayload = FailureFactory::payload($throwable);
                 $updateFailureCategory = FailureFactory::classify('update', 'workflow_command', $throwable);
+                $updateNonRetryable = FailureFactory::isNonRetryable($throwable);
 
                 /** @var WorkflowFailure $failure */
                 $failure = WorkflowFailure::query()->create(array_merge(
@@ -3423,6 +3427,7 @@ final class WorkflowExecutor
                         'source_id' => $command?->id ?? $update->id,
                         'propagation_kind' => 'update',
                         'failure_category' => $updateFailureCategory->value,
+                        'non_retryable' => $updateNonRetryable,
                         'handled' => false,
                     ],
                 ));
@@ -3436,6 +3441,7 @@ final class WorkflowExecutor
                     'sequence' => $sequence,
                     'failure_id' => $failure->id,
                     'failure_category' => $updateFailureCategory->value,
+                    'non_retryable' => $updateNonRetryable,
                     'exception_type' => $exceptionPayload['type'] ?? null,
                     'exception_class' => $failure->exception_class,
                     'message' => $failure->message,

@@ -231,6 +231,7 @@ final class ActivityOutcomeRecorder
             } else {
                 $exceptionPayload = FailureFactory::payload($throwable);
                 $activityFailureCategory = FailureFactory::classify('activity', 'activity_execution', $throwable);
+                $activityNonRetryable = FailureFactory::isNonRetryable($throwable);
 
                 /** @var WorkflowFailure $failure */
                 $failure = WorkflowFailure::query()->create(array_merge(
@@ -241,6 +242,7 @@ final class ActivityOutcomeRecorder
                         'source_id' => $lockedExecution->id,
                         'propagation_kind' => 'activity',
                         'failure_category' => $activityFailureCategory->value,
+                        'non_retryable' => $activityNonRetryable,
                         'handled' => false,
                     ],
                 ));
@@ -260,6 +262,7 @@ final class ActivityOutcomeRecorder
                     'attempt_number' => $attemptCount,
                     'failure_id' => $failure->id,
                     'failure_category' => $activityFailureCategory->value,
+                    'non_retryable' => $activityNonRetryable,
                     'exception_type' => $exceptionPayload['type'] ?? null,
                     'exception_class' => $failure->exception_class,
                     'message' => $failure->message,

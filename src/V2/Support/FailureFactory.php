@@ -14,6 +14,7 @@ use Workflow\Serializers\Serializer;
 use Illuminate\Database\QueryException;
 use Illuminate\Queue\MaxAttemptsExceededException;
 use PDOException;
+use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
@@ -86,6 +87,34 @@ final class FailureFactory
             'terminal', 'update' => self::classifyFromExceptionStrings($exceptionClass, $message),
             default => FailureCategory::Application,
         };
+    }
+
+    /**
+     * Determine whether a failure should be marked as non-retryable. A
+     * non-retryable failure will never be automatically retried by the engine,
+     * regardless of the retry policy.
+     */
+    public static function isNonRetryable(?Throwable $throwable): bool
+    {
+        return $throwable instanceof NonRetryableExceptionContract;
+    }
+
+    /**
+     * Determine non-retryable status from a recorded exception class string.
+     * Used by the external worker bridge and backfill commands where the
+     * original throwable is not available.
+     */
+    public static function isNonRetryableFromStrings(?string $exceptionClass): bool
+    {
+        if ($exceptionClass === null || $exceptionClass === '') {
+            return false;
+        }
+
+        if (! class_exists($exceptionClass)) {
+            return false;
+        }
+
+        return is_a($exceptionClass, NonRetryableExceptionContract::class, true);
     }
 
     /**
