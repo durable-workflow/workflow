@@ -1148,6 +1148,9 @@ final class WorkflowExecutor
             ? now()->addSeconds($options->scheduleToCloseTimeout)
             : null;
 
+        $serializedArguments = Serializer::serialize($activityCall->arguments);
+        StructuralLimits::guardPayloadSize($serializedArguments);
+
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
@@ -1156,7 +1159,7 @@ final class WorkflowExecutor
             'activity_type' => TypeRegistry::for($activityCall->activity),
             'status' => ActivityStatus::Pending->value,
             'attempt_count' => 0,
-            'arguments' => Serializer::serialize($activityCall->arguments),
+            'arguments' => $serializedArguments,
             'connection' => RoutingResolver::activityConnection($activityCall->activity, $run, $options),
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run, $options),
             'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
@@ -1286,6 +1289,9 @@ final class WorkflowExecutor
         $commandContract = RunCommandContract::snapshot($childWorkflowCall->workflow);
         $now = now();
 
+        $serializedChildArguments = Serializer::serialize($metadata->arguments);
+        StructuralLimits::guardPayloadSize($serializedChildArguments);
+
         /** @var WorkflowInstance $childInstance */
         $childInstance = WorkflowInstance::query()->create([
             'workflow_class' => $childWorkflowCall->workflow,
@@ -1306,7 +1312,7 @@ final class WorkflowExecutor
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
             'payload_codec' => config('workflows.serializer'),
-            'arguments' => Serializer::serialize($metadata->arguments),
+            'arguments' => $serializedChildArguments,
             'connection' => RoutingResolver::workflowConnection($childWorkflowCall->workflow, $metadata),
             'queue' => RoutingResolver::workflowQueue($childWorkflowCall->workflow, $metadata),
             'started_at' => $now,
@@ -3056,6 +3062,8 @@ final class WorkflowExecutor
 
         ksort($merged);
 
+        StructuralLimits::guardSearchAttributeSize(json_encode($merged, JSON_THROW_ON_ERROR));
+
         $run->search_attributes = $merged;
         $run->save();
 
@@ -3105,6 +3113,8 @@ final class WorkflowExecutor
         }
 
         ksort($merged);
+
+        StructuralLimits::guardMemoSize(json_encode($merged, JSON_THROW_ON_ERROR));
 
         $run->memo = $merged;
         $run->save();
