@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestContinueAsNewActivity;
 use Tests\Fixtures\V2\TestLongRunningChildWorkflow;
+use Tests\Fixtures\V2\TestParentWithClosePolicyContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWithClosePolicyWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
@@ -219,11 +221,103 @@ final class V2ParentClosePolicyTest extends TestCase
         $this->assertArrayHasKey('reason', $appliedEvent->payload);
     }
 
-    private function drainReadyTasks(): void
+    public function testContinueAsNewDoesNotTriggerParentClosePolicy(): void
+    {
+        $workflow = WorkflowStub::make(
+            TestParentWithClosePolicyContinuingChildWorkflow::class,
+            'continue-no-trigger',
+        );
+        // Child will continue-as-new once (count 0 → 1), then complete on count 1 (max=1).
+        $workflow->start('request_cancel', 1);
+
+        $this->drainReadyTasks();
+
+        // The child did continue-as-new, which should NOT have triggered the parent-close
+        // policy. The parent should complete normally with the child's final result.
+        $this->assertTrue($workflow->refresh()->completed());
+
+        // Verify no ParentClosePolicyApplied event was recorded — the child's
+        // continue-as-new was not treated as a close event.
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'continue-no-trigger')
+            ->first();
+
+        $appliedEvents = $parentRun->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->get();
+
+        $this->assertCount(0, $appliedEvents, 'Continue-as-new should not trigger parent-close policy.');
+    }
+
+    public function testParentClosePolicySurvivesContinueAsNewOnChild(): void
+    {
+        // Use a child that continues-as-new multiple times before completing.
+        // Set max high enough that the child will be mid-continuation when we terminate.
+        $workflow = WorkflowStub::make(
+            TestParentWithClosePolicyContinuingChildWorkflow::class,
+            'policy-survives-continue',
+        );
+        // Child: count=0, max=5 — will continue-as-new at counts 0,1,2,3,4 and complete at 5.
+        $workflow->start('request_cancel', 5);
+
+        // Drain a few tasks so the child starts and does at least one continue-as-new.
+        $this->drainReadyTasks(maxIterations: 6);
+
+        // Parent should be waiting on the child.
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        // Find the current child link — should be pointing to a continued run.
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_instance_id', 'policy-survives-continue')
+            ->where('link_type', 'child_workflow')
+            ->get();
+
+        // At least 2 links: original + at least one continue-as-new.
+        $this->assertGreaterThanOrEqual(2, $links->count());
+
+        // The latest child link should still carry the parent_close_policy.
+        $latestLink = $links->last();
+        $this->assertSame('request_cancel', $latestLink->parent_close_policy);
+
+        // Now terminate the parent — the policy should apply to the current child run.
+        $childInstanceId = $latestLink->child_workflow_instance_id;
+        $childStub = WorkflowStub::load($childInstanceId);
+
+        // Child should be in a non-terminal state.
+        $childStatus = $childStub->status();
+        $this->assertContains($childStatus, ['waiting', 'running', 'pending']);
+
+        $result = $workflow->attemptTerminate('test termination after continue-as-new');
+        $this->assertTrue($result->accepted());
+        $this->assertSame('terminated', $workflow->refresh()->status());
+
+        // The request_cancel policy should have cancelled the child.
+        $childStub->refresh();
+        $this->assertSame('cancelled', $childStub->status());
+
+        // Confirm the ParentClosePolicyApplied event was recorded.
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'policy-survives-continue')
+            ->first();
+
+        $appliedEvent = $parentRun->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->first();
+
+        $this->assertNotNull($appliedEvent, 'Parent-close policy should be enforced on the continued child run.');
+        $this->assertSame('request_cancel', $appliedEvent->payload['policy']);
+    }
+
+    private function drainReadyTasks(int $maxIterations = 0): void
     {
         $deadline = microtime(true) + 10;
+        $iterations = 0;
 
         while (microtime(true) < $deadline) {
+            if ($maxIterations > 0 && $iterations >= $maxIterations) {
+                return;
+            }
+
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->where('status', TaskStatus::Ready->value)
@@ -241,6 +335,7 @@ final class V2ParentClosePolicyTest extends TestCase
             };
 
             $this->app->call([$job, 'handle']);
+            $iterations++;
         }
 
         $this->fail('Timed out draining ready workflow tasks.');

@@ -1979,6 +1979,7 @@ final class WorkflowExecutor
                 'child_workflow_run_id' => $continuedRun->id,
                 'is_primary_parent' => $parentChildLink->is_primary_parent,
                 'parallel_group_path' => $parentChildLink->parallel_group_path,
+                'parent_close_policy' => $parentChildLink->parent_close_policy,
             ]);
 
             if (
