@@ -110,7 +110,15 @@ abstract class Workflow
                 $calls[] = $compensation();
             }
 
-            all($calls);
+            if ($this->continueWithError) {
+                try {
+                    all($calls);
+                } catch (Throwable) {
+                    // continueWithError applies uniformly: swallow parallel compensation failures
+                }
+            } else {
+                all($calls);
+            }
         } else {
             foreach ($reversed as $compensation) {
                 try {

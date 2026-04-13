@@ -11,6 +11,8 @@ use Tests\Fixtures\V2\TestSagaCancelActivity;
 use Tests\Fixtures\V2\TestSagaContinueWithErrorWorkflow;
 use Tests\Fixtures\V2\TestSagaFailingCancelActivity;
 use Tests\Fixtures\V2\TestSagaParallelCompensationWorkflow;
+use Tests\Fixtures\V2\TestSagaParallelContinueWithErrorWorkflow;
+use Tests\Fixtures\V2\TestSagaParallelFailingCompensationWorkflow;
 use Tests\Fixtures\V2\TestSagaSuccessWorkflow;
 use Tests\Fixtures\V2\TestSagaWorkflow;
 use Tests\TestCase;
@@ -233,6 +235,82 @@ final class V2SagaWorkflowTest extends TestCase
         $failedCount = array_count_values($events)[HistoryEventType::ActivityFailed->value] ?? 0;
         // 1 failing activity
         $this->assertSame(1, $failedCount);
+    }
+
+    public function testSagaParallelContinueWithErrorRunsAllCompensationsWhenOneFails(): void
+    {
+        WorkflowStub::fake();
+
+        $bookingSequence = 0;
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+            $bookingSequence++;
+
+            return "{$service}-id-{$bookingSequence}";
+        });
+
+        WorkflowStub::mock(TestFailingActivity::class, static function (): never {
+            throw new RuntimeException('payment failed');
+        });
+
+        WorkflowStub::mock(TestSagaFailingCancelActivity::class, static function ($ctx, string $service, string $bookingId): never {
+            throw new RuntimeException("Cancel failed for {$service}");
+        });
+
+        $cancelLog = [];
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+            $cancelLog[] = "{$service}:{$bookingId}";
+
+            return "cancelled-{$bookingId}";
+        });
+
+        $workflow = WorkflowStub::make(TestSagaParallelContinueWithErrorWorkflow::class, 'saga-parallel-continue');
+        $workflow->start();
+
+        $this->assertTrue($workflow->refresh()->completed());
+
+        $output = $workflow->output();
+        $this->assertTrue($output['compensated']);
+        $this->assertSame('payment failed', $output['reason']);
+
+        // Hotel cancel should run even though flight cancel (TestSagaFailingCancelActivity) throws.
+        // Both compensations are dispatched in parallel; continueWithError swallows the failure.
+        $this->assertSame(['hotel:hotel-id-2'], $cancelLog);
+
+        WorkflowStub::assertDispatchedTimes(TestSagaFailingCancelActivity::class, 1);
+        WorkflowStub::assertDispatchedTimes(TestSagaCancelActivity::class, 1);
+    }
+
+    public function testSagaParallelWithoutContinueWithErrorPropagatesCompensationFailure(): void
+    {
+        WorkflowStub::fake();
+
+        $bookingSequence = 0;
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+            $bookingSequence++;
+
+            return "{$service}-id-{$bookingSequence}";
+        });
+
+        WorkflowStub::mock(TestFailingActivity::class, static function (): never {
+            throw new RuntimeException('payment failed');
+        });
+
+        WorkflowStub::mock(TestSagaFailingCancelActivity::class, static function ($ctx, string $service, string $bookingId): never {
+            throw new RuntimeException("Cancel failed for {$service}");
+        });
+
+        $cancelLog = [];
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+            $cancelLog[] = "{$service}:{$bookingId}";
+
+            return "cancelled-{$bookingId}";
+        });
+
+        $workflow = WorkflowStub::make(TestSagaParallelFailingCompensationWorkflow::class, 'saga-parallel-fail');
+        $workflow->start();
+
+        // Without continueWithError, the compensation failure propagates and the workflow fails.
+        $this->assertTrue($workflow->refresh()->failed());
     }
 
     public function testSagaWithoutFailureDoesNotTriggerCompensation(): void
