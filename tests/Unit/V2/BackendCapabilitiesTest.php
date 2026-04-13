@@ -98,4 +98,55 @@ final class BackendCapabilitiesTest extends TestCase
             'row_locks' => false,
         ], $snapshot['database']['capabilities']);
     }
+
+    // ---------------------------------------------------------------
+    //  Structural limits in backend contract
+    // ---------------------------------------------------------------
+
+    public function testSnapshotIncludesStructuralLimitsContract(): void
+    {
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertArrayHasKey('structural_limits', $snapshot);
+        $this->assertArrayHasKey('configured', $snapshot['structural_limits']);
+        $this->assertArrayHasKey('backend_adjustments', $snapshot['structural_limits']);
+        $this->assertArrayHasKey('effective', $snapshot['structural_limits']);
+        $this->assertArrayHasKey('issues', $snapshot['structural_limits']);
+
+        $this->assertArrayHasKey('pending_activity_count', $snapshot['structural_limits']['configured']);
+        $this->assertArrayHasKey('warning_threshold_percent', $snapshot['structural_limits']['configured']);
+    }
+
+    public function testSqsQueuePublishesMaxDelayConstraint(): void
+    {
+        config()->set('queue.default', 'sqs');
+        config()->set('queue.connections.sqs.driver', 'sqs');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame(900, $snapshot['structural_limits']['backend_adjustments']['max_single_timer_delay_seconds'] ?? null);
+        $this->assertSame(900, $snapshot['structural_limits']['effective']['max_single_timer_delay_seconds'] ?? null);
+        $this->assertContains('queue_max_delay_constraint', array_column($snapshot['structural_limits']['issues'], 'code'));
+    }
+
+    public function testSqliteDatabasePublishesConcurrencyNote(): void
+    {
+        config()->set('database.default', 'sqlite');
+        config()->set('database.connections.sqlite.driver', 'sqlite');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame('limited', $snapshot['structural_limits']['backend_adjustments']['concurrent_write_safety'] ?? null);
+        $this->assertContains('sqlite_concurrency_note', array_column($snapshot['structural_limits']['issues'], 'code'));
+    }
+
+    public function testMysqlDatabaseDoesNotPublishConcurrencyNote(): void
+    {
+        config()->set('database.default', 'mysql');
+        config()->set('database.connections.mysql.driver', 'mysql');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertArrayNotHasKey('concurrent_write_safety', $snapshot['structural_limits']['backend_adjustments']);
+    }
 }

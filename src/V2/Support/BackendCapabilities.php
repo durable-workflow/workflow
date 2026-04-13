@@ -24,7 +24,8 @@ final class BackendCapabilities
         $database = self::database($databaseConnection);
         $queue = self::queue($queueConnection);
         $cache = self::cache($cacheStore);
-        $issues = array_values(array_merge($database['issues'], $queue['issues'], $cache['issues']));
+        $limits = self::structuralLimits($database, $queue);
+        $issues = array_values(array_merge($database['issues'], $queue['issues'], $cache['issues'], $limits['issues']));
 
         return [
             'generated_at' => $now->toJSON(),
@@ -32,6 +33,7 @@ final class BackendCapabilities
             'database' => $database,
             'queue' => $queue,
             'cache' => $cache,
+            'structural_limits' => $limits,
             'issues' => $issues,
         ];
     }
@@ -171,6 +173,64 @@ final class BackendCapabilities
             'capabilities' => [
                 'atomic_locks' => $lockSupported,
             ],
+            'issues' => $issues,
+        ];
+    }
+
+    /**
+     * Publish the structural-limit contract adjusted for the current backend.
+     *
+     * Most limits are backend-independent (they are pure config values). The
+     * queue driver, however, may impose additional ceiling constraints — for
+     * example, SQS caps delayed delivery at 900 seconds, which affects the
+     * maximum timer delay that can be expressed in a single queue message.
+     *
+     * @param array<string, mixed> $database
+     * @param array<string, mixed> $queue
+     * @return array<string, mixed>
+     */
+    private static function structuralLimits(array $database, array $queue): array
+    {
+        $configured = StructuralLimits::snapshot();
+        $issues = [];
+
+        $queueDriver = $queue['driver'] ?? null;
+        $maxQueueDelay = $queue['capabilities']['max_delay_seconds'] ?? null;
+
+        $backendAdjustments = [];
+
+        if (is_int($maxQueueDelay) && $maxQueueDelay > 0) {
+            $backendAdjustments['max_single_timer_delay_seconds'] = $maxQueueDelay;
+
+            $issues[] = self::issue(
+                'structural_limits',
+                'info',
+                'queue_max_delay_constraint',
+                sprintf(
+                    'The [%s] queue driver limits delayed dispatch to %d seconds; timers exceeding this are chunked by the transport layer.',
+                    $queueDriver ?? 'unknown',
+                    $maxQueueDelay,
+                ),
+            );
+        }
+
+        $dbDriver = $database['driver'] ?? null;
+
+        if ($dbDriver === 'sqlite') {
+            $backendAdjustments['concurrent_write_safety'] = 'limited';
+
+            $issues[] = self::issue(
+                'structural_limits',
+                'info',
+                'sqlite_concurrency_note',
+                'SQLite serializes writes; high pending-count limits may cause lock contention under concurrent worker load.',
+            );
+        }
+
+        return [
+            'configured' => $configured,
+            'backend_adjustments' => $backendAdjustments,
+            'effective' => array_merge($configured, $backendAdjustments),
             'issues' => $issues,
         ];
     }

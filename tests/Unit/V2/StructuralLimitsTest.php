@@ -224,6 +224,137 @@ final class StructuralLimitsTest extends TestCase
     }
 
     // ---------------------------------------------------------------
+    //  Warning threshold
+    // ---------------------------------------------------------------
+
+    public function testDefaultWarningThresholdPercent(): void
+    {
+        $this->assertSame(80, StructuralLimits::warningThresholdPercent());
+    }
+
+    public function testConfigOverridesWarningThreshold(): void
+    {
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 90]);
+
+        $this->assertSame(90, StructuralLimits::warningThresholdPercent());
+    }
+
+    public function testWarningThresholdClampedToZeroMin(): void
+    {
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => -10]);
+
+        $this->assertSame(0, StructuralLimits::warningThresholdPercent());
+    }
+
+    public function testWarningThresholdClampedTo100Max(): void
+    {
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 150]);
+
+        $this->assertSame(100, StructuralLimits::warningThresholdPercent());
+    }
+
+    // ---------------------------------------------------------------
+    //  checkApproaching
+    // ---------------------------------------------------------------
+
+    public function testCheckApproachingReturnsNullBelowThreshold(): void
+    {
+        config(['workflows.v2.structural_limits.pending_activity_count' => 100]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingActivityCount, 79);
+
+        $this->assertNull($result);
+    }
+
+    public function testCheckApproachingReturnsWarningAtThreshold(): void
+    {
+        config(['workflows.v2.structural_limits.pending_activity_count' => 100]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingActivityCount, 80);
+
+        $this->assertNotNull($result);
+        $this->assertSame('pending_activity_count', $result['limit_kind']);
+        $this->assertSame(80, $result['current']);
+        $this->assertSame(100, $result['limit']);
+        $this->assertSame(80, $result['threshold_percent']);
+        $this->assertSame(80, $result['utilization_percent']);
+    }
+
+    public function testCheckApproachingReturnsWarningAboveThreshold(): void
+    {
+        config(['workflows.v2.structural_limits.command_batch_size' => 1000]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::checkApproaching(StructuralLimitKind::CommandBatchSize, 950);
+
+        $this->assertNotNull($result);
+        $this->assertSame(95, $result['utilization_percent']);
+    }
+
+    public function testCheckApproachingReturnsNullWhenLimitDisabled(): void
+    {
+        config(['workflows.v2.structural_limits.pending_activity_count' => 0]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingActivityCount, 999);
+
+        $this->assertNull($result);
+    }
+
+    public function testCheckApproachingReturnsNullWhenThresholdDisabled(): void
+    {
+        config(['workflows.v2.structural_limits.pending_activity_count' => 100]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 0]);
+
+        $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingActivityCount, 99);
+
+        $this->assertNull($result);
+    }
+
+    public function testWarnApproachingHistoryTransactionReturnsWarning(): void
+    {
+        config(['workflows.v2.structural_limits.history_transaction_size' => 100]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::warnApproachingHistoryTransaction(85);
+
+        $this->assertNotNull($result);
+        $this->assertSame('history_transaction_size', $result['limit_kind']);
+    }
+
+    public function testWarnApproachingCommandBatchReturnsWarning(): void
+    {
+        config(['workflows.v2.structural_limits.command_batch_size' => 50]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        $result = StructuralLimits::warnApproachingCommandBatch(45);
+
+        $this->assertNotNull($result);
+        $this->assertSame('command_batch_size', $result['limit_kind']);
+    }
+
+    // ---------------------------------------------------------------
+    //  limitForKind
+    // ---------------------------------------------------------------
+
+    public function testLimitForKindReturnsConfiguredLimit(): void
+    {
+        config(['workflows.v2.structural_limits.pending_timer_count' => 500]);
+
+        $this->assertSame(500, StructuralLimits::limitForKind(StructuralLimitKind::PendingTimerCount));
+    }
+
+    public function testLimitForKindCoversAllKinds(): void
+    {
+        foreach (StructuralLimitKind::cases() as $kind) {
+            $limit = StructuralLimits::limitForKind($kind);
+            $this->assertIsInt($limit, "limitForKind should return int for {$kind->value}");
+        }
+    }
+
+    // ---------------------------------------------------------------
     //  Snapshot
     // ---------------------------------------------------------------
 
@@ -241,6 +372,7 @@ final class StructuralLimitsTest extends TestCase
         $this->assertArrayHasKey('memo_size_bytes', $snapshot);
         $this->assertArrayHasKey('search_attribute_size_bytes', $snapshot);
         $this->assertArrayHasKey('history_transaction_size', $snapshot);
+        $this->assertArrayHasKey('warning_threshold_percent', $snapshot);
     }
 
     // ---------------------------------------------------------------

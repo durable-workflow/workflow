@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Log;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLargeMemoWorkflow;
@@ -409,5 +410,91 @@ final class V2StructuralLimitTest extends TestCase
         $firstSnapshot = $snapshots[0];
         $this->assertSame(FailureCategory::StructuralLimit->value, $firstSnapshot['failure_category']);
         $this->assertSame('command_batch_size', $firstSnapshot['structural_limit_kind']);
+    }
+
+    // ---------------------------------------------------------------
+    //  Soft-limit warning tests
+    // ---------------------------------------------------------------
+
+    public function testSoftLimitWarningLoggedWhenApproachingCommandBatchLimit(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        // Limit = 10, threshold = 80% → warning at >= 8 items.
+        // Dispatching 9 parallel activities should trigger a warning but succeed.
+        config(['workflows.v2.structural_limits.command_batch_size' => 10]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(function (string $message) {
+                return str_contains($message, 'approaching structural limit')
+                    && str_contains($message, 'command_batch_size');
+            });
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-warn-batch-1');
+        $workflow->start(9);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed despite approaching limit.');
+    }
+
+    public function testNoSoftLimitWarningWhenBelowThreshold(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        // Limit = 1000, threshold = 80% → warning at >= 800.
+        // Only dispatching 3 activities — well below threshold.
+        config(['workflows.v2.structural_limits.command_batch_size' => 1000]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+
+        Log::shouldReceive('warning')
+            ->never()
+            ->withArgs(function (string $message) {
+                return str_contains($message, 'approaching structural limit');
+            });
+        Log::makePartial();
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-nowarn-batch-1');
+        $workflow->start(3);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed.');
+    }
+
+    public function testSoftLimitWarningDisabledWhenThresholdIsZero(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config(['workflows.v2.structural_limits.command_batch_size' => 5]);
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 0]);
+
+        Log::shouldReceive('warning')
+            ->never()
+            ->withArgs(function (string $message) {
+                return str_contains($message, 'approaching structural limit');
+            });
+        Log::makePartial();
+
+        $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-nowarn-disabled-1');
+        $workflow->start(4); // 4/5 = 80%, but threshold is disabled.
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed with warning threshold disabled.');
+    }
+
+    public function testSnapshotIncludesWarningThreshold(): void
+    {
+        config(['workflows.v2.structural_limits.warning_threshold_percent' => 90]);
+
+        $snapshot = StructuralLimits::snapshot();
+
+        $this->assertSame(90, $snapshot['warning_threshold_percent']);
     }
 }

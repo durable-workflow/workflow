@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use LogicException;
 use ReflectionMethod;
@@ -99,6 +100,7 @@ final class WorkflowExecutor
             if ($eventsInTransaction > 0) {
                 try {
                     StructuralLimits::guardHistoryTransactionSize($eventsInTransaction);
+                    $this->logApproachingLimit(StructuralLimits::warnApproachingHistoryTransaction($eventsInTransaction), $run);
                 } catch (StructuralLimitExceededException $limitExceeded) {
                     $this->failRun($run, $task, $limitExceeded, 'workflow_run', $run->id);
 
@@ -784,6 +786,7 @@ final class WorkflowExecutor
 
                 try {
                     StructuralLimits::guardCommandBatchSize($groupSize);
+                    $this->logApproachingLimit(StructuralLimits::warnApproachingCommandBatch($groupSize), $run);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -1148,6 +1151,7 @@ final class WorkflowExecutor
         bool $parkRun = true,
     ): WorkflowTask {
         StructuralLimits::guardPendingActivities($run);
+        $this->logApproachingLimit(StructuralLimits::warnApproachingPendingActivities($run), $run);
 
         EntryMethod::describeActivity($activityCall->activity);
 
@@ -1296,6 +1300,7 @@ final class WorkflowExecutor
         bool $parkRun = true,
     ): WorkflowTask {
         StructuralLimits::guardPendingChildren($run);
+        $this->logApproachingLimit(StructuralLimits::warnApproachingPendingChildren($run), $run);
 
         $metadata = WorkflowMetadata::fromStartArguments($childWorkflowCall->arguments);
         $workflowType = TypeRegistry::for($childWorkflowCall->workflow);
@@ -1478,6 +1483,7 @@ final class WorkflowExecutor
         TimerCall $timerCall,
     ): WorkflowTask {
         StructuralLimits::guardPendingTimers($run);
+        $this->logApproachingLimit(StructuralLimits::warnApproachingPendingTimers($run), $run);
 
         $fireAt = now()
             ->addSeconds($timerCall->seconds);
@@ -3746,5 +3752,37 @@ final class WorkflowExecutor
         $path = ParallelChildGroup::metadataPathFromPayload($parallelMetadata);
 
         return $path === [] ? null : $path;
+    }
+
+    /**
+     * Log a structured warning when a count-based resource is approaching
+     * its hard structural limit. Callers pass the result of one of the
+     * `StructuralLimits::warnApproaching*()` helpers — null means "safe,
+     * no warning needed."
+     *
+     * @param array{limit_kind: string, current: int, limit: int, threshold_percent: int, utilization_percent: int}|null $warning
+     */
+    private function logApproachingLimit(?array $warning, WorkflowRun $run): void
+    {
+        if ($warning === null) {
+            return;
+        }
+
+        Log::warning(sprintf(
+            '[Durable Workflow] Run %d approaching structural limit [%s]: %d / %d (%d%% utilization, warning at %d%%).',
+            $run->id,
+            $warning['limit_kind'],
+            $warning['current'],
+            $warning['limit'],
+            $warning['utilization_percent'],
+            $warning['threshold_percent'],
+        ), [
+            'workflow_run_id' => $run->id,
+            'workflow_type' => $run->workflow_type,
+            'limit_kind' => $warning['limit_kind'],
+            'current' => $warning['current'],
+            'limit' => $warning['limit'],
+            'utilization_percent' => $warning['utilization_percent'],
+        ]);
     }
 }
