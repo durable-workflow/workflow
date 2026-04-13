@@ -52,6 +52,12 @@ final class TaskDispatcher
             return;
         }
 
+        if (self::isPollMode()) {
+            self::markDispatched($task, $attemptedAt);
+
+            return;
+        }
+
         try {
             self::ensureBackendSupportsDispatch($task);
 
@@ -62,6 +68,11 @@ final class TaskDispatcher
 
             throw $throwable;
         }
+    }
+
+    private static function isPollMode(): bool
+    {
+        return config('workflows.v2.task_dispatch_mode') === 'poll';
     }
 
     private static function ensureBackendSupportsDispatch(WorkflowTask $task): void

@@ -87,6 +87,8 @@ return [
             'history_transaction_size' => (int) env('WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE', 5000),
             'warning_threshold_percent' => (int) env('WORKFLOW_V2_LIMIT_WARNING_THRESHOLD_PERCENT', 80),
         ],
+        'task_dispatch_mode' => env('WORKFLOW_V2_TASK_DISPATCH_MODE', 'queue'),
+
         'task_repair' => [
             'redispatch_after_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 3),
             'loop_throttle_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS', 5),

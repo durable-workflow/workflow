@@ -480,6 +480,145 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertSame('repair_backoff', $detail['tasks'][0]['transport_state']);
     }
 
+    public function testPollModeSkipsQueueDispatchAndLeavesTaskReadyForExternalPolling(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+
+        $this->mock(BusDispatcher::class, static function (MockInterface $mock): void {
+            $mock->shouldNotReceive('dispatch');
+        });
+
+        $run = $this->createWaitingRun('01J00000000000000000000010');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNotNull($task->last_dispatch_attempt_at);
+        $this->assertNotNull($task->last_dispatched_at);
+        $this->assertNull($task->last_dispatch_error);
+        $this->assertNull($task->repair_available_at);
+    }
+
+    public function testPollModeSkipsQueueDispatchForActivityTasks(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+
+        $this->mock(BusDispatcher::class, static function (MockInterface $mock): void {
+            $mock->shouldNotReceive('dispatch');
+        });
+
+        $run = $this->createWaitingRun('01J00000000000000000000011');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNotNull($task->last_dispatched_at);
+        $this->assertNull($task->last_dispatch_error);
+    }
+
+    public function testPollModeSkipsQueueDispatchForTimerTasks(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+
+        $this->mock(BusDispatcher::class, static function (MockInterface $mock): void {
+            $mock->shouldNotReceive('dispatch');
+        });
+
+        $run = $this->createWaitingRun('01J00000000000000000000012');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->addMinute(),
+            'payload' => ['timer_id' => 'test-timer'],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNotNull($task->last_dispatched_at);
+        $this->assertNull($task->last_dispatch_error);
+    }
+
+    public function testQueueModeStillDispatchesToBus(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'queue');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+
+        Queue::fake();
+
+        $run = $this->createWaitingRun('01J00000000000000000000013');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+    }
+
     private function createWaitingRun(string $instanceId): WorkflowRun
     {
         /** @var WorkflowInstance $instance */
