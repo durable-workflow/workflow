@@ -118,7 +118,8 @@ class V2BackfillFailureCategoriesCommand extends Command
         $query = WorkflowFailure::query()
             ->where(static function ($q): void {
                 $q->whereNull('failure_category')
-                    ->orWhereNull('non_retryable');
+                    ->orWhereNull('non_retryable')
+                    ->orWhere('non_retryable', false);
             })
             ->orderBy('id');
 
