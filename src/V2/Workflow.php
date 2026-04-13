@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use Throwable;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildWorkflowHandles;
@@ -20,6 +21,13 @@ abstract class Workflow
     private int $visibleSequence = 1;
 
     private bool $commandDispatchEnabled = true;
+
+    /** @var list<callable> */
+    private array $compensations = [];
+
+    private bool $parallelCompensation = false;
+
+    private bool $continueWithError = false;
 
     final public function __construct(
         public readonly WorkflowRun $run,
@@ -68,6 +76,52 @@ abstract class Workflow
     public function shouldContinueAsNew(): bool
     {
         return HistoryBudget::forRun($this->run)['continue_as_new_recommended'];
+    }
+
+    public function addCompensation(callable $compensation): static
+    {
+        $this->compensations[] = $compensation;
+
+        return $this;
+    }
+
+    public function setParallelCompensation(bool $parallel): static
+    {
+        $this->parallelCompensation = $parallel;
+
+        return $this;
+    }
+
+    public function setContinueWithError(bool $continueWithError): static
+    {
+        $this->continueWithError = $continueWithError;
+
+        return $this;
+    }
+
+    public function compensate(): void
+    {
+        $reversed = array_reverse($this->compensations);
+
+        if ($this->parallelCompensation) {
+            $calls = [];
+
+            foreach ($reversed as $compensation) {
+                $calls[] = $compensation();
+            }
+
+            all($calls);
+        } else {
+            foreach ($reversed as $compensation) {
+                try {
+                    $compensation();
+                } catch (Throwable $e) {
+                    if (! $this->continueWithError) {
+                        throw $e;
+                    }
+                }
+            }
+        }
     }
 
     public function syncExecutionCursor(int $visibleSequence): void
