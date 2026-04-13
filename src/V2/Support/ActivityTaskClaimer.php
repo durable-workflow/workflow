@@ -131,12 +131,21 @@ final class ActivityTaskClaimer
                 'last_claim_error' => null,
             ])->save();
 
+            $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
+            $startToCloseTimeout = is_int($retryPolicy['start_to_close_timeout'] ?? null)
+                ? $retryPolicy['start_to_close_timeout']
+                : null;
+            $closeDeadlineAt = $startToCloseTimeout !== null
+                ? $now->copy()->addSeconds($startToCloseTimeout)
+                : null;
+
             $execution->forceFill([
                 'status' => ActivityStatus::Running,
                 'attempt_count' => $attemptCount,
                 'current_attempt_id' => $attemptId,
                 'started_at' => $now,
                 'last_heartbeat_at' => null,
+                'close_deadline_at' => $closeDeadlineAt,
             ])->save();
 
             /** @var ActivityAttempt $attempt */

@@ -153,6 +153,7 @@ final class WorkflowStepHistory
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
                 HistoryEventType::ActivityCancelled,
+                HistoryEventType::ActivityTimedOut,
             ], true),
             self::CHILD_WORKFLOW => in_array($event->event_type, [
                 HistoryEventType::ChildWorkflowScheduled,
@@ -191,6 +192,7 @@ final class WorkflowStepHistory
                 HistoryEventType::ActivityCompleted->value,
                 HistoryEventType::ActivityFailed->value,
                 HistoryEventType::ActivityCancelled->value,
+                HistoryEventType::ActivityTimedOut->value,
             ]);
         }
 
@@ -233,6 +235,7 @@ final class WorkflowStepHistory
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
             HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityTimedOut,
             HistoryEventType::ChildWorkflowScheduled,
             HistoryEventType::ChildRunStarted,
             HistoryEventType::ChildRunCompleted,

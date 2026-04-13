@@ -40,6 +40,7 @@ enum HistoryEventType: string
     case ActivityCompleted = 'ActivityCompleted';
     case ActivityFailed = 'ActivityFailed';
     case ActivityCancelled = 'ActivityCancelled';
+    case ActivityTimedOut = 'ActivityTimedOut';
     case FailureHandled = 'FailureHandled';
     case SideEffectRecorded = 'SideEffectRecorded';
     case VersionMarkerRecorded = 'VersionMarkerRecorded';

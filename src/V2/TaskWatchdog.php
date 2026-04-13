@@ -12,6 +12,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\CommandContractBackfillSweep;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskCompatibility;
@@ -52,7 +53,10 @@ final class TaskWatchdog
      *     command_contract_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,
-     *     deadline_expired_failures: list<array{run_id: string, message: string}>
+     *     deadline_expired_failures: list<array{run_id: string, message: string}>,
+     *     activity_timeout_candidates: int,
+     *     activity_timeouts_enforced: int,
+     *     activity_timeout_failures: list<array{execution_id: string, message: string}>
      * }
      */
     public static function runPass(
@@ -133,6 +137,38 @@ final class TaskWatchdog
                 $report['deadline_expired_failures'][] = [
                     'run_id' => $deadlineRunId,
                     'message' => $result['error'],
+                ];
+            }
+        }
+
+        $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(TaskRepairPolicy::scanLimit());
+        $report['activity_timeout_candidates'] = count($activityTimeoutIds);
+
+        foreach ($activityTimeoutIds as $activityExecutionId) {
+            try {
+                $result = ActivityTimeoutEnforcer::enforce($activityExecutionId);
+
+                if ($result['enforced']) {
+                    $report['activity_timeouts_enforced']++;
+
+                    if ($result['next_task'] instanceof WorkflowTask) {
+                        $report['dispatched_tasks']++;
+                        TaskDispatcher::dispatch($result['next_task']);
+                    }
+                }
+
+                if ($result['reason'] !== null) {
+                    $report['activity_timeout_failures'][] = [
+                        'execution_id' => $activityExecutionId,
+                        'message' => $result['reason'],
+                    ];
+                }
+            } catch (Throwable $throwable) {
+                report($throwable);
+
+                $report['activity_timeout_failures'][] = [
+                    'execution_id' => $activityExecutionId,
+                    'message' => $throwable->getMessage(),
                 ];
             }
         }
@@ -280,7 +316,10 @@ final class TaskWatchdog
      *     command_contract_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,
-     *     deadline_expired_failures: list<array{run_id: string, message: string}>
+     *     deadline_expired_failures: list<array{run_id: string, message: string}>,
+     *     activity_timeout_candidates: int,
+     *     activity_timeouts_enforced: int,
+     *     activity_timeout_failures: list<array{execution_id: string, message: string}>
      * }
      */
     private static function emptyReport(
@@ -313,6 +352,9 @@ final class TaskWatchdog
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
             'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
         ];
     }
 

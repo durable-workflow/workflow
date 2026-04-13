@@ -121,6 +121,7 @@ final class FailureSnapshots
     {
         return in_array($event->event_type, [
             HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityTimedOut,
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated,
@@ -316,7 +317,8 @@ final class FailureSnapshots
     private static function sourceKindForEvent(WorkflowHistoryEvent $event): ?string
     {
         return match ($event->event_type) {
-            HistoryEventType::ActivityFailed => 'activity_execution',
+            HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityTimedOut => 'activity_execution',
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child_workflow_run',
@@ -332,7 +334,8 @@ final class FailureSnapshots
     private static function sourceIdForEvent(WorkflowHistoryEvent $event): ?string
     {
         return match ($event->event_type) {
-            HistoryEventType::ActivityFailed => self::stringValue($event->payload['activity_execution_id'] ?? null),
+            HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityTimedOut => self::stringValue($event->payload['activity_execution_id'] ?? null),
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => self::stringValue($event->payload['child_workflow_run_id'] ?? null),
@@ -350,6 +353,7 @@ final class FailureSnapshots
     {
         return match ($event->event_type) {
             HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::ActivityTimedOut => 'timeout',
             HistoryEventType::ChildRunFailed => 'child',
             HistoryEventType::ChildRunCancelled => 'cancelled',
             HistoryEventType::ChildRunTerminated => 'terminated',
@@ -368,6 +372,7 @@ final class FailureSnapshots
     {
         return match ($event->event_type) {
             HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::ActivityTimedOut => 'timeout',
             HistoryEventType::ChildRunFailed => 'child_workflow',
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::WorkflowCancelled => 'cancelled',

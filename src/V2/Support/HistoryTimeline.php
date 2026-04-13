@@ -222,7 +222,8 @@ final class HistoryTimeline
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
-            HistoryEventType::ActivityCancelled => 'activity',
+            HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityTimedOut => 'activity',
             HistoryEventType::FailureHandled => 'failure',
             HistoryEventType::SideEffectRecorded => 'side_effect',
             HistoryEventType::VersionMarkerRecorded => 'version',
@@ -348,6 +349,9 @@ final class HistoryTimeline
                 ? sprintf('Failed %s.', $activityLabel)
                 : sprintf('Failed %s: %s.', $activityLabel, $message),
             HistoryEventType::ActivityCancelled => sprintf('Cancelled %s.', $activityLabel),
+            HistoryEventType::ActivityTimedOut => $message === null
+                ? sprintf('Timed out %s.', $activityLabel)
+                : sprintf('Timed out %s: %s.', $activityLabel, $message),
             HistoryEventType::FailureHandled => $message === null
                 ? 'Failure handled.'
                 : sprintf('Handled failure: %s.', $message),
@@ -655,6 +659,7 @@ final class HistoryTimeline
                     HistoryEventType::ActivityRetryScheduled => 'pending',
                     HistoryEventType::ActivityCompleted => 'completed',
                     HistoryEventType::ActivityFailed => 'failed',
+                    HistoryEventType::ActivityTimedOut => 'failed',
                     HistoryEventType::ActivityCancelled => 'cancelled',
                     default => $activity?->status?->value,
                 },
@@ -681,6 +686,7 @@ final class HistoryTimeline
             'closed_at' => in_array($event->event_type, [
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityTimedOut,
                 HistoryEventType::ActivityCancelled,
             ], true)
                 ? self::timestamp(self::stringValue($snapshot['closed_at'] ?? null) ?? $activity?->closed_at)
@@ -763,6 +769,7 @@ final class HistoryTimeline
                 ?? self::stringValue($failure['source_id'] ?? null),
             'propagation_kind' => match ($event->event_type) {
                 HistoryEventType::ActivityFailed => 'activity',
+                HistoryEventType::ActivityTimedOut => 'timeout',
                 HistoryEventType::ChildRunFailed => 'child',
                 HistoryEventType::ChildRunCancelled,
                 HistoryEventType::WorkflowCancelled => 'cancelled',
@@ -781,6 +788,7 @@ final class HistoryTimeline
                 ?? self::stringValue($failure['failure_category'] ?? null)
                 ?? match ($event->event_type) {
                     HistoryEventType::ActivityFailed => 'activity',
+                    HistoryEventType::ActivityTimedOut => 'timeout',
                     HistoryEventType::ChildRunFailed => 'child_workflow',
                     HistoryEventType::ChildRunCancelled,
                     HistoryEventType::WorkflowCancelled => 'cancelled',
@@ -796,6 +804,7 @@ final class HistoryTimeline
             'handled' => match ($event->event_type) {
                 HistoryEventType::FailureHandled => true,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityTimedOut,
                 HistoryEventType::WorkflowTimedOut,
                 HistoryEventType::WorkflowFailed => false,
                 HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
@@ -849,7 +858,8 @@ final class HistoryTimeline
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
-            HistoryEventType::ActivityCancelled => 'activity_execution',
+            HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityTimedOut => 'activity_execution',
             HistoryEventType::FailureHandled => 'workflow_failure',
             HistoryEventType::VersionMarkerRecorded => 'version_marker',
             HistoryEventType::TimerScheduled,
@@ -957,7 +967,8 @@ final class HistoryTimeline
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
-            HistoryEventType::ActivityCancelled => 'activity',
+            HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityTimedOut => 'activity',
             HistoryEventType::TimerFired => 'timer',
             default => 'workflow',
         };

@@ -950,6 +950,7 @@ final class HistoryExport
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
                 HistoryEventType::ActivityCancelled,
+                HistoryEventType::ActivityTimedOut,
             ], true))
             ->sortBy('sequence');
     }

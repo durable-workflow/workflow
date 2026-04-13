@@ -34,6 +34,8 @@ class ActivityExecution extends Model
         'started_at' => 'datetime',
         'closed_at' => 'datetime',
         'last_heartbeat_at' => 'datetime',
+        'schedule_deadline_at' => 'datetime',
+        'close_deadline_at' => 'datetime',
     ];
 
     public function run(): BelongsTo

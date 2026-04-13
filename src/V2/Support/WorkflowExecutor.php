@@ -1128,6 +1128,10 @@ final class WorkflowExecutor
 
         $options = $activityCall->options;
 
+        $scheduleDeadlineAt = $options?->scheduleToStartTimeout !== null
+            ? now()->addSeconds($options->scheduleToStartTimeout)
+            : null;
+
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
@@ -1141,6 +1145,7 @@ final class WorkflowExecutor
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run, $options),
             'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
             'activity_options' => $options?->toSnapshot(),
+            'schedule_deadline_at' => $scheduleDeadlineAt,
         ]);
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = new $activityClass($execution, $run, $task->id);
@@ -2887,6 +2892,7 @@ final class WorkflowExecutor
                     HistoryEventType::ActivityCompleted,
                     HistoryEventType::ActivityFailed,
                     HistoryEventType::ActivityCancelled,
+                    HistoryEventType::ActivityTimedOut,
                 ],
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
@@ -3176,6 +3182,7 @@ final class WorkflowExecutor
             ? $event->payload['message']
             : match ($event?->event_type) {
                 HistoryEventType::ActivityCancelled => 'Activity cancelled',
+                HistoryEventType::ActivityTimedOut => 'Activity timed out',
                 default => 'Activity failed',
             };
         $fallbackCode = is_int($event?->payload['code'] ?? null)
