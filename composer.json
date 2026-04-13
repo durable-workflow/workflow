@@ -1,8 +1,11 @@
 {
-    "name": "laravel-workflow/laravel-workflow",
+    "name": "durable-workflow/workflow",
     "description": "Durable workflow engine that allows users to write long running persistent distributed workflows (orchestrations) in PHP powered by Laravel queues.",
     "type": "library",
     "license": "MIT",
+    "replace": {
+        "laravel-workflow/laravel-workflow": "self.version"
+    },
     "autoload": {
         "psr-4": {
             "Workflow\\": "src/"
