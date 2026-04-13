@@ -52,6 +52,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\ActivityTaskBridge;
 use Workflow\V2\AsyncWorkflow;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -75,6 +76,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\HistoryExport;
@@ -7976,6 +7978,160 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertNotNull($cancelRequestedEvent);
         $this->assertArrayNotHasKey('reason', $cancelRequestedEvent->payload ?? []);
+    }
+
+    public function testCancelCreatesFailureRowWithCancelledCategory(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-failure-row');
+        $workflow->start(5);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $result = $workflow->cancel('User requested cancellation');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('cancelled', $workflow->refresh()->status());
+
+        // Verify failure row was created.
+        $this->assertDatabaseHas('workflow_failures', [
+            'workflow_run_id' => $runId,
+            'source_kind' => 'workflow_run',
+            'source_id' => $runId,
+            'propagation_kind' => 'cancelled',
+            'failure_category' => 'cancelled',
+            'handled' => false,
+            'exception_class' => 'Workflow\\V2\\Exceptions\\WorkflowCancelledException',
+            'message' => 'Workflow cancelled: User requested cancellation',
+        ]);
+
+        // Verify history event includes failure_id and failure_category.
+        $cancelledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowCancelled)
+            ->first();
+
+        $this->assertNotNull($cancelledEvent);
+        $this->assertNotNull($cancelledEvent->payload['failure_id'] ?? null);
+        $this->assertSame('cancelled', $cancelledEvent->payload['failure_category'] ?? null);
+        $this->assertSame('User requested cancellation', $cancelledEvent->payload['reason'] ?? null);
+
+        // Verify failure row ID matches the history event.
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $runId)
+            ->first();
+
+        $this->assertNotNull($failure);
+        $this->assertSame($failure->id, $cancelledEvent->payload['failure_id']);
+        $this->assertSame(FailureCategory::Cancelled, $failure->failure_category);
+    }
+
+    public function testTerminateCreatesFailureRowWithTerminatedCategory(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'terminate-failure-row');
+        $workflow->start(5);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $result = $workflow->terminate('Emergency shutdown');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('terminated', $workflow->refresh()->status());
+
+        // Verify failure row was created.
+        $this->assertDatabaseHas('workflow_failures', [
+            'workflow_run_id' => $runId,
+            'source_kind' => 'workflow_run',
+            'source_id' => $runId,
+            'propagation_kind' => 'terminated',
+            'failure_category' => 'terminated',
+            'handled' => false,
+            'exception_class' => 'Workflow\\V2\\Exceptions\\WorkflowTerminatedException',
+            'message' => 'Workflow terminated: Emergency shutdown',
+        ]);
+
+        // Verify history event includes failure_id and failure_category.
+        $terminatedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowTerminated)
+            ->first();
+
+        $this->assertNotNull($terminatedEvent);
+        $this->assertNotNull($terminatedEvent->payload['failure_id'] ?? null);
+        $this->assertSame('terminated', $terminatedEvent->payload['failure_category'] ?? null);
+        $this->assertSame('Emergency shutdown', $terminatedEvent->payload['reason'] ?? null);
+
+        // Verify failure row ID matches.
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $runId)
+            ->first();
+
+        $this->assertNotNull($failure);
+        $this->assertSame($failure->id, $terminatedEvent->payload['failure_id']);
+        $this->assertSame(FailureCategory::Terminated, $failure->failure_category);
+    }
+
+    public function testCancelWithoutReasonCreatesFailureRowWithDefaultMessage(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-no-reason-failure');
+        $workflow->start(5);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $result = $workflow->cancel();
+
+        $this->assertTrue($result->accepted());
+
+        $this->assertDatabaseHas('workflow_failures', [
+            'workflow_run_id' => $runId,
+            'propagation_kind' => 'cancelled',
+            'failure_category' => 'cancelled',
+            'message' => 'Workflow cancelled.',
+        ]);
+    }
+
+    public function testCancelFailureRowAppearsInFailureSnapshots(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-snapshots');
+        $workflow->start(5);
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'timer');
+
+        $workflow->cancel('Snapshot test');
+
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $run->load(['historyEvents', 'failures']);
+
+        $snapshots = FailureSnapshots::forRun($run);
+
+        $this->assertNotEmpty($snapshots);
+
+        $cancelSnapshot = $snapshots[0];
+
+        $this->assertSame('cancelled', $cancelSnapshot['failure_category']);
+        $this->assertSame('cancelled', $cancelSnapshot['propagation_kind']);
+        $this->assertSame('workflow_run', $cancelSnapshot['source_kind']);
+        $this->assertSame('Workflow cancelled: Snapshot test', $cancelSnapshot['message']);
+        $this->assertFalse($cancelSnapshot['handled']);
     }
 
     private function waitFor(callable $condition): void

@@ -18,6 +18,7 @@ use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\DuplicateStartPolicy;
@@ -2754,11 +2755,41 @@ final class WorkflowStub
                 'last_progress_at' => now(),
             ])->save();
 
+            $propagationKind = $commandType === CommandType::Cancel ? 'cancelled' : 'terminated';
+            $failureCategory = $commandType === CommandType::Cancel
+                ? FailureCategory::Cancelled
+                : FailureCategory::Terminated;
+            $failureExceptionClass = $commandType === CommandType::Cancel
+                ? 'Workflow\\V2\\Exceptions\\WorkflowCancelledException'
+                : 'Workflow\\V2\\Exceptions\\WorkflowTerminatedException';
+            $failureMessage = $reason !== null && $reason !== ''
+                ? sprintf('Workflow %s: %s', $closedReason, $reason)
+                : sprintf('Workflow %s.', $closedReason);
+
+            /** @var WorkflowFailure $failure */
+            $failure = WorkflowFailure::query()->create([
+                'workflow_run_id' => $run->id,
+                'source_kind' => 'workflow_run',
+                'source_id' => $run->id,
+                'propagation_kind' => $propagationKind,
+                'failure_category' => $failureCategory->value,
+                'handled' => false,
+                'exception_class' => $failureExceptionClass,
+                'message' => $failureMessage,
+                'file' => '',
+                'line' => 0,
+                'trace_preview' => '',
+            ]);
+
             $terminalHistoryPayload = [
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
+                'failure_id' => $failure->id,
+                'failure_category' => $failureCategory->value,
                 'closed_reason' => $closedReason,
+                'exception_class' => $failureExceptionClass,
+                'message' => $failureMessage,
             ];
 
             if ($reason !== null && $reason !== '') {

@@ -1770,9 +1770,12 @@ final class WorkflowExecutor
                 ? $childTerminalEvent->payload['output'] ?? $childRun->output
                 : null,
             'failure_id' => $failure?->id,
-            'failure_category' => $eventType === HistoryEventType::ChildRunFailed
-                ? ($failure?->failure_category ?? FailureCategory::ChildWorkflow->value)
-                : null,
+            'failure_category' => match ($eventType) {
+                HistoryEventType::ChildRunFailed => $failure?->failure_category ?? FailureCategory::ChildWorkflow->value,
+                HistoryEventType::ChildRunCancelled => $failure?->failure_category ?? FailureCategory::Cancelled->value,
+                HistoryEventType::ChildRunTerminated => $failure?->failure_category ?? FailureCategory::Terminated->value,
+                default => null,
+            },
             'exception' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
                 ? $childTerminalEvent->payload['exception'] ?? null
                 : null,
