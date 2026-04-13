@@ -24,6 +24,7 @@ use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TimerRecovery;
+use Workflow\V2\Support\TimerTransportChunker;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class RunTimerTask implements ShouldQueue
@@ -51,7 +52,10 @@ final class RunTimerTask implements ShouldQueue
         [$timerId, $releaseIn] = $this->claimTask();
 
         if ($releaseIn !== null) {
-            $this->release($releaseIn);
+            $this->release(TimerTransportChunker::cappedReleaseDelay(
+                $releaseIn,
+                is_string($this->connection ?? null) ? $this->connection : null,
+            ));
 
             return;
         }

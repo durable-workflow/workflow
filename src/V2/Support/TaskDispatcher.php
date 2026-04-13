@@ -90,7 +90,11 @@ final class TaskDispatcher
         }
 
         if ($task->available_at !== null && $task->available_at->isFuture()) {
-            $job->delay($task->available_at);
+            $effectiveDelay = $task->task_type === TaskType::Timer
+                ? TimerTransportChunker::cappedDispatchDelay($task->available_at, $task->connection)
+                : $task->available_at;
+
+            $job->delay($effectiveDelay);
         }
 
         return $job;

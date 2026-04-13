@@ -31,6 +31,7 @@ use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
+use Workflow\V2\Exceptions\WorkflowTimeoutException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
@@ -2235,17 +2236,13 @@ final class WorkflowExecutor
     {
         $now = now();
 
-        $timeoutKind = 'run_timeout';
+        $exception = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
+            ? WorkflowTimeoutException::executionTimeout($run->execution_deadline_at->toIso8601String())
+            : WorkflowTimeoutException::runTimeout($run->run_deadline_at->toIso8601String());
 
-        if ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at)) {
-            $timeoutKind = 'execution_timeout';
-        }
-
-        $message = $timeoutKind === 'execution_timeout'
-            ? sprintf('Workflow execution deadline expired at %s.', $run->execution_deadline_at->toIso8601String())
-            : sprintf('Workflow run deadline expired at %s.', $run->run_deadline_at->toIso8601String());
-
-        $exceptionClass = 'Workflow\\V2\\Exceptions\\WorkflowTimeoutException';
+        $timeoutKind = $exception->timeoutKind;
+        $message = $exception->getMessage();
+        $exceptionClass = WorkflowTimeoutException::class;
 
         // Cancel all open tasks except the current one.
         $openTasks = $run->tasks

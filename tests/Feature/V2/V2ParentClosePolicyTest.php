@@ -190,6 +190,35 @@ final class V2ParentClosePolicyTest extends TestCase
         $this->assertContains($childStub->status(), ['waiting', 'running', 'pending']);
     }
 
+    public function testEnforcementRecordsAppliedHistoryEventOnParentRun(): void
+    {
+        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'applied-event');
+        $workflow->start('request_cancel');
+
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        // Terminate the parent — policy should apply and record history event.
+        $result = $workflow->attemptTerminate('test termination');
+        $this->assertTrue($result->accepted());
+        $this->assertSame('terminated', $workflow->refresh()->status());
+
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'applied-event')
+            ->first();
+
+        $appliedEvent = $parentRun->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->first();
+
+        $this->assertNotNull($appliedEvent, 'Parent run should have a ParentClosePolicyApplied history event.');
+        $this->assertSame('request_cancel', $appliedEvent->payload['policy']);
+        $this->assertArrayHasKey('child_instance_id', $appliedEvent->payload);
+        $this->assertArrayHasKey('child_run_id', $appliedEvent->payload);
+        $this->assertArrayHasKey('reason', $appliedEvent->payload);
+    }
+
     private function drainReadyTasks(): void
     {
         $deadline = microtime(true) + 10;

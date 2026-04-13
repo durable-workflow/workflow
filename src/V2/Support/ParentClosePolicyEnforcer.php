@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Facades\Log;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\WorkflowStub;
@@ -62,14 +65,14 @@ final class ParentClosePolicyEnforcer
 
             $childInstanceId = $link->child_workflow_instance_id;
 
+            $reason = sprintf(
+                'Parent workflow closed (%s); parent-close policy: %s.',
+                $run->closed_reason ?? $run->status->value ?? 'unknown',
+                $policy->value,
+            );
+
             try {
                 $stub = WorkflowStub::load($childInstanceId);
-
-                $reason = sprintf(
-                    'Parent workflow closed (%s); parent-close policy: %s.',
-                    $run->closed_reason ?? $run->status->value ?? 'unknown',
-                    $policy->value,
-                );
 
                 match ($policy) {
                     ParentClosePolicy::RequestCancel => $stub->attemptCancel($reason),
@@ -77,12 +80,34 @@ final class ParentClosePolicyEnforcer
                     default => null,
                 };
 
+                WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyApplied, [
+                    'child_instance_id' => $childInstanceId,
+                    'child_run_id' => $childRun->id,
+                    'policy' => $policy->value,
+                    'reason' => $reason,
+                ]);
+
                 $appliedTo[] = $childInstanceId;
-            } catch (\Throwable) {
+            } catch (\Throwable $throwable) {
                 // Best-effort: if the child cannot be loaded or the command
                 // is rejected (already terminal), continue with the remaining
-                // children. The child's independent lifecycle is not disrupted
-                // by parent-side enforcement failures.
+                // children. Record the failure so operators can distinguish
+                // "policy applied" from "policy failed silently".
+                WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyFailed, [
+                    'child_instance_id' => $childInstanceId,
+                    'child_run_id' => $childRun->id,
+                    'policy' => $policy->value,
+                    'reason' => $reason,
+                    'error' => $throwable->getMessage(),
+                ]);
+
+                Log::warning('Parent-close policy enforcement failed.', [
+                    'parent_run_id' => $run->id,
+                    'child_instance_id' => $childInstanceId,
+                    'policy' => $policy->value,
+                    'error' => $throwable->getMessage(),
+                ]);
+
                 continue;
             }
         }

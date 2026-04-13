@@ -337,6 +337,7 @@ final class V2WorkflowTimeoutTest extends TestCase
         $this->assertSame(FailureCategory::Timeout->value, $failure->failure_category->value);
         $this->assertSame('timeout', $failure->propagation_kind);
         $this->assertStringContainsString('run deadline expired', $failure->message);
+        $this->assertSame(\Workflow\V2\Exceptions\WorkflowTimeoutException::class, $failure->exception_class);
 
         $timedOutEvent = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
@@ -345,6 +346,7 @@ final class V2WorkflowTimeoutTest extends TestCase
 
         $this->assertSame('run_timeout', $timedOutEvent->payload['timeout_kind']);
         $this->assertSame('timeout', $timedOutEvent->payload['failure_category']);
+        $this->assertSame(\Workflow\V2\Exceptions\WorkflowTimeoutException::class, $timedOutEvent->payload['exception_class']);
 
         Carbon::setTestNow();
     }

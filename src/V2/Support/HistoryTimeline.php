@@ -385,6 +385,17 @@ final class HistoryTimeline
             HistoryEventType::TimerCancelled => $timerKind === 'condition_timeout'
                 ? 'Condition timeout cancelled.'
                 : 'Timer cancelled.',
+            HistoryEventType::ParentClosePolicyApplied => sprintf(
+                'Applied parent-close policy %s to child %s.',
+                self::stringValue($payload['policy'] ?? null) ?? 'unknown',
+                self::stringValue($payload['child_instance_id'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ParentClosePolicyFailed => sprintf(
+                'Failed to apply parent-close policy %s to child %s: %s',
+                self::stringValue($payload['policy'] ?? null) ?? 'unknown',
+                self::stringValue($payload['child_instance_id'] ?? null) ?? 'unknown',
+                self::stringValue($payload['error'] ?? null) ?? 'unknown error',
+            ),
             HistoryEventType::MessageCursorAdvanced => sprintf(
                 'Message cursor advanced to %d.',
                 self::intValue($payload['new_position'] ?? null) ?? 0,
