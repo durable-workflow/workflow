@@ -18,6 +18,7 @@ use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -1353,6 +1354,9 @@ final class WorkflowExecutor
             $childCallId,
         );
 
+        $parentClosePolicy = $childWorkflowCall->options?->parentClosePolicy
+            ?? ParentClosePolicy::Abandon;
+
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
             'id' => $childCallId,
@@ -1363,6 +1367,7 @@ final class WorkflowExecutor
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'is_primary_parent' => true,
+            'parent_close_policy' => $parentClosePolicy->value,
             'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
         ]);
 
@@ -1374,6 +1379,7 @@ final class WorkflowExecutor
             'child_workflow_run_id' => $childRun->id,
             'child_workflow_class' => $childRun->workflow_class,
             'child_workflow_type' => $childRun->workflow_type,
+            'parent_close_policy' => $parentClosePolicy->value,
         ], $parallelMetadata ?? []), $task);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, array_merge([
@@ -2160,6 +2166,8 @@ final class WorkflowExecutor
 
         LifecycleEventDispatcher::workflowCompleted($run);
 
+        ParentClosePolicyEnforcer::enforce($run);
+
         $this->dispatchParentResumeTasks($run);
 
         RunSummaryProjector::project(
@@ -2338,6 +2346,9 @@ final class WorkflowExecutor
             $message,
         );
 
+        // Apply parent-close policy to open children.
+        ParentClosePolicyEnforcer::enforce($run);
+
         // Notify parent workflows and project summary.
         $this->dispatchParentResumeTasks($run);
 
@@ -2431,6 +2442,8 @@ final class WorkflowExecutor
             $failure->exception_class,
             $failure->message,
         );
+
+        ParentClosePolicyEnforcer::enforce($run);
 
         $this->dispatchParentResumeTasks($run);
 

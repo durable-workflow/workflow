@@ -14,6 +14,7 @@ final class ChildWorkflowCall implements YieldedCommand
     public function __construct(
         public readonly string $workflow,
         public readonly array $arguments,
+        public readonly ?ChildWorkflowOptions $options = null,
     ) {
     }
 }

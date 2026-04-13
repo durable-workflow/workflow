@@ -15,6 +15,7 @@ use Workflow\V2\Support\AllCall;
 use Workflow\V2\Support\AwaitCall;
 use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\ChildWorkflowCall;
+use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
@@ -87,16 +88,28 @@ if (! function_exists(__NAMESPACE__ . '\\awaitWithTimeout')) {
 }
 
 if (! function_exists(__NAMESPACE__ . '\\child')) {
-    function child(string $workflow, ...$arguments): mixed
+    function child(string $workflow, mixed ...$arguments): mixed
     {
-        return WorkflowFiberContext::suspend(new ChildWorkflowCall($workflow, $arguments));
+        $options = null;
+
+        if (($arguments[0] ?? null) instanceof ChildWorkflowOptions) {
+            $options = array_shift($arguments);
+        }
+
+        return WorkflowFiberContext::suspend(new ChildWorkflowCall($workflow, $arguments, $options));
     }
 }
 
 if (! function_exists(__NAMESPACE__ . '\\startChild')) {
-    function startChild(string $workflow, ...$arguments): ChildWorkflowCall
+    function startChild(string $workflow, mixed ...$arguments): ChildWorkflowCall
     {
-        return new ChildWorkflowCall($workflow, $arguments);
+        $options = null;
+
+        if (($arguments[0] ?? null) instanceof ChildWorkflowOptions) {
+            $options = array_shift($arguments);
+        }
+
+        return new ChildWorkflowCall($workflow, $arguments, $options);
     }
 }
 

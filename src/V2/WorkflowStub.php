@@ -49,6 +49,7 @@ use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Support\CurrentRunResolver;
+use Workflow\V2\Support\ParentClosePolicyEnforcer;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
@@ -2866,6 +2867,8 @@ final class WorkflowStub
             $command->forceFill([
                 'applied_at' => now(),
             ])->save();
+
+            ParentClosePolicyEnforcer::enforce($run);
 
             $parentTasks = $this->createParentResumeTasks($run);
 
