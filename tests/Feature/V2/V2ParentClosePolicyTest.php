@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewActivity;
 use Tests\Fixtures\V2\TestLongRunningChildWorkflow;
@@ -22,6 +23,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
 
 final class V2ParentClosePolicyTest extends TestCase
@@ -306,6 +308,128 @@ final class V2ParentClosePolicyTest extends TestCase
 
         $this->assertNotNull($appliedEvent, 'Parent-close policy should be enforced on the continued child run.');
         $this->assertSame('request_cancel', $appliedEvent->payload['policy']);
+    }
+
+    public function testRequestCancelPolicyCancelsChildWhenParentTimesOut(): void
+    {
+        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'cancel-on-timeout');
+        $workflow->start('request_cancel');
+
+        $this->drainReadyTasks();
+
+        // Parent should be waiting on the child.
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        // Find the child instance and verify it's running.
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_instance_id', 'cancel-on-timeout')
+            ->where('link_type', 'child_workflow')
+            ->first();
+
+        $this->assertNotNull($link);
+        $childInstanceId = $link->child_workflow_instance_id;
+        $childStub = WorkflowStub::load($childInstanceId);
+        $this->assertContains($childStub->status(), ['waiting', 'running', 'pending']);
+
+        // Set the parent run's deadline in the past to simulate a timeout.
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'cancel-on-timeout')
+            ->firstOrFail();
+
+        $parentRun->forceFill([
+            'run_timeout_seconds' => 60,
+            'run_deadline_at' => Carbon::now()->subSeconds(10),
+        ])->save();
+
+        // Create a workflow task to trigger the timeout check.
+        $deadlineTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now(),
+            'payload' => ['deadline_expired' => true],
+            'leased_at' => now(),
+            'lease_expires_at' => now()->addMinutes(5),
+        ]);
+
+        // Execute the task — the executor should detect the expired deadline.
+        app(WorkflowExecutor::class)->run($parentRun->fresh(), $deadlineTask->fresh());
+
+        // Parent should now be failed with timed_out reason.
+        $parentRun->refresh();
+        $this->assertSame(RunStatus::Failed, $parentRun->status);
+        $this->assertSame('timed_out', $parentRun->closed_reason);
+
+        // The request_cancel policy should have cancelled the child.
+        $childStub->refresh();
+        $this->assertSame('cancelled', $childStub->status());
+
+        // ParentClosePolicyApplied history event should be recorded on the parent run.
+        $appliedEvent = $parentRun->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->first();
+
+        $this->assertNotNull($appliedEvent, 'Parent-close policy should be enforced when parent times out.');
+        $this->assertSame('request_cancel', $appliedEvent->payload['policy']);
+        $this->assertSame($childInstanceId, $appliedEvent->payload['child_instance_id']);
+    }
+
+    public function testTerminatePolicyTerminatesChildWhenParentTimesOut(): void
+    {
+        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'terminate-on-timeout');
+        $workflow->start('terminate');
+
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_instance_id', 'terminate-on-timeout')
+            ->where('link_type', 'child_workflow')
+            ->first();
+
+        $this->assertNotNull($link);
+        $childInstanceId = $link->child_workflow_instance_id;
+        $childStub = WorkflowStub::load($childInstanceId);
+        $this->assertContains($childStub->status(), ['waiting', 'running', 'pending']);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'terminate-on-timeout')
+            ->firstOrFail();
+
+        $parentRun->forceFill([
+            'run_timeout_seconds' => 60,
+            'run_deadline_at' => Carbon::now()->subSeconds(10),
+        ])->save();
+
+        $deadlineTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now(),
+            'payload' => ['deadline_expired' => true],
+            'leased_at' => now(),
+            'lease_expires_at' => now()->addMinutes(5),
+        ]);
+
+        app(WorkflowExecutor::class)->run($parentRun->fresh(), $deadlineTask->fresh());
+
+        $parentRun->refresh();
+        $this->assertSame(RunStatus::Failed, $parentRun->status);
+        $this->assertSame('timed_out', $parentRun->closed_reason);
+
+        // Terminate policy should have terminated the child.
+        $childStub->refresh();
+        $this->assertSame('terminated', $childStub->status());
+
+        $appliedEvent = $parentRun->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->first();
+
+        $this->assertNotNull($appliedEvent, 'Parent-close policy should be enforced when parent times out.');
+        $this->assertSame('terminate', $appliedEvent->payload['policy']);
     }
 
     private function drainReadyTasks(int $maxIterations = 0): void
