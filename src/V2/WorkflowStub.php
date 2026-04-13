@@ -539,20 +539,30 @@ final class WorkflowStub
         return new self($instance->fresh());
     }
 
-    public static function load(string $instanceId): self
+    public static function load(string $instanceId, ?string $namespace = null): self
     {
+        $query = self::instanceQuery();
+
+        if ($namespace !== null) {
+            $query->where('namespace', $namespace);
+        }
+
         /** @var WorkflowInstance $instance */
-        $instance = self::instanceQuery()
-            ->findOrFail($instanceId);
+        $instance = $query->findOrFail($instanceId);
 
         return new self($instance);
     }
 
-    public static function loadSelection(string $instanceId, ?string $runId = null): self
+    public static function loadSelection(string $instanceId, ?string $runId = null, ?string $namespace = null): self
     {
+        $query = self::instanceQuery();
+
+        if ($namespace !== null) {
+            $query->where('namespace', $namespace);
+        }
+
         /** @var WorkflowInstance $instance */
-        $instance = self::instanceQuery()
-            ->findOrFail($instanceId);
+        $instance = $query->findOrFail($instanceId);
 
         if ($runId === null) {
             return new self($instance);
@@ -563,9 +573,17 @@ final class WorkflowStub
         return new self($instance, $run, true);
     }
 
-    public static function loadRun(string $runId): self
+    public static function loadRun(string $runId, ?string $namespace = null): self
     {
-        $run = SelectedRunLocator::forRunIdOrFail($runId, ['instance']);
+        if ($namespace !== null) {
+            /** @var WorkflowRun $run */
+            $run = self::runQuery()
+                ->with('instance')
+                ->where('namespace', $namespace)
+                ->findOrFail($runId);
+        } else {
+            $run = SelectedRunLocator::forRunIdOrFail($runId, ['instance']);
+        }
 
         $instance = $run->instance;
 

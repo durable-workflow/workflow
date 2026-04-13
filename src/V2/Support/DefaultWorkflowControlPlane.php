@@ -797,10 +797,19 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
      */
     private function loadControlPlaneWorkflow(string $instanceId, array $options): array
     {
+        $namespace = isset($options['namespace']) && is_string($options['namespace'])
+            ? $options['namespace']
+            : null;
+
         try {
+            $query = $this->instanceQuery();
+
+            if ($namespace !== null) {
+                $query->where('namespace', $namespace);
+            }
+
             /** @var WorkflowInstance $instance */
-            $instance = $this->instanceQuery()
-                ->findOrFail($instanceId);
+            $instance = $query->findOrFail($instanceId);
         } catch (ModelNotFoundException) {
             return [
                 'workflow' => null,
@@ -835,7 +844,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         }
 
         return [
-            'workflow' => WorkflowStub::load($instanceId),
+            'workflow' => WorkflowStub::load($instanceId, $namespace),
             'error' => null,
         ];
     }
