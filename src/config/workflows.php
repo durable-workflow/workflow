@@ -84,6 +84,7 @@ return [
             'payload_size_bytes' => (int) env('WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES', 2097152),
             'memo_size_bytes' => (int) env('WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES', 262144),
             'search_attribute_size_bytes' => (int) env('WORKFLOW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES', 40960),
+            'history_transaction_size' => (int) env('WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE', 5000),
         ],
         'task_repair' => [
             'redispatch_after_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 3),

@@ -150,4 +150,18 @@ final class StructuralLimitExceededException extends RuntimeException
             ),
         );
     }
+
+    public static function historyTransactionSize(int $eventCount, int $limit): self
+    {
+        return new self(
+            StructuralLimitKind::HistoryTransactionSize,
+            $eventCount,
+            $limit,
+            sprintf(
+                'Structural limit exceeded: workflow task produced %d history events (limit %d).',
+                $eventCount,
+                $limit,
+            ),
+        );
+    }
 }

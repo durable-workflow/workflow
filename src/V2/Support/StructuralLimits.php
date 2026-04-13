@@ -40,6 +40,7 @@ final class StructuralLimits
     public const DEFAULT_PAYLOAD_SIZE_BYTES = 2097152;       // 2 MiB
     public const DEFAULT_MEMO_SIZE_BYTES = 262144;           // 256 KiB
     public const DEFAULT_SEARCH_ATTRIBUTE_SIZE_BYTES = 40960; // 40 KiB
+    public const DEFAULT_HISTORY_TRANSACTION_SIZE = 5000;
 
     // ── Config readers ──────────────────────────────────────────────
 
@@ -86,6 +87,11 @@ final class StructuralLimits
     public static function searchAttributeSizeLimit(): int
     {
         return self::intConfig('search_attribute_size_bytes', self::DEFAULT_SEARCH_ATTRIBUTE_SIZE_BYTES);
+    }
+
+    public static function historyTransactionSizeLimit(): int
+    {
+        return self::intConfig('history_transaction_size', self::DEFAULT_HISTORY_TRANSACTION_SIZE);
     }
 
     // ── Enforcement helpers ─────────────────────────────────────────
@@ -235,6 +241,22 @@ final class StructuralLimits
     }
 
     /**
+     * @throws StructuralLimitExceededException
+     */
+    public static function guardHistoryTransactionSize(int $eventCount): void
+    {
+        $limit = self::historyTransactionSizeLimit();
+
+        if ($limit <= 0) {
+            return;
+        }
+
+        if ($eventCount > $limit) {
+            throw StructuralLimitExceededException::historyTransactionSize($eventCount, $limit);
+        }
+    }
+
+    /**
      * Return the full limit contract as a snapshot for health checks
      * and control-plane describe responses.
      *
@@ -252,6 +274,7 @@ final class StructuralLimits
             'payload_size_bytes' => self::payloadSizeLimit(),
             'memo_size_bytes' => self::memoSizeLimit(),
             'search_attribute_size_bytes' => self::searchAttributeSizeLimit(),
+            'history_transaction_size' => self::historyTransactionSizeLimit(),
         ];
     }
 

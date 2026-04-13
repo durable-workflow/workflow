@@ -181,6 +181,49 @@ final class StructuralLimitsTest extends TestCase
     }
 
     // ---------------------------------------------------------------
+    //  History transaction size guard
+    // ---------------------------------------------------------------
+
+    public function testDefaultHistoryTransactionSizeLimit(): void
+    {
+        $this->assertSame(5000, StructuralLimits::historyTransactionSizeLimit());
+    }
+
+    public function testConfigOverridesHistoryTransactionSizeLimit(): void
+    {
+        config(['workflows.v2.structural_limits.history_transaction_size' => 200]);
+
+        $this->assertSame(200, StructuralLimits::historyTransactionSizeLimit());
+    }
+
+    public function testGuardHistoryTransactionSizePassesUnderLimit(): void
+    {
+        config(['workflows.v2.structural_limits.history_transaction_size' => 100]);
+
+        StructuralLimits::guardHistoryTransactionSize(99);
+
+        $this->assertTrue(true);
+    }
+
+    public function testGuardHistoryTransactionSizeThrowsOverLimit(): void
+    {
+        config(['workflows.v2.structural_limits.history_transaction_size' => 5]);
+
+        $this->expectException(StructuralLimitExceededException::class);
+
+        StructuralLimits::guardHistoryTransactionSize(6);
+    }
+
+    public function testGuardHistoryTransactionSizeSkipsWhenDisabled(): void
+    {
+        config(['workflows.v2.structural_limits.history_transaction_size' => 0]);
+
+        StructuralLimits::guardHistoryTransactionSize(999999);
+
+        $this->assertTrue(true);
+    }
+
+    // ---------------------------------------------------------------
     //  Snapshot
     // ---------------------------------------------------------------
 
@@ -197,6 +240,7 @@ final class StructuralLimitsTest extends TestCase
         $this->assertArrayHasKey('payload_size_bytes', $snapshot);
         $this->assertArrayHasKey('memo_size_bytes', $snapshot);
         $this->assertArrayHasKey('search_attribute_size_bytes', $snapshot);
+        $this->assertArrayHasKey('history_transaction_size', $snapshot);
     }
 
     // ---------------------------------------------------------------
@@ -246,6 +290,15 @@ final class StructuralLimitsTest extends TestCase
         $this->assertSame(StructuralLimitKind::PendingChildCount, $exception->limitKind);
         $this->assertSame(150, $exception->currentValue);
         $this->assertSame(100, $exception->configuredLimit);
+    }
+
+    public function testHistoryTransactionSizeExceptionCarriesMetadata(): void
+    {
+        $exception = StructuralLimitExceededException::historyTransactionSize(600, 500);
+
+        $this->assertSame(StructuralLimitKind::HistoryTransactionSize, $exception->limitKind);
+        $this->assertSame(600, $exception->currentValue);
+        $this->assertSame(500, $exception->configuredLimit);
     }
 
     public function testExceptionMessageIsHumanReadable(): void

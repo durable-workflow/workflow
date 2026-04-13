@@ -91,8 +91,21 @@ final class WorkflowExecutor
 
         $sequence = 1;
         $this->syncWorkflowCursor($workflow, $sequence);
+        $historySequenceAtTaskStart = $run->last_history_sequence ?? 0;
 
         while (true) {
+            $eventsInTransaction = ($run->last_history_sequence ?? 0) - $historySequenceAtTaskStart;
+
+            if ($eventsInTransaction > 0) {
+                try {
+                    StructuralLimits::guardHistoryTransactionSize($eventsInTransaction);
+                } catch (StructuralLimitExceededException $limitExceeded) {
+                    $this->failRun($run, $task, $limitExceeded, 'workflow_run', $run->id);
+
+                    return null;
+                }
+            }
+
             if (! $workflowExecution->valid()) {
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence);

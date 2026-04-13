@@ -11,6 +11,7 @@ use Tests\Fixtures\V2\TestLargePayloadChildWorkflow;
 use Tests\Fixtures\V2\TestLargePayloadWorkflow;
 use Tests\Fixtures\V2\TestLargeSearchAttributeWorkflow;
 use Tests\Fixtures\V2\TestManyActivitiesWorkflow;
+use Tests\Fixtures\V2\TestManySideEffectsWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
@@ -315,6 +316,76 @@ final class V2StructuralLimitTest extends TestCase
         $workflow->refresh();
 
         $this->assertTrue($workflow->completed(), 'Workflow should have completed with payload limit disabled.');
+    }
+
+    public function testHistoryTransactionSizeLimitFailsRunWithTypedFailure(): void
+    {
+        WorkflowStub::fake();
+
+        // Set a very low history transaction limit to trigger enforcement.
+        // Each side effect creates one SideEffectRecorded event.
+        config(['workflows.v2.structural_limits.history_transaction_size' => 3]);
+
+        $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-1');
+        $workflow->start(10); // Tries to record 10 side effects, exceeding limit of 3.
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-txn-1')
+            ->firstOrFail();
+
+        $this->assertSame(RunStatus::Failed->value, $run->status->value ?? $run->status);
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(
+            FailureCategory::StructuralLimit->value,
+            $failure->failure_category?->value ?? $failure->failure_category,
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('history_transaction_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+        $this->assertArrayHasKey('structural_limit_value', $failedEvent->payload);
+        $this->assertArrayHasKey('structural_limit_configured', $failedEvent->payload);
+        $this->assertSame(3, $failedEvent->payload['structural_limit_configured']);
+    }
+
+    public function testHistoryTransactionSizeLimitPassesUnderLimit(): void
+    {
+        WorkflowStub::fake();
+
+        // Allow enough events for 5 side effects.
+        config(['workflows.v2.structural_limits.history_transaction_size' => 100]);
+
+        $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-ok-1');
+        $workflow->start(5);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed under history transaction limit.');
+    }
+
+    public function testHistoryTransactionSizeLimitDisabledDoesNotBlock(): void
+    {
+        WorkflowStub::fake();
+
+        config(['workflows.v2.structural_limits.history_transaction_size' => 0]);
+
+        $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-disabled-1');
+        $workflow->start(20);
+
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->completed(), 'Workflow should have completed with history transaction limit disabled.');
     }
 
     public function testFailureSnapshotsIncludeStructuralLimitMetadata(): void
