@@ -641,6 +641,120 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertNull($result['result']);
     }
 
+    // ── Repair ──────────────────────────────────────────────────────
+
+    public function testRepairActiveWorkflow(): void
+    {
+        $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-repair-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $result = $this->controlPlane->repair('ctrl-plane-repair-1');
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame('ctrl-plane-repair-1', $result['workflow_instance_id']);
+        $this->assertNotNull($result['workflow_command_id']);
+        $this->assertNull($result['reason']);
+    }
+
+    public function testRepairNonExistentInstance(): void
+    {
+        $result = $this->controlPlane->repair('nonexistent-repair-1');
+
+        $this->assertFalse($result['accepted']);
+        $this->assertNotNull($result['reason']);
+    }
+
+    public function testRepairTerminatedWorkflowIsRejected(): void
+    {
+        $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-repair-closed-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $this->controlPlane->terminate('ctrl-plane-repair-closed-1');
+
+        $result = $this->controlPlane->repair('ctrl-plane-repair-closed-1');
+
+        $this->assertFalse($result['accepted']);
+        $this->assertNotNull($result['reason']);
+    }
+
+    // ── Archive ────────────────────────────────────────────────────
+
+    public function testArchiveTerminatedWorkflow(): void
+    {
+        $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-archive-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $this->controlPlane->terminate('ctrl-plane-archive-1');
+
+        $result = $this->controlPlane->archive('ctrl-plane-archive-1', [
+            'reason' => 'Testing archival',
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame('ctrl-plane-archive-1', $result['workflow_instance_id']);
+        $this->assertNotNull($result['workflow_command_id']);
+        $this->assertNull($result['reason']);
+    }
+
+    public function testArchiveNonExistentInstance(): void
+    {
+        $result = $this->controlPlane->archive('nonexistent-archive-1');
+
+        $this->assertFalse($result['accepted']);
+        $this->assertNotNull($result['reason']);
+    }
+
+    public function testArchiveActiveWorkflowIsRejected(): void
+    {
+        $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-archive-active-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $result = $this->controlPlane->archive('ctrl-plane-archive-active-1');
+
+        $this->assertFalse($result['accepted']);
+        $this->assertNotNull($result['reason']);
+    }
+
+    // ── Describe with repair/archive actions ───────────────────────
+
+    public function testDescribeActiveWorkflowIncludesRepairAndArchiveActions(): void
+    {
+        $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-desc-actions-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $result = $this->controlPlane->describe('ctrl-plane-desc-actions-1');
+
+        $this->assertTrue($result['found']);
+        $this->assertTrue($result['actions']['can_repair']);
+        $this->assertFalse($result['actions']['can_archive']);
+    }
+
+    public function testDescribeTerminatedWorkflowCanArchive(): void
+    {
+        $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-desc-archive-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $this->controlPlane->terminate('ctrl-plane-desc-archive-1');
+
+        $result = $this->controlPlane->describe('ctrl-plane-desc-archive-1');
+
+        $this->assertTrue($result['found']);
+        $this->assertFalse($result['actions']['can_repair']);
+        $this->assertTrue($result['actions']['can_archive']);
+    }
+
     private function ensureJobsTable(): void
     {
         if (Schema::hasTable('jobs')) {

@@ -233,4 +233,170 @@ final class FailureCategoryTest extends TestCase
 
         $this->assertSame(FailureCategory::Terminated, $category);
     }
+
+    // ---------------------------------------------------------------
+    //  FailureFactory::classifyFromStrings() — string-based routing
+    // ---------------------------------------------------------------
+
+    public function testClassifyFromStringsActivityPropagation(): void
+    {
+        $category = FailureFactory::classifyFromStrings('activity', 'activity_execution', null, null);
+
+        $this->assertSame(FailureCategory::Activity, $category);
+    }
+
+    public function testClassifyFromStringsChildPropagation(): void
+    {
+        $category = FailureFactory::classifyFromStrings('child', 'child_workflow_run', null, null);
+
+        $this->assertSame(FailureCategory::ChildWorkflow, $category);
+    }
+
+    public function testClassifyFromStringsCancelledPropagation(): void
+    {
+        $category = FailureFactory::classifyFromStrings('cancelled', 'workflow_run', null, null);
+
+        $this->assertSame(FailureCategory::Cancelled, $category);
+    }
+
+    public function testClassifyFromStringsTerminatedPropagation(): void
+    {
+        $category = FailureFactory::classifyFromStrings('terminated', 'workflow_run', null, null);
+
+        $this->assertSame(FailureCategory::Terminated, $category);
+    }
+
+    public function testClassifyFromStringsUnsupportedYieldAsTaskFailure(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            UnsupportedWorkflowYieldException::class,
+            'Unsupported yield type',
+        );
+
+        $this->assertSame(FailureCategory::TaskFailure, $category);
+    }
+
+    public function testClassifyFromStringsStraightLineRequiredAsTaskFailure(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            StraightLineWorkflowRequiredException::class,
+            'Straight-line workflow required',
+        );
+
+        $this->assertSame(FailureCategory::TaskFailure, $category);
+    }
+
+    public function testClassifyFromStringsQueryExceptionAsInternal(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            QueryException::class,
+            'Connection lost',
+        );
+
+        $this->assertSame(FailureCategory::Internal, $category);
+    }
+
+    public function testClassifyFromStringsPdoExceptionAsInternal(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            PDOException::class,
+            'SQLSTATE[HY000]: General error',
+        );
+
+        $this->assertSame(FailureCategory::Internal, $category);
+    }
+
+    public function testClassifyFromStringsMaxAttemptsAsInternal(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            MaxAttemptsExceededException::class,
+            'Job exceeded max attempts',
+        );
+
+        $this->assertSame(FailureCategory::Internal, $category);
+    }
+
+    public function testClassifyFromStringsTimeoutMessage(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            RuntimeException::class,
+            'Workflow execution timed out',
+        );
+
+        $this->assertSame(FailureCategory::Timeout, $category);
+    }
+
+    public function testClassifyFromStringsExecutionDeadlineMessage(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            RuntimeException::class,
+            'Workflow execution deadline reached',
+        );
+
+        $this->assertSame(FailureCategory::Timeout, $category);
+    }
+
+    public function testClassifyFromStringsRunDeadlineMessage(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            RuntimeException::class,
+            'Run deadline exceeded',
+        );
+
+        $this->assertSame(FailureCategory::Timeout, $category);
+    }
+
+    public function testClassifyFromStringsApplicationFallback(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            RuntimeException::class,
+            'Something went wrong',
+        );
+
+        $this->assertSame(FailureCategory::Application, $category);
+    }
+
+    public function testClassifyFromStringsNullClassAndMessageDefaultsToApplication(): void
+    {
+        $category = FailureFactory::classifyFromStrings('terminal', 'workflow_run', null, null);
+
+        $this->assertSame(FailureCategory::Application, $category);
+    }
+
+    public function testClassifyFromStringsTimeoutMessageWithNullClass(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            null,
+            'Workflow execution timed out',
+        );
+
+        $this->assertSame(FailureCategory::Timeout, $category);
+    }
+
+    public function testClassifyFromStringsUnknownPropagationDefaultsToApplication(): void
+    {
+        $category = FailureFactory::classifyFromStrings('unknown', 'unknown', null, null);
+
+        $this->assertSame(FailureCategory::Application, $category);
+    }
 }

@@ -531,6 +531,70 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         );
     }
 
+    public function repair(string $instanceId, array $options = []): array
+    {
+        $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
+
+        if (($loaded['error'] ?? null) !== null) {
+            return $loaded['error'];
+        }
+
+        $stub = $loaded['workflow'] ?? null;
+
+        if (! $stub instanceof WorkflowStub) {
+            return $this->notFoundControlPlaneResult($instanceId, 'workflow_command_id');
+        }
+
+        $result = $stub
+            ->withCommandContext($this->commandContext($options))
+            ->attemptRepair();
+
+        return array_merge(
+            CommandResponse::payload($result),
+            [
+                'accepted' => $result->accepted(),
+                'workflow_instance_id' => $instanceId,
+                'workflow_command_id' => $result->commandId(),
+                'command_reason' => $result->reason(),
+                'reason' => $result->rejected() ? $result->rejectionReason() : null,
+                'status' => $result->accepted() ? 200 : 409,
+            ],
+        );
+    }
+
+    public function archive(string $instanceId, array $options = []): array
+    {
+        $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
+
+        if (($loaded['error'] ?? null) !== null) {
+            return $loaded['error'];
+        }
+
+        $stub = $loaded['workflow'] ?? null;
+
+        if (! $stub instanceof WorkflowStub) {
+            return $this->notFoundControlPlaneResult($instanceId, 'workflow_command_id');
+        }
+
+        $reason = is_string($options['reason'] ?? null) ? $options['reason'] : null;
+
+        $result = $stub
+            ->withCommandContext($this->commandContext($options))
+            ->attemptArchive($reason);
+
+        return array_merge(
+            CommandResponse::payload($result),
+            [
+                'accepted' => $result->accepted(),
+                'workflow_instance_id' => $instanceId,
+                'workflow_command_id' => $result->commandId(),
+                'command_reason' => $result->reason(),
+                'reason' => $result->rejected() ? $result->rejectionReason() : null,
+                'status' => $result->accepted() ? 200 : 409,
+            ],
+        );
+    }
+
     public function describe(string $instanceId, array $options = []): array
     {
         $runId = $options['run_id'] ?? null;
@@ -549,6 +613,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'can_update' => false,
                 'can_cancel' => false,
                 'can_terminate' => false,
+                'can_repair' => false,
+                'can_archive' => false,
             ],
             'reason' => 'instance_not_found',
         ];
@@ -623,6 +689,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'can_update' => $isCurrentRun && $isOpen && $classResolvable,
                 'can_cancel' => $isCurrentRun && $isOpen,
                 'can_terminate' => $isCurrentRun && $isOpen,
+                'can_repair' => $isCurrentRun && $isOpen,
+                'can_archive' => $run->status->isTerminal() && $run->archived_at === null,
             ],
             'reason' => null,
         ];

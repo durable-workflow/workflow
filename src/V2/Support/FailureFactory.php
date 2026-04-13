@@ -71,6 +71,23 @@ final class FailureFactory
     }
 
     /**
+     * Classify a failure from string metadata (class name and message) without
+     * requiring a live Throwable instance. Used by the external worker bridge
+     * where the original throwable is not available.
+     */
+    public static function classifyFromStrings(string $propagationKind, string $sourceKind, ?string $exceptionClass, ?string $message): FailureCategory
+    {
+        return match ($propagationKind) {
+            'activity' => FailureCategory::Activity,
+            'child' => FailureCategory::ChildWorkflow,
+            'cancelled' => FailureCategory::Cancelled,
+            'terminated' => FailureCategory::Terminated,
+            'terminal', 'update' => self::classifyFromExceptionStrings($exceptionClass, $message),
+            default => FailureCategory::Application,
+        };
+    }
+
+    /**
      * Refine the failure category for terminal/update propagation by inspecting
      * the throwable type. Falls back to Application for user-space exceptions.
      */
@@ -106,12 +123,73 @@ final class FailureFactory
     }
 
     /**
+     * Refine the failure category using exception class name and message strings.
+     * Mirrors classifyFromThrowable logic using string matching instead of instanceof.
+     */
+    private static function classifyFromExceptionStrings(?string $exceptionClass, ?string $message): FailureCategory
+    {
+        if ($exceptionClass !== null) {
+            // Task-level failures: determinism violations, unsupported yields.
+            if (
+                self::classNameMatches($exceptionClass, UnsupportedWorkflowYieldException::class)
+                || self::classNameMatches($exceptionClass, StraightLineWorkflowRequiredException::class)
+            ) {
+                return FailureCategory::TaskFailure;
+            }
+
+            // Infrastructure failures: database, PDO, queue exhaustion.
+            if (
+                self::classNameMatches($exceptionClass, QueryException::class)
+                || self::classNameMatches($exceptionClass, PDOException::class)
+                || self::classNameMatches($exceptionClass, MaxAttemptsExceededException::class)
+            ) {
+                return FailureCategory::Internal;
+            }
+        }
+
+        // Timeout failures: check message convention.
+        if ($message !== null && self::isTimeoutMessage($message)) {
+            return FailureCategory::Timeout;
+        }
+
+        return FailureCategory::Application;
+    }
+
+    /**
+     * Check if an exception class name matches a known class, accounting for
+     * the class itself or any subclass whose fully qualified name ends with
+     * the same short class name.
+     */
+    private static function classNameMatches(string $exceptionClass, string $knownClass): bool
+    {
+        if ($exceptionClass === $knownClass) {
+            return true;
+        }
+
+        // Also match when the recorded class is a subclass of the known class
+        // and is resolvable in the current runtime.
+        if (class_exists($exceptionClass) && is_a($exceptionClass, $knownClass, true)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Detect throwables that represent timeout conditions. This checks for a
      * conventional marker interface or a message pattern indicating a timeout.
      */
     private static function isTimeoutThrowable(Throwable $throwable): bool
     {
-        $message = strtolower($throwable->getMessage());
+        return self::isTimeoutMessage($throwable->getMessage());
+    }
+
+    /**
+     * Check a message string for timeout-indicating patterns.
+     */
+    private static function isTimeoutMessage(string $message): bool
+    {
+        $message = strtolower($message);
 
         return str_contains($message, 'timed out')
             || str_contains($message, 'timeout exceeded')

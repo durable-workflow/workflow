@@ -696,7 +696,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ) ? $command['exception_class'] : RuntimeException::class;
         $exceptionType = is_string($command['exception_type'] ?? null) ? $command['exception_type'] : null;
 
-        $failureCategory = FailureFactory::classify('terminal', 'workflow_run');
+        $failureCategory = FailureFactory::classifyFromStrings('terminal', 'workflow_run', $exceptionClass, $message);
 
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create([

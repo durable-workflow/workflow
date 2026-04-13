@@ -198,6 +198,68 @@ interface WorkflowControlPlane
     public function terminate(string $instanceId, array $options = []): array;
 
     /**
+     * Request a repair of the current workflow run.
+     *
+     * Repair re-projects the run summary, detects liveness issues, and
+     * creates a new workflow task when the run is in a repairable state.
+     * Only the current run of an open workflow instance may be repaired.
+     *
+     * Options:
+     * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
+     * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
+     *
+     * @return array{
+     *     accepted: bool,
+     *     workflow_instance_id: string,
+     *     workflow_command_id: string|null,
+     *     reason: string|null,
+     *     status?: int,
+     *     workflow_id?: string,
+     *     run_id?: string|null,
+     *     command_id?: string|null,
+     *     command_status?: string|null,
+     *     command_source?: string|null,
+     *     target_scope?: string|null,
+     *     workflow_type?: string|null,
+     *     outcome?: string|null,
+     *     rejection_reason?: string|null,
+     * }
+     */
+    public function repair(string $instanceId, array $options = []): array;
+
+    /**
+     * Archive a terminal workflow run.
+     *
+     * Archive marks a closed run as archived, preventing further commands
+     * and signaling that the run data may be eligible for cold storage or
+     * cleanup. Only terminal (completed, failed, cancelled, terminated)
+     * runs may be archived.
+     *
+     * Options:
+     * - reason: string|null — archive reason
+     * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
+     * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
+     *
+     * @return array{
+     *     accepted: bool,
+     *     workflow_instance_id: string,
+     *     workflow_command_id: string|null,
+     *     reason: string|null,
+     *     status?: int,
+     *     workflow_id?: string,
+     *     run_id?: string|null,
+     *     command_id?: string|null,
+     *     command_status?: string|null,
+     *     command_source?: string|null,
+     *     target_scope?: string|null,
+     *     workflow_type?: string|null,
+     *     outcome?: string|null,
+     *     rejection_reason?: string|null,
+     * }
+     */
+    public function archive(string $instanceId, array $options = []): array;
+
+    /**
      * Describe the current state of a workflow instance.
      *
      * Returns instance metadata, current run state, summary fields, and
@@ -237,6 +299,8 @@ interface WorkflowControlPlane
      *         can_update: bool,
      *         can_cancel: bool,
      *         can_terminate: bool,
+     *         can_repair: bool,
+     *         can_archive: bool,
      *     },
      *     reason: string|null,
      * }
