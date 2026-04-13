@@ -45,4 +45,10 @@ enum FailureCategory: string
      * Server or infrastructure failure (database, queue, worker crash).
      */
     case Internal = 'internal';
+
+    /**
+     * Failure caused by exceeding a structural limit (payload size,
+     * pending fan-out count, command batch size, etc.).
+     */
+    case StructuralLimit = 'structural_limit';
 }

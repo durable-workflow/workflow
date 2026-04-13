@@ -23,7 +23,9 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Enums\StructuralLimitKind;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
@@ -767,6 +769,14 @@ final class WorkflowExecutor
                 $leafDescriptors = $current->leafDescriptors($sequence);
                 $groupSize = count($leafDescriptors);
 
+                try {
+                    StructuralLimits::guardCommandBatchSize($groupSize);
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
                 if ($groupSize === 0) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence);
@@ -1124,6 +1134,8 @@ final class WorkflowExecutor
         ?array $parallelMetadata = null,
         bool $parkRun = true,
     ): WorkflowTask {
+        StructuralLimits::guardPendingActivities($run);
+
         EntryMethod::describeActivity($activityCall->activity);
 
         $options = $activityCall->options;
@@ -1267,6 +1279,8 @@ final class WorkflowExecutor
         ?array $parallelMetadata = null,
         bool $parkRun = true,
     ): WorkflowTask {
+        StructuralLimits::guardPendingChildren($run);
+
         $metadata = WorkflowMetadata::fromStartArguments($childWorkflowCall->arguments);
         $workflowType = TypeRegistry::for($childWorkflowCall->workflow);
         $commandContract = RunCommandContract::snapshot($childWorkflowCall->workflow);
@@ -1444,6 +1458,8 @@ final class WorkflowExecutor
         int $sequence,
         TimerCall $timerCall,
     ): WorkflowTask {
+        StructuralLimits::guardPendingTimers($run);
+
         $fireAt = now()
             ->addSeconds($timerCall->seconds);
 
@@ -2354,7 +2370,7 @@ final class WorkflowExecutor
 
         $exceptionPayload = FailureFactory::payload($throwable);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, [
+        $failedEventPayload = [
             'failure_id' => $failure->id,
             'source_kind' => $sourceKind,
             'source_id' => $sourceId,
@@ -2363,7 +2379,15 @@ final class WorkflowExecutor
             'exception_class' => $failure->exception_class,
             'message' => $failure->message,
             'exception' => $exceptionPayload,
-        ], $task);
+        ];
+
+        if ($throwable instanceof StructuralLimitExceededException) {
+            $failedEventPayload['structural_limit_kind'] = $throwable->limitKind->value;
+            $failedEventPayload['structural_limit_value'] = $throwable->currentValue;
+            $failedEventPayload['structural_limit_configured'] = $throwable->configuredLimit;
+        }
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $failedEventPayload, $task);
 
         $task->forceFill([
             'status' => TaskStatus::Failed,

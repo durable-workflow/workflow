@@ -241,6 +241,9 @@ final class FailureSnapshots
             'created_at' => $failure?->created_at ?? $event->recorded_at ?? $event->created_at,
             'event_sequence' => $event->sequence,
             'exception_payload' => $exceptionPayload,
+            'structural_limit_kind' => self::stringValue($event->payload['structural_limit_kind'] ?? null),
+            'structural_limit_value' => self::intValue($event->payload['structural_limit_value'] ?? null),
+            'structural_limit_configured' => self::intValue($event->payload['structural_limit_configured'] ?? null),
         ];
     }
 

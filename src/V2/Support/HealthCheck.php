@@ -32,6 +32,7 @@ final class HealthCheck
             'healthy' => $status !== 'error',
             'checks' => $checks,
             'operator_metrics' => $metrics,
+            'structural_limits' => StructuralLimits::snapshot(),
         ];
     }
 

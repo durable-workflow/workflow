@@ -74,6 +74,17 @@ return [
         'guardrails' => [
             'boot' => env('WORKFLOW_V2_GUARDRAILS_BOOT', 'warn'),
         ],
+        'structural_limits' => [
+            'pending_activity_count' => (int) env('WORKFLOW_V2_LIMIT_PENDING_ACTIVITIES', 2000),
+            'pending_child_count' => (int) env('WORKFLOW_V2_LIMIT_PENDING_CHILDREN', 1000),
+            'pending_timer_count' => (int) env('WORKFLOW_V2_LIMIT_PENDING_TIMERS', 2000),
+            'pending_signal_count' => (int) env('WORKFLOW_V2_LIMIT_PENDING_SIGNALS', 5000),
+            'pending_update_count' => (int) env('WORKFLOW_V2_LIMIT_PENDING_UPDATES', 500),
+            'command_batch_size' => (int) env('WORKFLOW_V2_LIMIT_COMMAND_BATCH_SIZE', 1000),
+            'payload_size_bytes' => (int) env('WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES', 2097152),
+            'memo_size_bytes' => (int) env('WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES', 262144),
+            'search_attribute_size_bytes' => (int) env('WORKFLOW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES', 40960),
+        ],
         'task_repair' => [
             'redispatch_after_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 3),
             'loop_throttle_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS', 5),

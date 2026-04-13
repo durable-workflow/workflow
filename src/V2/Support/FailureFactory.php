@@ -18,6 +18,7 @@ use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 
 final class FailureFactory
@@ -97,6 +98,11 @@ final class FailureFactory
             return FailureCategory::Application;
         }
 
+        // Structural-limit failures: pending fan-out, payload size, metadata size.
+        if ($throwable instanceof StructuralLimitExceededException) {
+            return FailureCategory::StructuralLimit;
+        }
+
         // Task-level failures: determinism violations, unsupported yields, replay shape errors.
         if (
             $throwable instanceof UnsupportedWorkflowYieldException
@@ -119,6 +125,11 @@ final class FailureFactory
             return FailureCategory::Timeout;
         }
 
+        // Structural-limit failures: check message convention as fallback.
+        if (self::isStructuralLimitMessage($throwable->getMessage())) {
+            return FailureCategory::StructuralLimit;
+        }
+
         return FailureCategory::Application;
     }
 
@@ -129,6 +140,11 @@ final class FailureFactory
     private static function classifyFromExceptionStrings(?string $exceptionClass, ?string $message): FailureCategory
     {
         if ($exceptionClass !== null) {
+            // Structural-limit failures.
+            if (self::classNameMatches($exceptionClass, StructuralLimitExceededException::class)) {
+                return FailureCategory::StructuralLimit;
+            }
+
             // Task-level failures: determinism violations, unsupported yields.
             if (
                 self::classNameMatches($exceptionClass, UnsupportedWorkflowYieldException::class)
@@ -150,6 +166,11 @@ final class FailureFactory
         // Timeout failures: check message convention.
         if ($message !== null && self::isTimeoutMessage($message)) {
             return FailureCategory::Timeout;
+        }
+
+        // Structural-limit failures: check message convention.
+        if ($message !== null && self::isStructuralLimitMessage($message)) {
+            return FailureCategory::StructuralLimit;
         }
 
         return FailureCategory::Application;
@@ -195,6 +216,14 @@ final class FailureFactory
             || str_contains($message, 'timeout exceeded')
             || str_contains($message, 'execution deadline')
             || str_contains($message, 'run deadline');
+    }
+
+    /**
+     * Check a message string for structural-limit-indicating patterns.
+     */
+    private static function isStructuralLimitMessage(string $message): bool
+    {
+        return str_starts_with($message, 'Structural limit exceeded:');
     }
 
     /**

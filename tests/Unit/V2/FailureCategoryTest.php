@@ -10,7 +10,9 @@ use PDOException;
 use RuntimeException;
 use Tests\TestCase;
 use Workflow\V2\Enums\FailureCategory;
+use Workflow\V2\Enums\StructuralLimitKind;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Support\FailureFactory;
 
@@ -31,6 +33,7 @@ final class FailureCategoryTest extends TestCase
             'child_workflow',
             'task_failure',
             'internal',
+            'structural_limit',
         ];
 
         $actual = array_map(
@@ -398,5 +401,92 @@ final class FailureCategoryTest extends TestCase
         $category = FailureFactory::classifyFromStrings('unknown', 'unknown', null, null);
 
         $this->assertSame(FailureCategory::Application, $category);
+    }
+
+    // ---------------------------------------------------------------
+    //  FailureFactory::classify() — structural limit classification
+    // ---------------------------------------------------------------
+
+    public function testStructuralLimitExceptionClassifiesAsStructuralLimit(): void
+    {
+        $throwable = StructuralLimitExceededException::pendingActivityCount(2000, 2000);
+
+        $category = FailureFactory::classify('terminal', 'workflow_run', $throwable);
+
+        $this->assertSame(FailureCategory::StructuralLimit, $category);
+    }
+
+    public function testStructuralLimitExceptionTakesPriorityOverMessagePatterns(): void
+    {
+        $throwable = StructuralLimitExceededException::payloadSize(3000000, 2097152);
+
+        $category = FailureFactory::classify('terminal', 'workflow_run', $throwable);
+
+        $this->assertSame(FailureCategory::StructuralLimit, $category);
+    }
+
+    public function testStructuralLimitMessageClassifiesAsStructuralLimitViaFallback(): void
+    {
+        $throwable = new RuntimeException('Structural limit exceeded: 2000 pending activities (limit 2000).');
+
+        $category = FailureFactory::classify('terminal', 'workflow_run', $throwable);
+
+        $this->assertSame(FailureCategory::StructuralLimit, $category);
+    }
+
+    public function testClassifyFromStringsStructuralLimitException(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            StructuralLimitExceededException::class,
+            'Structural limit exceeded: 2000 pending activities (limit 2000).',
+        );
+
+        $this->assertSame(FailureCategory::StructuralLimit, $category);
+    }
+
+    public function testClassifyFromStringsStructuralLimitMessageFallback(): void
+    {
+        $category = FailureFactory::classifyFromStrings(
+            'terminal',
+            'workflow_run',
+            RuntimeException::class,
+            'Structural limit exceeded: payload size 3000000 bytes (limit 2097152 bytes).',
+        );
+
+        $this->assertSame(FailureCategory::StructuralLimit, $category);
+    }
+
+    // ---------------------------------------------------------------
+    //  StructuralLimitExceededException — factory methods
+    // ---------------------------------------------------------------
+
+    public function testStructuralLimitExceptionCarriesMetadata(): void
+    {
+        $exception = StructuralLimitExceededException::pendingActivityCount(50, 25);
+
+        $this->assertSame(StructuralLimitKind::PendingActivityCount, $exception->limitKind);
+        $this->assertSame(50, $exception->currentValue);
+        $this->assertSame(25, $exception->configuredLimit);
+        $this->assertStringContainsString('50 pending activities', $exception->getMessage());
+    }
+
+    public function testStructuralLimitExceptionPayloadSizeFactory(): void
+    {
+        $exception = StructuralLimitExceededException::payloadSize(3000000, 2097152);
+
+        $this->assertSame(StructuralLimitKind::PayloadSize, $exception->limitKind);
+        $this->assertSame(3000000, $exception->currentValue);
+        $this->assertSame(2097152, $exception->configuredLimit);
+    }
+
+    public function testStructuralLimitExceptionCommandBatchSizeFactory(): void
+    {
+        $exception = StructuralLimitExceededException::commandBatchSize(1500, 1000);
+
+        $this->assertSame(StructuralLimitKind::CommandBatchSize, $exception->limitKind);
+        $this->assertSame(1500, $exception->currentValue);
+        $this->assertSame(1000, $exception->configuredLimit);
     }
 }
