@@ -7,6 +7,9 @@ namespace Workflow\V2;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Throwable;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CommandContractBackfillSweep;
@@ -46,7 +49,10 @@ final class TaskWatchdog
      *     command_contract_backfill_unavailable: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
-     *     command_contract_failures: list<array{run_id: string, message: string}>
+     *     command_contract_failures: list<array{run_id: string, message: string}>,
+     *     deadline_expired_candidates: int,
+     *     deadline_expired_tasks_created: int,
+     *     deadline_expired_failures: list<array{run_id: string, message: string}>
      * }
      */
     public static function runPass(
@@ -107,6 +113,25 @@ final class TaskWatchdog
             if ($result['error'] !== null) {
                 $report['missing_run_failures'][] = [
                     'run_id' => $runId,
+                    'message' => $result['error'],
+                ];
+            }
+        }
+
+        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId);
+        $report['deadline_expired_candidates'] = count($deadlineExpiredRunIds);
+
+        foreach ($deadlineExpiredRunIds as $deadlineRunId) {
+            $result = self::createDeadlineExpiredTask($deadlineRunId);
+
+            if ($result['task'] instanceof WorkflowTask) {
+                $report['deadline_expired_tasks_created']++;
+                $report['dispatched_tasks']++;
+            }
+
+            if ($result['error'] !== null) {
+                $report['deadline_expired_failures'][] = [
+                    'run_id' => $deadlineRunId,
                     'message' => $result['error'],
                 ];
             }
@@ -252,7 +277,10 @@ final class TaskWatchdog
      *     command_contract_backfill_unavailable: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
-     *     command_contract_failures: list<array{run_id: string, message: string}>
+     *     command_contract_failures: list<array{run_id: string, message: string}>,
+     *     deadline_expired_candidates: int,
+     *     deadline_expired_tasks_created: int,
+     *     deadline_expired_failures: list<array{run_id: string, message: string}>
      * }
      */
     private static function emptyReport(
@@ -282,6 +310,124 @@ final class TaskWatchdog
             'existing_task_failures' => [],
             'missing_run_failures' => [],
             'command_contract_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+        ];
+    }
+
+    /**
+     * Find non-terminal runs with expired execution or run deadlines
+     * that have no open workflow task to detect the timeout.
+     *
+     * @return list<string>
+     */
+    private static function deadlineExpiredRunIds(array $runIds = [], ?string $instanceId = null): array
+    {
+        $now = now();
+
+        $query = WorkflowRun::query()
+            ->whereIn('status', [
+                RunStatus::Pending->value,
+                RunStatus::Running->value,
+                RunStatus::Waiting->value,
+            ])
+            ->where(static function ($deadline) use ($now): void {
+                $deadline->where(static function ($execution) use ($now): void {
+                    $execution->whereNotNull('execution_deadline_at')
+                        ->where('execution_deadline_at', '<=', $now);
+                })->orWhere(static function ($run) use ($now): void {
+                    $run->whereNotNull('run_deadline_at')
+                        ->where('run_deadline_at', '<=', $now);
+                });
+            })
+            ->whereDoesntHave('tasks', static function ($task): void {
+                $task->where('task_type', TaskType::Workflow->value)
+                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value]);
+            });
+
+        if ($runIds !== []) {
+            $query->whereKey($runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->where('workflow_instance_id', $instanceId);
+        }
+
+        return $query->limit(TaskRepairPolicy::scanLimit())->pluck('id')->all();
+    }
+
+    /**
+     * @return array{task: WorkflowTask|null, error: string|null}
+     */
+    private static function createDeadlineExpiredTask(string $runId): array
+    {
+        try {
+            $task = DB::transaction(static function () use ($runId): ?WorkflowTask {
+                /** @var WorkflowRun|null $run */
+                $run = WorkflowRun::query()
+                    ->lockForUpdate()
+                    ->find($runId);
+
+                if ($run === null || $run->status->isTerminal()) {
+                    return null;
+                }
+
+                $now = now();
+                $deadlineExpired = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
+                    || ($run->run_deadline_at !== null && $now->gte($run->run_deadline_at));
+
+                if (! $deadlineExpired) {
+                    return null;
+                }
+
+                $existingWorkflowTask = WorkflowTask::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->where('task_type', TaskType::Workflow->value)
+                    ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                    ->first();
+
+                if ($existingWorkflowTask !== null) {
+                    return null;
+                }
+
+                /** @var WorkflowTask $task */
+                $task = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $now,
+                    'payload' => [
+                        'reason' => 'deadline_expired',
+                    ],
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
+                    'repair_count' => 1,
+                ]);
+
+                RunSummaryProjector::project(
+                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                );
+
+                return $task;
+            });
+
+            if ($task instanceof WorkflowTask) {
+                TaskDispatcher::dispatch($task);
+            }
+        } catch (Throwable $throwable) {
+            report($throwable);
+
+            return [
+                'task' => null,
+                'error' => $throwable->getMessage(),
+            ];
+        }
+
+        return [
+            'task' => $task,
+            'error' => null,
         ];
     }
 }

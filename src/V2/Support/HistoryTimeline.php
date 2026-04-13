@@ -386,6 +386,13 @@ final class HistoryTimeline
                 self::intValue($payload['new_position'] ?? null) ?? 0,
             ),
             HistoryEventType::WorkflowCompleted => 'Workflow completed.',
+            HistoryEventType::WorkflowTimedOut => match ($payload['timeout_kind'] ?? null) {
+                'execution_timeout' => 'Workflow execution deadline expired.',
+                'run_timeout' => 'Workflow run deadline expired.',
+                default => $message === null
+                    ? 'Workflow timed out.'
+                    : sprintf('Workflow timed out: %s.', $message),
+            },
             HistoryEventType::WorkflowFailed => $message === null
                 ? 'Workflow failed.'
                 : sprintf('Workflow failed: %s.', $message),
@@ -761,6 +768,7 @@ final class HistoryTimeline
                 HistoryEventType::WorkflowCancelled => 'cancelled',
                 HistoryEventType::ChildRunTerminated,
                 HistoryEventType::WorkflowTerminated => 'terminated',
+                HistoryEventType::WorkflowTimedOut => 'timeout',
                 HistoryEventType::WorkflowFailed => 'terminal',
                 HistoryEventType::FailureHandled => self::stringValue($payload['propagation_kind'] ?? null)
                     ?? self::stringValue($failure['propagation_kind'] ?? null),
@@ -778,6 +786,7 @@ final class HistoryTimeline
                     HistoryEventType::WorkflowCancelled => 'cancelled',
                     HistoryEventType::ChildRunTerminated,
                     HistoryEventType::WorkflowTerminated => 'terminated',
+                    HistoryEventType::WorkflowTimedOut => 'timeout',
                     HistoryEventType::WorkflowFailed => 'application',
                     HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
                         ? null
@@ -787,6 +796,7 @@ final class HistoryTimeline
             'handled' => match ($event->event_type) {
                 HistoryEventType::FailureHandled => true,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::WorkflowTimedOut,
                 HistoryEventType::WorkflowFailed => false,
                 HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
                     ? null
@@ -964,6 +974,7 @@ final class HistoryTimeline
             HistoryEventType::ActivityHeartbeatRecorded => 'leased',
             HistoryEventType::ActivityCancelled => 'cancelled',
             HistoryEventType::WorkflowFailed => 'failed',
+            HistoryEventType::WorkflowTimedOut => 'completed',
             default => 'completed',
         };
     }

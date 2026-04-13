@@ -4,15 +4,26 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Carbon;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHistoryBudgetWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\FailureSnapshots;
+use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowTimeoutTest extends TestCase
@@ -262,5 +273,340 @@ final class V2WorkflowTimeoutTest extends TestCase
         $this->assertSame(3600, (int) $run->run_timeout_seconds);
         $this->assertNotNull($run->execution_deadline_at);
         $this->assertNotNull($run->run_deadline_at);
+    }
+
+    public function testRunDeadlineEnforcedOnWorkflowTaskExecution(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'timeout-enforce-run-1',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => $startedAt,
+            'started_at' => $startedAt,
+        ]);
+
+        $runDeadlineAt = $startedAt->copy()->addSeconds(60);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => null,
+            'queue' => null,
+            'run_timeout_seconds' => 60,
+            'run_deadline_at' => $runDeadlineAt,
+            'started_at' => $startedAt,
+            'last_progress_at' => $startedAt,
+        ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => $startedAt,
+            'payload' => [],
+            'leased_at' => $startedAt,
+            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+        ]);
+
+        // Advance past run deadline.
+        Carbon::setTestNow($startedAt->copy()->addSeconds(120));
+
+        $nextTask = app(WorkflowExecutor::class)->run($run->fresh(), $task->fresh());
+
+        $this->assertNull($nextTask);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Failed, $run->status);
+        $this->assertSame('timed_out', $run->closed_reason);
+        $this->assertNotNull($run->closed_at);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Completed, $task->status);
+
+        $failure = WorkflowFailure::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $this->assertSame(FailureCategory::Timeout->value, $failure->failure_category->value);
+        $this->assertSame('timeout', $failure->propagation_kind);
+        $this->assertStringContainsString('run deadline expired', $failure->message);
+
+        $timedOutEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowTimedOut->value)
+            ->firstOrFail();
+
+        $this->assertSame('run_timeout', $timedOutEvent->payload['timeout_kind']);
+        $this->assertSame('timeout', $timedOutEvent->payload['failure_category']);
+
+        Carbon::setTestNow();
+    }
+
+    public function testExecutionDeadlineEnforcedOnWorkflowTaskExecution(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'timeout-enforce-exec-1',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'execution_timeout_seconds' => 300,
+            'run_count' => 1,
+            'reserved_at' => $startedAt,
+            'started_at' => $startedAt,
+        ]);
+
+        $executionDeadlineAt = $startedAt->copy()->addSeconds(300);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => null,
+            'queue' => null,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'started_at' => $startedAt,
+            'last_progress_at' => $startedAt,
+        ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => $startedAt,
+            'payload' => [],
+            'leased_at' => $startedAt,
+            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+        ]);
+
+        // Advance past execution deadline.
+        Carbon::setTestNow($startedAt->copy()->addSeconds(600));
+
+        $nextTask = app(WorkflowExecutor::class)->run($run->fresh(), $task->fresh());
+
+        $this->assertNull($nextTask);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Failed, $run->status);
+        $this->assertSame('timed_out', $run->closed_reason);
+
+        $failure = WorkflowFailure::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $this->assertSame(FailureCategory::Timeout->value, $failure->failure_category->value);
+        $this->assertStringContainsString('execution deadline expired', $failure->message);
+
+        $timedOutEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowTimedOut->value)
+            ->firstOrFail();
+
+        $this->assertSame('execution_timeout', $timedOutEvent->payload['timeout_kind']);
+
+        Carbon::setTestNow();
+    }
+
+    public function testTimeoutCancelsOpenActivitiesAndTimers(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'timeout-cancel-1',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => $startedAt,
+            'started_at' => $startedAt,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => null,
+            'queue' => null,
+            'run_timeout_seconds' => 30,
+            'run_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'started_at' => $startedAt,
+            'last_progress_at' => $startedAt,
+        ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        // Create an open activity execution.
+        $activityExecution = \Workflow\V2\Models\ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => 'test-greeting-activity',
+            'sequence' => 1,
+            'status' => \Workflow\V2\Enums\ActivityStatus::Running->value,
+            'attempt_count' => 1,
+            'started_at' => $startedAt,
+        ]);
+
+        // Create an open activity task.
+        $activityTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => $startedAt,
+            'payload' => ['activity_execution_id' => $activityExecution->id],
+            'leased_at' => $startedAt,
+            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+        ]);
+
+        // Create an open timer.
+        $timer = \Workflow\V2\Models\WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 2,
+            'status' => \Workflow\V2\Enums\TimerStatus::Pending->value,
+            'fire_at' => $startedAt->copy()->addMinutes(10),
+            'delay_seconds' => 600,
+        ]);
+
+        // Create the workflow task that the executor claims.
+        $workflowTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => $startedAt,
+            'payload' => [],
+            'leased_at' => $startedAt,
+            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+        ]);
+
+        // Advance past deadline.
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        app(WorkflowExecutor::class)->run($run->fresh(), $workflowTask->fresh());
+
+        // Activity should be cancelled.
+        $activityExecution->refresh();
+        $this->assertSame(\Workflow\V2\Enums\ActivityStatus::Cancelled->value, $activityExecution->status->value);
+
+        // Activity task should be cancelled.
+        $activityTask->refresh();
+        $this->assertSame(TaskStatus::Cancelled->value, $activityTask->status->value);
+
+        // Timer should be cancelled.
+        $timer->refresh();
+        $this->assertSame(\Workflow\V2\Enums\TimerStatus::Cancelled->value, $timer->status->value);
+
+        // ActivityCancelled history event should exist.
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $run->id,
+            'event_type' => HistoryEventType::ActivityCancelled->value,
+        ]);
+
+        // TimerCancelled history event should exist.
+        $this->assertDatabaseHas('workflow_history_events', [
+            'workflow_run_id' => $run->id,
+            'event_type' => HistoryEventType::TimerCancelled->value,
+        ]);
+
+        Carbon::setTestNow();
+    }
+
+    public function testTimeoutFailureCategoryAppearInFailureSnapshots(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'timeout-snapshots-1',
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'run_count' => 1,
+            'reserved_at' => $startedAt,
+            'started_at' => $startedAt,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestGreetingWorkflow::class,
+            'workflow_type' => 'test-greeting-workflow',
+            'status' => RunStatus::Running->value,
+            'arguments' => Serializer::serialize(['Taylor']),
+            'connection' => null,
+            'queue' => null,
+            'run_timeout_seconds' => 30,
+            'run_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'started_at' => $startedAt,
+            'last_progress_at' => $startedAt,
+        ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => $startedAt,
+            'payload' => [],
+            'leased_at' => $startedAt,
+            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+        ]);
+
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        app(WorkflowExecutor::class)->run($run->fresh(), $task->fresh());
+
+        $run->refresh();
+        $run->load(['historyEvents', 'failures']);
+
+        $snapshots = FailureSnapshots::forRun($run);
+
+        $this->assertNotEmpty($snapshots);
+        $timeoutSnapshot = $snapshots[0];
+        $this->assertSame('timeout', $timeoutSnapshot['failure_category']);
+        $this->assertSame('timeout', $timeoutSnapshot['propagation_kind']);
+        $this->assertSame('workflow_run', $timeoutSnapshot['source_kind']);
+
+        Carbon::setTestNow();
+    }
+
+    public function testNoDeadlineEnforcedWhenDeadlineNotExpired(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'timeout-no-enforce-1');
+        $workflow->start(
+            'Taylor',
+            StartOptions::rejectDuplicate()->withRunTimeout(3600),
+        );
+
+        $this->assertTrue($workflow->refresh()->completed());
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'timeout-no-enforce-1')
+            ->firstOrFail();
+
+        $this->assertSame('completed', $run->closed_reason);
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $run->id,
+            'event_type' => HistoryEventType::WorkflowTimedOut->value,
+        ]);
+
+        Carbon::setTestNow();
     }
 }

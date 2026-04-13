@@ -15,6 +15,7 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
@@ -58,6 +59,12 @@ final class WorkflowExecutor
             'childLinks.childRun.failures',
             'childLinks.childRun.historyEvents',
         ]);
+
+        if ($this->deadlineExpired($run)) {
+            $this->timeoutRun($run, $task);
+
+            return null;
+        }
 
         $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
         $workflow = new $workflowClass($run);
@@ -2140,6 +2147,144 @@ final class WorkflowExecutor
         );
 
         return $command;
+    }
+
+    private function deadlineExpired(WorkflowRun $run): bool
+    {
+        $now = now();
+
+        if ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at)) {
+            return true;
+        }
+
+        if ($run->run_deadline_at !== null && $now->gte($run->run_deadline_at)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function timeoutRun(WorkflowRun $run, WorkflowTask $task): void
+    {
+        $now = now();
+
+        $timeoutKind = 'run_timeout';
+
+        if ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at)) {
+            $timeoutKind = 'execution_timeout';
+        }
+
+        $message = $timeoutKind === 'execution_timeout'
+            ? sprintf('Workflow execution deadline expired at %s.', $run->execution_deadline_at->toIso8601String())
+            : sprintf('Workflow run deadline expired at %s.', $run->run_deadline_at->toIso8601String());
+
+        $exceptionClass = 'Workflow\\V2\\Exceptions\\WorkflowTimeoutException';
+
+        // Cancel all open tasks except the current one.
+        $openTasks = $run->tasks
+            ->filter(static fn (WorkflowTask $t): bool => in_array($t->status, [TaskStatus::Ready, TaskStatus::Leased], true)
+                && $t->id !== $task->id);
+
+        foreach ($openTasks as $openTask) {
+            $openTask->forceFill([
+                'status' => TaskStatus::Cancelled,
+                'lease_expires_at' => null,
+                'last_error' => null,
+            ])->save();
+        }
+
+        // Cancel open activity executions with history events.
+        $tasksByActivityExecutionId = $openTasks
+            ->filter(static fn (WorkflowTask $t): bool => is_string($t->payload['activity_execution_id'] ?? null))
+            ->keyBy(static fn (WorkflowTask $t): string => $t->payload['activity_execution_id']);
+
+        $openActivityExecutions = $run->activityExecutions
+            ->filter(static fn (ActivityExecution $e): bool => in_array($e->status, [ActivityStatus::Pending, ActivityStatus::Running], true));
+
+        foreach ($openActivityExecutions as $execution) {
+            $execution->forceFill([
+                'status' => ActivityStatus::Cancelled,
+                'closed_at' => $execution->closed_at ?? $now,
+            ])->save();
+
+            /** @var WorkflowTask|null $activityTask */
+            $activityTask = $tasksByActivityExecutionId->get($execution->id);
+
+            ActivityCancellation::record($run, $execution, $activityTask);
+        }
+
+        // Cancel open timers with history events.
+        $openTimers = $run->timers
+            ->filter(static fn (WorkflowTimer $t): bool => $t->status === TimerStatus::Pending);
+
+        foreach ($openTimers as $timer) {
+            $timer->forceFill([
+                'status' => TimerStatus::Cancelled,
+            ])->save();
+
+            TimerCancellation::record($run, $timer);
+        }
+
+        // Record failure row.
+        $failureCategory = FailureCategory::Timeout;
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()->create([
+            'workflow_run_id' => $run->id,
+            'source_kind' => 'workflow_run',
+            'source_id' => $run->id,
+            'propagation_kind' => 'timeout',
+            'failure_category' => $failureCategory->value,
+            'handled' => false,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'file' => '',
+            'line' => 0,
+            'trace_preview' => '',
+        ]);
+
+        // Close the run.
+        $run->forceFill([
+            'status' => RunStatus::Failed,
+            'closed_reason' => 'timed_out',
+            'closed_at' => $now,
+            'last_progress_at' => $now,
+        ])->save();
+
+        // Record terminal history event.
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowTimedOut, [
+            'failure_id' => $failure->id,
+            'timeout_kind' => $timeoutKind,
+            'failure_category' => $failureCategory->value,
+            'message' => $message,
+            'exception_class' => $exceptionClass,
+            'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
+            'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
+        ], $task);
+
+        // Mark current task completed.
+        $task->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_expires_at' => null,
+        ])->save();
+
+        // Dispatch lifecycle events.
+        LifecycleEventDispatcher::workflowFailed($run, $exceptionClass, $message);
+        LifecycleEventDispatcher::failureRecorded(
+            $run,
+            (string) $failure->id,
+            'workflow_run',
+            $run->id,
+            $exceptionClass,
+            $message,
+        );
+
+        // Notify parent workflows and project summary.
+        $this->dispatchParentResumeTasks($run);
+
+        RunSummaryProjector::project(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
     }
 
     private function failRun(

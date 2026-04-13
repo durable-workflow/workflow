@@ -125,6 +125,7 @@ final class FailureSnapshots
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated,
             HistoryEventType::WorkflowFailed,
+            HistoryEventType::WorkflowTimedOut,
             HistoryEventType::WorkflowCancelled,
             HistoryEventType::WorkflowTerminated,
             HistoryEventType::UpdateCompleted,
@@ -320,6 +321,7 @@ final class FailureSnapshots
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child_workflow_run',
             HistoryEventType::WorkflowFailed,
+            HistoryEventType::WorkflowTimedOut,
             HistoryEventType::WorkflowCancelled,
             HistoryEventType::WorkflowTerminated => 'workflow_run',
             HistoryEventType::UpdateCompleted => 'workflow_command',
@@ -335,6 +337,7 @@ final class FailureSnapshots
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => self::stringValue($event->payload['child_workflow_run_id'] ?? null),
             HistoryEventType::WorkflowFailed,
+            HistoryEventType::WorkflowTimedOut,
             HistoryEventType::WorkflowCancelled,
             HistoryEventType::WorkflowTerminated => $event->workflow_run_id,
             HistoryEventType::UpdateCompleted => self::stringValue($event->workflow_command_id)
@@ -351,6 +354,7 @@ final class FailureSnapshots
             HistoryEventType::ChildRunCancelled => 'cancelled',
             HistoryEventType::ChildRunTerminated => 'terminated',
             HistoryEventType::WorkflowFailed => 'terminal',
+            HistoryEventType::WorkflowTimedOut => 'timeout',
             HistoryEventType::WorkflowCancelled => 'cancelled',
             HistoryEventType::WorkflowTerminated => 'terminated',
             HistoryEventType::UpdateCompleted => self::stringValue($event->payload['failure_id'] ?? null) === null
@@ -369,6 +373,7 @@ final class FailureSnapshots
             HistoryEventType::WorkflowCancelled => 'cancelled',
             HistoryEventType::ChildRunTerminated,
             HistoryEventType::WorkflowTerminated => 'terminated',
+            HistoryEventType::WorkflowTimedOut => 'timeout',
             HistoryEventType::WorkflowFailed => 'application',
             HistoryEventType::UpdateCompleted => self::stringValue($event->payload['failure_id'] ?? null) === null
                 ? null
