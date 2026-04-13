@@ -632,6 +632,84 @@ final class V2ActivityTimeoutTest extends TestCase
         Carbon::setTestNow();
     }
 
+    public function testScheduleToStartRetryResetsScheduleDeadline(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        $scheduleToStartTimeout = 30;
+
+        [$run, $execution, $activityTask] = $this->createPendingActivity(
+            instanceId: 'act-timeout-sts-retry-reset-1',
+            scheduleDeadlineAt: $startedAt->copy()->addSeconds($scheduleToStartTimeout),
+            retryPolicy: [
+                'snapshot_version' => 1,
+                'max_attempts' => 3,
+                'backoff_seconds' => [5],
+                'start_to_close_timeout' => 60,
+                'schedule_to_start_timeout' => $scheduleToStartTimeout,
+            ],
+        );
+
+        // Advance past the schedule-to-start deadline.
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        $result = ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertTrue($result['enforced']);
+        $this->assertNotNull($result['next_task']);
+
+        $execution->refresh();
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
+
+        // The schedule_deadline_at should be reset relative to the retry available_at,
+        // not left at the old expired value.
+        $this->assertNotNull($execution->schedule_deadline_at);
+
+        // The retry task has a 5-second backoff, so available_at = now + 5s.
+        $retryAvailableAt = now()->copy()->addSeconds(5);
+        $expectedDeadline = $retryAvailableAt->copy()->addSeconds($scheduleToStartTimeout);
+
+        $this->assertEquals(
+            $expectedDeadline->toIso8601String(),
+            $execution->schedule_deadline_at->toIso8601String(),
+        );
+
+        Carbon::setTestNow();
+    }
+
+    public function testScheduleToStartRetryClearsDeadlineWhenNoTimeoutConfigured(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        // Activity has a schedule_deadline_at set manually but no schedule_to_start_timeout in policy.
+        [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
+            instanceId: 'act-timeout-stc-retry-clear-1',
+            closeDeadlineAt: $startedAt->copy()->addSeconds(30),
+            maxAttempts: 3,
+        );
+
+        // Set an old schedule_deadline_at that would have been set at scheduling time.
+        $execution->forceFill([
+            'schedule_deadline_at' => $startedAt->copy()->addSeconds(10),
+        ])->save();
+
+        // Advance past the start-to-close deadline.
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        $result = ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertTrue($result['enforced']);
+        $this->assertNotNull($result['next_task']);
+
+        $execution->refresh();
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
+
+        // No schedule_to_start_timeout in policy, so deadline should be cleared.
+        $this->assertNull($execution->schedule_deadline_at);
+
+        Carbon::setTestNow();
+    }
+
     /**
      * @return array{0: WorkflowRun, 1: ActivityExecution, 2: WorkflowTask}
      */

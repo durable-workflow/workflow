@@ -203,6 +203,7 @@ final class RunActivityView
                 HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityTimedOut,
                 HistoryEventType::ActivityCancelled,
             ], true))
             ->sortBy('sequence');

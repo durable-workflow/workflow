@@ -196,11 +196,17 @@ final class ActivityTimeoutEnforcer
         $backoffSeconds = ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, $attemptCount);
         $retryAvailableAt = $now->copy()->addSeconds($backoffSeconds);
 
+        $scheduleToStartTimeout = self::scheduleToStartTimeoutFromPolicy($execution);
+        $newScheduleDeadline = $scheduleToStartTimeout !== null
+            ? $retryAvailableAt->copy()->addSeconds($scheduleToStartTimeout)
+            : null;
+
         $execution->forceFill([
             'status' => ActivityStatus::Pending,
             'last_heartbeat_at' => null,
             'close_deadline_at' => null,
             'heartbeat_deadline_at' => null,
+            'schedule_deadline_at' => $newScheduleDeadline,
         ])->save();
 
         /** @var WorkflowTask $retryTask */
@@ -422,6 +428,14 @@ final class ActivityTimeoutEnforcer
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
             ->where('payload->activity_execution_id', $execution->id)
             ->first();
+    }
+
+    private static function scheduleToStartTimeoutFromPolicy(ActivityExecution $execution): ?int
+    {
+        $policy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
+        $value = $policy['schedule_to_start_timeout'] ?? null;
+
+        return is_int($value) && $value > 0 ? $value : null;
     }
 
     /**
