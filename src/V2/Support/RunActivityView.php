@@ -265,8 +265,8 @@ final class RunActivityView
             'created_at' => $state['created_at'] ?? null,
             'started_at' => $state['started_at'] ?? ($latestAttempt['started_at'] ?? null),
             'closed_at' => self::activityClosedAt($status, $state, $latestAttempt),
-            'arguments' => self::publicSerializedValue($state['arguments'] ?? null, []),
-            'result' => self::publicSerializedValue(
+            'arguments' => self::publicTypedValue($state['arguments'] ?? null, []),
+            'result' => self::publicTypedValue(
                 $unsupportedReason === null ? ($state['result'] ?? null) : null,
                 null,
             ),
@@ -503,16 +503,16 @@ final class RunActivityView
         return null;
     }
 
-    private static function publicSerializedValue(mixed $value, mixed $default): string
+    private static function publicTypedValue(mixed $value, mixed $default): mixed
     {
         if (! is_string($value) || $value === '') {
-            return serialize($default);
+            return $default;
         }
 
         try {
-            return serialize(Serializer::unserialize($value));
+            return Serializer::unserialize($value);
         } catch (Throwable) {
-            return serialize($default);
+            return $default;
         }
     }
 

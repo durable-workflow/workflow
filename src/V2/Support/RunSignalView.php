@@ -100,7 +100,7 @@ final class RunSignalView
             'validation_errors' => $signal->normalizedValidationErrors(),
             'payload_codec' => $signal->payload_codec,
             'arguments_available' => is_string($signal->arguments),
-            'arguments' => self::normalizeSerializedValue($signal->arguments),
+            'arguments' => self::normalizeTypedValue($signal->arguments),
             'received_at' => self::timestamp($signal->received_at),
             'applied_at' => self::timestamp($signal->applied_at),
             'rejected_at' => self::timestamp($signal->rejected_at),
@@ -142,7 +142,7 @@ final class RunSignalView
             'validation_errors' => $command->validationErrors(),
             'payload_codec' => $command->payload_codec,
             'arguments_available' => true,
-            'arguments' => serialize($command->payloadArguments()),
+            'arguments' => $command->payloadArguments(),
             'received_at' => self::timestamp($command->accepted_at),
             'applied_at' => self::timestamp($command->applied_at),
             'rejected_at' => self::timestamp($command->rejected_at),
@@ -213,13 +213,13 @@ final class RunSignalView
         return SignalStatus::Received->value;
     }
 
-    private static function normalizeSerializedValue(mixed $value): mixed
+    private static function normalizeTypedValue(mixed $value): mixed
     {
         if (! is_string($value)) {
             return $value;
         }
 
-        return serialize(Serializer::unserialize($value));
+        return Serializer::unserialize($value);
     }
 
     private static function timestamp(mixed $value): ?string

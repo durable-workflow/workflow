@@ -641,7 +641,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('activity_running_without_task', $detail['liveness_state']);
         $this->assertSame($execution->id, $detail['activities'][0]['id']);
         $this->assertSame('running', $detail['activities'][0]['status']);
-        $this->assertNull(unserialize($detail['activities'][0]['result']));
+        $this->assertNull($detail['activities'][0]['result']);
         $this->assertNull($detail['activities'][0]['closed_at']);
         $this->assertSame('open', $detail['waits'][0]['status']);
         $this->assertSame('running', $detail['waits'][0]['source_status']);
@@ -725,7 +725,7 @@ final class V2WorkflowTest extends TestCase
             $detail['activities'][0]['history_unsupported_reason'],
         );
         $this->assertSame('completed', $detail['activities'][0]['row_status']);
-        $this->assertNull(unserialize($detail['activities'][0]['result']));
+        $this->assertNull($detail['activities'][0]['result']);
         $this->assertSame('unsupported', $detail['waits'][0]['status']);
         $this->assertSame('completed', $detail['waits'][0]['source_status']);
         $this->assertTrue($detail['waits'][0]['diagnostic_only']);
@@ -811,7 +811,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($attemptId, $detail['activities'][0]['attempts'][0]['id']);
         $this->assertSame('cancelled', $detail['activities'][0]['attempts'][0]['status']);
         $this->assertNull($detail['activities'][0]['closed_at']);
-        $this->assertNull(unserialize($detail['activities'][0]['result']));
+        $this->assertNull($detail['activities'][0]['result']);
         $this->assertSame('unsupported', $detail['waits'][0]['status']);
         $this->assertSame('cancelled', $detail['waits'][0]['source_status']);
         $this->assertTrue($detail['waits'][0]['diagnostic_only']);

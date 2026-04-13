@@ -206,7 +206,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame([
             'approved' => true,
             'events' => ['started', 'approved:yes:api'],
-        ], unserialize($detail['commands'][1]['result']));
+        ], $detail['commands'][1]['result']);
         $this->assertCount(1, $detail['updates']);
         $this->assertSame($update->updateId(), $detail['updates'][0]['id']);
         $this->assertSame($update->commandId(), $detail['updates'][0]['command_id']);
@@ -219,7 +219,7 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame([
             'approved' => true,
             'events' => ['started', 'approved:yes:api'],
-        ], unserialize($detail['updates'][0]['result']));
+        ], $detail['updates'][0]['result']);
 
         $signal = $workflow->signal('name-provided', 'Taylor');
 

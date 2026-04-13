@@ -157,7 +157,7 @@ final class RunDetailView
             'compatibility_supported_in_fleet' => $fleetCompatibility['supported'],
             'compatibility_fleet_reason' => $fleetCompatibility['reason'],
             'compatibility_fleet' => $compatibilityFleet,
-            'arguments' => serialize($run->workflowArguments()),
+            'arguments' => $run->workflowArguments(),
             'connection' => $run->connection,
             'queue' => $run->queue,
             'execution_timeout_seconds' => $run->instance?->execution_timeout_seconds !== null
@@ -168,7 +168,7 @@ final class RunDetailView
                 : null,
             'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
             'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
-            'output' => $run->output === null ? serialize(null) : serialize($run->workflowOutput()),
+            'output' => $run->output === null ? null : $run->workflowOutput(),
             'status' => $run->status->value,
             'is_terminal' => $run->status->isTerminal(),
             'declared_queries' => $commandContract['queries'],
@@ -351,7 +351,7 @@ final class RunDetailView
                     return [
                         'id' => $failure['id'] ?? null,
                         'code' => $failure['trace_preview'] ?? null,
-                        'exception' => serialize(self::exceptionPayload($failure)),
+                        'exception' => self::exceptionPayload($failure),
                         'history_authority' => $failure['history_authority'] ?? null,
                         'diagnostic_only' => (bool) ($failure['diagnostic_only'] ?? false),
                         'failure_category' => $failure['failure_category'] ?? null,

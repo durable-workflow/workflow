@@ -774,7 +774,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('run_id', $workflow->runId())
             ->assertJsonPath('target_scope', 'instance');
 
-        $this->assertSame(1, unserialize((string) $response->json('result')));
+        $this->assertSame(1, $response->json('result'));
     }
 
     public function testRunTargetedQueryWebhookReturnsSerializedResultForSelectedRun(): void
@@ -800,7 +800,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('run_id', $workflow->runId())
             ->assertJsonPath('target_scope', 'run');
 
-        $this->assertSame(1, unserialize((string) $response->json('result')));
+        $this->assertSame(1, $response->json('result'));
     }
 
     public function testQueryWebhookReturnsValidationErrorsForInvalidArguments(): void

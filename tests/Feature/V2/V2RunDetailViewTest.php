@@ -1292,17 +1292,17 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('start', $detail['commands'][0]['type']);
         $this->assertSame(config('workflows.serializer'), $detail['commands'][0]['payload_codec']);
         $this->assertTrue($detail['commands'][0]['payload_available']);
-        $this->assertSame(serialize([]), $detail['commands'][0]['payload']);
+        $this->assertSame([], $detail['commands'][0]['payload']);
         $this->assertSame(2, $detail['commands'][1]['sequence']);
         $this->assertSame('signal', $detail['commands'][1]['type']);
         $this->assertSame('name-provided', $detail['commands'][1]['target_name']);
         $this->assertSame(config('workflows.serializer'), $detail['commands'][1]['payload_codec']);
         $this->assertTrue($detail['commands'][1]['payload_available']);
-        $this->assertSame(serialize([
+        $this->assertSame([
             'name' => 'name-provided',
             'arguments' => ['Taylor'],
             'validation_errors' => [],
-        ]), $detail['commands'][1]['payload']);
+        ], $detail['commands'][1]['payload']);
         $this->assertSame('signal_received', $detail['commands'][1]['outcome']);
         $this->assertCount(1, $detail['activities']);
         $this->assertSame('completed', $detail['activities'][0]['status']);
@@ -1314,7 +1314,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('completed', $detail['activities'][0]['attempts'][0]['status']);
         $this->assertNotNull($detail['activities'][0]['attempts'][0]['closed_at']);
         $this->assertNotNull($detail['activities'][0]['created_at']);
-        $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
+        $this->assertSame('Hello, Taylor!', $detail['activities'][0]['result']);
         $signalWait = $this->findWait($detail['waits'], 'signal', 'name-provided');
         $this->assertSame('resolved', $signalWait['status']);
         $this->assertSame('applied', $signalWait['source_status']);
@@ -1388,12 +1388,12 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
         $this->assertSame('completed', $detail['activities'][0]['status']);
         $this->assertFalse($detail['activities'][0]['diagnostic_only']);
-        $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
-        $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
+        $this->assertSame(['Taylor'], $detail['activities'][0]['arguments']);
+        $this->assertSame('Hello, Taylor!', $detail['activities'][0]['result']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['logs'][0]['class']);
         $this->assertSame('typed_history', $detail['logs'][0]['history_authority']);
         $this->assertFalse($detail['logs'][0]['diagnostic_only']);
-        $this->assertSame('Hello, Taylor!', unserialize($detail['logs'][0]['result']));
+        $this->assertSame('Hello, Taylor!', $detail['logs'][0]['result']);
         $this->assertSame('Activity', $detail['chartData'][1]['type']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['chartData'][1]['x']);
         $this->assertSame('typed_history', $detail['chartData'][1]['history_authority']);
@@ -1427,13 +1427,13 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
         $this->assertSame('completed', $detail['activities'][0]['status']);
         $this->assertFalse($detail['activities'][0]['diagnostic_only']);
-        $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
-        $this->assertSame('Hello, Taylor!', unserialize($detail['activities'][0]['result']));
+        $this->assertSame(['Taylor'], $detail['activities'][0]['arguments']);
+        $this->assertSame('Hello, Taylor!', $detail['activities'][0]['result']);
         $this->assertCount(1, $detail['logs']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['logs'][0]['class']);
         $this->assertSame('typed_history', $detail['logs'][0]['history_authority']);
         $this->assertFalse($detail['logs'][0]['diagnostic_only']);
-        $this->assertSame('Hello, Taylor!', unserialize($detail['logs'][0]['result']));
+        $this->assertSame('Hello, Taylor!', $detail['logs'][0]['result']);
         $this->assertCount(2, $detail['chartData']);
         $this->assertSame('Activity', $detail['chartData'][1]['type']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['chartData'][1]['x']);
@@ -1783,7 +1783,7 @@ final class V2RunDetailViewTest extends TestCase
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
         $detail = RunDetailView::forRun($run);
-        $exception = unserialize($detail['exceptions'][0]['exception']);
+        $exception = $detail['exceptions'][0]['exception'];
         $properties = collect($exception['properties'] ?? [])->keyBy('name');
 
         $this->assertSame(\Tests\Fixtures\V2\TestReplayedDomainException::class, $exception['__constructor']);
@@ -1822,7 +1822,7 @@ final class V2RunDetailViewTest extends TestCase
         );
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
-        $exception = unserialize($detail['exceptions'][0]['exception']);
+        $exception = $detail['exceptions'][0]['exception'];
         $properties = collect($exception['properties'] ?? [])->keyBy('name');
 
         $this->assertSame(1, $detail['exception_count']);
@@ -3601,7 +3601,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertFalse($detail['activities'][0]['diagnostic_only']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['type']);
         $this->assertSame(\Tests\Fixtures\V2\TestGreetingActivity::class, $detail['activities'][0]['class']);
-        $this->assertSame(['Taylor'], unserialize($detail['activities'][0]['arguments']));
+        $this->assertSame(['Taylor'], $detail['activities'][0]['arguments']);
         $this->assertNotNull($detail['activities'][0]['started_at']);
         $this->assertSame('typed_history', $detail['logs'][0]['history_authority']);
         $this->assertFalse($detail['logs'][0]['diagnostic_only']);
@@ -3937,6 +3937,71 @@ final class V2RunDetailViewTest extends TestCase
         };
 
         $this->app->call([$job, 'handle']);
+    }
+
+    public function testRunDetailViewReturnsTypedPayloadsNotPhpSerializedStrings(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-typed-contract');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $workflow->signal('name-provided', 'Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+
+        // Workflow arguments must be a typed array, not a PHP-serialized string.
+        $this->assertIsArray($detail['arguments']);
+        $this->assertSame([], $detail['arguments']);
+
+        // Workflow output must be typed, not a PHP-serialized string.
+        $this->assertNotNull($detail['output']);
+        $this->assertFalse(
+            self::looksPhpSerialized($detail['output']),
+            'Workflow output looks like a PHP-serialized string.',
+        );
+
+        // Activity results must be typed, not PHP-serialized strings.
+        foreach ($detail['activities'] as $activity) {
+            $this->assertIsArray($activity['arguments']);
+            $this->assertFalse(
+                self::looksPhpSerialized($activity['arguments']),
+                'Activity arguments look like a PHP-serialized string.',
+            );
+            $this->assertFalse(
+                self::looksPhpSerialized($activity['result']),
+                'Activity result looks like a PHP-serialized string.',
+            );
+        }
+
+        // Command payloads must be typed, not PHP-serialized strings.
+        foreach ($detail['commands'] as $command) {
+            $this->assertFalse(
+                self::looksPhpSerialized($command['payload']),
+                'Command payload looks like a PHP-serialized string.',
+            );
+        }
+
+        // Signal arguments must be typed, not PHP-serialized strings.
+        foreach ($detail['signals'] as $signal) {
+            $this->assertFalse(
+                self::looksPhpSerialized($signal['arguments']),
+                'Signal arguments look like a PHP-serialized string.',
+            );
+        }
+    }
+
+    private static function looksPhpSerialized(mixed $value): bool
+    {
+        if (! is_string($value)) {
+            return false;
+        }
+
+        return (bool) preg_match('/^[aOsidbN]:/', $value);
     }
 
     /**

@@ -606,7 +606,7 @@ final class V2QueryWorkflowTest extends TestCase
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
         $detail = RunDetailView::forRun($run);
-        $exception = unserialize($detail['exceptions'][0]['exception']);
+        $exception = $detail['exceptions'][0]['exception'];
         $timelineFailure = collect($detail['timeline'])->firstWhere('type', HistoryEventType::ActivityFailed->value);
 
         $this->assertSame('order-rejected', $detail['exceptions'][0]['exception_type']);
@@ -1348,7 +1348,7 @@ final class V2QueryWorkflowTest extends TestCase
         ]));
 
         $detail = RunDetailView::forRun($parentRun->fresh());
-        $exception = unserialize($detail['exceptions'][0]['exception']);
+        $exception = $detail['exceptions'][0]['exception'];
         $export = HistoryExport::forRun($parentRun->fresh());
 
         $this->assertSame(1, $detail['exception_count']);

@@ -21,7 +21,7 @@ final class CommandPayloadPreview
         }
 
         try {
-            return serialize(Serializer::unserialize($payload));
+            return Serializer::unserialize($payload);
         } catch (Throwable) {
             return $payload;
         }

@@ -72,7 +72,7 @@ final class QueryResponse
                 'workflow_id' => $workflow->id(),
                 'run_id' => $workflow->runId(),
                 'target_scope' => $targetScope,
-                'result' => serialize($result),
+                'result' => $result,
             ],
         ];
     }
