@@ -423,19 +423,191 @@ final class VisibilityFiltersTest extends TestCase
 
         $this->assertSame(VisibilityFilters::VERSION, $supported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $supported['current_version']);
+        $this->assertSame(VisibilityFilters::MINIMUM_SUPPORTED_VERSION, $supported['minimum_supported_version']);
         $this->assertSame([1, 2, 3, 4, VisibilityFilters::VERSION], $supported['supported_versions']);
         $this->assertTrue($supported['supported']);
+        $this->assertFalse($supported['deprecated']);
         $this->assertSame('supported', $supported['status']);
         $this->assertNull($supported['message']);
 
         $this->assertSame(99, $unsupported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $unsupported['current_version']);
+        $this->assertSame(VisibilityFilters::MINIMUM_SUPPORTED_VERSION, $unsupported['minimum_supported_version']);
         $this->assertSame([1, 2, 3, 4, VisibilityFilters::VERSION], $unsupported['supported_versions']);
         $this->assertFalse($unsupported['supported']);
+        $this->assertFalse($unsupported['deprecated']);
         $this->assertSame('unsupported', $unsupported['status']);
         $this->assertSame(
             'This saved view uses visibility filter version 99, but this Waterline build supports version 1, 2, 3, 4, 5.',
             $unsupported['message'],
         );
+    }
+
+    public function testVersionMetadataMarksDeprecatedVersionsExplicitly(): void
+    {
+        $deprecated = VisibilityFilters::versionMetadata(1);
+
+        $this->assertSame(1, $deprecated['version']);
+        $this->assertSame(VisibilityFilters::VERSION, $deprecated['current_version']);
+        $this->assertTrue($deprecated['supported']);
+        $this->assertTrue($deprecated['deprecated']);
+        $this->assertSame('deprecated', $deprecated['status']);
+        $this->assertSame(
+            'This saved view uses deprecated visibility filter version 1. Consider updating it to the current version 5.',
+            $deprecated['message'],
+        );
+
+        $deprecated2 = VisibilityFilters::versionMetadata(2);
+        $this->assertTrue($deprecated2['supported']);
+        $this->assertTrue($deprecated2['deprecated']);
+        $this->assertSame('deprecated', $deprecated2['status']);
+
+        $notDeprecated = VisibilityFilters::versionMetadata(3);
+        $this->assertTrue($notDeprecated['supported']);
+        $this->assertFalse($notDeprecated['deprecated']);
+        $this->assertSame('supported', $notDeprecated['status']);
+        $this->assertNull($notDeprecated['message']);
+    }
+
+    public function testVersionEvolutionPolicyExposesStableContract(): void
+    {
+        $policy = VisibilityFilters::versionEvolutionPolicy();
+
+        $this->assertSame(VisibilityFilters::VERSION, $policy['current_version']);
+        $this->assertSame(VisibilityFilters::MINIMUM_SUPPORTED_VERSION, $policy['minimum_supported_version']);
+        $this->assertSame([1, 2, 3, 4, VisibilityFilters::VERSION], $policy['supported_versions']);
+        $this->assertSame([1, 2], $policy['deprecated_versions']);
+        $this->assertSame('system:', $policy['reserved_view_id_prefix']);
+        $this->assertIsString($policy['upgrade_policy']);
+
+        foreach ($policy['deprecated_versions'] as $version) {
+            $this->assertTrue(VisibilityFilters::isDeprecated($version));
+            $this->assertContains($version, $policy['supported_versions']);
+            $this->assertGreaterThanOrEqual($policy['minimum_supported_version'], $version);
+        }
+    }
+
+    public function testIsReservedViewIdGuardsSystemPrefix(): void
+    {
+        $this->assertTrue(VisibilityFilters::isReservedViewId('system:running'));
+        $this->assertTrue(VisibilityFilters::isReservedViewId('system:running-task-problems'));
+        $this->assertTrue(VisibilityFilters::isReservedViewId('system:'));
+        $this->assertFalse(VisibilityFilters::isReservedViewId('01J20000000000000000000000'));
+        $this->assertFalse(VisibilityFilters::isReservedViewId('custom-view'));
+        $this->assertFalse(VisibilityFilters::isReservedViewId(''));
+    }
+
+    public function testDefinitionIncludesVersionEvolutionFields(): void
+    {
+        $definition = VisibilityFilters::definition();
+
+        $this->assertSame(VisibilityFilters::MINIMUM_SUPPORTED_VERSION, $definition['minimum_supported_version']);
+        $this->assertSame([1, 2], $definition['deprecated_versions']);
+        $this->assertSame('system:', $definition['reserved_view_id_prefix']);
+    }
+
+    public function testApplyFiltersRunSummariesBySearchAttributes(): void
+    {
+        WorkflowRunSummary::create([
+            'id' => '01JVISSEARCHATTR0MATCH0001',
+            'workflow_instance_id' => 'search-attr-match',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'search_attributes' => [
+                'priority' => 'high',
+                'region' => 'us-east',
+            ],
+            'status' => 'running',
+            'status_bucket' => 'running',
+        ]);
+        WorkflowRunSummary::create([
+            'id' => '01JVISSEARCHATTR0MISS00001',
+            'workflow_instance_id' => 'search-attr-miss',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'search_attributes' => [
+                'priority' => 'low',
+                'region' => 'us-east',
+            ],
+            'status' => 'running',
+            'status_bucket' => 'running',
+        ]);
+        WorkflowRunSummary::create([
+            'id' => '01JVISSEARCHATTR0NULL00001',
+            'workflow_instance_id' => 'search-attr-null',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'search_attributes' => null,
+            'status' => 'running',
+            'status_bucket' => 'running',
+        ]);
+
+        $ids = VisibilityFilters::apply(WorkflowRunSummary::query(), [
+            'search_attributes' => ['priority' => 'high'],
+        ])->pluck('id')
+            ->all();
+
+        $this->assertSame(['01JVISSEARCHATTR0MATCH0001'], $ids);
+    }
+
+    public function testNormalizeHandlesSearchAttributes(): void
+    {
+        $filters = VisibilityFilters::normalize([
+            'search_attributes' => [
+                'priority' => ' high ',
+                'bad key' => 'ignored',
+                'status' => 'processing',
+            ],
+        ]);
+
+        $this->assertSame([
+            'search_attributes' => [
+                'priority' => 'high',
+                'status' => 'processing',
+            ],
+        ], $filters);
+    }
+
+    public function testMergeCombinesSearchAttributesFromMultipleSources(): void
+    {
+        $filters = VisibilityFilters::merge(
+            ['search_attributes' => ['priority' => 'high']],
+            ['search_attributes' => ['region' => 'us-east']],
+        );
+
+        $this->assertSame([
+            'search_attributes' => [
+                'priority' => 'high',
+                'region' => 'us-east',
+            ],
+        ], $filters);
+    }
+
+    public function testDefinitionDescribesSearchAttributeContract(): void
+    {
+        $definition = VisibilityFilters::definition();
+
+        $this->assertSame('Search Attributes', $definition['search_attributes']['label']);
+        $this->assertSame('map<string,string>', $definition['search_attributes']['type']);
+        $this->assertSame('key_value_textarea', $definition['search_attributes']['input']);
+        $this->assertTrue($definition['search_attributes']['filterable']);
+        $this->assertTrue($definition['search_attributes']['saved_view_compatible']);
+        $this->assertSame(
+            ['search_attribute[key]', 'search_attributes[key]'],
+            $definition['search_attributes']['query_parameters'],
+        );
+        $this->assertSame('Search Attributes', $definition['indexed_metadata']['search_attributes']['label']);
+        $this->assertTrue($definition['indexed_metadata']['search_attributes']['indexed']);
+        $this->assertTrue($definition['indexed_metadata']['search_attributes']['filterable']);
+        $this->assertTrue($definition['indexed_metadata']['search_attributes']['saved_view_compatible']);
     }
 }

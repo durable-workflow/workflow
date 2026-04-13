@@ -74,12 +74,58 @@ final class VisibilityFilters
 
     private const LABEL_KEY_PATTERN = '/^[A-Za-z0-9_.:-]{1,64}$/';
 
+    public const MINIMUM_SUPPORTED_VERSION = 1;
+
+    private const DEPRECATED_VERSIONS = [1, 2];
+
+    private const RESERVED_VIEW_ID_PREFIX = 'system:';
+
     /**
      * @return list<int>
      */
     public static function supportedVersions(): array
     {
         return [1, 2, 3, 4, self::VERSION];
+    }
+
+    public static function minimumSupportedVersion(): int
+    {
+        return self::MINIMUM_SUPPORTED_VERSION;
+    }
+
+    public static function isDeprecated(int $version): bool
+    {
+        return in_array($version, self::DEPRECATED_VERSIONS, true);
+    }
+
+    public static function isReservedViewId(string $id): bool
+    {
+        return str_starts_with($id, self::RESERVED_VIEW_ID_PREFIX);
+    }
+
+    /**
+     * @return array{
+     *     current_version: int,
+     *     minimum_supported_version: int,
+     *     supported_versions: list<int>,
+     *     deprecated_versions: list<int>,
+     *     reserved_view_id_prefix: string,
+     *     upgrade_policy: string
+     * }
+     */
+    public static function versionEvolutionPolicy(): array
+    {
+        return [
+            'current_version' => self::VERSION,
+            'minimum_supported_version' => self::MINIMUM_SUPPORTED_VERSION,
+            'supported_versions' => self::supportedVersions(),
+            'deprecated_versions' => self::DEPRECATED_VERSIONS,
+            'reserved_view_id_prefix' => self::RESERVED_VIEW_ID_PREFIX,
+            'upgrade_policy' => 'Saved views written against any supported version remain readable. '
+                .'Updating a saved view rewrites it onto the current version. '
+                .'Deprecated versions are still loadable but should be migrated to the current version. '
+                .'Versions below the minimum supported version are rejected.',
+        ];
     }
 
     /**
@@ -108,7 +154,10 @@ final class VisibilityFilters
 
         return [
             'version' => self::VERSION,
+            'minimum_supported_version' => self::MINIMUM_SUPPORTED_VERSION,
             'supported_versions' => self::supportedVersions(),
+            'deprecated_versions' => self::DEPRECATED_VERSIONS,
+            'reserved_view_id_prefix' => self::RESERVED_VIEW_ID_PREFIX,
             'fields' => $fields,
             'labels' => [
                 'label' => 'Labels',
@@ -145,8 +194,10 @@ final class VisibilityFilters
      * @return array{
      *     version: int|null,
      *     current_version: int,
+     *     minimum_supported_version: int,
      *     supported_versions: list<int>,
      *     supported: bool,
+     *     deprecated: bool,
      *     status: string,
      *     message: string|null
      * }
@@ -156,16 +207,31 @@ final class VisibilityFilters
         $normalizedVersion = self::normalizeVersion($version);
         $supportedVersions = self::supportedVersions();
         $supported = $normalizedVersion !== null && in_array($normalizedVersion, $supportedVersions, true);
+        $deprecated = $supported && self::isDeprecated($normalizedVersion);
+
+        $status = match (true) {
+            ! $supported => 'unsupported',
+            $deprecated => 'deprecated',
+            default => 'supported',
+        };
 
         return [
             'version' => $normalizedVersion,
             'current_version' => self::VERSION,
+            'minimum_supported_version' => self::MINIMUM_SUPPORTED_VERSION,
             'supported_versions' => $supportedVersions,
             'supported' => $supported,
-            'status' => $supported ? 'supported' : 'unsupported',
-            'message' => $supported
-                ? null
-                : self::unsupportedVersionMessage($normalizedVersion, $supportedVersions),
+            'deprecated' => $deprecated,
+            'status' => $status,
+            'message' => match (true) {
+                ! $supported => self::unsupportedVersionMessage($normalizedVersion, $supportedVersions),
+                $deprecated => sprintf(
+                    'This saved view uses deprecated visibility filter version %d. Consider updating it to the current version %d.',
+                    $normalizedVersion,
+                    self::VERSION,
+                ),
+                default => null,
+            },
         ];
     }
 
