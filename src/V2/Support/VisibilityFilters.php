@@ -11,12 +11,13 @@ use Workflow\V2\Enums\StatusBucket;
 
 final class VisibilityFilters
 {
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     private const FIELD_LABELS = [
         'instance_id' => 'Instance ID',
         'run_id' => 'Run ID',
         'is_current_run' => 'Current Run',
+        'namespace' => 'Namespace',
         'workflow_type' => 'Workflow Type',
         'business_key' => 'Business Key',
         'compatibility' => 'Compatibility',
@@ -42,6 +43,7 @@ final class VisibilityFilters
     private const STRING_FIELDS = [
         'instance_id',
         'run_id',
+        'namespace',
         'workflow_type',
         'business_key',
         'compatibility',
@@ -77,7 +79,7 @@ final class VisibilityFilters
      */
     public static function supportedVersions(): array
     {
-        return [1, 2, 3, self::VERSION];
+        return [1, 2, 3, 4, self::VERSION];
     }
 
     /**

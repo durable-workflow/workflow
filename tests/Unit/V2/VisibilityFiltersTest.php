@@ -16,6 +16,7 @@ final class VisibilityFiltersTest extends TestCase
             'instance_id' => ' order-visibility ',
             'run_id' => ' run-visibility ',
             'is_current_run' => 'yes',
+            'namespace' => ' production ',
             'workflow_type' => ' billing.invoice-sync ',
             'business_key' => '',
             'compatibility' => 'build-a',
@@ -45,6 +46,7 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame([
             'instance_id' => 'order-visibility',
             'run_id' => 'run-visibility',
+            'namespace' => 'production',
             'workflow_type' => 'billing.invoice-sync',
             'compatibility' => 'build-a',
             'declared_entry_mode' => 'compatibility',
@@ -243,7 +245,7 @@ final class VisibilityFiltersTest extends TestCase
         $definition = VisibilityFilters::definition();
 
         $this->assertSame(VisibilityFilters::VERSION, $definition['version']);
-        $this->assertSame([1, 2, VisibilityFilters::VERSION], $definition['supported_versions']);
+        $this->assertSame([1, 2, 3, 4, VisibilityFilters::VERSION], $definition['supported_versions']);
         $this->assertSame('Instance ID', $definition['fields']['instance_id']['label']);
         $this->assertSame('string', $definition['fields']['instance_id']['type']);
         $this->assertSame('text', $definition['fields']['instance_id']['input']);
@@ -251,6 +253,11 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertTrue($definition['fields']['instance_id']['saved_view_compatible']);
         $this->assertSame(0, $definition['fields']['instance_id']['order']);
         $this->assertSame('string', $definition['fields']['run_id']['type']);
+        $this->assertSame('Namespace', $definition['fields']['namespace']['label']);
+        $this->assertSame('string', $definition['fields']['namespace']['type']);
+        $this->assertSame('text', $definition['fields']['namespace']['input']);
+        $this->assertTrue($definition['fields']['namespace']['filterable']);
+        $this->assertTrue($definition['fields']['namespace']['saved_view_compatible']);
         $this->assertSame('boolean', $definition['fields']['is_current_run']['type']);
         $this->assertSame('boolean_select', $definition['fields']['is_current_run']['input']);
         $this->assertSame('Business Key', $definition['fields']['business_key']['label']);
@@ -331,7 +338,7 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame(['label[key]', 'labels[key]'], $definition['labels']['query_parameters']);
         $this->assertSame('tenant=acme' . "\n" . 'region=us-east', $definition['labels']['placeholder']);
         $this->assertSame(
-            'One exact-match label per line in key=value format. Labels are indexed operator metadata and saved-view compatible.',
+            'One exact-match label per line in key=value format. Labels are indexed operator metadata set at start and saved-view compatible.',
             $definition['labels']['help'],
         );
         $this->assertSame('Business Key', $definition['indexed_metadata']['business_key']['label']);
@@ -362,6 +369,53 @@ final class VisibilityFiltersTest extends TestCase
         );
     }
 
+    public function testApplyFiltersRunSummariesByNamespace(): void
+    {
+        WorkflowRunSummary::create([
+            'id' => '01JVISNSFILTER0MATCH000001',
+            'workflow_instance_id' => 'ns-filter-match',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'namespace' => 'production',
+            'status' => 'running',
+            'status_bucket' => 'running',
+        ]);
+        WorkflowRunSummary::create([
+            'id' => '01JVISNSFILTER0MISS0000001',
+            'workflow_instance_id' => 'ns-filter-miss',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'namespace' => 'staging',
+            'status' => 'running',
+            'status_bucket' => 'running',
+        ]);
+        WorkflowRunSummary::create([
+            'id' => '01JVISNSFILTER0NULL0000001',
+            'workflow_instance_id' => 'ns-filter-null',
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'namespace' => null,
+            'status' => 'running',
+            'status_bucket' => 'running',
+        ]);
+
+        $ids = VisibilityFilters::apply(WorkflowRunSummary::query(), [
+            'namespace' => 'production',
+        ])->pluck('id')
+            ->all();
+
+        $this->assertSame(['01JVISNSFILTER0MATCH000001'], $ids);
+    }
+
     public function testVersionMetadataMarksUnsupportedSavedViewContractsExplicitly(): void
     {
         $supported = VisibilityFilters::versionMetadata(VisibilityFilters::VERSION);
@@ -369,18 +423,18 @@ final class VisibilityFiltersTest extends TestCase
 
         $this->assertSame(VisibilityFilters::VERSION, $supported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $supported['current_version']);
-        $this->assertSame([1, 2, VisibilityFilters::VERSION], $supported['supported_versions']);
+        $this->assertSame([1, 2, 3, 4, VisibilityFilters::VERSION], $supported['supported_versions']);
         $this->assertTrue($supported['supported']);
         $this->assertSame('supported', $supported['status']);
         $this->assertNull($supported['message']);
 
         $this->assertSame(99, $unsupported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $unsupported['current_version']);
-        $this->assertSame([1, 2, VisibilityFilters::VERSION], $unsupported['supported_versions']);
+        $this->assertSame([1, 2, 3, 4, VisibilityFilters::VERSION], $unsupported['supported_versions']);
         $this->assertFalse($unsupported['supported']);
         $this->assertSame('unsupported', $unsupported['status']);
         $this->assertSame(
-            'This saved view uses visibility filter version 99, but this Waterline build supports version 1, 2, 3.',
+            'This saved view uses visibility filter version 99, but this Waterline build supports version 1, 2, 3, 4, 5.',
             $unsupported['message'],
         );
     }

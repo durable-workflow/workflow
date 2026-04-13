@@ -1000,6 +1000,7 @@ final class WorkflowStub
             /** @var WorkflowTask $task */
             $task = self::taskQuery()->create([
                 'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
@@ -1843,6 +1844,7 @@ final class WorkflowStub
                 /** @var WorkflowTask $resumeTask */
                 $resumeTask = self::taskQuery()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => now(),
@@ -2131,6 +2133,7 @@ final class WorkflowStub
                 /** @var WorkflowTask $task */
                 $task = self::taskQuery()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => now(),
@@ -2310,6 +2313,7 @@ final class WorkflowStub
                     /** @var WorkflowTask $task */
                     $task = self::taskQuery()->create([
                         'workflow_run_id' => $run->id,
+                        'namespace' => $run->namespace,
                         'task_type' => TaskType::Workflow->value,
                         'status' => TaskStatus::Ready->value,
                         'available_at' => now(),
@@ -2485,6 +2489,7 @@ final class WorkflowStub
             /** @var WorkflowTask $task */
             $task = self::taskQuery()->create([
                 'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
@@ -3965,6 +3970,7 @@ final class WorkflowStub
             /** @var WorkflowTask $task */
             $task = self::taskQuery()->create([
                 'workflow_run_id' => $parentRun->id,
+                'namespace' => $parentRun->namespace,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),

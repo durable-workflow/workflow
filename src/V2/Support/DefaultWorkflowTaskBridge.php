@@ -46,7 +46,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     ) {
     }
 
-    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array
+    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null, ?string $namespace = null): array
     {
         // Use a 1-second ceiling on the availability cutoff so that tasks created
         // in the same request tick are reliably surfaced across all backends,
@@ -74,6 +74,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         if ($compatibility !== null) {
             $query->where('compatibility', $compatibility);
+        }
+
+        if ($namespace !== null) {
+            $query->where('namespace', $namespace);
         }
 
         $tasks = $query->get();
@@ -842,6 +846,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         /** @var WorkflowTask $activityTask */
         $activityTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => now(),
@@ -887,6 +892,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         /** @var WorkflowTask $timerTask */
         $timerTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $fireAt,
@@ -1000,6 +1006,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         /** @var WorkflowTask $childTask */
         $childTask = WorkflowTask::query()->create([
             'workflow_run_id' => $childRun->id,
+            'namespace' => $childRun->namespace,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $now,
@@ -1179,6 +1186,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([
             'workflow_run_id' => $continuedRun->id,
+            'namespace' => $continuedRun->namespace,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $now,
@@ -1241,6 +1249,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
             WorkflowTask::query()->create([
                 'workflow_run_id' => $parentRun->id,
+                'namespace' => $parentRun->namespace,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),

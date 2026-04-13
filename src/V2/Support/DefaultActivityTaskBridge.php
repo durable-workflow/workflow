@@ -23,7 +23,7 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class DefaultActivityTaskBridge implements ActivityTaskBridge
 {
-    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array
+    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null, ?string $namespace = null): array
     {
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Activity->value)
@@ -50,6 +50,10 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
         if ($compatibility !== null) {
             $query->where('compatibility', $compatibility);
+        }
+
+        if ($namespace !== null) {
+            $query->where('namespace', $namespace);
         }
 
         $tasks = $query->get();

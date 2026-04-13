@@ -32,6 +32,7 @@ interface WorkflowControlPlane
      * - arguments: string|null — codec-tagged serialized arguments
      * - connection: string|null — queue connection override
      * - queue: string|null — queue name override
+     * - namespace: string|null — execution namespace for multi-namespace isolation (falls back to config)
      * - business_key: string|null — caller-supplied business key
      * - labels: array<string, string>|null — visibility labels
      * - memo: array<string, mixed>|null — non-indexed metadata
@@ -275,6 +276,7 @@ interface WorkflowControlPlane
      *     workflow_instance_id: string,
      *     workflow_type: string|null,
      *     workflow_class: string|null,
+     *     namespace: string|null,
      *     business_key: string|null,
      *     run: array{
      *         workflow_run_id: string,

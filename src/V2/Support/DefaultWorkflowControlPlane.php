@@ -40,6 +40,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         $labels = $options['labels'] ?? null;
         $memo = $options['memo'] ?? null;
         $searchAttributes = $options['search_attributes'] ?? null;
+        $namespace = $this->resolveNamespace($options);
         $executionTimeoutSeconds = isset($options['execution_timeout_seconds']) ? (int) $options['execution_timeout_seconds'] : null;
         $runTimeoutSeconds = isset($options['run_timeout_seconds']) ? (int) $options['run_timeout_seconds'] : null;
         $duplicatePolicy = ($options['duplicate_start_policy'] ?? null) === 'return_existing_active'
@@ -65,6 +66,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $labels,
             $memo,
             $searchAttributes,
+            $namespace,
             $executionTimeoutSeconds,
             $runTimeoutSeconds,
             $duplicatePolicy,
@@ -72,7 +74,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             &$task,
             &$instance,
         ): void {
-            $instance = $this->resolveOrCreateInstance($workflowType, $workflowClass, $instanceId);
+            $instance = $this->resolveOrCreateInstance($workflowType, $workflowClass, $instanceId, $namespace);
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
             CurrentRunResolver::syncPointer($instance, $currentRun);
@@ -166,6 +168,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'run_number' => $instance->run_count + 1,
                     'workflow_class' => $workflowClass,
                     'workflow_type' => $workflowType,
+                    'namespace' => $namespace,
                     'business_key' => $businessKey ?? $instance->business_key,
                     'visibility_labels' => $labels ?? (is_array($instance->visibility_labels) ? $instance->visibility_labels : null),
                     'memo' => $memo ?? (is_array($instance->memo) ? $instance->memo : null),
@@ -253,6 +256,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $task = $this->taskQuery()
                 ->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $namespace,
                     'task_type' => TaskType::Workflow->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => now(),
@@ -656,6 +660,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             'workflow_instance_id' => $instance->id,
             'workflow_type' => $instance->workflow_type,
             'workflow_class' => $instance->workflow_class,
+            'namespace' => $instance->namespace ?? null,
             'business_key' => $instance->business_key ?? null,
             'execution_timeout_seconds' => $instance->execution_timeout_seconds !== null
                 ? (int) $instance->execution_timeout_seconds
@@ -709,6 +714,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         string $workflowType,
         string $workflowClass,
         ?string $instanceId,
+        ?string $namespace = null,
     ): WorkflowInstance {
         if ($instanceId === null) {
             /** @var WorkflowInstance $instance */
@@ -716,6 +722,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 ->create([
                     'workflow_class' => $workflowClass,
                     'workflow_type' => $workflowType,
+                    'namespace' => $namespace,
                     'reserved_at' => now(),
                     'run_count' => 0,
                 ]);
@@ -732,6 +739,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'id' => $instanceId,
                 'workflow_class' => $workflowClass,
                 'workflow_type' => $workflowType,
+                'namespace' => $namespace,
                 'reserved_at' => $now,
                 'run_count' => 0,
                 'created_at' => $now,
@@ -881,6 +889,15 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         }
 
         return null;
+    }
+
+    private function resolveNamespace(array $options): ?string
+    {
+        $namespace = $options['namespace'] ?? config('workflows.v2.namespace');
+
+        return is_string($namespace) && trim($namespace) !== ''
+            ? trim($namespace)
+            : null;
     }
 
     private function notFoundControlPlaneResult(string $instanceId, string $idField): array

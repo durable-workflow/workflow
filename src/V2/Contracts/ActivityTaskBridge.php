@@ -33,7 +33,7 @@ interface ActivityTaskBridge
      *     available_at: string|null,
      * }>
      */
-    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array;
+    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null, ?string $namespace = null): array;
 
     /**
      * Claim a specific activity task with detailed status.

@@ -297,6 +297,7 @@ final class RunSummaryProjector
                 'engine_source' => 'v2',
                 'class' => $run->workflow_class,
                 'workflow_type' => $run->workflow_type,
+                'namespace' => $run->namespace ?? $run->instance?->namespace,
                 'business_key' => $run->business_key ?? $run->instance?->business_key,
                 'visibility_labels' => $run->visibility_labels ?? $run->instance?->visibility_labels,
                 'search_attributes' => $run->search_attributes,

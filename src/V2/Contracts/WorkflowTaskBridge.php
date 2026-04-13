@@ -35,7 +35,7 @@ interface WorkflowTaskBridge
      *     available_at: string|null,
      * }>
      */
-    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null): array;
+    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null, ?string $namespace = null): array;
 
     /**
      * Claim a specific workflow task with detailed status.

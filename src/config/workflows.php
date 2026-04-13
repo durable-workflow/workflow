@@ -18,6 +18,8 @@ return [
     'workflow_relationships_table' => 'workflow_relationships',
 
     'v2' => [
+        'namespace' => env('WORKFLOW_V2_NAMESPACE'),
+
         'instance_model' => Workflow\V2\Models\WorkflowInstance::class,
         'run_model' => Workflow\V2\Models\WorkflowRun::class,
         'history_event_model' => Workflow\V2\Models\WorkflowHistoryEvent::class,

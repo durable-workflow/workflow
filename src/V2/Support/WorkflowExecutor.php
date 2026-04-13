@@ -1160,6 +1160,7 @@ final class WorkflowExecutor
         /** @var WorkflowTask $activityTask */
         $activityTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => now(),
@@ -1228,6 +1229,7 @@ final class WorkflowExecutor
         /** @var WorkflowTask $timerTask */
         $timerTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $fireAt,
@@ -1372,6 +1374,7 @@ final class WorkflowExecutor
         /** @var WorkflowTask $childTask */
         $childTask = WorkflowTask::query()->create([
             'workflow_run_id' => $childRun->id,
+            'namespace' => $childRun->namespace,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $now,
@@ -1453,6 +1456,7 @@ final class WorkflowExecutor
         /** @var WorkflowTask $timerTask */
         $timerTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
             'task_type' => TaskType::Timer->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $fireAt,
@@ -2035,6 +2039,7 @@ final class WorkflowExecutor
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([
             'workflow_run_id' => $continuedRun->id,
+            'namespace' => $continuedRun->namespace,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $now,
@@ -2759,6 +2764,7 @@ final class WorkflowExecutor
             /** @var WorkflowTask $parentTask */
             $parentTask = WorkflowTask::query()->create([
                 'workflow_run_id' => $parentRun->id,
+                'namespace' => $parentRun->namespace,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
