@@ -139,6 +139,13 @@ final class ActivityTaskClaimer
                 ? $now->copy()->addSeconds($startToCloseTimeout)
                 : null;
 
+            $heartbeatTimeout = is_int($retryPolicy['heartbeat_timeout'] ?? null)
+                ? $retryPolicy['heartbeat_timeout']
+                : null;
+            $heartbeatDeadlineAt = $heartbeatTimeout !== null
+                ? $now->copy()->addSeconds($heartbeatTimeout)
+                : null;
+
             $execution->forceFill([
                 'status' => ActivityStatus::Running,
                 'attempt_count' => $attemptCount,
@@ -146,6 +153,7 @@ final class ActivityTaskClaimer
                 'started_at' => $now,
                 'last_heartbeat_at' => null,
                 'close_deadline_at' => $closeDeadlineAt,
+                'heartbeat_deadline_at' => $heartbeatDeadlineAt,
             ])->save();
 
             /** @var ActivityAttempt $attempt */

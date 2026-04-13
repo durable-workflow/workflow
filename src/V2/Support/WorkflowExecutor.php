@@ -1132,6 +1132,10 @@ final class WorkflowExecutor
             ? now()->addSeconds($options->scheduleToStartTimeout)
             : null;
 
+        $scheduleToCloseDeadlineAt = $options?->scheduleToCloseTimeout !== null
+            ? now()->addSeconds($options->scheduleToCloseTimeout)
+            : null;
+
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
@@ -1146,6 +1150,7 @@ final class WorkflowExecutor
             'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
             'activity_options' => $options?->toSnapshot(),
             'schedule_deadline_at' => $scheduleDeadlineAt,
+            'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
         ]);
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = new $activityClass($execution, $run, $task->id);

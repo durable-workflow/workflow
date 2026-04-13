@@ -12,7 +12,7 @@ final class ActivityRetryPolicy
     public const SNAPSHOT_VERSION = 1;
 
     /**
-     * @return array{snapshot_version: int, max_attempts: int|null, backoff_seconds: list<int>, start_to_close_timeout: int|null, schedule_to_start_timeout: int|null}
+     * @return array{snapshot_version: int, max_attempts: int|null, backoff_seconds: list<int>, start_to_close_timeout: int|null, schedule_to_start_timeout: int|null, schedule_to_close_timeout: int|null, heartbeat_timeout: int|null}
      */
     public static function snapshot(Activity $activity, ?ActivityOptions $options = null): array
     {
@@ -33,6 +33,8 @@ final class ActivityRetryPolicy
             'backoff_seconds' => $backoff,
             'start_to_close_timeout' => $options?->startToCloseTimeout,
             'schedule_to_start_timeout' => $options?->scheduleToStartTimeout,
+            'schedule_to_close_timeout' => $options?->scheduleToCloseTimeout,
+            'heartbeat_timeout' => $options?->heartbeatTimeout,
         ];
     }
 

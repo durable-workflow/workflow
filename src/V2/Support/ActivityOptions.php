@@ -18,6 +18,8 @@ final class ActivityOptions
     /**
      * @param int|null $maxAttempts Override the activity class $tries value.
      * @param list<int>|int|null $backoff Override the activity class backoff() return.
+     * @param int|null $scheduleToCloseTimeout Maximum wall-clock seconds from scheduling to completion across all retries.
+     * @param int|null $heartbeatTimeout Maximum seconds between heartbeats before the activity is considered unresponsive.
      */
     public function __construct(
         public readonly ?string $connection = null,
@@ -26,6 +28,8 @@ final class ActivityOptions
         public readonly array|int|null $backoff = null,
         public readonly ?int $startToCloseTimeout = null,
         public readonly ?int $scheduleToStartTimeout = null,
+        public readonly ?int $scheduleToCloseTimeout = null,
+        public readonly ?int $heartbeatTimeout = null,
     ) {
     }
 
@@ -36,7 +40,9 @@ final class ActivityOptions
      *     max_attempts: int|null,
      *     backoff: list<int>|int|null,
      *     start_to_close_timeout: int|null,
-     *     schedule_to_start_timeout: int|null
+     *     schedule_to_start_timeout: int|null,
+     *     schedule_to_close_timeout: int|null,
+     *     heartbeat_timeout: int|null
      * }
      */
     public function toSnapshot(): array
@@ -48,6 +54,8 @@ final class ActivityOptions
             'backoff' => $this->backoff,
             'start_to_close_timeout' => $this->startToCloseTimeout,
             'schedule_to_start_timeout' => $this->scheduleToStartTimeout,
+            'schedule_to_close_timeout' => $this->scheduleToCloseTimeout,
+            'heartbeat_timeout' => $this->heartbeatTimeout,
         ];
     }
 
@@ -63,6 +71,9 @@ final class ActivityOptions
 
     public function hasTimeoutOverrides(): bool
     {
-        return $this->startToCloseTimeout !== null || $this->scheduleToStartTimeout !== null;
+        return $this->startToCloseTimeout !== null
+            || $this->scheduleToStartTimeout !== null
+            || $this->scheduleToCloseTimeout !== null
+            || $this->heartbeatTimeout !== null;
     }
 }

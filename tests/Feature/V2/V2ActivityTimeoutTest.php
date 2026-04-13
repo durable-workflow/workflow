@@ -352,6 +352,286 @@ final class V2ActivityTimeoutTest extends TestCase
         Carbon::setTestNow();
     }
 
+    public function testScheduleToCloseTimeoutEnforced(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        // Create a running activity with schedule-to-close deadline.
+        [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
+            instanceId: 'act-timeout-s2c-enforce-1',
+            closeDeadlineAt: $startedAt->copy()->addSeconds(120),
+            maxAttempts: 3,
+        );
+
+        // Set the schedule-to-close deadline on the execution.
+        $execution->forceFill([
+            'schedule_to_close_deadline_at' => $startedAt->copy()->addSeconds(60),
+        ])->save();
+
+        // Advance past the schedule-to-close deadline but before close deadline.
+        Carbon::setTestNow($startedAt->copy()->addSeconds(90));
+
+        $result = ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertTrue($result['enforced']);
+
+        $execution->refresh();
+        // Schedule-to-close is always terminal — no retries.
+        $this->assertSame(ActivityStatus::Failed, $execution->status);
+
+        $timedOutEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityTimedOut->value)
+            ->firstOrFail();
+
+        $this->assertSame('schedule_to_close', $timedOutEvent->payload['timeout_kind']);
+        $this->assertSame(FailureCategory::Timeout->value, $timedOutEvent->payload['failure_category']);
+        $this->assertNotNull($timedOutEvent->payload['schedule_to_close_deadline_at']);
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('source_id', $execution->id)
+            ->firstOrFail();
+
+        $this->assertSame(FailureCategory::Timeout->value, $failure->failure_category->value);
+        $this->assertStringContainsString('schedule-to-close deadline expired', $failure->message);
+
+        Carbon::setTestNow();
+    }
+
+    public function testScheduleToCloseDoesNotRetryEvenWhenAttemptsRemain(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
+            instanceId: 'act-timeout-s2c-no-retry-1',
+            closeDeadlineAt: $startedAt->copy()->addSeconds(300),
+            maxAttempts: 10,
+        );
+
+        $execution->forceFill([
+            'schedule_to_close_deadline_at' => $startedAt->copy()->addSeconds(30),
+        ])->save();
+
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        $result = ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertTrue($result['enforced']);
+
+        $execution->refresh();
+        // Should be terminal, NOT retried.
+        $this->assertSame(ActivityStatus::Failed, $execution->status);
+
+        // No retry task should be created.
+        $retryTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->whereKeyNot($activityTask->id)
+            ->first();
+        $this->assertNull($retryTask);
+
+        // A workflow resume task should be created.
+        $resumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->first();
+        $this->assertNotNull($resumeTask);
+
+        Carbon::setTestNow();
+    }
+
+    public function testScheduleToCloseDetectedOnPendingActivity(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        [$run, $execution, $activityTask] = $this->createPendingActivity(
+            instanceId: 'act-timeout-s2c-pending-1',
+        );
+
+        $execution->forceFill([
+            'schedule_to_close_deadline_at' => $startedAt->copy()->addSeconds(30),
+        ])->save();
+
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds();
+        $this->assertContains($execution->id, $expiredIds);
+
+        $result = ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertTrue($result['enforced']);
+
+        $execution->refresh();
+        $this->assertSame(ActivityStatus::Failed, $execution->status);
+
+        $timedOutEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityTimedOut->value)
+            ->firstOrFail();
+
+        $this->assertSame('schedule_to_close', $timedOutEvent->payload['timeout_kind']);
+
+        Carbon::setTestNow();
+    }
+
+    public function testHeartbeatTimeoutEnforced(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
+            instanceId: 'act-timeout-hb-enforce-1',
+            closeDeadlineAt: $startedAt->copy()->addSeconds(300),
+        );
+
+        // Set heartbeat deadline.
+        $execution->forceFill([
+            'heartbeat_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'last_heartbeat_at' => $startedAt,
+        ])->save();
+
+        // Advance past the heartbeat deadline.
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        $result = ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertTrue($result['enforced']);
+
+        $execution->refresh();
+        $this->assertSame(ActivityStatus::Failed, $execution->status);
+
+        $timedOutEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityTimedOut->value)
+            ->firstOrFail();
+
+        $this->assertSame('heartbeat', $timedOutEvent->payload['timeout_kind']);
+        $this->assertSame(FailureCategory::Timeout->value, $timedOutEvent->payload['failure_category']);
+        $this->assertNotNull($timedOutEvent->payload['heartbeat_deadline_at']);
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('source_id', $execution->id)
+            ->firstOrFail();
+
+        $this->assertStringContainsString('heartbeat deadline expired', $failure->message);
+        $this->assertStringContainsString('last heartbeat:', $failure->message);
+
+        Carbon::setTestNow();
+    }
+
+    public function testHeartbeatTimeoutRetriesWhenAttemptsRemain(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
+            instanceId: 'act-timeout-hb-retry-1',
+            closeDeadlineAt: $startedAt->copy()->addSeconds(300),
+            maxAttempts: 3,
+        );
+
+        $execution->forceFill([
+            'heartbeat_deadline_at' => $startedAt->copy()->addSeconds(30),
+        ])->save();
+
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        $result = ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertTrue($result['enforced']);
+        $this->assertNotNull($result['next_task']);
+
+        $execution->refresh();
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
+        // heartbeat_deadline_at should be cleared on retry.
+        $this->assertNull($execution->heartbeat_deadline_at);
+
+        $retryTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->whereKeyNot($activityTask->id)
+            ->first();
+        $this->assertNotNull($retryTask);
+        $this->assertSame('heartbeat', $retryTask->payload['timeout_kind']);
+
+        Carbon::setTestNow();
+    }
+
+    public function testHeartbeatDeadlineSetOnClaim(): void
+    {
+        \Workflow\V2\WorkflowStub::fake();
+
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        [$run, $execution, $activityTask] = $this->createPendingActivity(
+            instanceId: 'act-timeout-hb-claim-1',
+            retryPolicy: [
+                'snapshot_version' => 1,
+                'max_attempts' => 3,
+                'backoff_seconds' => [1],
+                'start_to_close_timeout' => 120,
+                'schedule_to_start_timeout' => null,
+                'schedule_to_close_timeout' => null,
+                'heartbeat_timeout' => 15,
+            ],
+        );
+
+        $claimResult = \Workflow\V2\Support\ActivityTaskClaimer::claimDetailed($activityTask->id);
+        $this->assertNotNull($claimResult['claim']);
+
+        $execution->refresh();
+        $this->assertSame(ActivityStatus::Running, $execution->status);
+        $this->assertNotNull($execution->heartbeat_deadline_at);
+        $this->assertEquals(
+            $startedAt->copy()->addSeconds(15)->toIso8601String(),
+            $execution->heartbeat_deadline_at->toIso8601String(),
+        );
+
+        Carbon::setTestNow();
+    }
+
+    public function testExpiredExecutionIdsFindsHeartbeatAndScheduleToClose(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        // Running activity with expired heartbeat deadline.
+        [$run1, $execution1] = $this->createRunningActivity(
+            instanceId: 'act-timeout-find-hb-1',
+        );
+        $execution1->forceFill([
+            'heartbeat_deadline_at' => $startedAt->copy()->subSeconds(10),
+        ])->save();
+
+        // Pending activity with expired schedule-to-close deadline.
+        [$run2, $execution2] = $this->createPendingActivity(
+            instanceId: 'act-timeout-find-s2c-1',
+        );
+        $execution2->forceFill([
+            'schedule_to_close_deadline_at' => $startedAt->copy()->subSeconds(10),
+        ])->save();
+
+        // Running activity with future heartbeat deadline (should NOT be found).
+        [$run3, $execution3] = $this->createRunningActivity(
+            instanceId: 'act-timeout-find-hb-future-1',
+        );
+        $execution3->forceFill([
+            'heartbeat_deadline_at' => $startedAt->copy()->addSeconds(300),
+        ])->save();
+
+        $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds();
+
+        $this->assertContains($execution1->id, $expiredIds);
+        $this->assertContains($execution2->id, $expiredIds);
+        $this->assertNotContains($execution3->id, $expiredIds);
+
+        Carbon::setTestNow();
+    }
+
     /**
      * @return array{0: WorkflowRun, 1: ActivityExecution, 2: WorkflowTask}
      */

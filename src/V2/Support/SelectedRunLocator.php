@@ -27,10 +27,16 @@ final class SelectedRunLocator
     /**
      * @param list<string> $relations
      */
-    public static function forRunIdOrFail(string $runId, array $relations = []): WorkflowRun
+    public static function forRunIdOrFail(string $runId, array $relations = [], ?string $namespace = null): WorkflowRun
     {
+        $query = self::runQuery($relations);
+
+        if ($namespace !== null) {
+            $query->where('namespace', $namespace);
+        }
+
         /** @var WorkflowRun $run */
-        $run = self::runQuery($relations)->findOrFail($runId);
+        $run = $query->findOrFail($runId);
 
         return $run;
     }

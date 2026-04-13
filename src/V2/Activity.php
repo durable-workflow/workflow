@@ -125,9 +125,21 @@ abstract class Activity
             $heartbeatAt = now();
             $leaseExpiresAt = ActivityLease::expiresAt();
 
-            $execution->forceFill([
-                'last_heartbeat_at' => $heartbeatAt,
-            ])->save();
+            $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
+            $heartbeatTimeout = is_int($retryPolicy['heartbeat_timeout'] ?? null)
+                ? $retryPolicy['heartbeat_timeout']
+                : null;
+            $heartbeatDeadlineAt = $heartbeatTimeout !== null
+                ? $heartbeatAt->copy()->addSeconds($heartbeatTimeout)
+                : null;
+
+            $executionUpdate = ['last_heartbeat_at' => $heartbeatAt];
+
+            if ($heartbeatDeadlineAt !== null) {
+                $executionUpdate['heartbeat_deadline_at'] = $heartbeatDeadlineAt;
+            }
+
+            $execution->forceFill($executionUpdate)->save();
 
             if (
                 $attempt->activity_execution_id === $execution->id

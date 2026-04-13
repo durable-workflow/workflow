@@ -45,6 +45,13 @@ final class ActivityTimeoutEnforcer
                     $close->where('status', ActivityStatus::Running->value)
                         ->whereNotNull('close_deadline_at')
                         ->where('close_deadline_at', '<=', $now);
+                })->orWhere(static function ($scheduleToClose) use ($now): void {
+                    $scheduleToClose->whereNotNull('schedule_to_close_deadline_at')
+                        ->where('schedule_to_close_deadline_at', '<=', $now);
+                })->orWhere(static function ($heartbeat) use ($now): void {
+                    $heartbeat->where('status', ActivityStatus::Running->value)
+                        ->whereNotNull('heartbeat_deadline_at')
+                        ->where('heartbeat_deadline_at', '<=', $now);
                 });
             })
             ->limit($limit)
@@ -115,7 +122,9 @@ final class ActivityTimeoutEnforcer
                 $maxAttempts = ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
                 $canRetry = $attemptCount < $maxAttempts;
 
-                if ($canRetry) {
+                // Schedule-to-close covers the entire execution lifecycle across
+                // all retries — retrying would not help.
+                if ($canRetry && $timeoutKind !== 'schedule_to_close') {
                     return self::scheduleRetry($run, $execution, $existingTask, $attempt, $timeoutKind, $attemptCount, $maxAttempts);
                 }
 
@@ -134,12 +143,29 @@ final class ActivityTimeoutEnforcer
 
     private static function resolveTimeoutKind(ActivityExecution $execution, $now): ?string
     {
+        // Schedule-to-close applies to both Pending and Running — it covers the
+        // entire lifetime from scheduling through completion across all retries.
+        if (
+            $execution->schedule_to_close_deadline_at !== null
+            && $now->gte($execution->schedule_to_close_deadline_at)
+        ) {
+            return 'schedule_to_close';
+        }
+
         if (
             $execution->status === ActivityStatus::Pending
             && $execution->schedule_deadline_at !== null
             && $now->gte($execution->schedule_deadline_at)
         ) {
             return 'schedule_to_start';
+        }
+
+        if (
+            $execution->status === ActivityStatus::Running
+            && $execution->heartbeat_deadline_at !== null
+            && $now->gte($execution->heartbeat_deadline_at)
+        ) {
+            return 'heartbeat';
         }
 
         if (
@@ -174,6 +200,7 @@ final class ActivityTimeoutEnforcer
             'status' => ActivityStatus::Pending,
             'last_heartbeat_at' => null,
             'close_deadline_at' => null,
+            'heartbeat_deadline_at' => null,
         ])->save();
 
         /** @var WorkflowTask $retryTask */
@@ -280,6 +307,8 @@ final class ActivityTimeoutEnforcer
             'exception_class' => $exceptionClass,
             'schedule_deadline_at' => $execution->schedule_deadline_at?->toIso8601String(),
             'close_deadline_at' => $execution->close_deadline_at?->toIso8601String(),
+            'schedule_to_close_deadline_at' => $execution->schedule_to_close_deadline_at?->toIso8601String(),
+            'heartbeat_deadline_at' => $execution->heartbeat_deadline_at?->toIso8601String(),
             'activity' => ActivitySnapshot::fromExecution($execution),
         ], $parallelMetadata ?? []), $existingTask);
 
@@ -344,19 +373,31 @@ final class ActivityTimeoutEnforcer
 
     private static function timeoutMessage(ActivityExecution $execution, string $timeoutKind): string
     {
-        if ($timeoutKind === 'schedule_to_start') {
-            return sprintf(
-                'Activity %s schedule-to-start deadline expired at %s.',
-                $execution->activity_type ?? $execution->activity_class,
-                $execution->schedule_deadline_at->toIso8601String(),
-            );
-        }
+        $label = $execution->activity_type ?? $execution->activity_class;
 
-        return sprintf(
-            'Activity %s start-to-close deadline expired at %s.',
-            $execution->activity_type ?? $execution->activity_class,
-            $execution->close_deadline_at->toIso8601String(),
-        );
+        return match ($timeoutKind) {
+            'schedule_to_start' => sprintf(
+                'Activity %s schedule-to-start deadline expired at %s.',
+                $label,
+                $execution->schedule_deadline_at->toIso8601String(),
+            ),
+            'schedule_to_close' => sprintf(
+                'Activity %s schedule-to-close deadline expired at %s.',
+                $label,
+                $execution->schedule_to_close_deadline_at->toIso8601String(),
+            ),
+            'heartbeat' => sprintf(
+                'Activity %s heartbeat deadline expired at %s (last heartbeat: %s).',
+                $label,
+                $execution->heartbeat_deadline_at->toIso8601String(),
+                $execution->last_heartbeat_at?->toIso8601String() ?? 'never',
+            ),
+            default => sprintf(
+                'Activity %s start-to-close deadline expired at %s.',
+                $label,
+                $execution->close_deadline_at->toIso8601String(),
+            ),
+        };
     }
 
     private static function currentAttempt(ActivityExecution $execution): ?ActivityAttempt

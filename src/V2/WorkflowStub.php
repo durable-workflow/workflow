@@ -575,15 +575,7 @@ final class WorkflowStub
 
     public static function loadRun(string $runId, ?string $namespace = null): self
     {
-        if ($namespace !== null) {
-            /** @var WorkflowRun $run */
-            $run = self::runQuery()
-                ->with('instance')
-                ->where('namespace', $namespace)
-                ->findOrFail($runId);
-        } else {
-            $run = SelectedRunLocator::forRunIdOrFail($runId, ['instance']);
-        }
+        $run = SelectedRunLocator::forRunIdOrFail($runId, ['instance'], $namespace);
 
         $instance = $run->instance;
 
