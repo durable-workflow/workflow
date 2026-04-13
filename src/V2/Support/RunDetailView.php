@@ -354,6 +354,7 @@ final class RunDetailView
                         'exception' => serialize(self::exceptionPayload($failure)),
                         'history_authority' => $failure['history_authority'] ?? null,
                         'diagnostic_only' => (bool) ($failure['diagnostic_only'] ?? false),
+                        'failure_category' => $failure['failure_category'] ?? null,
                         'exception_type' => $failure['exception_type'] ?? null,
                         'exception_class' => $failure['exception_class'] ?? null,
                         'exception_resolved_class' => $failure['exception_resolved_class'] ?? null,

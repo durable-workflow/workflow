@@ -139,6 +139,7 @@ final class FailureSnapshots
             'source_kind' => $failure->source_kind,
             'source_id' => $failure->source_id,
             'propagation_kind' => $failure->propagation_kind,
+            'failure_category' => $failure->failure_category?->value ?? $failure->failure_category,
             'handled' => (bool) $failure->handled,
             'history_authority' => self::HISTORY_AUTHORITY_FAILURE_ROW_FALLBACK,
             'diagnostic_only' => true,
@@ -213,6 +214,9 @@ final class FailureSnapshots
                 ?? self::sourceIdForEvent($event),
             'propagation_kind' => $failure?->propagation_kind
                 ?? self::propagationKindForEvent($event),
+            'failure_category' => self::stringValue($event->payload['failure_category'] ?? null)
+                ?? ($failure?->failure_category?->value ?? $failure?->failure_category)
+                ?? self::failureCategoryForEvent($event),
             'handled' => (bool) ($failure?->handled ?? false),
             'history_authority' => self::HISTORY_AUTHORITY_TYPED,
             'diagnostic_only' => false,
@@ -336,6 +340,19 @@ final class FailureSnapshots
             HistoryEventType::UpdateCompleted => self::stringValue($event->payload['failure_id'] ?? null) === null
                 ? null
                 : 'update',
+            default => null,
+        };
+    }
+
+    private static function failureCategoryForEvent(WorkflowHistoryEvent $event): ?string
+    {
+        return match ($event->event_type) {
+            HistoryEventType::ActivityFailed => 'activity',
+            HistoryEventType::ChildRunFailed => 'child_workflow',
+            HistoryEventType::WorkflowFailed => 'application',
+            HistoryEventType::UpdateCompleted => self::stringValue($event->payload['failure_id'] ?? null) === null
+                ? null
+                : 'application',
             default => null,
         };
     }

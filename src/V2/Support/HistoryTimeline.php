@@ -764,6 +764,17 @@ final class HistoryTimeline
                     : 'update',
                 default => self::stringValue($failure['propagation_kind'] ?? null),
             },
+            'failure_category' => self::stringValue($payload['failure_category'] ?? null)
+                ?? self::stringValue($failure['failure_category'] ?? null)
+                ?? match ($event->event_type) {
+                    HistoryEventType::ActivityFailed => 'activity',
+                    HistoryEventType::ChildRunFailed => 'child_workflow',
+                    HistoryEventType::WorkflowFailed => 'application',
+                    HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
+                        ? null
+                        : 'application',
+                    default => null,
+                },
             'handled' => match ($event->event_type) {
                 HistoryEventType::FailureHandled => true,
                 HistoryEventType::ActivityFailed,

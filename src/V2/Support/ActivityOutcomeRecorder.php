@@ -10,6 +10,7 @@ use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -229,6 +230,7 @@ final class ActivityOutcomeRecorder
                 return self::recorded($retryTask);
             } else {
                 $exceptionPayload = FailureFactory::payload($throwable);
+                $activityFailureCategory = FailureFactory::classify('activity', 'activity_execution', $throwable);
 
                 /** @var WorkflowFailure $failure */
                 $failure = WorkflowFailure::query()->create(array_merge(
@@ -238,6 +240,7 @@ final class ActivityOutcomeRecorder
                         'source_kind' => 'activity_execution',
                         'source_id' => $lockedExecution->id,
                         'propagation_kind' => 'activity',
+                        'failure_category' => $activityFailureCategory->value,
                         'handled' => false,
                     ],
                 ));
@@ -256,6 +259,7 @@ final class ActivityOutcomeRecorder
                     'sequence' => $lockedExecution->sequence,
                     'attempt_number' => $attemptCount,
                     'failure_id' => $failure->id,
+                    'failure_category' => $activityFailureCategory->value,
                     'exception_type' => $exceptionPayload['type'] ?? null,
                     'exception_class' => $failure->exception_class,
                     'message' => $failure->message,

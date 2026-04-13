@@ -11,6 +11,7 @@ use ReflectionException;
 use ReflectionProperty;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 
@@ -46,6 +47,19 @@ final class FailureFactory
                 : $throwable->getLine(),
             'trace_preview' => self::previewFromPayload($payload),
         ];
+    }
+
+    /**
+     * Classify a failure into the canonical taxonomy based on its propagation
+     * kind, source kind, and the throwable itself.
+     */
+    public static function classify(string $propagationKind, string $sourceKind, ?Throwable $throwable = null): FailureCategory
+    {
+        return match ($propagationKind) {
+            'activity' => FailureCategory::Activity,
+            'child' => FailureCategory::ChildWorkflow,
+            default => FailureCategory::Application,
+        };
     }
 
     /**

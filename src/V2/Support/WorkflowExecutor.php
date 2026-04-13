@@ -1763,6 +1763,9 @@ final class WorkflowExecutor
                 ? $childTerminalEvent->payload['output'] ?? $childRun->output
                 : null,
             'failure_id' => $failure?->id,
+            'failure_category' => $eventType === HistoryEventType::ChildRunFailed
+                ? ($failure?->failure_category ?? FailureCategory::ChildWorkflow->value)
+                : null,
             'exception' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
                 ? $childTerminalEvent->payload['exception'] ?? null
                 : null,
@@ -2164,6 +2167,8 @@ final class WorkflowExecutor
             return;
         }
 
+        $failureCategory = FailureFactory::classify('terminal', $sourceKind, $throwable);
+
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create(array_merge(
             FailureFactory::make($throwable),
@@ -2172,6 +2177,7 @@ final class WorkflowExecutor
                 'source_kind' => $sourceKind,
                 'source_id' => $sourceId,
                 'propagation_kind' => 'terminal',
+                'failure_category' => $failureCategory->value,
                 'handled' => false,
             ],
         ));
@@ -2189,6 +2195,7 @@ final class WorkflowExecutor
             'failure_id' => $failure->id,
             'source_kind' => $sourceKind,
             'source_id' => $sourceId,
+            'failure_category' => $failureCategory->value,
             'exception_type' => $exceptionPayload['type'] ?? null,
             'exception_class' => $failure->exception_class,
             'message' => $failure->message,
@@ -3186,6 +3193,7 @@ final class WorkflowExecutor
                 }
             } catch (Throwable $throwable) {
                 $exceptionPayload = FailureFactory::payload($throwable);
+                $updateFailureCategory = FailureFactory::classify('update', 'workflow_command', $throwable);
 
                 /** @var WorkflowFailure $failure */
                 $failure = WorkflowFailure::query()->create(array_merge(
@@ -3195,6 +3203,7 @@ final class WorkflowExecutor
                         'source_kind' => 'workflow_command',
                         'source_id' => $command?->id ?? $update->id,
                         'propagation_kind' => 'update',
+                        'failure_category' => $updateFailureCategory->value,
                         'handled' => false,
                     ],
                 ));
@@ -3207,6 +3216,7 @@ final class WorkflowExecutor
                     'update_name' => $update->update_name,
                     'sequence' => $sequence,
                     'failure_id' => $failure->id,
+                    'failure_category' => $updateFailureCategory->value,
                     'exception_type' => $exceptionPayload['type'] ?? null,
                     'exception_class' => $failure->exception_class,
                     'message' => $failure->message,

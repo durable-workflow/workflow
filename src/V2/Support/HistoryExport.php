@@ -1159,6 +1159,7 @@ final class HistoryExport
             'source_kind' => $failure['source_kind'] ?? null,
             'source_id' => $failure['source_id'] ?? null,
             'propagation_kind' => $failure['propagation_kind'] ?? null,
+            'failure_category' => $failure['failure_category'] ?? null,
             'handled' => (bool) ($failure['handled'] ?? false),
             'history_authority' => $failure['history_authority'] ?? null,
             'diagnostic_only' => (bool) ($failure['diagnostic_only'] ?? false),

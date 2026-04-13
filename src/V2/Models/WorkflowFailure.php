@@ -7,6 +7,7 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowFailure extends Model
@@ -25,6 +26,7 @@ class WorkflowFailure extends Model
 
     protected $casts = [
         'handled' => 'bool',
+        'failure_category' => FailureCategory::class,
     ];
 
     public function run(): BelongsTo
