@@ -101,9 +101,9 @@ final class ActivityTaskBridge
     /**
      * @return array{recorded: bool, task_id: string, reason: string|null, next_task_id: string|null}
      */
-    public static function complete(string $attemptId, mixed $result): array
+    public static function complete(string $attemptId, mixed $result, ?string $codec = null): array
     {
-        return self::resolve()->complete($attemptId, $result);
+        return self::resolve()->complete($attemptId, $result, $codec);
     }
 
     /**
