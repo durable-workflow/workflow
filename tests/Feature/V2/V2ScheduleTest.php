@@ -45,9 +45,9 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame('America/New_York', $schedule->timezone);
         $this->assertSame(ScheduleStatus::Active, $schedule->status);
         $this->assertSame('skip', $schedule->overlap_policy);
-        $this->assertSame(0, (int) $schedule->total_runs);
-        $this->assertNotNull($schedule->next_run_at);
-        $this->assertSame('Runs every night at 2 AM ET.', $schedule->notes);
+        $this->assertSame(0, (int) $schedule->fires_count);
+        $this->assertNotNull($schedule->next_fire_at);
+        $this->assertSame('Runs every night at 2 AM ET.', $schedule->note);
     }
 
     public function testCreateScheduleWithInvalidCronThrows(): void
@@ -96,7 +96,7 @@ final class V2ScheduleTest extends TestCase
         $resumed = ScheduleManager::resume($paused);
         $this->assertSame(ScheduleStatus::Active, $resumed->status);
         $this->assertNull($resumed->paused_at);
-        $this->assertNotNull($resumed->next_run_at);
+        $this->assertNotNull($resumed->next_fire_at);
     }
 
     public function testResumeNonPausedThrows(): void
@@ -124,7 +124,7 @@ final class V2ScheduleTest extends TestCase
         $deleted = ScheduleManager::delete($schedule);
         $this->assertSame(ScheduleStatus::Deleted, $deleted->status);
         $this->assertNotNull($deleted->deleted_at);
-        $this->assertNull($deleted->next_run_at);
+        $this->assertNull($deleted->next_fire_at);
     }
 
     public function testPauseDeletedScheduleThrows(): void
@@ -152,7 +152,7 @@ final class V2ScheduleTest extends TestCase
             timezone: 'UTC',
         );
 
-        $originalNextRun = $schedule->next_run_at;
+        $originalNextRun = $schedule->next_fire_at;
 
         $updated = ScheduleManager::update(
             $schedule,
@@ -163,8 +163,8 @@ final class V2ScheduleTest extends TestCase
 
         $this->assertSame('30 2 * * *', $updated->cron_expression);
         $this->assertSame('America/Chicago', $updated->timezone);
-        $this->assertSame('Updated to 2:30 AM CT.', $updated->notes);
-        $this->assertNotEquals($originalNextRun, $updated->next_run_at);
+        $this->assertSame('Updated to 2:30 AM CT.', $updated->note);
+        $this->assertNotEquals($originalNextRun, $updated->next_fire_at);
     }
 
     public function testTriggerCreatesWorkflowRun(): void
@@ -182,8 +182,8 @@ final class V2ScheduleTest extends TestCase
 
         $this->assertNotNull($instanceId);
         $schedule->refresh();
-        $this->assertSame(1, (int) $schedule->total_runs);
-        $this->assertNotNull($schedule->last_triggered_at);
+        $this->assertSame(1, (int) $schedule->fires_count);
+        $this->assertNotNull($schedule->last_fired_at);
         $this->assertSame($instanceId, $schedule->latest_workflow_instance_id);
     }
 
@@ -225,7 +225,7 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '* * * * *',
         );
 
-        $schedule->forceFill(['next_run_at' => now()->subMinute()])->save();
+        $schedule->forceFill(['next_fire_at' => now()->subMinute()])->save();
 
         $results = ScheduleManager::tick();
 
@@ -261,12 +261,12 @@ final class V2ScheduleTest extends TestCase
         $this->assertNotNull($firstInstanceId);
 
         $schedule->refresh();
-        $schedule->forceFill(['next_run_at' => now()->subMinute()])->save();
+        $schedule->forceFill(['next_fire_at' => now()->subMinute()])->save();
 
         $secondInstanceId = ScheduleManager::trigger($schedule);
 
         $schedule->refresh();
-        $this->assertSame(1, (int) $schedule->total_runs);
+        $this->assertSame(1, (int) $schedule->fires_count);
     }
 
     public function testAllowAllOverlapPolicyPermitsOverlappingRuns(): void
@@ -288,7 +288,7 @@ final class V2ScheduleTest extends TestCase
         $this->assertNotNull($secondInstanceId);
 
         $schedule->refresh();
-        $this->assertSame(2, (int) $schedule->total_runs);
+        $this->assertSame(2, (int) $schedule->fires_count);
     }
 
     public function testMaxRunsEnforcementDeletesSchedule(): void
@@ -314,7 +314,7 @@ final class V2ScheduleTest extends TestCase
         $schedule->refresh();
         $this->assertSame(0, (int) $schedule->remaining_actions);
         $this->assertSame(ScheduleStatus::Deleted, $schedule->status);
-        $this->assertNull($schedule->next_run_at);
+        $this->assertNull($schedule->next_fire_at);
     }
 
     public function testDescribeReturnsScheduleDescription(): void
@@ -333,13 +333,14 @@ final class V2ScheduleTest extends TestCase
 
         $this->assertInstanceOf(ScheduleDescription::class, $description);
         $this->assertSame('describe-test', $description->scheduleId);
-        $this->assertSame('test-scheduled-workflow', $description->workflowType);
-        $this->assertSame('0 6 * * 1-5', $description->cronExpression);
-        $this->assertSame('Europe/London', $description->timezone);
+        $this->assertSame(['0 6 * * 1-5'], $description->spec['cron_expressions']);
+        $this->assertSame('Europe/London', $description->spec['timezone']);
+        $this->assertSame('test-scheduled-workflow', $description->action['workflow_type']);
+        $this->assertSame(TestScheduledWorkflow::class, $description->action['workflow_class']);
         $this->assertSame(ScheduleStatus::Active, $description->status);
         $this->assertSame(ScheduleOverlapPolicy::BufferOne, $description->overlapPolicy);
         $this->assertSame(30, $description->jitterSeconds);
-        $this->assertSame('Weekday 6 AM London.', $description->notes);
+        $this->assertSame('Weekday 6 AM London.', $description->note);
 
         $array = $description->toArray();
         $this->assertSame('describe-test', $array['schedule_id']);
@@ -541,7 +542,7 @@ final class V2ScheduleTest extends TestCase
         $this->assertNotNull($results[2]['instance_id']);
 
         $schedule->refresh();
-        $this->assertSame(3, (int) $schedule->total_runs);
+        $this->assertSame(3, (int) $schedule->fires_count);
     }
 
     public function testBackfillRespectsMaxRuns(): void
@@ -648,7 +649,7 @@ final class V2ScheduleTest extends TestCase
         $this->assertCount(3, $triggeredResults);
 
         $schedule->refresh();
-        $this->assertSame(3, (int) $schedule->total_runs);
+        $this->assertSame(3, (int) $schedule->fires_count);
     }
 
     public function testMultipleTriggersIncrementScheduleTriggeredEventCount(): void
