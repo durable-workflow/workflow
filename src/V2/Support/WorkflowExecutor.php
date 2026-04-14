@@ -1168,7 +1168,7 @@ final class WorkflowExecutor
             ? now()->addSeconds($options->scheduleToCloseTimeout)
             : null;
 
-        $serializedArguments = Serializer::serialize($activityCall->arguments);
+        $serializedArguments = Serializer::serializeWithCodec($run->payload_codec, $activityCall->arguments);
         StructuralLimits::guardPayloadSize($serializedArguments);
 
         /** @var ActivityExecution $execution */
@@ -1310,7 +1310,7 @@ final class WorkflowExecutor
         $commandContract = RunCommandContract::snapshot($childWorkflowCall->workflow);
         $now = now();
 
-        $serializedChildArguments = Serializer::serialize($metadata->arguments);
+        $serializedChildArguments = Serializer::serializeWithCodec($run->payload_codec, $metadata->arguments);
         StructuralLimits::guardPayloadSize($serializedChildArguments);
 
         /** @var WorkflowInstance $childInstance */
@@ -1693,7 +1693,7 @@ final class WorkflowExecutor
             'signal_name' => $signalCall->name,
             'signal_wait_id' => $signalWaitId,
             'sequence' => $sequence,
-            'value' => Serializer::serialize($value),
+            'value' => Serializer::serializeWithCodec($run->payload_codec, $value),
         ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
     }
 
@@ -1924,7 +1924,7 @@ final class WorkflowExecutor
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,
-            'arguments' => Serializer::serialize($continueAsNew->arguments),
+            'arguments' => Serializer::serializeWithCodec($run->payload_codec, $continueAsNew->arguments),
             'connection' => $run->connection,
             'queue' => $run->queue,
             'started_at' => $now,
@@ -2153,7 +2153,7 @@ final class WorkflowExecutor
         $run->forceFill([
             'status' => RunStatus::Completed,
             'closed_reason' => 'completed',
-            'output' => Serializer::serialize($result),
+            'output' => Serializer::serializeWithCodec($run->payload_codec, $result),
             'closed_at' => now(),
             'last_progress_at' => now(),
         ])->save();
@@ -2206,8 +2206,8 @@ final class WorkflowExecutor
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Accepted->value,
                     'outcome' => CommandOutcome::StartedNew->value,
-                    'payload_codec' => CodecRegistry::defaultCodec(),
-                    'payload' => Serializer::serialize($arguments),
+                    'payload_codec' => $sourceRun->payload_codec ?? CodecRegistry::defaultCodec(),
+                    'payload' => Serializer::serializeWithCodec($sourceRun->payload_codec, $arguments),
                     'accepted_at' => $recordedAt,
                     'applied_at' => $recordedAt,
                     'created_at' => $recordedAt,
@@ -3030,7 +3030,7 @@ final class WorkflowExecutor
             HistoryEventType::SideEffectRecorded,
             [
                 'sequence' => $sequence,
-                'result' => Serializer::serialize($result),
+                'result' => Serializer::serializeWithCodec($run->payload_codec, $result),
             ],
             $task,
         );
