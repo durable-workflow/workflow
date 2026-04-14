@@ -22,6 +22,7 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
         WorkflowSchedule $schedule,
         ?DateTimeInterface $occurrenceTime,
         string $outcome,
+        ?string $effectiveOverlapPolicy = null,
     ): ScheduleStartResult {
         $action = is_array($schedule->action) ? $schedule->action : [];
         $workflowClass = $action['workflow_class'] ?? null;

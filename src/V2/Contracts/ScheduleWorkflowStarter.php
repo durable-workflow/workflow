@@ -22,5 +22,6 @@ interface ScheduleWorkflowStarter
         WorkflowSchedule $schedule,
         ?DateTimeInterface $occurrenceTime,
         string $outcome,
+        ?string $effectiveOverlapPolicy = null,
     ): ScheduleStartResult;
 }

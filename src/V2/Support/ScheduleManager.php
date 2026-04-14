@@ -337,7 +337,7 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $overlapPolicy);
             }
 
-            $startResult = self::startRun($schedule);
+            $startResult = self::startRun($schedule, effectiveOverlapPolicy: $overlapPolicy->value);
 
             return new ScheduleTriggerResult('triggered', $startResult->instanceId, $startResult->runId, null);
         });
@@ -362,21 +362,28 @@ final class ScheduleManager
                 continue;
             }
 
-            $instanceId = DB::transaction(static function () use ($schedule): ?string {
-                /** @var WorkflowSchedule $schedule */
-                $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
+            try {
+                $instanceId = DB::transaction(static function () use ($schedule): ?string {
+                    /** @var WorkflowSchedule $schedule */
+                    $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
 
-                if ($schedule->drainBuffer() === null) {
-                    return null;
+                    if ($schedule->drainBuffer() === null) {
+                        return null;
+                    }
+
+                    $schedule->save();
+
+                    return self::startRun($schedule, outcome: 'drained')->instanceId;
+                });
+
+                if ($instanceId !== null) {
+                    $results[] = ['schedule_id' => $schedule->schedule_id, 'instance_id' => $instanceId];
                 }
-
+            } catch (\Throwable $e) {
+                $schedule->refresh();
+                $schedule->recordFailure($e->getMessage());
                 $schedule->save();
-
-                return self::startRun($schedule, outcome: 'drained')->instanceId;
-            });
-
-            if ($instanceId !== null) {
-                $results[] = ['schedule_id' => $schedule->schedule_id, 'instance_id' => $instanceId];
+                $results[] = ['schedule_id' => $schedule->schedule_id, 'instance_id' => null, 'error' => $e->getMessage()];
             }
         }
 
@@ -390,11 +397,23 @@ final class ScheduleManager
             ->get();
 
         foreach ($due as $schedule) {
-            $instanceId = self::trigger($schedule);
-            $results[] = [
-                'schedule_id' => $schedule->schedule_id,
-                'instance_id' => $instanceId,
-            ];
+            try {
+                $detail = self::triggerDetailed($schedule);
+                $results[] = [
+                    'schedule_id' => $schedule->schedule_id,
+                    'instance_id' => $detail->instanceId,
+                    'outcome' => $detail->outcome,
+                ];
+            } catch (\Throwable $e) {
+                $schedule->refresh();
+                $schedule->recordFailure($e->getMessage());
+                $schedule->save();
+                $results[] = [
+                    'schedule_id' => $schedule->schedule_id,
+                    'instance_id' => null,
+                    'error' => $e->getMessage(),
+                ];
+            }
         }
 
         return $results;
@@ -458,14 +477,27 @@ final class ScheduleManager
                 ?? ScheduleOverlapPolicy::Skip;
             $effectivePolicy = $overlapPolicyOverride ?? $originalPolicy;
 
-            $instanceId = self::triggerForBackfill($schedule, $effectivePolicy, $occurrence['at']);
-            $schedule->refresh();
+            try {
+                $instanceId = self::triggerForBackfill($schedule, $effectivePolicy, $occurrence['at']);
+                $schedule->refresh();
 
-            $results[] = [
-                'schedule_id' => $schedule->schedule_id,
-                'instance_id' => $instanceId,
-                'cron_time' => $occurrence['cron_time'],
-            ];
+                $results[] = [
+                    'schedule_id' => $schedule->schedule_id,
+                    'instance_id' => $instanceId,
+                    'cron_time' => $occurrence['cron_time'],
+                ];
+            } catch (\Throwable $e) {
+                $schedule->refresh();
+                $schedule->recordFailure($e->getMessage());
+                $schedule->save();
+
+                $results[] = [
+                    'schedule_id' => $schedule->schedule_id,
+                    'instance_id' => null,
+                    'cron_time' => $occurrence['cron_time'],
+                    'error' => $e->getMessage(),
+                ];
+            }
 
             if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
                 break;
@@ -506,7 +538,7 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $effectivePolicy);
             }
 
-            return self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'backfilled')->instanceId;
+            return self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'backfilled', effectiveOverlapPolicy: $effectivePolicy->value)->instanceId;
         });
     }
 
@@ -518,11 +550,12 @@ final class ScheduleManager
         WorkflowSchedule $schedule,
         ?DateTimeInterface $occurrenceTime = null,
         string $outcome = 'scheduled',
+        ?string $effectiveOverlapPolicy = null,
     ): ScheduleStartResult {
         $starter = app(ScheduleWorkflowStarter::class);
 
         try {
-            $result = $starter->start($schedule, $occurrenceTime, $outcome);
+            $result = $starter->start($schedule, $occurrenceTime, $outcome, $effectiveOverlapPolicy);
         } catch (\Throwable $e) {
             $schedule->recordFailure($e->getMessage());
             $schedule->save();
