@@ -36,6 +36,7 @@ final class ActivityOutcomeRecorder
         ?Throwable $throwable,
         int $maxAttempts,
         int $backoffSeconds,
+        ?string $codec = null,
     ): array {
         return DB::transaction(static function () use (
             $taskId,
@@ -45,6 +46,7 @@ final class ActivityOutcomeRecorder
             $throwable,
             $maxAttempts,
             $backoffSeconds,
+            $codec,
         ): array {
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
@@ -136,9 +138,13 @@ final class ActivityOutcomeRecorder
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
             if ($throwable === null) {
+                $serializedResult = $codec !== null
+                    ? $result
+                    : Serializer::serialize($result);
+
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,
-                    'result' => Serializer::serialize($result),
+                    'result' => $serializedResult,
                     'exception' => null,
                     'closed_at' => now(),
                 ])->save();
@@ -338,7 +344,7 @@ final class ActivityOutcomeRecorder
     /**
      * @return array{recorded: bool, reason: string|null, next_task: WorkflowTask|null}
      */
-    public static function recordForAttempt(string $attemptId, mixed $result, ?Throwable $throwable): array
+    public static function recordForAttempt(string $attemptId, mixed $result, ?Throwable $throwable, ?string $codec = null): array
     {
         /** @var ActivityAttempt|null $attempt */
         $attempt = ActivityAttempt::query()
@@ -369,6 +375,7 @@ final class ActivityOutcomeRecorder
             $throwable,
             ActivityRetryPolicy::maxAttemptsFromSnapshot($execution),
             ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, $attemptNumber),
+            $codec,
         );
     }
 

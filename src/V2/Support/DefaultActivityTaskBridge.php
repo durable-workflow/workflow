@@ -178,9 +178,9 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         ];
     }
 
-    public function complete(string $attemptId, mixed $result): array
+    public function complete(string $attemptId, mixed $result, ?string $codec = null): array
     {
-        $outcome = $this->dispatchingOutcome(ActivityOutcomeRecorder::recordForAttempt($attemptId, $result, null));
+        $outcome = $this->dispatchingOutcome(ActivityOutcomeRecorder::recordForAttempt($attemptId, $result, null, $codec));
 
         return [
             'recorded' => $outcome['recorded'],

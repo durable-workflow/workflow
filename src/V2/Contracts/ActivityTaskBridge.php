@@ -105,7 +105,7 @@ interface ActivityTaskBridge
      *     next_task_id: string|null,
      * }
      */
-    public function complete(string $attemptId, mixed $result): array;
+    public function complete(string $attemptId, mixed $result, ?string $codec = null): array;
 
     /**
      * Record activity task failure from an external worker.

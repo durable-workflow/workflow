@@ -105,6 +105,26 @@ final class PayloadEnvelopeResolver
     }
 
     /**
+     * Like resolveCommandPayload but also returns the codec when present.
+     *
+     * @return array{payload: mixed, codec: string|null}
+     */
+    public static function resolveCommandPayloadWithCodec($value, string $field = 'result'): array
+    {
+        if ($value === null) {
+            return ['payload' => null, 'codec' => null];
+        }
+
+        if (is_array($value) && self::looksLikeEnvelope($value)) {
+            $envelope = self::resolveExplicitEnvelope($value, $field);
+
+            return ['payload' => $envelope['blob'], 'codec' => $envelope['codec']];
+        }
+
+        return ['payload' => $value, 'codec' => null];
+    }
+
+    /**
      * @param  mixed  $input    the `input` field from a validated request (array or null)
      * @return array{codec: string|null, blob: string|null}
      *         codec/blob are null when the client sent no input — callers
