@@ -227,4 +227,34 @@ class WorkflowRun extends Model
 
         return Serializer::unserialize($this->output);
     }
+
+    /**
+     * @return array{codec: string, blob: string}|null
+     */
+    public function argumentsEnvelope(): ?array
+    {
+        if ($this->arguments === null) {
+            return null;
+        }
+
+        return [
+            'codec' => $this->payload_codec ?? config('workflows.serializer_name', 'json'),
+            'blob' => $this->arguments,
+        ];
+    }
+
+    /**
+     * @return array{codec: string, blob: string}|null
+     */
+    public function outputEnvelope(): ?array
+    {
+        if ($this->output === null) {
+            return null;
+        }
+
+        return [
+            'codec' => $this->payload_codec ?? config('workflows.serializer_name', 'json'),
+            'blob' => $this->output,
+        ];
+    }
 }
