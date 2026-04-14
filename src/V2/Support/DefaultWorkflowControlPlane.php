@@ -27,6 +27,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\UpdateResult;
 use Workflow\V2\WorkflowStub;
+use Workflow\Serializers\CodecRegistry;
 
 final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 {
@@ -34,6 +35,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     {
         $resolvedClass = $this->tryResolveWorkflowClass($workflowType);
         $arguments = $options['arguments'] ?? null;
+        $payloadCodec = isset($options['payload_codec']) && is_string($options['payload_codec']) && $options['payload_codec'] !== ''
+            ? CodecRegistry::canonicalize($options['payload_codec'])
+            : config('workflows.serializer');
         $connection = $options['connection'] ?? null;
         $queue = $options['queue'] ?? null;
         $businessKey = $options['business_key'] ?? null;
@@ -70,6 +74,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $executionTimeoutSeconds,
             $runTimeoutSeconds,
             $duplicatePolicy,
+            $payloadCodec,
             &$command,
             &$task,
             &$instance,
@@ -96,7 +101,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'outcome' => $canReturnExisting
                         ? CommandOutcome::ReturnedExistingActive->value
                         : CommandOutcome::RejectedDuplicate->value,
-                    'payload_codec' => config('workflows.serializer'),
+                    'payload_codec' => $currentRun->payload_codec ?? $payloadCodec,
                     'payload' => is_string($arguments) ? $arguments : null,
                     'rejection_reason' => $canReturnExisting ? null : 'instance_already_started',
                     'accepted_at' => $canReturnExisting ? now() : null,
@@ -178,7 +183,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'run_deadline_at' => $runDeadlineAt,
                     'status' => RunStatus::Pending->value,
                     'compatibility' => WorkerCompatibility::current(),
-                    'payload_codec' => config('workflows.serializer'),
+                    'payload_codec' => $payloadCodec,
                     'arguments' => is_string($arguments) ? $arguments : null,
                     'connection' => $connection,
                     'queue' => $queue,
@@ -192,7 +197,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'target_scope' => 'instance',
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::StartedNew->value,
-                'payload_codec' => config('workflows.serializer'),
+                'payload_codec' => $payloadCodec,
                 'payload' => is_string($arguments) ? $arguments : null,
                 'accepted_at' => now(),
                 'applied_at' => now(),
