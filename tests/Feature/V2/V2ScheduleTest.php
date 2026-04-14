@@ -7,8 +7,10 @@ namespace Tests\Feature\V2;
 use LogicException;
 use Tests\Fixtures\V2\TestScheduledWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Support\ScheduleDescription;
 use Workflow\V2\Support\ScheduleManager;
@@ -419,5 +421,270 @@ final class V2ScheduleTest extends TestCase
         $again = ScheduleManager::delete($schedule);
 
         $this->assertSame(ScheduleStatus::Deleted, $again->status);
+    }
+
+    public function testTriggerRecordsScheduleTriggeredHistoryEvent(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'event-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+        );
+
+        $instanceId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($instanceId);
+
+        $schedule->refresh();
+        $runId = null;
+
+        $stub = WorkflowStub::load($instanceId);
+        $runId = $stub->runId();
+
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+            ->first();
+
+        $this->assertNotNull($event, 'ScheduleTriggered history event should be recorded on the started run.');
+        $this->assertSame('event-test', $event->payload['schedule_id']);
+        $this->assertSame($schedule->id, $event->payload['schedule_ulid']);
+        $this->assertSame('* * * * *', $event->payload['cron_expression']);
+        $this->assertSame(1, $event->payload['trigger_number']);
+    }
+
+    public function testTriggerDeletedScheduleTracksSkipReason(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'skip-tracking-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+        );
+
+        ScheduleManager::delete($schedule);
+
+        $instanceId = ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $this->assertNull($instanceId);
+        $this->assertSame('status_not_triggerable', $schedule->last_skip_reason);
+        $this->assertNotNull($schedule->last_skipped_at);
+        $this->assertSame(1, (int) $schedule->skipped_trigger_count);
+    }
+
+    public function testDescribeIncludesSkipTracking(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'describe-skip-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+        );
+
+        ScheduleManager::delete($schedule);
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $description = ScheduleManager::describe($schedule);
+        $this->assertSame(1, $description->skippedTriggerCount);
+        $this->assertSame('status_not_triggerable', $description->lastSkipReason);
+        $this->assertNotNull($description->lastSkippedAt);
+
+        $array = $description->toArray();
+        $this->assertSame(1, $array['skipped_trigger_count']);
+        $this->assertSame('status_not_triggerable', $array['last_skip_reason']);
+    }
+
+    public function testExhaustedRemainingActionsTracksSkipReason(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'exhausted-skip-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            maxRuns: 1,
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $this->assertSame('status_not_triggerable', $schedule->last_skip_reason);
+        $this->assertSame(1, (int) $schedule->skipped_trigger_count);
+    }
+
+    public function testBackfillTriggersMultipleOccurrences(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'backfill-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        $from = new \DateTimeImmutable('2026-04-14 00:00:00', new \DateTimeZone('UTC'));
+        $to = new \DateTimeImmutable('2026-04-14 03:00:00', new \DateTimeZone('UTC'));
+
+        $results = ScheduleManager::backfill($schedule, $from, $to);
+
+        $this->assertCount(3, $results);
+        $this->assertSame('backfill-test', $results[0]['schedule_id']);
+        $this->assertNotNull($results[0]['instance_id']);
+        $this->assertNotNull($results[1]['instance_id']);
+        $this->assertNotNull($results[2]['instance_id']);
+
+        $schedule->refresh();
+        $this->assertSame(3, (int) $schedule->total_runs);
+    }
+
+    public function testBackfillRespectsMaxRuns(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'backfill-maxruns-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            maxRuns: 2,
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        $from = new \DateTimeImmutable('2026-04-14 00:00:00', new \DateTimeZone('UTC'));
+        $to = new \DateTimeImmutable('2026-04-14 05:00:00', new \DateTimeZone('UTC'));
+
+        $results = ScheduleManager::backfill($schedule, $from, $to);
+
+        $triggeredResults = array_filter($results, static fn (array $r) => $r['instance_id'] !== null);
+        $this->assertCount(2, $triggeredResults);
+
+        $schedule->refresh();
+        $this->assertSame(ScheduleStatus::Deleted, $schedule->status);
+    }
+
+    public function testBackfillDeletedScheduleThrows(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'backfill-deleted-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+        );
+
+        ScheduleManager::delete($schedule);
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Cannot backfill deleted schedule');
+
+        ScheduleManager::backfill(
+            $schedule,
+            new \DateTimeImmutable('2026-04-14 00:00:00'),
+            new \DateTimeImmutable('2026-04-14 03:00:00'),
+        );
+    }
+
+    public function testBackfillRecordsScheduleTriggeredEventsWithOccurrenceTime(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'backfill-event-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        $from = new \DateTimeImmutable('2026-04-14 00:00:00', new \DateTimeZone('UTC'));
+        $to = new \DateTimeImmutable('2026-04-14 02:00:00', new \DateTimeZone('UTC'));
+
+        $results = ScheduleManager::backfill($schedule, $from, $to);
+
+        $this->assertCount(2, $results);
+
+        foreach ($results as $result) {
+            $this->assertNotNull($result['instance_id']);
+
+            $stub = WorkflowStub::load($result['instance_id']);
+            $runId = $stub->runId();
+
+            $event = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+                ->first();
+
+            $this->assertNotNull($event);
+            $this->assertSame('backfill-event-test', $event->payload['schedule_id']);
+            $this->assertArrayHasKey('occurrence_time', $event->payload);
+        }
+    }
+
+    public function testBackfillWithOverlapPolicyOverride(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'backfill-overlap-override',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::Skip,
+        );
+
+        $from = new \DateTimeImmutable('2026-04-14 00:00:00', new \DateTimeZone('UTC'));
+        $to = new \DateTimeImmutable('2026-04-14 03:00:00', new \DateTimeZone('UTC'));
+
+        $results = ScheduleManager::backfill(
+            $schedule,
+            $from,
+            $to,
+            overlapPolicyOverride: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        $triggeredResults = array_filter($results, static fn (array $r) => $r['instance_id'] !== null);
+        $this->assertCount(3, $triggeredResults);
+
+        $schedule->refresh();
+        $this->assertSame(3, (int) $schedule->total_runs);
+    }
+
+    public function testMultipleTriggersIncrementScheduleTriggeredEventCount(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'multi-trigger-event-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        $firstInstanceId = ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $secondInstanceId = ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $this->assertNotNull($firstInstanceId);
+        $this->assertNotNull($secondInstanceId);
+
+        $firstStub = WorkflowStub::load($firstInstanceId);
+        $firstEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $firstStub->runId())
+            ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+            ->firstOrFail();
+
+        $this->assertSame(1, $firstEvent->payload['trigger_number']);
+
+        $secondStub = WorkflowStub::load($secondInstanceId);
+        $secondEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $secondStub->runId())
+            ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+            ->firstOrFail();
+
+        $this->assertSame(2, $secondEvent->payload['trigger_number']);
     }
 }

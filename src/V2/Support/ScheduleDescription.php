@@ -26,6 +26,9 @@ final class ScheduleDescription
         public readonly ?string $latestInstanceId,
         public readonly int $jitterSeconds,
         public readonly ?string $notes,
+        public readonly int $skippedTriggerCount = 0,
+        public readonly ?string $lastSkipReason = null,
+        public readonly ?DateTimeInterface $lastSkippedAt = null,
     ) {
     }
 
@@ -50,6 +53,9 @@ final class ScheduleDescription
             'latest_instance_id' => $this->latestInstanceId,
             'jitter_seconds' => $this->jitterSeconds,
             'notes' => $this->notes,
+            'skipped_trigger_count' => $this->skippedTriggerCount,
+            'last_skip_reason' => $this->lastSkipReason,
+            'last_skipped_at' => $this->lastSkippedAt?->format('Y-m-d\TH:i:s.uP'),
         ];
     }
 }

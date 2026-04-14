@@ -411,6 +411,36 @@ final class HistoryTimeline
             HistoryEventType::WorkflowFailed => $message === null
                 ? 'Workflow failed.'
                 : sprintf('Workflow failed: %s.', $message),
+            HistoryEventType::ScheduleCreated => sprintf(
+                'Schedule %s created.',
+                self::stringValue($payload['schedule_id'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::SchedulePaused => sprintf(
+                'Schedule %s paused.',
+                self::stringValue($payload['schedule_id'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ScheduleResumed => sprintf(
+                'Schedule %s resumed.',
+                self::stringValue($payload['schedule_id'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ScheduleUpdated => sprintf(
+                'Schedule %s updated.',
+                self::stringValue($payload['schedule_id'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ScheduleTriggered => sprintf(
+                'Triggered by schedule %s (trigger #%d).',
+                self::stringValue($payload['schedule_id'] ?? null) ?? 'unknown',
+                self::intValue($payload['trigger_number'] ?? null) ?? 0,
+            ),
+            HistoryEventType::ScheduleDeleted => sprintf(
+                'Schedule %s deleted.',
+                self::stringValue($payload['schedule_id'] ?? null) ?? 'unknown',
+            ),
+            HistoryEventType::ScheduleTriggerSkipped => sprintf(
+                'Schedule %s trigger skipped: %s.',
+                self::stringValue($payload['schedule_id'] ?? null) ?? 'unknown',
+                self::stringValue($payload['reason'] ?? null) ?? 'unknown reason',
+            ),
         };
     }
 

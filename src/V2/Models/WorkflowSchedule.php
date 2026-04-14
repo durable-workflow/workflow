@@ -32,6 +32,7 @@ class WorkflowSchedule extends Model
         'visibility_labels' => 'array',
         'overlap_policy' => 'string',
         'last_triggered_at' => 'datetime',
+        'last_skipped_at' => 'datetime',
         'next_run_at' => 'datetime',
         'paused_at' => 'datetime',
         'deleted_at' => 'datetime',
@@ -39,6 +40,7 @@ class WorkflowSchedule extends Model
         'max_runs' => 'integer',
         'total_runs' => 'integer',
         'remaining_actions' => 'integer',
+        'skipped_trigger_count' => 'integer',
     ];
 
     public function latestInstance(): BelongsTo

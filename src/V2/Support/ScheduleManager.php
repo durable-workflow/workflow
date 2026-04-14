@@ -14,6 +14,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
@@ -170,10 +171,14 @@ final class ScheduleManager
                 ->findOrFail($schedule->id);
 
             if (! $schedule->status->allowsTrigger()) {
+                self::recordSkip($schedule, 'status_not_triggerable');
+
                 return null;
             }
 
             if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
+                self::recordSkip($schedule, 'remaining_actions_exhausted');
+
                 return null;
             }
 
@@ -181,6 +186,7 @@ final class ScheduleManager
                 ?? ScheduleOverlapPolicy::Skip;
 
             if (! self::overlapAllowed($schedule, $overlapPolicy)) {
+                self::recordSkip($schedule, 'overlap_policy_' . $overlapPolicy->value);
                 $schedule->forceFill([
                     'next_run_at' => self::nextRunTime($schedule->cron_expression, $schedule->timezone),
                 ])->save();
@@ -207,6 +213,8 @@ final class ScheduleManager
             $arguments[] = $startOptions;
 
             $result = $stub->start(...$arguments);
+
+            self::recordScheduleTriggered($schedule, $result->runId());
 
             $schedule->forceFill([
                 'total_runs' => $schedule->total_runs + 1,
@@ -274,6 +282,9 @@ final class ScheduleManager
             latestInstanceId: $schedule->latest_workflow_instance_id,
             jitterSeconds: (int) $schedule->jitter_seconds,
             notes: $schedule->notes,
+            skippedTriggerCount: (int) ($schedule->skipped_trigger_count ?? 0),
+            lastSkipReason: $schedule->last_skip_reason,
+            lastSkippedAt: $schedule->last_skipped_at,
         );
     }
 
@@ -283,6 +294,181 @@ final class ScheduleManager
         return WorkflowSchedule::query()
             ->where('schedule_id', $scheduleId)
             ->first();
+    }
+
+    /**
+     * @param list<array{at: \DateTimeInterface, cron_time: string}> $occurrences
+     * @return list<array{schedule_id: string, instance_id: string|null, cron_time: string}>
+     */
+    public static function backfill(
+        WorkflowSchedule $schedule,
+        \DateTimeInterface $from,
+        \DateTimeInterface $to,
+        ?ScheduleOverlapPolicy $overlapPolicyOverride = null,
+    ): array {
+        if ($schedule->status === ScheduleStatus::Deleted) {
+            throw new LogicException(sprintf('Cannot backfill deleted schedule [%s].', $schedule->schedule_id));
+        }
+
+        $occurrences = self::cronOccurrences($schedule->cron_expression, $schedule->timezone, $from, $to);
+        $results = [];
+
+        foreach ($occurrences as $occurrence) {
+            $originalPolicy = ScheduleOverlapPolicy::tryFrom($schedule->overlap_policy ?? '')
+                ?? ScheduleOverlapPolicy::Skip;
+            $effectivePolicy = $overlapPolicyOverride ?? $originalPolicy;
+
+            $instanceId = self::triggerForBackfill($schedule, $effectivePolicy, $occurrence['at']);
+
+            $schedule->refresh();
+
+            $results[] = [
+                'schedule_id' => $schedule->schedule_id,
+                'instance_id' => $instanceId,
+                'cron_time' => $occurrence['cron_time'],
+            ];
+
+            if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
+                break;
+            }
+        }
+
+        return $results;
+    }
+
+    private static function triggerForBackfill(
+        WorkflowSchedule $schedule,
+        ScheduleOverlapPolicy $overlapPolicy,
+        \DateTimeInterface $occurrenceTime,
+    ): ?string {
+        return DB::transaction(static function () use ($schedule, $overlapPolicy, $occurrenceTime): ?string {
+            /** @var WorkflowSchedule $schedule */
+            $schedule = WorkflowSchedule::query()
+                ->lockForUpdate()
+                ->findOrFail($schedule->id);
+
+            if (! $schedule->status->allowsTrigger()) {
+                return null;
+            }
+
+            if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
+                return null;
+            }
+
+            if (! self::overlapAllowed($schedule, $overlapPolicy)) {
+                return null;
+            }
+
+            if ($overlapPolicy === ScheduleOverlapPolicy::CancelOther || $overlapPolicy === ScheduleOverlapPolicy::TerminateOther) {
+                self::closeExistingRun($schedule, $overlapPolicy);
+            }
+
+            $stub = WorkflowStub::make(
+                $schedule->workflow_class,
+                sprintf('schedule:%s:backfill:%s', $schedule->schedule_id, $occurrenceTime->getTimestamp()),
+            );
+
+            $startOptions = new StartOptions(
+                labels: is_array($schedule->visibility_labels) ? $schedule->visibility_labels : [],
+                memo: is_array($schedule->memo) ? $schedule->memo : [],
+                searchAttributes: is_array($schedule->search_attributes) ? $schedule->search_attributes : [],
+            );
+
+            $arguments = is_array($schedule->workflow_arguments) ? $schedule->workflow_arguments : [];
+            $arguments[] = $startOptions;
+
+            $result = $stub->start(...$arguments);
+
+            self::recordScheduleTriggered($schedule, $result->runId(), $occurrenceTime);
+
+            $schedule->forceFill([
+                'total_runs' => $schedule->total_runs + 1,
+                'remaining_actions' => $schedule->remaining_actions !== null
+                    ? max(0, $schedule->remaining_actions - 1)
+                    : null,
+                'last_triggered_at' => now(),
+                'latest_workflow_instance_id' => $result->instanceId(),
+            ])->save();
+
+            if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
+                $schedule->forceFill([
+                    'status' => ScheduleStatus::Deleted->value,
+                    'deleted_at' => now(),
+                    'next_run_at' => null,
+                ])->save();
+            }
+
+            return $result->instanceId();
+        });
+    }
+
+    private static function recordScheduleTriggered(
+        WorkflowSchedule $schedule,
+        ?string $runId,
+        ?\DateTimeInterface $occurrenceTime = null,
+    ): void {
+        if ($runId === null) {
+            return;
+        }
+
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($runId);
+
+        if ($run === null) {
+            return;
+        }
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ScheduleTriggered, array_filter([
+            'schedule_id' => $schedule->schedule_id,
+            'schedule_ulid' => $schedule->id,
+            'cron_expression' => $schedule->cron_expression,
+            'timezone' => $schedule->timezone,
+            'overlap_policy' => $schedule->overlap_policy,
+            'trigger_number' => $schedule->total_runs + 1,
+            'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
+        ], static fn (mixed $v): bool => $v !== null));
+    }
+
+    private static function recordSkip(WorkflowSchedule $schedule, string $reason): void
+    {
+        $schedule->forceFill([
+            'last_skip_reason' => $reason,
+            'last_skipped_at' => now(),
+            'skipped_trigger_count' => ($schedule->skipped_trigger_count ?? 0) + 1,
+        ])->save();
+    }
+
+    /**
+     * @return list<array{at: \DateTimeInterface, cron_time: string}>
+     */
+    private static function cronOccurrences(
+        string $cronExpression,
+        string $timezone,
+        \DateTimeInterface $from,
+        \DateTimeInterface $to,
+    ): array {
+        $cron = new CronExpression($cronExpression);
+        $tz = new DateTimeZone($timezone);
+        $current = new DateTimeImmutable($from->format('Y-m-d H:i:s'), $tz);
+        $end = new DateTimeImmutable($to->format('Y-m-d H:i:s'), $tz);
+
+        $occurrences = [];
+
+        while (true) {
+            $next = DateTimeImmutable::createFromMutable($cron->getNextRunDate($current));
+
+            if ($next > $end) {
+                break;
+            }
+
+            $occurrences[] = [
+                'at' => $next,
+                'cron_time' => $next->format('Y-m-d\TH:i:sP'),
+            ];
+
+            $current = $next;
+        }
+
+        return $occurrences;
     }
 
     private static function overlapAllowed(WorkflowSchedule $schedule, ScheduleOverlapPolicy $policy): bool
