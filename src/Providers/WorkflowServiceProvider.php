@@ -18,6 +18,7 @@ use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\V2RepairPassCommand;
+use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
@@ -76,6 +77,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             V2HistoryExportCommand::class,
             V2RepairPassCommand::class,
             V2RebuildProjectionsCommand::class,
+            V2ScheduleTickCommand::class,
         ]);
 
         TypeRegistry::validateTypeMap();

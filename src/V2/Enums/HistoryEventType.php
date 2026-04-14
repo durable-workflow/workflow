@@ -55,4 +55,11 @@ enum HistoryEventType: string
     case ParentClosePolicyApplied = 'ParentClosePolicyApplied';
     case ParentClosePolicyFailed = 'ParentClosePolicyFailed';
     case MessageCursorAdvanced = 'MessageCursorAdvanced';
+    case ScheduleCreated = 'ScheduleCreated';
+    case SchedulePaused = 'SchedulePaused';
+    case ScheduleResumed = 'ScheduleResumed';
+    case ScheduleUpdated = 'ScheduleUpdated';
+    case ScheduleTriggered = 'ScheduleTriggered';
+    case ScheduleDeleted = 'ScheduleDeleted';
+    case ScheduleTriggerSkipped = 'ScheduleTriggerSkipped';
 }
