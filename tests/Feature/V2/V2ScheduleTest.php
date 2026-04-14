@@ -261,10 +261,14 @@ final class V2ScheduleTest extends TestCase
         $firstInstanceId = ScheduleManager::trigger($schedule);
         $this->assertNotNull($firstInstanceId);
 
+        $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
+        $run->forceFill(['status' => 'running'])->save();
+
         $schedule->refresh();
         $schedule->forceFill(['next_fire_at' => now()->subMinute()])->save();
 
         $secondInstanceId = ScheduleManager::trigger($schedule);
+        $this->assertNull($secondInstanceId, 'Skip policy should prevent overlapping runs.');
 
         $schedule->refresh();
         $this->assertSame(1, (int) $schedule->fires_count);
@@ -949,5 +953,117 @@ final class V2ScheduleTest extends TestCase
 
         $this->assertSame('redis', $run->connection, 'Schedule connection should be forwarded to the workflow run.');
         $this->assertSame('high-priority', $run->queue, 'Schedule queue should be forwarded to the workflow run.');
+    }
+
+    public function testBufferAllBuffersMultipleTriggersWhenRunIsActive(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'buffer-all-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferAll,
+        );
+
+        $firstInstanceId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($firstInstanceId);
+
+        $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
+        $run->forceFill(['status' => 'running'])->save();
+
+        $schedule->refresh();
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+        $this->assertCount(1, $schedule->buffered_actions);
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+        $this->assertCount(2, $schedule->buffered_actions, 'BufferAll should accept multiple buffered actions.');
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+        $this->assertCount(3, $schedule->buffered_actions, 'BufferAll should not cap buffered actions.');
+    }
+
+    public function testBufferAllDrainsSequentiallyOnTick(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'buffer-all-drain-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 0 1 1 *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferAll,
+        );
+
+        $firstInstanceId = ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
+        $run->forceFill(['status' => 'running'])->save();
+
+        ScheduleManager::trigger($schedule);
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+        $this->assertCount(2, $schedule->buffered_actions);
+
+        $run->forceFill(['status' => 'completed'])->save();
+
+        $results = ScheduleManager::tick();
+
+        $drained = array_filter($results, static fn (array $r) => $r['schedule_id'] === 'buffer-all-drain-test' && $r['instance_id'] !== null);
+        $this->assertCount(1, $drained, 'Tick should drain one buffered action at a time.');
+
+        $schedule->refresh();
+        $this->assertCount(1, $schedule->buffered_actions, 'One buffered action should remain after draining one.');
+        $this->assertSame(2, (int) $schedule->fires_count);
+    }
+
+    public function testBackfillWithBufferOnePolicyStartsAllOccurrences(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'backfill-buffer-one-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferOne,
+        );
+
+        $from = new \DateTimeImmutable('2026-04-14 00:00:00', new \DateTimeZone('UTC'));
+        $to = new \DateTimeImmutable('2026-04-14 03:00:00', new \DateTimeZone('UTC'));
+
+        $results = ScheduleManager::backfill($schedule, $from, $to);
+
+        $triggeredResults = array_filter($results, static fn (array $r) => $r['instance_id'] !== null);
+        $this->assertCount(3, $triggeredResults, 'Backfill with BufferOne should start all occurrences (buffer treated as AllowAll).');
+
+        $schedule->refresh();
+        $this->assertSame(3, (int) $schedule->fires_count);
+    }
+
+    public function testBackfillWithBufferAllPolicyStartsAllOccurrences(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'backfill-buffer-all-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferAll,
+        );
+
+        $from = new \DateTimeImmutable('2026-04-14 00:00:00', new \DateTimeZone('UTC'));
+        $to = new \DateTimeImmutable('2026-04-14 03:00:00', new \DateTimeZone('UTC'));
+
+        $results = ScheduleManager::backfill($schedule, $from, $to);
+
+        $triggeredResults = array_filter($results, static fn (array $r) => $r['instance_id'] !== null);
+        $this->assertCount(3, $triggeredResults, 'Backfill with BufferAll should start all occurrences (buffer treated as AllowAll).');
+
+        $schedule->refresh();
+        $this->assertSame(3, (int) $schedule->fires_count);
     }
 }

@@ -465,7 +465,11 @@ final class ScheduleManager
         ScheduleOverlapPolicy $overlapPolicy,
         DateTimeInterface $occurrenceTime,
     ): ?string {
-        return DB::transaction(static function () use ($schedule, $overlapPolicy, $occurrenceTime): ?string {
+        $effectivePolicy = $overlapPolicy->isBuffer()
+            ? ScheduleOverlapPolicy::AllowAll
+            : $overlapPolicy;
+
+        return DB::transaction(static function () use ($schedule, $effectivePolicy, $occurrenceTime): ?string {
             /** @var WorkflowSchedule $schedule */
             $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
 
@@ -477,12 +481,12 @@ final class ScheduleManager
                 return null;
             }
 
-            if (! self::overlapAllowed($schedule, $overlapPolicy)) {
+            if (! self::overlapAllowed($schedule, $effectivePolicy)) {
                 return null;
             }
 
-            if ($overlapPolicy === ScheduleOverlapPolicy::CancelOther || $overlapPolicy === ScheduleOverlapPolicy::TerminateOther) {
-                self::closeExistingRun($schedule, $overlapPolicy);
+            if ($effectivePolicy === ScheduleOverlapPolicy::CancelOther || $effectivePolicy === ScheduleOverlapPolicy::TerminateOther) {
+                self::closeExistingRun($schedule, $effectivePolicy);
             }
 
             return self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'backfilled');
@@ -673,8 +677,9 @@ final class ScheduleManager
         }
 
         return match ($policy) {
-            ScheduleOverlapPolicy::Skip, ScheduleOverlapPolicy::BufferOne, ScheduleOverlapPolicy::BufferAll => false,
+            ScheduleOverlapPolicy::Skip => false,
             ScheduleOverlapPolicy::CancelOther, ScheduleOverlapPolicy::TerminateOther, ScheduleOverlapPolicy::AllowAll => true,
+            ScheduleOverlapPolicy::BufferOne, ScheduleOverlapPolicy::BufferAll => false,
         };
     }
 
