@@ -20,6 +20,12 @@ return new class() extends Migration {
                 ->nullable()
                 ->after('visibility_labels');
         });
+
+        Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
+            $table->json('memo')
+                ->nullable()
+                ->after('visibility_labels');
+        });
     }
 
     public function down(): void
@@ -27,6 +33,10 @@ return new class() extends Migration {
         if (Schema::getConnection()->getDriverName() === 'sqlite') {
             return;
         }
+
+        Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
+            $table->dropColumn('memo');
+        });
 
         Schema::table('workflow_runs', static function (Blueprint $table): void {
             $table->dropColumn('memo');
