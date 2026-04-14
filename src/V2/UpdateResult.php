@@ -41,6 +41,14 @@ final class UpdateResult extends CommandResult
         return $this->result;
     }
 
+    /**
+     * @return array{codec: string, blob: string}|null
+     */
+    public function resultEnvelope(): ?array
+    {
+        return $this->update?->resultEnvelope();
+    }
+
     public function completed(): bool
     {
         return $this->command->outcome === CommandOutcome::UpdateCompleted;

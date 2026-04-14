@@ -93,6 +93,23 @@ class WorkflowUpdate extends Model
     }
 
     /**
+     * @return array{codec: string, blob: string}|null
+     */
+    public function resultEnvelope(): ?array
+    {
+        if (! is_string($this->result) || $this->result === '') {
+            return null;
+        }
+
+        $run = $this->run;
+
+        return [
+            'codec' => $run?->payload_codec ?? config('workflows.serializer_name', 'json'),
+            'blob' => $this->result,
+        ];
+    }
+
+    /**
      * @return array<string, list<string>>
      */
     public function normalizedValidationErrors(): array

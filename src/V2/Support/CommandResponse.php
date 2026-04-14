@@ -46,6 +46,7 @@ final class CommandResponse
             $payload['update_name'] = $result->updateName();
             $payload['workflow_sequence'] = $result->workflowSequence();
             $payload['result'] = $result->result();
+            $payload['result_envelope'] = $result->resultEnvelope();
             $payload['failure_id'] = $result->failureId();
             $payload['failure_message'] = $result->failureMessage();
             $payload['accepted_at'] = $result->acceptedAt()?->toJSON();

@@ -28,6 +28,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\UpdateResult;
 use Workflow\V2\WorkflowStub;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
 
 final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 {
@@ -417,6 +418,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             ];
         }
 
+        $codec = $stub->payloadCodec();
+
         return [
             'success' => true,
             'workflow_instance_id' => $instanceId,
@@ -425,6 +428,10 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             'target_scope' => 'instance',
             'query_name' => $queryName,
             'result' => $result,
+            'result_envelope' => $result !== null ? [
+                'codec' => $codec,
+                'blob' => Serializer::serializeWithCodec($codec, $result),
+            ] : null,
             'reason' => null,
             'status' => 200,
         ];
