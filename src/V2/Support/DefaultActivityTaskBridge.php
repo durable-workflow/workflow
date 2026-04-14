@@ -190,10 +190,10 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         ];
     }
 
-    public function fail(string $attemptId, Throwable|array|string $failure): array
+    public function fail(string $attemptId, Throwable|array|string $failure, ?string $codec = null): array
     {
         $outcome = $this->dispatchingOutcome(
-            ActivityOutcomeRecorder::recordForAttempt($attemptId, null, self::throwable($failure))
+            ActivityOutcomeRecorder::recordForAttempt($attemptId, null, self::throwable($failure), $codec)
         );
 
         return [

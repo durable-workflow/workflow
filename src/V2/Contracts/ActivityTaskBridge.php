@@ -118,7 +118,7 @@ interface ActivityTaskBridge
      *     next_task_id: string|null,
      * }
      */
-    public function fail(string $attemptId, Throwable|array|string $failure): array;
+    public function fail(string $attemptId, Throwable|array|string $failure, ?string $codec = null): array;
 
     /**
      * Get the current status of an activity attempt.
