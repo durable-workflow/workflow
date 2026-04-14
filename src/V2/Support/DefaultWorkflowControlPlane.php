@@ -316,10 +316,12 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         }
 
         $arguments = $this->commandArguments($options);
+        $payloadCodec = $options['payload_codec'] ?? null;
+        $payloadBlob = $options['payload_blob'] ?? null;
 
         $result = $stub
             ->withCommandContext($this->commandContext($options))
-            ->attemptSignalWithArguments($name, $arguments);
+            ->attemptSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob);
 
         return array_merge(
             CommandResponse::payload($result),

@@ -1305,8 +1305,12 @@ final class WorkflowStub
     /**
      * @param array<int|string, mixed> $arguments
      */
-    public function attemptSignalWithArguments(string $name, array $arguments): CommandResult
-    {
+    public function attemptSignalWithArguments(
+        string $name,
+        array $arguments,
+        ?string $payloadCodec = null,
+        ?string $payloadBlob = null,
+    ): CommandResult {
         $arguments = array_is_list($arguments)
             ? array_values($arguments)
             : $arguments;
@@ -1315,7 +1319,7 @@ final class WorkflowStub
             throw new LogicException('Signal name cannot be empty.');
         }
 
-        return $this->attemptSignalInternal($name, $arguments);
+        return $this->attemptSignalInternal($name, $arguments, $payloadCodec, $payloadBlob);
     }
 
     public function attemptRepair(): CommandResult
@@ -2026,8 +2030,12 @@ final class WorkflowStub
     /**
      * @param array<int|string, mixed> $arguments
      */
-    private function attemptSignalInternal(string $name, array $arguments): CommandResult
-    {
+    private function attemptSignalInternal(
+        string $name,
+        array $arguments,
+        ?string $payloadCodec = null,
+        ?string $payloadBlob = null,
+    ): CommandResult {
         if ($name === '') {
             throw new LogicException('Signal name cannot be empty.');
         }
@@ -2036,7 +2044,7 @@ final class WorkflowStub
         $command = null;
         $task = null;
 
-        DB::transaction(function () use ($name, $arguments, &$command, &$task): void {
+        DB::transaction(function () use ($name, $arguments, $payloadCodec, $payloadBlob, &$command, &$task): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -2051,7 +2059,7 @@ final class WorkflowStub
                     CommandType::Signal,
                     'instance_not_started',
                     $this->commandTargetScope(),
-                    $this->signalCommandPayloadAttributes($name, $arguments),
+                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -2071,7 +2079,7 @@ final class WorkflowStub
                         CommandType::Signal,
                         'selected_run_not_current',
                         $this->commandTargetScope(),
-                        array_merge($this->signalCommandPayloadAttributes($name, $arguments), [
+                        array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
                             'resolved_workflow_run_id' => $currentRun->id,
                         ]),
                     );
@@ -2095,7 +2103,7 @@ final class WorkflowStub
                     CommandType::Signal,
                     'run_not_active',
                     $this->commandTargetScope(),
-                    $this->signalCommandPayloadAttributes($name, $arguments),
+                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -2112,7 +2120,7 @@ final class WorkflowStub
                     CommandType::Signal,
                     'unknown_signal',
                     $this->commandTargetScope(),
-                    $this->signalCommandPayloadAttributes($name, $arguments),
+                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -2132,6 +2140,7 @@ final class WorkflowStub
                         $name,
                         $arguments,
                         $validatedArguments['validation_errors'],
+                        $payloadCodec,
                     ),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments, $validatedArguments['validation_errors']);
@@ -2150,7 +2159,7 @@ final class WorkflowStub
                     CommandType::Signal,
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
-                    $this->signalCommandPayloadAttributes($name, $arguments),
+                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -2163,12 +2172,12 @@ final class WorkflowStub
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::SignalReceived->value,
-                ...$this->signalCommandPayloadAttributes($name, $arguments),
+                ...$this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
                 'accepted_at' => now(),
             ]));
 
             $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name, $command->id);
-            $signal = $this->recordAcceptedSignal($instance, $run, $command, $name, $arguments, $signalWaitId);
+            $signal = $this->recordAcceptedSignal($instance, $run, $command, $name, $arguments, $signalWaitId, $payloadCodec, $payloadBlob);
 
             WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
                 'workflow_command_id' => $command->id,
@@ -3048,7 +3057,11 @@ final class WorkflowStub
         string $name,
         array $arguments,
         string $signalWaitId,
+        ?string $payloadCodec = null,
+        ?string $payloadBlob = null,
     ): WorkflowSignal {
+        $codec = $payloadCodec ?? $run->payload_codec ?? config('workflows.serializer');
+
         /** @var WorkflowSignal $signal */
         $signal = WorkflowSignal::query()->create([
             'workflow_command_id' => $command->id,
@@ -3062,8 +3075,8 @@ final class WorkflowStub
             'status' => SignalStatus::Received->value,
             'outcome' => $command->outcome?->value,
             'command_sequence' => $command->command_sequence,
-            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-            'arguments' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), $arguments),
+            'payload_codec' => $codec,
+            'arguments' => $payloadBlob ?? Serializer::serializeWithCodec($codec, $arguments),
             'received_at' => $command->accepted_at,
         ]);
 
@@ -3162,10 +3175,13 @@ final class WorkflowStub
         string $name,
         array $arguments,
         array $validationErrors = [],
+        ?string $payloadCodec = null,
     ): array {
+        $codec = $payloadCodec ?? config('workflows.serializer');
+
         return [
-            'payload_codec' => config('workflows.serializer'),
-            'payload' => Serializer::serializeWithCodec(config('workflows.serializer'), [
+            'payload_codec' => $codec,
+            'payload' => Serializer::serializeWithCodec($codec, [
                 'name' => $name,
                 'arguments' => $arguments,
                 'validation_errors' => $validationErrors,
