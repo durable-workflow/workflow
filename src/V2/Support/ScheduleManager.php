@@ -192,6 +192,7 @@ final class ScheduleManager
         ?array $action = null,
         ?array $memo = null,
         ?array $searchAttributes = null,
+        ?int $maxRuns = null,
     ): WorkflowSchedule {
         if ($schedule->status === ScheduleStatus::Deleted) {
             throw new LogicException(sprintf('Cannot update deleted schedule [%s].', $schedule->schedule_id));
@@ -238,6 +239,13 @@ final class ScheduleManager
 
         if ($searchAttributes !== null) {
             $updates['search_attributes'] = $searchAttributes !== [] ? $searchAttributes : null;
+        }
+
+        if ($maxRuns !== null) {
+            $updates['max_runs'] = $maxRuns;
+            $updates['remaining_actions'] = ($schedule->remaining_actions === null || $maxRuns > (int) $schedule->fires_count)
+                ? $maxRuns - (int) $schedule->fires_count
+                : (int) $schedule->remaining_actions;
         }
 
         $schedule->forceFill($updates)->save();
@@ -329,9 +337,9 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $overlapPolicy);
             }
 
-            $instanceId = self::startRun($schedule);
+            $startResult = self::startRun($schedule);
 
-            return new ScheduleTriggerResult('triggered', $instanceId, null, null);
+            return new ScheduleTriggerResult('triggered', $startResult->instanceId, $startResult->runId, null);
         });
     }
 
@@ -364,7 +372,7 @@ final class ScheduleManager
 
                 $schedule->save();
 
-                return self::startRun($schedule, outcome: 'drained');
+                return self::startRun($schedule, outcome: 'drained')->instanceId;
             });
 
             if ($instanceId !== null) {
@@ -498,7 +506,7 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $effectivePolicy);
             }
 
-            return self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'backfilled');
+            return self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'backfilled')->instanceId;
         });
     }
 
@@ -510,7 +518,7 @@ final class ScheduleManager
         WorkflowSchedule $schedule,
         ?DateTimeInterface $occurrenceTime = null,
         string $outcome = 'scheduled',
-    ): ?string {
+    ): ScheduleStartResult {
         $starter = app(ScheduleWorkflowStarter::class);
 
         try {
@@ -544,7 +552,7 @@ final class ScheduleManager
             ])->save();
         }
 
-        return $result->instanceId;
+        return $result;
     }
 
     private static function recordScheduleTriggered(
