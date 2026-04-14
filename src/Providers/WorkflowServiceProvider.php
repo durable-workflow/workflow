@@ -22,12 +22,14 @@ use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\PhpClassScheduleStarter;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowModeGuard;
 use Workflow\V2\TaskWatchdog;
@@ -49,6 +51,8 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->app->singleton(ActivityTaskBridge::class, DefaultActivityTaskBridge::class);
 
         $this->app->singleton(WorkflowControlPlane::class, DefaultWorkflowControlPlane::class);
+
+        $this->app->singleton(ScheduleWorkflowStarter::class, PhpClassScheduleStarter::class);
     }
 
     public function boot(): void

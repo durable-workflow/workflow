@@ -10,6 +10,7 @@ use DateTimeInterface;
 use DateTimeZone;
 use Illuminate\Support\Facades\DB;
 use LogicException;
+use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
@@ -17,9 +18,6 @@ use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
-use Workflow\V2\StartOptions;
-use Workflow\V2\WorkflowStub;
-use Workflow\WorkflowOptions;
 
 /**
  * Single source of truth for workflow schedule lifecycle.
@@ -271,7 +269,14 @@ final class ScheduleManager
      */
     public static function trigger(WorkflowSchedule $schedule, ?ScheduleOverlapPolicy $overlapPolicyOverride = null): ?string
     {
-        return DB::transaction(static function () use ($schedule, $overlapPolicyOverride): ?string {
+        return self::triggerDetailed($schedule, $overlapPolicyOverride)->instanceId;
+    }
+
+    public static function triggerDetailed(
+        WorkflowSchedule $schedule,
+        ?ScheduleOverlapPolicy $overlapPolicyOverride = null,
+    ): ScheduleTriggerResult {
+        return DB::transaction(static function () use ($schedule, $overlapPolicyOverride): ScheduleTriggerResult {
             /** @var WorkflowSchedule $schedule */
             $schedule = WorkflowSchedule::query()
                 ->lockForUpdate()
@@ -280,13 +285,13 @@ final class ScheduleManager
             if (! $schedule->status->allowsTrigger()) {
                 self::recordSkip($schedule, 'status_not_triggerable');
 
-                return null;
+                return new ScheduleTriggerResult('skipped', null, null, 'status_not_triggerable');
             }
 
             if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
                 self::recordSkip($schedule, 'remaining_actions_exhausted');
 
-                return null;
+                return new ScheduleTriggerResult('skipped', null, null, 'remaining_actions_exhausted');
             }
 
             $overlapPolicy = $overlapPolicyOverride
@@ -300,30 +305,33 @@ final class ScheduleManager
                         'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
                     ])->save();
 
-                    return null;
+                    return new ScheduleTriggerResult('buffer_full', null, null, 'buffer_full');
                 }
 
                 $schedule->bufferAction();
                 $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
                 $schedule->save();
 
-                return null;
+                return new ScheduleTriggerResult('buffered', null, null, null);
             }
 
             if (! self::overlapAllowed($schedule, $overlapPolicy)) {
-                self::recordSkip($schedule, 'overlap_policy_' . $overlapPolicy->value);
+                $reason = 'overlap_policy_' . $overlapPolicy->value;
+                self::recordSkip($schedule, $reason);
                 $schedule->forceFill([
                     'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
                 ])->save();
 
-                return null;
+                return new ScheduleTriggerResult('skipped', null, null, $reason);
             }
 
             if ($overlapPolicy === ScheduleOverlapPolicy::CancelOther || $overlapPolicy === ScheduleOverlapPolicy::TerminateOther) {
                 self::closeExistingRun($schedule, $overlapPolicy);
             }
 
-            return self::startRun($schedule);
+            $instanceId = self::startRun($schedule);
+
+            return new ScheduleTriggerResult('triggered', $instanceId, null, null);
         });
     }
 
@@ -503,44 +511,10 @@ final class ScheduleManager
         ?DateTimeInterface $occurrenceTime = null,
         string $outcome = 'scheduled',
     ): ?string {
-        $action = is_array($schedule->action) ? $schedule->action : [];
-        $workflowClass = $action['workflow_class'] ?? null;
-
-        if (! is_string($workflowClass) || $workflowClass === '') {
-            throw new LogicException(sprintf(
-                'Schedule [%s] action missing workflow_class.',
-                $schedule->schedule_id,
-            ));
-        }
-
-        $suffix = $occurrenceTime !== null
-            ? sprintf('backfill:%s', $occurrenceTime->getTimestamp())
-            : (string) now()->getTimestampMs();
-
-        $stub = WorkflowStub::make(
-            $workflowClass,
-            sprintf('schedule:%s:%s', $schedule->schedule_id, $suffix),
-        );
-
-        $startOptions = new StartOptions(
-            labels: is_array($schedule->visibility_labels) ? $schedule->visibility_labels : [],
-            memo: is_array($schedule->memo) ? $schedule->memo : [],
-            searchAttributes: is_array($schedule->search_attributes) ? $schedule->search_attributes : [],
-        );
-
-        $arguments = array_values(is_array($action['input'] ?? null) ? $action['input'] : []);
-
-        $scheduleConnection = $schedule->connection;
-        $scheduleQueue = $schedule->queue;
-
-        if ($scheduleConnection !== null || $scheduleQueue !== null) {
-            $arguments[] = new WorkflowOptions($scheduleConnection, $scheduleQueue);
-        }
-
-        $arguments[] = $startOptions;
+        $starter = app(ScheduleWorkflowStarter::class);
 
         try {
-            $result = $stub->start(...$arguments);
+            $result = $starter->start($schedule, $occurrenceTime, $outcome);
         } catch (\Throwable $e) {
             $schedule->recordFailure($e->getMessage());
             $schedule->save();
@@ -548,9 +522,9 @@ final class ScheduleManager
             throw $e;
         }
 
-        self::recordScheduleTriggered($schedule, $result->runId(), $occurrenceTime);
+        self::recordScheduleTriggered($schedule, $result->runId, $occurrenceTime);
 
-        $schedule->recordFire($result->instanceId(), $result->runId(), $outcome);
+        $schedule->recordFire($result->instanceId, $result->runId, $outcome);
         $schedule->forceFill([
             'recent_actions' => $schedule->recent_actions,
             'fires_count' => $schedule->fires_count,
@@ -559,7 +533,7 @@ final class ScheduleManager
             'remaining_actions' => $schedule->remaining_actions !== null
                 ? max(0, (int) $schedule->remaining_actions - 1)
                 : null,
-            'latest_workflow_instance_id' => $result->instanceId(),
+            'latest_workflow_instance_id' => $result->instanceId,
         ])->save();
 
         if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
@@ -570,7 +544,7 @@ final class ScheduleManager
             ])->save();
         }
 
-        return $result->instanceId();
+        return $result->instanceId;
     }
 
     private static function recordScheduleTriggered(

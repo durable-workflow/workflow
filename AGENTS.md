@@ -1,6 +1,21 @@
 # Quality Cycle
 
-Run these commands in order before considering any change complete:
+Run these commands in order before considering any change complete.
+
+When working from Workspace HQ, run them inside the workflow repo `app` container via the root `Makefile`:
+
+- `make workflow-ecs`
+- `make workflow-stan`
+- `make workflow-unit`
+- `make workflow-coverage`
+- `make workflow-feature`
+- `make workflow-quality`
+
+If you need the raw container command for unit tests, use:
+
+- `docker compose -f /home/lab/workspace-hq/repos/workflow/.devcontainer/docker-compose.yml exec app composer unit`
+
+Inside the repo container, the quality cycle is:
 
 1. `composer ecs` — Fix code style (auto-fixes)
 2. `composer stan` — Static analysis (must pass with no errors)
