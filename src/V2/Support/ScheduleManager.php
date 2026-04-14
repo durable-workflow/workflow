@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
+use Workflow\WorkflowOptions;
 
 /**
  * Single source of truth for workflow schedule lifecycle.
@@ -523,6 +524,14 @@ final class ScheduleManager
         );
 
         $arguments = array_values(is_array($action['input'] ?? null) ? $action['input'] : []);
+
+        $scheduleConnection = $schedule->connection;
+        $scheduleQueue = $schedule->queue;
+
+        if ($scheduleConnection !== null || $scheduleQueue !== null) {
+            $arguments[] = new WorkflowOptions($scheduleConnection, $scheduleQueue);
+        }
+
         $arguments[] = $startOptions;
 
         try {

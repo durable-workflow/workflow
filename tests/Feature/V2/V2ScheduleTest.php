@@ -12,6 +12,7 @@ use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ScheduleDescription;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\WorkflowStub;
@@ -687,5 +688,118 @@ final class V2ScheduleTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame(2, $secondEvent->payload['trigger_number']);
+    }
+
+    public function testBufferOneBuffersWhenRunIsActive(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'buffer-one-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferOne,
+        );
+
+        $firstInstanceId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($firstInstanceId);
+
+        $schedule->refresh();
+        $this->assertSame(1, (int) $schedule->fires_count);
+
+        $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
+        $run->forceFill(['status' => 'running'])->save();
+
+        $secondInstanceId = ScheduleManager::trigger($schedule);
+        $this->assertNull($secondInstanceId, 'BufferOne should not start a second run while one is active.');
+
+        $schedule->refresh();
+        $this->assertSame(1, (int) $schedule->fires_count);
+        $this->assertTrue($schedule->hasBufferedActions(), 'BufferOne should buffer the trigger instead of skipping.');
+        $this->assertCount(1, $schedule->buffered_actions);
+    }
+
+    public function testBufferOneRejectsSecondBuffer(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'buffer-one-cap-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferOne,
+        );
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $run = WorkflowRun::query()->find(
+            WorkflowStub::load($schedule->latest_workflow_instance_id)->runId()
+        );
+        $run->forceFill(['status' => 'running'])->save();
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+        $this->assertCount(1, $schedule->buffered_actions);
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+        $this->assertCount(1, $schedule->buffered_actions, 'BufferOne should not exceed one buffered action.');
+        $this->assertSame('buffer_full', $schedule->last_skip_reason);
+    }
+
+    public function testBufferOneDrainsOnTick(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'buffer-drain-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 0 1 1 *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferOne,
+        );
+
+        $firstInstanceId = ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
+        $run->forceFill(['status' => 'running'])->save();
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+        $this->assertTrue($schedule->hasBufferedActions());
+
+        $run->forceFill(['status' => 'completed'])->save();
+
+        $results = ScheduleManager::tick();
+
+        $drainedResults = array_filter($results, static fn (array $r) => $r['schedule_id'] === 'buffer-drain-test' && $r['instance_id'] !== null);
+        $this->assertCount(1, $drainedResults, 'Tick should drain the buffered action after the run completes.');
+
+        $schedule->refresh();
+        $this->assertFalse($schedule->hasBufferedActions());
+        $this->assertSame(2, (int) $schedule->fires_count);
+    }
+
+    public function testTriggerWithConnectionAndQueueRoutesWorkflow(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'routing-trigger-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            connection: 'redis',
+            queue: 'high-priority',
+        );
+
+        $instanceId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($instanceId);
+
+        $stub = WorkflowStub::load($instanceId);
+        $run = WorkflowRun::query()->find($stub->runId());
+
+        $this->assertSame('redis', $run->connection, 'Schedule connection should be forwarded to the workflow run.');
+        $this->assertSame('high-priority', $run->queue, 'Schedule queue should be forwarded to the workflow run.');
     }
 }
