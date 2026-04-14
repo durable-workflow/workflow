@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Workflow\Serializers\CodecRegistry;
 use Closure;
 use InvalidArgumentException;
 use LogicException;
@@ -101,7 +102,7 @@ final class HistoryExport
                 'last_progress_at' => self::timestamp($run->last_progress_at),
             ],
             'payloads' => [
-                'codec' => $run->payload_codec ?? config('workflows.serializer'),
+                'codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
                 'arguments' => [
                     'available' => $run->arguments !== null,
                     'data' => $run->arguments,

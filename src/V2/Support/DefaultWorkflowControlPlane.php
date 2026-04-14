@@ -38,7 +38,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         $arguments = $options['arguments'] ?? null;
         $payloadCodec = isset($options['payload_codec']) && is_string($options['payload_codec']) && $options['payload_codec'] !== ''
             ? CodecRegistry::canonicalize($options['payload_codec'])
-            : config('workflows.serializer');
+            : CodecRegistry::defaultCodec();
         $connection = $options['connection'] ?? null;
         $queue = $options['queue'] ?? null;
         $businessKey = $options['business_key'] ?? null;

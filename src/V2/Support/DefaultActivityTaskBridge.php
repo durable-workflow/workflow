@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
+use Workflow\Serializers\CodecRegistry;
 use RuntimeException;
 use Throwable;
 use Workflow\V2\Contracts\ActivityTaskBridge;
@@ -135,7 +136,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             'activity_type' => self::nonEmptyString($execution->activity_type),
             'activity_class' => self::nonEmptyString($execution->activity_class),
             'idempotency_key' => $execution->id,
-            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'arguments' => self::nonEmptyString($execution->arguments),
             'retry_policy' => is_array($execution->retry_policy) ? $execution->retry_policy : null,
             'connection' => self::nonEmptyString($execution->connection),

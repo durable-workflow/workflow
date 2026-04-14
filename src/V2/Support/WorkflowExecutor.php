@@ -10,6 +10,7 @@ use LogicException;
 use ReflectionMethod;
 use RuntimeException;
 use Throwable;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\ActivityStatus;
@@ -1331,7 +1332,7 @@ final class WorkflowExecutor
             'visibility_labels' => null,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
-            'payload_codec' => config('workflows.serializer'),
+            'payload_codec' => CodecRegistry::defaultCodec(),
             'arguments' => $serializedChildArguments,
             'connection' => RoutingResolver::workflowConnection($childWorkflowCall->workflow, $metadata),
             'queue' => RoutingResolver::workflowQueue($childWorkflowCall->workflow, $metadata),
@@ -2205,7 +2206,7 @@ final class WorkflowExecutor
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Accepted->value,
                     'outcome' => CommandOutcome::StartedNew->value,
-                    'payload_codec' => config('workflows.serializer'),
+                    'payload_codec' => CodecRegistry::defaultCodec(),
                     'payload' => Serializer::serialize($arguments),
                     'accepted_at' => $recordedAt,
                     'applied_at' => $recordedAt,
@@ -3394,6 +3395,7 @@ final class WorkflowExecutor
                 ], $task, $command);
                 $run->historyEvents->push($appliedEvent);
 
+                $updateCodec = $run->payload_codec ?? CodecRegistry::defaultCodec();
                 $completedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
                     'workflow_command_id' => $command?->id,
                     'update_id' => $update->id,
@@ -3401,7 +3403,7 @@ final class WorkflowExecutor
                     'workflow_run_id' => $run->id,
                     'update_name' => $target,
                     'sequence' => $sequence,
-                    'result' => Serializer::serialize($result),
+                    'result' => Serializer::serializeWithCodec($updateCodec, $result),
                 ], $task, $command);
                 $run->historyEvents->push($completedEvent);
 
@@ -3409,7 +3411,7 @@ final class WorkflowExecutor
                     'workflow_sequence' => $sequence,
                     'status' => UpdateStatus::Completed->value,
                     'outcome' => CommandOutcome::UpdateCompleted->value,
-                    'result' => Serializer::serialize($result),
+                    'result' => Serializer::serializeWithCodec($updateCodec, $result),
                     'applied_at' => now(),
                     'closed_at' => now(),
                 ])->save();

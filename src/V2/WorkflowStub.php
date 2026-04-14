@@ -13,6 +13,7 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\QueueFake;
 use LogicException;
 use Throwable;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
@@ -860,8 +861,8 @@ final class WorkflowStub
                     'outcome' => $canReturnExisting
                         ? CommandOutcome::ReturnedExistingActive->value
                         : CommandOutcome::RejectedDuplicate->value,
-                    'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-                    'payload' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), $metadata->arguments),
+                    'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                    'payload' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $metadata->arguments),
                     'rejection_reason' => $canReturnExisting
                         ? null
                         : 'instance_already_started',
@@ -945,8 +946,8 @@ final class WorkflowStub
                 'run_deadline_at' => $runDeadlineAt,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
-                'payload_codec' => config('workflows.serializer'),
-                'arguments' => \Workflow\Serializers\Serializer::serializeWithCodec(config('workflows.serializer'), $metadata->arguments),
+                'payload_codec' => CodecRegistry::defaultCodec(),
+                'arguments' => \Workflow\Serializers\Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), $metadata->arguments),
                 'connection' => RoutingResolver::workflowConnection($workflowClass, $metadata),
                 'queue' => RoutingResolver::workflowQueue($workflowClass, $metadata),
                 'started_at' => $startedAt,
@@ -960,8 +961,8 @@ final class WorkflowStub
                 'target_scope' => 'instance',
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::StartedNew->value,
-                'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-                'payload' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), $metadata->arguments),
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                'payload' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $metadata->arguments),
                 'accepted_at' => now(),
                 'applied_at' => now(),
             ]));
@@ -1457,8 +1458,8 @@ final class WorkflowStub
                 'outcome' => $task instanceof WorkflowTask
                     ? CommandOutcome::RepairDispatched->value
                     : CommandOutcome::RepairNotNeeded->value,
-                'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-                'payload' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), [
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                'payload' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), [
                     'liveness_state' => $summary->liveness_state,
                     'wait_kind' => $summary->wait_kind,
                     'task_id' => $task?->id,
@@ -1855,8 +1856,8 @@ final class WorkflowStub
                 'update_name' => $updateName,
                 'status' => UpdateStatus::Accepted->value,
                 'command_sequence' => $command->command_sequence,
-                'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-                'arguments' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), $arguments),
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                'arguments' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $arguments),
                 'accepted_at' => $command->accepted_at,
             ]);
 
@@ -1866,7 +1867,7 @@ final class WorkflowStub
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'update_name' => $updateName,
-                'arguments' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), $arguments),
+                'arguments' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $arguments),
             ], null, $command);
 
             $resumeTask = $this->readyWorkflowTaskForDispatch($run->id);
@@ -2333,8 +2334,8 @@ final class WorkflowStub
                         'target_scope' => 'instance',
                         'status' => CommandStatus::Accepted->value,
                         'outcome' => CommandOutcome::ReturnedExistingActive->value,
-                        'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-                        'payload' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), $metadata->arguments),
+                        'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                        'payload' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $metadata->arguments),
                         'accepted_at' => now(),
                         'applied_at' => now(),
                     ],
@@ -2488,8 +2489,8 @@ final class WorkflowStub
                 'run_deadline_at' => $runDeadlineAt,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
-                'payload_codec' => config('workflows.serializer'),
-                'arguments' => Serializer::serializeWithCodec(config('workflows.serializer'), $metadata->arguments),
+                'payload_codec' => CodecRegistry::defaultCodec(),
+                'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), $metadata->arguments),
                 'connection' => RoutingResolver::workflowConnection($workflowClass, $metadata),
                 'queue' => RoutingResolver::workflowQueue($workflowClass, $metadata),
                 'started_at' => $startedAt,
@@ -2505,8 +2506,8 @@ final class WorkflowStub
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Accepted->value,
                     'outcome' => CommandOutcome::StartedNew->value,
-                    'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
-                    'payload' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), $metadata->arguments),
+                    'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                    'payload' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $metadata->arguments),
                     'accepted_at' => now(),
                     'applied_at' => now(),
                 ],
@@ -2761,7 +2762,7 @@ final class WorkflowStub
             }
 
             $commandPayload = $reason !== null && $reason !== ''
-                ? Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), [
+                ? Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), [
                     'reason' => $reason,
                 ])
                 : null;
@@ -2776,7 +2777,7 @@ final class WorkflowStub
                     CommandType::Terminate => CommandOutcome::Terminated->value,
                     default => null,
                 },
-                'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
                 'payload' => $commandPayload,
                 'accepted_at' => now(),
             ]));
@@ -2926,7 +2927,7 @@ final class WorkflowStub
             'target_scope' => $targetScope,
             'status' => CommandStatus::Rejected->value,
             'outcome' => $this->rejectionOutcome($reason),
-            'payload_codec' => $run?->payload_codec ?? config('workflows.serializer'),
+            'payload_codec' => $run?->payload_codec ?? CodecRegistry::defaultCodec(),
             'rejection_reason' => $reason,
             'rejected_at' => now(),
         ], $attributes)));
@@ -2970,7 +2971,7 @@ final class WorkflowStub
             'target_scope' => $targetScope,
             'status' => CommandStatus::Rejected->value,
             'outcome' => $this->rejectionOutcome($reason),
-            'payload_codec' => $run?->payload_codec ?? config('workflows.serializer'),
+            'payload_codec' => $run?->payload_codec ?? CodecRegistry::defaultCodec(),
             'rejection_reason' => $reason,
             'rejected_at' => now(),
         ], $commandAttributes)));
@@ -2987,8 +2988,8 @@ final class WorkflowStub
             'status' => UpdateStatus::Rejected->value,
             'outcome' => $command->outcome?->value,
             'command_sequence' => $command->command_sequence,
-            'payload_codec' => $run?->payload_codec ?? config('workflows.serializer'),
-            'arguments' => Serializer::serializeWithCodec($run?->payload_codec ?? config('workflows.serializer'), $arguments),
+            'payload_codec' => $run?->payload_codec ?? CodecRegistry::defaultCodec(),
+            'arguments' => Serializer::serializeWithCodec($run?->payload_codec ?? CodecRegistry::defaultCodec(), $arguments),
             'validation_errors' => $validationErrors,
             'rejection_reason' => $reason,
             'rejected_at' => $command->rejected_at,
@@ -3005,7 +3006,7 @@ final class WorkflowStub
                     'workflow_instance_id' => $instance->id,
                     'workflow_run_id' => $run->id,
                     'update_name' => $updateName,
-                    'arguments' => Serializer::serializeWithCodec($run->payload_codec ?? config('workflows.serializer'), $arguments),
+                    'arguments' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $arguments),
                     'validation_errors' => $validationErrors,
                 ], static fn (mixed $value): bool => $value !== null && $value !== []),
                 null,
@@ -3060,7 +3061,7 @@ final class WorkflowStub
         ?string $payloadCodec = null,
         ?string $payloadBlob = null,
     ): WorkflowSignal {
-        $codec = $payloadCodec ?? $run->payload_codec ?? config('workflows.serializer');
+        $codec = $payloadCodec ?? $run->payload_codec ?? CodecRegistry::defaultCodec();
 
         /** @var WorkflowSignal $signal */
         $signal = WorkflowSignal::query()->create([
@@ -3154,7 +3155,7 @@ final class WorkflowStub
                 'target_scope' => 'instance',
                 'status' => CommandStatus::Rejected->value,
                 'outcome' => $this->rejectionOutcome($reason),
-                'payload_codec' => $run?->payload_codec ?? config('workflows.serializer'),
+                'payload_codec' => $run?->payload_codec ?? CodecRegistry::defaultCodec(),
                 'rejection_reason' => $reason,
                 'rejected_at' => now(),
                 ...$this->signalCommandPayloadAttributes($name, $arguments, $validationErrors),
@@ -3177,7 +3178,7 @@ final class WorkflowStub
         array $validationErrors = [],
         ?string $payloadCodec = null,
     ): array {
-        $codec = $payloadCodec ?? config('workflows.serializer');
+        $codec = $payloadCodec ?? CodecRegistry::defaultCodec();
 
         return [
             'payload_codec' => $codec,
@@ -3200,8 +3201,8 @@ final class WorkflowStub
         array $validationErrors = [],
     ): array {
         return [
-            'payload_codec' => config('workflows.serializer'),
-            'payload' => Serializer::serializeWithCodec(config('workflows.serializer'), [
+            'payload_codec' => CodecRegistry::defaultCodec(),
+            'payload' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
                 'name' => $method,
                 'arguments' => $arguments,
                 'validation_errors' => $validationErrors,
@@ -3216,8 +3217,8 @@ final class WorkflowStub
     private function archiveCommandPayloadAttributes(?string $reason, array $attributes = []): array
     {
         return array_merge([
-            'payload_codec' => config('workflows.serializer'),
-            'payload' => Serializer::serializeWithCodec(config('workflows.serializer'), [
+            'payload_codec' => CodecRegistry::defaultCodec(),
+            'payload' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
                 'reason' => $reason,
             ]),
         ], $attributes);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
+use Workflow\Serializers\CodecRegistry;
 use Illuminate\Support\Str;
 use LogicException;
 use RuntimeException;
@@ -186,7 +187,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'workflow_instance_id' => $run->workflow_instance_id,
                 'workflow_type' => self::nonEmptyString($run->workflow_type),
                 'workflow_class' => self::nonEmptyString($run->workflow_class),
-                'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
                 'connection' => self::nonEmptyString($task->connection),
                 'queue' => self::nonEmptyString($task->queue),
                 'compatibility' => self::nonEmptyString($task->compatibility),
@@ -250,7 +251,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_instance_id' => $run->workflow_instance_id,
             'workflow_type' => self::nonEmptyString($run->workflow_type),
             'workflow_class' => self::nonEmptyString($run->workflow_class),
-            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'arguments' => self::nonEmptyString($run->arguments),
             'run_status' => $run->status->value,
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
@@ -310,7 +311,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_instance_id' => $run->workflow_instance_id,
             'workflow_type' => self::nonEmptyString($run->workflow_type),
             'workflow_class' => self::nonEmptyString($run->workflow_class),
-            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'arguments' => self::nonEmptyString($run->arguments),
             'run_status' => $run->status->value,
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
@@ -946,7 +947,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_type' => $workflowType,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
-            'payload_codec' => $run->payload_codec ?? config('workflows.serializer'),
+            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'arguments' => $arguments,
             'connection' => $connection,
             'queue' => $queue,
