@@ -185,6 +185,7 @@ final class ActivityOutcomeRecorder
                 /** @var WorkflowTask $retryTask */
                 $retryTask = WorkflowTask::query()->create([
                     'workflow_run_id' => $run->id,
+                    'namespace' => $run->namespace,
                     'task_type' => TaskType::Activity->value,
                     'status' => TaskStatus::Ready->value,
                     'available_at' => $retryAvailableAt,
@@ -318,6 +319,7 @@ final class ActivityOutcomeRecorder
             /** @var WorkflowTask $resumeTask */
             $resumeTask = WorkflowTask::query()->create([
                 'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
