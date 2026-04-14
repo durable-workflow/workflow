@@ -132,7 +132,9 @@ class WorkflowSchedule extends Model
      * Compute the next fire time from the schedule spec.
      *
      * Evaluates both cron expressions and interval specs and returns the
-     * earliest upcoming fire time across all of them.
+     * earliest upcoming fire time across all of them. This returns the
+     * canonical (unjittered) time — use {@see computeNextFireAtWithJitter()}
+     * when storing `next_fire_at` for tick evaluation.
      */
     public function computeNextFireAt(?DateTimeInterface $after = null): ?DateTimeInterface
     {
@@ -163,6 +165,24 @@ class WorkflowSchedule extends Model
         }
 
         return $earliest;
+    }
+
+    /**
+     * Compute the next fire time with bounded random jitter applied.
+     *
+     * When `jitter_seconds > 0`, a random offset in `[0, jitter_seconds]`
+     * is added to the canonical fire time. This spreads schedule triggers
+     * across a window to mitigate thundering-herd effects.
+     */
+    public function computeNextFireAtWithJitter(?DateTimeInterface $after = null): ?DateTimeInterface
+    {
+        $next = $this->computeNextFireAt($after);
+
+        if ($next === null || (int) $this->jitter_seconds <= 0) {
+            return $next;
+        }
+
+        return Carbon::instance($next)->addSeconds(random_int(0, (int) $this->jitter_seconds));
     }
 
     /**
@@ -391,7 +411,7 @@ class WorkflowSchedule extends Model
         $this->recent_actions = array_values($actions);
         $this->fires_count = (int) $this->fires_count + 1;
         $this->last_fired_at = now();
-        $this->next_fire_at = $this->computeNextFireAt();
+        $this->next_fire_at = $this->computeNextFireAtWithJitter();
     }
 
     public function recordFailure(string $reason): void
@@ -410,7 +430,7 @@ class WorkflowSchedule extends Model
         $this->recent_actions = array_values($actions);
         $this->failures_count = (int) $this->failures_count + 1;
         $this->last_fired_at = now();
-        $this->next_fire_at = $this->computeNextFireAt();
+        $this->next_fire_at = $this->computeNextFireAtWithJitter();
     }
 
     // ── HTTP shaping ─────────────────────────────────────────────────

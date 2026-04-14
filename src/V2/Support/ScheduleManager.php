@@ -136,7 +136,7 @@ final class ScheduleManager
             'note' => $note,
         ]);
 
-        $schedule->next_fire_at = $schedule->computeNextFireAt();
+        $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
 
         return $schedule;
@@ -173,7 +173,7 @@ final class ScheduleManager
             'paused_at' => null,
         ])->save();
 
-        $schedule->next_fire_at = $schedule->computeNextFireAt();
+        $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
 
         return $schedule;
@@ -244,7 +244,7 @@ final class ScheduleManager
 
         $schedule->forceFill($updates)->save();
 
-        $schedule->next_fire_at = $schedule->computeNextFireAt();
+        $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
 
         return $schedule;
@@ -297,14 +297,14 @@ final class ScheduleManager
                 if ($schedule->isAtBufferCapacity($overlapPolicy->value)) {
                     self::recordSkip($schedule, 'buffer_full');
                     $schedule->forceFill([
-                        'next_fire_at' => $schedule->computeNextFireAt(),
+                        'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
                     ])->save();
 
                     return null;
                 }
 
                 $schedule->bufferAction();
-                $schedule->next_fire_at = $schedule->computeNextFireAt();
+                $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
                 $schedule->save();
 
                 return null;
@@ -313,7 +313,7 @@ final class ScheduleManager
             if (! self::overlapAllowed($schedule, $overlapPolicy)) {
                 self::recordSkip($schedule, 'overlap_policy_' . $overlapPolicy->value);
                 $schedule->forceFill([
-                    'next_fire_at' => $schedule->computeNextFireAt(),
+                    'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
                 ])->save();
 
                 return null;

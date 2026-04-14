@@ -781,6 +781,154 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame(2, (int) $schedule->fires_count);
     }
 
+    public function testJitterAppliesRandomOffsetToNextFireAt(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'jitter-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            jitterSeconds: 300,
+        );
+
+        $this->assertSame(300, (int) $schedule->jitter_seconds);
+
+        $canonicalNext = $schedule->computeNextFireAt();
+        $this->assertNotNull($canonicalNext);
+
+        $jitteredTimes = [];
+        for ($i = 0; $i < 20; $i++) {
+            $jittered = $schedule->computeNextFireAtWithJitter();
+            $this->assertNotNull($jittered);
+            $this->assertGreaterThanOrEqual(
+                $canonicalNext->getTimestamp(),
+                $jittered->getTimestamp(),
+                'Jittered time must not be earlier than canonical time.',
+            );
+            $this->assertLessThanOrEqual(
+                $canonicalNext->getTimestamp() + 300,
+                $jittered->getTimestamp(),
+                'Jittered time must not exceed canonical time + jitter_seconds.',
+            );
+            $jitteredTimes[] = $jittered->getTimestamp();
+        }
+
+        $this->assertGreaterThan(
+            1,
+            count(array_unique($jitteredTimes)),
+            'Jitter should produce varying fire times across multiple calls.',
+        );
+    }
+
+    public function testZeroJitterReturnsCanonicalTime(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'no-jitter-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            jitterSeconds: 0,
+        );
+
+        $canonical = $schedule->computeNextFireAt();
+        $jittered = $schedule->computeNextFireAtWithJitter();
+
+        $this->assertNotNull($canonical);
+        $this->assertNotNull($jittered);
+        $this->assertSame(
+            $canonical->getTimestamp(),
+            $jittered->getTimestamp(),
+            'With jitter_seconds=0, jittered time should equal canonical time.',
+        );
+    }
+
+    public function testJitterAppliedOnCreate(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'jitter-create-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            jitterSeconds: 600,
+        );
+
+        $canonical = $schedule->computeNextFireAt();
+        $storedNext = $schedule->next_fire_at;
+
+        $this->assertNotNull($canonical);
+        $this->assertNotNull($storedNext);
+        $this->assertGreaterThanOrEqual(
+            $canonical->getTimestamp(),
+            $storedNext->getTimestamp(),
+            'Stored next_fire_at should be >= canonical time.',
+        );
+        $this->assertLessThanOrEqual(
+            $canonical->getTimestamp() + 600,
+            $storedNext->getTimestamp(),
+            'Stored next_fire_at should be <= canonical time + jitter_seconds.',
+        );
+    }
+
+    public function testJitterAppliedAfterTrigger(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'jitter-trigger-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            jitterSeconds: 120,
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        ScheduleManager::trigger($schedule);
+        $schedule->refresh();
+
+        $canonical = $schedule->computeNextFireAt();
+        $storedNext = $schedule->next_fire_at;
+
+        $this->assertNotNull($canonical);
+        $this->assertNotNull($storedNext);
+        $this->assertGreaterThanOrEqual($canonical->getTimestamp(), $storedNext->getTimestamp());
+        $this->assertLessThanOrEqual($canonical->getTimestamp() + 120, $storedNext->getTimestamp());
+    }
+
+    public function testBackfillEnumerationIgnoresJitter(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'jitter-backfill-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            jitterSeconds: 300,
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        $from = new \DateTimeImmutable('2026-04-14 00:00:00', new \DateTimeZone('UTC'));
+        $to = new \DateTimeImmutable('2026-04-14 03:00:00', new \DateTimeZone('UTC'));
+
+        $results = ScheduleManager::backfill($schedule, $from, $to);
+
+        $this->assertCount(3, $results);
+        $this->assertSame('2026-04-14T00:00:00+00:00', $results[0]['cron_time']);
+        $this->assertSame('2026-04-14T01:00:00+00:00', $results[1]['cron_time']);
+        $this->assertSame('2026-04-14T02:00:00+00:00', $results[2]['cron_time']);
+    }
+
+    public function testDescribeIncludesJitterSeconds(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'jitter-describe-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            jitterSeconds: 45,
+        );
+
+        $description = ScheduleManager::describe($schedule);
+        $this->assertSame(45, $description->jitterSeconds);
+
+        $array = $description->toArray();
+        $this->assertSame(45, $array['jitter_seconds']);
+    }
+
     public function testTriggerWithConnectionAndQueueRoutesWorkflow(): void
     {
         WorkflowStub::fake();
