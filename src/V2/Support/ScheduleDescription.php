@@ -32,6 +32,7 @@ final class ScheduleDescription
         public readonly int $skippedTriggerCount = 0,
         public readonly ?string $lastSkipReason = null,
         public readonly ?DateTimeInterface $lastSkippedAt = null,
+        public readonly string $namespace = 'default',
     ) {
     }
 
@@ -43,6 +44,7 @@ final class ScheduleDescription
         return [
             'id' => $this->id,
             'schedule_id' => $this->scheduleId,
+            'namespace' => $this->namespace,
             'spec' => $this->spec,
             'action' => $this->action,
             'status' => $this->status->value,

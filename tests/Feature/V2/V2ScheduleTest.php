@@ -1066,4 +1066,349 @@ final class V2ScheduleTest extends TestCase
         $schedule->refresh();
         $this->assertSame(3, (int) $schedule->fires_count);
     }
+
+    // ── Interval-based schedule tests ────────────────────────────────
+
+    public function testCreateFromSpecWithInterval(): void
+    {
+        $schedule = ScheduleManager::createFromSpec(
+            scheduleId: 'interval-30m',
+            spec: [
+                'intervals' => [['every' => 'PT30M']],
+            ],
+            action: [
+                'workflow_type' => 'test-scheduled-workflow',
+                'workflow_class' => TestScheduledWorkflow::class,
+                'input' => ['interval-run'],
+            ],
+        );
+
+        $this->assertInstanceOf(WorkflowSchedule::class, $schedule);
+        $this->assertSame('interval-30m', $schedule->schedule_id);
+        $this->assertSame(ScheduleStatus::Active, $schedule->status);
+        $this->assertNotNull($schedule->next_fire_at);
+
+        $spec = $schedule->spec;
+        $this->assertSame([['every' => 'PT30M']], $spec['intervals']);
+    }
+
+    public function testCreateFromSpecWithIntervalAndOffset(): void
+    {
+        $schedule = ScheduleManager::createFromSpec(
+            scheduleId: 'interval-offset',
+            spec: [
+                'intervals' => [['every' => 'PT1H', 'offset' => 'PT5M']],
+            ],
+            action: [
+                'workflow_type' => 'test-scheduled-workflow',
+                'workflow_class' => TestScheduledWorkflow::class,
+                'input' => [],
+            ],
+        );
+
+        $this->assertNotNull($schedule->next_fire_at);
+        $spec = $schedule->spec;
+        $this->assertSame('PT5M', $spec['intervals'][0]['offset']);
+    }
+
+    public function testNextIntervalOccurrenceComputesCorrectly(): void
+    {
+        $after = new \DateTimeImmutable('2026-04-14 10:00:00', new \DateTimeZone('UTC'));
+
+        $next = WorkflowSchedule::nextIntervalOccurrence(
+            ['every' => 'PT30M'],
+            $after,
+        );
+
+        $this->assertNotNull($next);
+        $this->assertGreaterThan($after, $next);
+        $diffSeconds = $next->getTimestamp() - $after->getTimestamp();
+        $this->assertLessThanOrEqual(30 * 60, $diffSeconds);
+    }
+
+    public function testNextIntervalOccurrenceWithOffset(): void
+    {
+        $after = new \DateTimeImmutable('2026-04-14 10:02:00', new \DateTimeZone('UTC'));
+
+        $next = WorkflowSchedule::nextIntervalOccurrence(
+            ['every' => 'PT1H', 'offset' => 'PT5M'],
+            $after,
+        );
+
+        $this->assertNotNull($next);
+        $minuteOfHour = (int) date('i', $next->getTimestamp());
+        $this->assertSame(5, $minuteOfHour, 'Interval with offset PT5M should land on :05 of the hour.');
+    }
+
+    public function testNextIntervalOccurrenceReturnsNullForInvalidSpec(): void
+    {
+        $after = new \DateTimeImmutable('2026-04-14 10:00:00', new \DateTimeZone('UTC'));
+
+        $this->assertNull(WorkflowSchedule::nextIntervalOccurrence(['every' => ''], $after));
+        $this->assertNull(WorkflowSchedule::nextIntervalOccurrence(['every' => 'INVALID'], $after));
+        $this->assertNull(WorkflowSchedule::nextIntervalOccurrence([], $after));
+    }
+
+    public function testDateIntervalToSeconds(): void
+    {
+        $this->assertSame(3600, WorkflowSchedule::dateIntervalToSeconds(new \DateInterval('PT1H')));
+        $this->assertSame(1800, WorkflowSchedule::dateIntervalToSeconds(new \DateInterval('PT30M')));
+        $this->assertSame(86400, WorkflowSchedule::dateIntervalToSeconds(new \DateInterval('P1D')));
+        $this->assertSame(90, WorkflowSchedule::dateIntervalToSeconds(new \DateInterval('PT1M30S')));
+    }
+
+    public function testIntervalScheduleTriggersOnTick(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::createFromSpec(
+            scheduleId: 'interval-tick-test',
+            spec: [
+                'intervals' => [['every' => 'PT10M']],
+            ],
+            action: [
+                'workflow_type' => 'test-scheduled-workflow',
+                'workflow_class' => TestScheduledWorkflow::class,
+                'input' => [],
+            ],
+        );
+
+        $schedule->forceFill(['next_fire_at' => now()->subMinute()])->save();
+
+        $results = ScheduleManager::tick();
+        $triggered = array_filter($results, static fn (array $r) => $r['instance_id'] !== null);
+
+        $this->assertNotEmpty($triggered);
+        $this->assertSame('interval-tick-test', $triggered[0]['schedule_id'] ?? $results[0]['schedule_id']);
+
+        $schedule->refresh();
+        $this->assertSame(1, (int) $schedule->fires_count);
+        $this->assertNotNull($schedule->next_fire_at);
+    }
+
+    public function testCreateFromSpecWithMixedCronAndInterval(): void
+    {
+        $schedule = ScheduleManager::createFromSpec(
+            scheduleId: 'mixed-spec',
+            spec: [
+                'cron_expressions' => ['0 12 * * *'],
+                'intervals' => [['every' => 'PT6H']],
+                'timezone' => 'America/Chicago',
+            ],
+            action: [
+                'workflow_type' => 'test-scheduled-workflow',
+                'workflow_class' => TestScheduledWorkflow::class,
+                'input' => ['mixed'],
+            ],
+        );
+
+        $this->assertNotNull($schedule->next_fire_at);
+        $spec = $schedule->spec;
+        $this->assertCount(1, $spec['cron_expressions']);
+        $this->assertCount(1, $spec['intervals']);
+        $this->assertSame('America/Chicago', $spec['timezone']);
+    }
+
+    public function testCreateFromSpecRejectsEmptySpec(): void
+    {
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('at least one cron_expression or interval');
+
+        ScheduleManager::createFromSpec(
+            scheduleId: 'empty-spec',
+            spec: ['cron_expressions' => [], 'intervals' => []],
+            action: [
+                'workflow_type' => 'test-scheduled-workflow',
+                'workflow_class' => TestScheduledWorkflow::class,
+                'input' => [],
+            ],
+        );
+    }
+
+    public function testCreateFromSpecWithNamespace(): void
+    {
+        $schedule = ScheduleManager::createFromSpec(
+            scheduleId: 'ns-schedule',
+            spec: ['cron_expressions' => ['*/5 * * * *']],
+            action: [
+                'workflow_type' => 'test-scheduled-workflow',
+                'workflow_class' => TestScheduledWorkflow::class,
+                'input' => [],
+            ],
+            namespace: 'billing',
+        );
+
+        $this->assertSame('billing', $schedule->namespace);
+
+        $found = ScheduleManager::findByScheduleId('ns-schedule', namespace: 'billing');
+        $this->assertNotNull($found);
+        $this->assertSame($schedule->id, $found->id);
+
+        $notFound = ScheduleManager::findByScheduleId('ns-schedule', namespace: 'shipping');
+        $this->assertNull($notFound);
+    }
+
+    public function testDescribeIncludesNamespace(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'ns-describe-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            namespace: 'operations',
+        );
+
+        $description = ScheduleManager::describe($schedule);
+        $array = $description->toArray();
+
+        $this->assertSame('operations', $description->namespace);
+        $this->assertSame('operations', $array['namespace']);
+    }
+
+    public function testUpdateScheduleWithSpecOverride(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'update-spec-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+        );
+
+        $updated = ScheduleManager::update(
+            $schedule,
+            spec: [
+                'intervals' => [['every' => 'PT15M']],
+            ],
+        );
+
+        $spec = $updated->spec;
+        $this->assertSame([['every' => 'PT15M']], $spec['intervals']);
+        $this->assertArrayNotHasKey('cron_expressions', $spec);
+    }
+
+    public function testUpdateScheduleMemoAndSearchAttributes(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'update-memo-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            memo: ['origin' => 'initial'],
+            searchAttributes: ['tenant_id' => '1'],
+        );
+
+        $this->assertSame(['origin' => 'initial'], $schedule->memo);
+        $this->assertSame(['tenant_id' => '1'], $schedule->search_attributes);
+
+        $updated = ScheduleManager::update(
+            $schedule,
+            memo: ['origin' => 'updated', 'version' => 2],
+            searchAttributes: ['tenant_id' => '2'],
+        );
+
+        $this->assertSame(['origin' => 'updated', 'version' => 2], $updated->memo);
+        $this->assertSame(['tenant_id' => '2'], $updated->search_attributes);
+    }
+
+    public function testUpdateScheduleClearsOptionalFieldsWithEmptyArrays(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'clear-fields-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            memo: ['key' => 'value'],
+            searchAttributes: ['tenant' => '1'],
+        );
+
+        $updated = ScheduleManager::update($schedule, memo: [], searchAttributes: []);
+
+        $this->assertNull($updated->memo);
+        $this->assertNull($updated->search_attributes);
+    }
+
+    public function testScheduleToDetailIncludesAllFields(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'detail-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            jitterSeconds: 60,
+            maxRuns: 10,
+            notes: 'Test detail.',
+            memo: ['env' => 'test'],
+            searchAttributes: ['tier' => 'free'],
+            namespace: 'platform',
+        );
+
+        $detail = $schedule->toDetail();
+
+        $this->assertSame('detail-test', $detail['schedule_id']);
+        $this->assertArrayHasKey('spec', $detail);
+        $this->assertArrayHasKey('action', $detail);
+        $this->assertArrayHasKey('overlap_policy', $detail);
+        $this->assertArrayHasKey('state', $detail);
+        $this->assertArrayHasKey('info', $detail);
+        $this->assertSame(['env' => 'test'], $detail['memo']);
+        $this->assertSame(['tier' => 'free'], $detail['search_attributes']);
+    }
+
+    public function testScheduleToListItemShape(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'list-shape-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+        );
+
+        $item = $schedule->toListItem();
+
+        $this->assertSame('list-shape-test', $item['schedule_id']);
+        $this->assertSame('test-scheduled-workflow', $item['workflow_type']);
+        $this->assertSame('active', $item['status']);
+        $this->assertFalse($item['paused']);
+        $this->assertArrayHasKey('next_fire', $item);
+        $this->assertArrayHasKey('last_fire', $item);
+        $this->assertArrayHasKey('overlap_policy', $item);
+    }
+
+    public function testCancelOtherOverlapPolicyCancelsPreviousRun(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'cancel-other-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '*/5 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::CancelOther,
+        );
+
+        $firstId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($firstId);
+
+        $schedule->refresh();
+        $secondId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($secondId);
+
+        $schedule->refresh();
+        $this->assertSame(2, (int) $schedule->fires_count);
+    }
+
+    public function testTerminateOtherOverlapPolicyTerminatesPreviousRun(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'terminate-other-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '*/5 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::TerminateOther,
+        );
+
+        $firstId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($firstId);
+
+        $schedule->refresh();
+        $secondId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($secondId);
+
+        $schedule->refresh();
+        $this->assertSame(2, (int) $schedule->fires_count);
+    }
 }

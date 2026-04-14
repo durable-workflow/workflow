@@ -405,6 +405,7 @@ final class ScheduleManager
             skippedTriggerCount: (int) ($schedule->skipped_trigger_count ?? 0),
             lastSkipReason: $schedule->last_skip_reason,
             lastSkippedAt: $schedule->last_skipped_at,
+            namespace: $schedule->namespace ?? 'default',
         );
     }
 
