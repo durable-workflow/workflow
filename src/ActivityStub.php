@@ -34,6 +34,14 @@ final class ActivityStub
             $log = $context->storedWorkflow->findLogByIndex($context->index);
             $result = null;
 
+            // Validate that stored log class matches expected activity.
+            // If workflow code changed (e.g., new conditional branch added),
+            // index sequence may have shifted. Dispatch fresh activity instead
+            // of replaying wrong result from a different activity.
+            if ($log && $log->class !== Exception::class && $log->class !== $activity) {
+                $log = null;
+            }
+
             if (WorkflowStub::faked()) {
                 $mocks = WorkflowStub::mocks();
 

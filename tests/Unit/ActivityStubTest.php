@@ -304,6 +304,50 @@ final class ActivityStubTest extends TestCase
 
         $this->assertSame('test', $result);
     }
+
+    public function testDoesNotReplayWrongActivityClass(): void
+    {
+        // Regression test for issue #381: ActivityStub replays by index only,
+        // causing data corruption when workflow code changes shift the index sequence.
+        //
+        // Scenario: Stored log at index 0 has TestOtherActivity result ('wrong-result'),
+        // but workflow code now expects TestActivity at index 0.
+        // Should dispatch TestActivity fresh, not replay TestOtherActivity's result.
+
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->update([
+            'arguments' => Serializer::serialize([]),
+            'status' => WorkflowPendingStatus::$name,
+        ]);
+
+        // Create stored log with TestOtherActivity at index 0
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => WorkflowStub::now(),
+                'class' => TestOtherActivity::class,
+                'result' => Serializer::serialize('wrong-result'),
+            ]);
+
+        $result = null;
+
+        // Try to call TestActivity at index 0 (where TestOtherActivity log exists)
+        ActivityStub::make(TestActivity::class)
+            ->then(static function ($value) use (&$result) {
+                $result = $value;
+            });
+
+        // Should NOT return 'wrong-result'. Should dispatch TestActivity fresh.
+        $this->assertNull($result, 'Should not replay result from wrong activity class');
+
+        // Should have dispatched TestActivity
+        $this->assertDatabaseHas('workflow_logs', [
+            'stored_workflow_id' => $workflow->id(),
+            'index' => 0,
+            'class' => TestActivity::class,
+        ]);
+    }
 }
 
 final class ActivityStubNonStandardConstructorException extends Exception
