@@ -1191,6 +1191,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $now = now();
         $arguments = $command['arguments'] ?? $run->arguments;
         $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
+        $queue = is_string($command['queue'] ?? null) ? $command['queue'] : $run->queue;
 
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()
@@ -1212,7 +1213,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'payload_codec' => $run->payload_codec,
             'arguments' => $arguments,
             'connection' => $run->connection,
-            'queue' => $run->queue,
+            'queue' => $queue,
             'started_at' => $now,
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
@@ -1500,6 +1501,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     {
         $workflowType = self::normalizeOptionalString($command['workflow_type'] ?? null);
         $arguments = self::normalizeNullableString($command['arguments'] ?? null);
+        $queue = self::normalizeOptionalString($command['queue'] ?? null);
 
         if (($command['workflow_type'] ?? null) !== null && $workflowType === null) {
             return null;
@@ -1509,10 +1511,15 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             return null;
         }
 
+        if (($command['queue'] ?? null) !== null && $queue === null) {
+            return null;
+        }
+
         return array_filter([
             'type' => 'continue_as_new',
             'arguments' => $arguments,
             'workflow_type' => $workflowType,
+            'queue' => $queue,
         ], static fn (mixed $value): bool => $value !== null);
     }
 
