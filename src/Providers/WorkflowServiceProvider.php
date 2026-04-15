@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Workflow\Providers;
 
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
@@ -22,14 +24,21 @@ use Workflow\Commands\V2RepairPassCommand;
 use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\LongPollWakeStore;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Observers\WorkflowHistoryEventObserver;
+use Workflow\V2\Observers\WorkflowTaskObserver;
+use Workflow\V2\Support\CacheLongPollWakeStore;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\LongPollCacheValidator;
 use Workflow\V2\Support\PhpClassScheduleStarter;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowModeGuard;
@@ -54,6 +63,11 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->app->singleton(WorkflowControlPlane::class, DefaultWorkflowControlPlane::class);
 
         $this->app->singleton(ScheduleWorkflowStarter::class, PhpClassScheduleStarter::class);
+
+        // Register default LongPollWakeStore implementation if not already bound
+        if (! $this->app->bound(LongPollWakeStore::class)) {
+            $this->app->singleton(LongPollWakeStore::class, CacheLongPollWakeStore::class);
+        }
     }
 
     public function boot(): void
@@ -89,9 +103,91 @@ final class WorkflowServiceProvider extends ServiceProvider
         TypeRegistry::validateTypeMap();
         WorkflowModeGuard::check();
 
+        // Register long-poll wake signal observers
+        $this->registerLongPollObservers();
+
+        // Validate cache backend for multi-node deployments
+        $this->validateCacheBackend();
+
         Event::listen(Looping::class, static function (Looping $event): void {
             Watchdog::wake($event->connectionName, $event->queue);
             TaskWatchdog::wake($event->connectionName, $event->queue);
         });
+    }
+
+    /**
+     * Register observers for long-poll wake signals.
+     *
+     * Checks if observers are already registered to avoid conflicts with
+     * applications that manually register observers.
+     */
+    private function registerLongPollObservers(): void
+    {
+        // Check if WorkflowTask observer already registered
+        $taskObservers = WorkflowTask::getObservableEvents();
+        $taskHasObservers = ! empty($taskObservers);
+
+        // Check if WorkflowHistoryEvent observer already registered
+        $historyObservers = WorkflowHistoryEvent::getObservableEvents();
+        $historyHasObservers = ! empty($historyObservers);
+
+        // Only register if not already registered (allows server to override)
+        if (! $taskHasObservers) {
+            WorkflowTask::observe(WorkflowTaskObserver::class);
+        }
+
+        if (! $historyHasObservers) {
+            WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
+        }
+
+        if ($taskHasObservers || $historyHasObservers) {
+            Log::debug('[Workflow] Long-poll observers already registered, skipping package auto-registration');
+        }
+    }
+
+    /**
+     * Validate cache backend for multi-node deployments.
+     *
+     * Checks if cache backend supports cross-node coordination when
+     * multi_node is enabled. Behavior controlled by validation_mode:
+     * - 'fail': throw exception
+     * - 'warn': log warning
+     * - 'silent': no action
+     */
+    private function validateCacheBackend(): void
+    {
+        $validateEnabled = (bool) config('workflows.v2.long_poll.validate_cache_backend', true);
+
+        if (! $validateEnabled) {
+            return;
+        }
+
+        $multiNode = (bool) config('workflows.v2.long_poll.multi_node', false);
+        $validationMode = config('workflows.v2.long_poll.validation_mode', 'warn');
+
+        $cache = $this->app->make(CacheRepository::class);
+        $validator = new LongPollCacheValidator;
+
+        $result = $validator->checkMultiNodeSafety($cache, $multiNode);
+
+        if (! $result['safe']) {
+            $message = sprintf(
+                '[Workflow] Cache backend validation failed: %s',
+                $result['message']
+            );
+
+            match ($validationMode) {
+                'fail' => throw new \RuntimeException($message),
+                'warn' => Log::warning($message),
+                default => null, // 'silent' or unknown mode
+            };
+        } else {
+            $validation = $validator->validateMultiNodeCapable($cache);
+            Log::info(sprintf(
+                '[Workflow] Cache backend validation passed: backend=%s, multi_node=%s',
+                $validation['backend'],
+                $multiNode ? 'true' : 'false'
+            ));
+        }
     }
 }
