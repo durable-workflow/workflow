@@ -14,6 +14,7 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -1031,6 +1032,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $childCallId = (string) Str::ulid();
 
+        $parentClosePolicy = $command['parent_close_policy'] ?? ParentClosePolicy::Abandon->value;
+
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
             'id' => $childCallId,
@@ -1041,6 +1044,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'child_workflow_instance_id' => $childInstance->id,
             'child_workflow_run_id' => $childRun->id,
             'is_primary_parent' => true,
+            'parent_close_policy' => $parentClosePolicy,
         ]);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, [
@@ -1051,6 +1055,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'child_workflow_run_id' => $childRun->id,
             'child_workflow_class' => $workflowType,
             'child_workflow_type' => $workflowType,
+            'parent_close_policy' => $parentClosePolicy,
         ], $task);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
@@ -1483,6 +1488,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'arguments' => self::normalizeNullableString($command['arguments'] ?? null),
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
             'queue' => self::normalizeOptionalString($command['queue'] ?? null),
+            'parent_close_policy' => self::normalizeOptionalString($command['parent_close_policy'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);
     }
 

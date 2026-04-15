@@ -1366,7 +1366,76 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNotNull($childStartedEvent);
     }
 
-    public function testCompleteContinuesAsNew(): void
+
+    public function testCompleteStartsChildWorkflowWithParentClosePolicy(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+                'parent_close_policy' => 'terminate',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->first();
+
+        $this->assertNotNull($link);
+        $this->assertSame('terminate', $link->parent_close_policy);
+
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled->value)
+            ->first();
+
+        $this->assertNotNull($scheduledEvent);
+        $this->assertSame('terminate', $scheduledEvent->payload['parent_close_policy']);
+    }
+
+    public function testCompleteStartsChildWorkflowDefaultsToAbandonPolicy(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->first();
+
+        $this->assertNotNull($link);
+        $this->assertSame('abandon', $link->parent_close_policy);
+
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled->value)
+            ->first();
+
+        $this->assertNotNull($scheduledEvent);
+        $this->assertSame('abandon', $scheduledEvent->payload['parent_close_policy']);
+    }
+
+        public function testCompleteContinuesAsNew(): void
     {
         $run = $this->createWaitingRun();
 
