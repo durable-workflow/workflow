@@ -96,6 +96,19 @@ return [
             'scan_limit' => (int) env('WORKFLOW_V2_TASK_REPAIR_SCAN_LIMIT', 25),
             'failure_backoff_max_seconds' => (int) env('WORKFLOW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS', 60),
         ],
+
+        'long_poll' => [
+            // Whether this deployment has multiple server nodes.
+            // When true, validates that cache backend supports cross-node coordination.
+            'multi_node' => (bool) env('WORKFLOW_V2_MULTI_NODE', false),
+
+            // Whether to validate cache backend on boot.
+            // Set to false to disable boot-time validation (not recommended for production).
+            'validate_cache_backend' => (bool) env('WORKFLOW_V2_VALIDATE_CACHE_BACKEND', true),
+
+            // How to handle validation failures: '\''fail'\'' (throw exception), '\''warn'\'' (log warning), '\''silent'\'' (no action)
+            'validation_mode' => env('WORKFLOW_V2_CACHE_VALIDATION_MODE', 'warn'),
+        ],
     ],
 
     'serializer' => Workflow\Serializers\Y::class,
