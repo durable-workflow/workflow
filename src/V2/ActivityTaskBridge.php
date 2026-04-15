@@ -33,13 +33,18 @@ final class ActivityTaskBridge
      *     available_at: string|null,
      * }>
      */
+    /**
+     * @param  list<string>  $activityTypes
+     */
     public static function poll(
         ?string $connection,
         ?string $queue,
         int $limit = 1,
-        ?string $compatibility = null
+        ?string $compatibility = null,
+        ?string $namespace = null,
+        array $activityTypes = [],
     ): array {
-        return self::resolve()->poll($connection, $queue, $limit, $compatibility);
+        return self::resolve()->poll($connection, $queue, $limit, $compatibility, $namespace, $activityTypes);
     }
 
     /**

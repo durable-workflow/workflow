@@ -24,7 +24,7 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class DefaultActivityTaskBridge implements ActivityTaskBridge
 {
-    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null, ?string $namespace = null): array
+    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null, ?string $namespace = null, array $activityTypes = []): array
     {
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Activity->value)
@@ -59,7 +59,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
         $tasks = $query->get();
 
-        return $tasks->map(static function (WorkflowTask $task) {
+        $results = $tasks->map(static function (WorkflowTask $task) {
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->find($task->workflow_run_id);
@@ -85,6 +85,16 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             ];
         })->values()
             ->all();
+
+        if ($activityTypes !== []) {
+            $results = array_values(array_filter($results, static function (array $task) use ($activityTypes): bool {
+                $type = $task['activity_type'] ?? null;
+
+                return ! is_string($type) || $type === '' || in_array($type, $activityTypes, true);
+            }));
+        }
+
+        return $results;
     }
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
