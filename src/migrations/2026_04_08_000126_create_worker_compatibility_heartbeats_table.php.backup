@@ -13,9 +13,6 @@ return new class() extends Migration {
             $table->id();
             $table->string('worker_id');
             $table->string('scope_key', 64);
-            $table->string('namespace')
-                ->nullable()
-                ->index();
             $table->string('host')
                 ->nullable();
             $table->string('process_id')

@@ -12,23 +12,11 @@ return new class() extends Migration {
         Schema::create('workflow_runs', static function (Blueprint $table): void {
             $table->string('id', 26)
                 ->primary();
-            $table->string('workflow_instance_id', 191)
+            $table->string('workflow_instance_id', 26)
                 ->index();
             $table->unsignedInteger('run_number');
             $table->string('workflow_class');
             $table->string('workflow_type');
-            $table->string('namespace')
-                ->nullable()
-                ->index();
-            $table->string('business_key', 191)
-                ->nullable()
-                ->index('workflow_runs_business_key_index');
-            $table->json('visibility_labels')
-                ->nullable();
-            $table->json('memo')
-                ->nullable();
-            $table->json('search_attributes')
-                ->nullable();
             $table->string('status');
             $table->string('closed_reason')
                 ->nullable();
@@ -46,27 +34,9 @@ return new class() extends Migration {
                 ->nullable();
             $table->unsignedInteger('last_history_sequence')
                 ->default(0);
-            $table->unsignedInteger('last_command_sequence')
-                ->default(0);
-            $table->unsignedInteger('message_cursor_position')
-                ->default(0);
-            $table->unsignedInteger('run_timeout_seconds')
-                ->nullable();
-            $table->timestamp('execution_deadline_at', 6)
-                ->nullable();
-            $table->timestamp('run_deadline_at', 6)
-                ->nullable();
             $table->timestamp('started_at', 6)
                 ->nullable();
             $table->timestamp('closed_at', 6)
-                ->nullable();
-            $table->timestamp('archived_at', 6)
-                ->nullable()
-                ->index();
-            $table->string('archive_command_id', 26)
-                ->nullable()
-                ->index();
-            $table->string('archive_reason')
                 ->nullable();
             $table->timestamp('last_progress_at', 6)
                 ->nullable();

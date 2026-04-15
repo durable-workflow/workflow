@@ -14,13 +14,8 @@ return new class() extends Migration {
                 ->primary();
             $table->string('workflow_run_id', 26)
                 ->index();
-            $table->string('namespace')
-                ->nullable()
-                ->index();
             $table->string('task_type');
             $table->string('status');
-            $table->string('compatibility')
-                ->nullable();
             $table->json('payload')
                 ->nullable();
             $table->string('connection')
@@ -37,20 +32,10 @@ return new class() extends Migration {
                 ->nullable();
             $table->unsignedInteger('attempt_count')
                 ->default(0);
-            $table->timestamp('last_dispatch_attempt_at', 6)
-                ->nullable();
             $table->timestamp('last_dispatched_at', 6)
-                ->nullable();
-            $table->text('last_dispatch_error')
-                ->nullable();
-            $table->timestamp('last_claim_failed_at', 6)
-                ->nullable();
-            $table->text('last_claim_error')
                 ->nullable();
             $table->unsignedInteger('repair_count')
                 ->default(0);
-            $table->timestamp('repair_available_at', 6)
-                ->nullable();
             $table->text('last_error')
                 ->nullable();
             $table->timestamps(6);

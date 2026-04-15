@@ -21,9 +21,6 @@ return new class() extends Migration {
             $table->string('workflow_task_id', 26)
                 ->nullable()
                 ->index();
-            $table->string('workflow_command_id', 26)
-                ->nullable()
-                ->index();
             $table->timestamp('recorded_at', 6)
                 ->nullable();
             $table->timestamps(6);

@@ -30,22 +30,6 @@ return new class() extends Migration {
                 ->nullable();
             $table->unsignedInteger('attempt_count')
                 ->default(1);
-            $table->string('current_attempt_id', 26)
-                ->nullable();
-            $table->json('retry_policy')
-                ->nullable();
-            $table->json('parallel_group_path')
-                ->nullable();
-            $table->json('activity_options')
-                ->nullable();
-            $table->timestamp('schedule_deadline_at', 6)
-                ->nullable();
-            $table->timestamp('close_deadline_at', 6)
-                ->nullable();
-            $table->timestamp('schedule_to_close_deadline_at', 6)
-                ->nullable();
-            $table->timestamp('heartbeat_deadline_at', 6)
-                ->nullable();
             $table->timestamp('started_at', 6)
                 ->nullable();
             $table->timestamp('closed_at', 6)
