@@ -117,32 +117,13 @@ final class WorkflowServiceProvider extends ServiceProvider
 
     /**
      * Register observers for long-poll wake signals.
-     *
-     * Checks if observers are already registered to avoid conflicts with
-     * applications that manually register observers.
      */
     private function registerLongPollObservers(): void
     {
-        // Check if WorkflowTask observer already registered
-        $taskObservers = WorkflowTask::getObservableEvents();
-        $taskHasObservers = ! empty($taskObservers);
-
-        // Check if WorkflowHistoryEvent observer already registered
-        $historyObservers = WorkflowHistoryEvent::getObservableEvents();
-        $historyHasObservers = ! empty($historyObservers);
-
-        // Only register if not already registered (allows server to override)
-        if (! $taskHasObservers) {
-            WorkflowTask::observe(WorkflowTaskObserver::class);
-        }
-
-        if (! $historyHasObservers) {
-            WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
-        }
-
-        if ($taskHasObservers || $historyHasObservers) {
-            Log::debug('[Workflow] Long-poll observers already registered, skipping package auto-registration');
-        }
+        // Register observers for long-poll wake signals
+        // Note: Laravel's observe() is idempotent - calling it multiple times is safe
+        WorkflowTask::observe(WorkflowTaskObserver::class);
+        WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
     }
 
     /**
