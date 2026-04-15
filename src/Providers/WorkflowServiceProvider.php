@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
+use Workflow\Commands\V1ListCommand;
 use Workflow\Commands\V2BackfillCommandContractsCommand;
 use Workflow\Commands\V2BackfillCommandLifecyclesCommand;
 use Workflow\Commands\V2BackfillFailureCategoriesCommand;
@@ -72,6 +73,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->commands([
             ActivityMakeCommand::class,
             WorkflowMakeCommand::class,
+            V1ListCommand::class,
             V2BackfillCommandContractsCommand::class,
             V2BackfillCommandLifecyclesCommand::class,
             V2BackfillFailureCategoriesCommand::class,
