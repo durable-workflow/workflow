@@ -550,6 +550,71 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         });
     }
 
+
+    public function status(string $taskId): array
+    {
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->find($taskId);
+
+        if ($task === null) {
+            return [
+                'task_id' => $taskId,
+                'task_status' => null,
+                'run_status' => null,
+                'workflow_run_id' => null,
+                'workflow_instance_id' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'lease_expired' => false,
+                'attempt_count' => null,
+                'reason' => 'task_not_found',
+            ];
+        }
+
+        if ($task->task_type !== TaskType::Workflow) {
+            return [
+                'task_id' => $taskId,
+                'task_status' => $task->status?->value,
+                'run_status' => null,
+                'workflow_run_id' => $task->workflow_run_id,
+                'workflow_instance_id' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'lease_expired' => false,
+                'attempt_count' => null,
+                'reason' => 'task_not_workflow',
+            ];
+        }
+
+        $leaseOwner = is_string($task->lease_owner) && trim($task->lease_owner) !== ''
+            ? trim($task->lease_owner)
+            : null;
+        $leaseExpiresAt = $task->lease_expires_at;
+        $leaseExpired = $leaseExpiresAt !== null && $leaseExpiresAt->lte(now());
+
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->find($task->workflow_run_id);
+
+        $attemptCount = is_int($task->attempt_count) && $task->attempt_count > 0
+            ? (int) $task->attempt_count
+            : null;
+
+        return [
+            'task_id' => $taskId,
+            'task_status' => $task->status?->value,
+            'run_status' => $run?->status?->value,
+            'workflow_run_id' => $task->workflow_run_id,
+            'workflow_instance_id' => $run?->workflow_instance_id,
+            'lease_owner' => $leaseOwner,
+            'lease_expires_at' => $leaseExpiresAt?->toJSON(),
+            'lease_expired' => $leaseExpired,
+            'attempt_count' => $attemptCount,
+            'reason' => null,
+        ];
+    }
+
     public function complete(string $taskId, array $commands): array
     {
         $parsed = self::parseCommands($commands);

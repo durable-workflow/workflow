@@ -166,6 +166,26 @@ final class WorkflowTaskBridge
         return self::resolve()->heartbeat($taskId);
     }
 
+
+    /**
+     * @return array{
+     *     task_id: string,
+     *     task_status: string|null,
+     *     run_status: string|null,
+     *     workflow_run_id: string|null,
+     *     workflow_instance_id: string|null,
+     *     lease_owner: string|null,
+     *     lease_expires_at: string|null,
+     *     lease_expired: bool,
+     *     attempt_count: int|null,
+     *     reason: string|null,
+     * }
+     */
+    public static function status(string $taskId): array
+    {
+        return self::resolve()->status($taskId);
+    }
+
     private static function resolve(): WorkflowTaskBridgeContract
     {
         return app(WorkflowTaskBridgeContract::class);

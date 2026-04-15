@@ -252,4 +252,26 @@ interface WorkflowTaskBridge
      * }
      */
     public function complete(string $taskId, array $commands): array;
+
+    /**
+     * Get the current status of a workflow task.
+     *
+     * Returns liveness, lease, and run metadata for the task
+     * without renewing the lease or recording a heartbeat.
+     *
+     * @return array{
+     *     task_id: string,
+     *     task_status: string|null,
+     *     run_status: string|null,
+     *     workflow_run_id: string|null,
+     *     workflow_instance_id: string|null,
+     *     lease_owner: string|null,
+     *     lease_expires_at: string|null,
+     *     lease_expired: bool,
+     *     attempt_count: int|null,
+     *     reason: string|null,
+     * }
+     */
+    public function status(string $taskId): array;
 }
+

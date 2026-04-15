@@ -613,7 +613,171 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('cancelled', $result['run_status']);
     }
 
-    public function testClaimStatusRejectsActivityTask(): void
+
+    public function testStatusReturnsLeasedTaskMetadata(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->addMinutes(5),
+            'attempt_count' => 2,
+        ]);
+
+        $result = $this->bridge->status($task->id);
+
+        $this->assertSame($task->id, $result['task_id']);
+        $this->assertSame('leased', $result['task_status']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertSame($run->id, $result['workflow_run_id']);
+        $this->assertSame($run->workflow_instance_id, $result['workflow_instance_id']);
+        $this->assertSame('worker-1', $result['lease_owner']);
+        $this->assertNotNull($result['lease_expires_at']);
+        $this->assertFalse($result['lease_expired']);
+        $this->assertSame(2, $result['attempt_count']);
+        $this->assertNull($result['reason']);
+    }
+
+    public function testStatusDetectsExpiredLease(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->subMinute(),
+        ]);
+
+        $result = $this->bridge->status($task->id);
+
+        $this->assertSame('leased', $result['task_status']);
+        $this->assertTrue($result['lease_expired']);
+        $this->assertSame('worker-1', $result['lease_owner']);
+        $this->assertNull($result['reason']);
+    }
+
+    public function testStatusReturnsReadyTaskWithNoLease(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $result = $this->bridge->status($task->id);
+
+        $this->assertSame($task->id, $result['task_id']);
+        $this->assertSame('ready', $result['task_status']);
+        $this->assertNull($result['lease_owner']);
+        $this->assertNull($result['lease_expires_at']);
+        $this->assertFalse($result['lease_expired']);
+        $this->assertNull($result['reason']);
+    }
+
+    public function testStatusReturnsTaskNotFound(): void
+    {
+        $result = $this->bridge->status('nonexistent-task-id');
+
+        $this->assertSame('nonexistent-task-id', $result['task_id']);
+        $this->assertNull($result['task_status']);
+        $this->assertSame('task_not_found', $result['reason']);
+    }
+
+    public function testStatusRejectsActivityTask(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $result = $this->bridge->status($task->id);
+
+        $this->assertSame('task_not_workflow', $result['reason']);
+    }
+
+    public function testStatusReturnsRunStatusFromRun(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->forceFill(['status' => RunStatus::Cancelled->value])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->addMinutes(5),
+        ]);
+
+        $result = $this->bridge->status($task->id);
+
+        $this->assertSame('cancelled', $result['run_status']);
+        $this->assertSame('leased', $result['task_status']);
+    }
+
+    public function testStatusNormalizesNullAttemptCount(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'worker-1',
+            'lease_expires_at' => now()->addMinutes(5),
+            'attempt_count' => 0,
+        ]);
+
+        $result = $this->bridge->status($task->id);
+
+        $this->assertNull($result['attempt_count']);
+    }
+
+        public function testClaimStatusRejectsActivityTask(): void
     {
         $run = $this->createWaitingRun();
 
