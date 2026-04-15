@@ -14,11 +14,14 @@ final class TestSagaSuccessWorkflow extends Workflow
     public function handle(): array
     {
         $flightId = activity(TestSagaBookingActivity::class, 'flight');
-        $this->addCompensation(fn () => activity(TestSagaCancelActivity::class, 'flight', $flightId));
+        $this->addCompensation(static fn () => activity(TestSagaCancelActivity::class, 'flight', $flightId));
 
         $hotelId = activity(TestSagaBookingActivity::class, 'hotel');
-        $this->addCompensation(fn () => activity(TestSagaCancelActivity::class, 'hotel', $hotelId));
+        $this->addCompensation(static fn () => activity(TestSagaCancelActivity::class, 'hotel', $hotelId));
 
-        return ['flight' => $flightId, 'hotel' => $hotelId];
+        return [
+            'flight' => $flightId,
+            'hotel' => $hotelId,
+        ];
     }
 }

@@ -19,8 +19,10 @@ final class V2BackfillFailureCategoriesTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
     }
 
     public function testBackfillCategorizesUncategorizedFailures(): void
@@ -41,7 +43,9 @@ final class V2BackfillFailureCategoriesTest extends TestCase
             ->where('workflow_run_id', $workflow->runId())
             ->firstOrFail();
 
-        $failure->forceFill(['failure_category' => null])->save();
+        $failure->forceFill([
+            'failure_category' => null,
+        ])->save();
         $this->assertNull($failure->fresh()->failure_category);
 
         // Run the backfill command.
@@ -111,10 +115,14 @@ final class V2BackfillFailureCategoriesTest extends TestCase
             ->where('workflow_run_id', $workflow->runId())
             ->firstOrFail();
 
-        $failure->forceFill(['failure_category' => null])->save();
+        $failure->forceFill([
+            'failure_category' => null,
+        ])->save();
 
         // Run with --dry-run.
-        $this->artisan('workflow:v2:backfill-failure-categories', ['--dry-run' => true])
+        $this->artisan('workflow:v2:backfill-failure-categories', [
+            '--dry-run' => true,
+        ])
             ->assertSuccessful();
 
         // The failure should still have no category.
@@ -143,7 +151,9 @@ final class V2BackfillFailureCategoriesTest extends TestCase
         $this->assertNotNull($originalCategory);
 
         // Run the backfill — it should report the row as already categorized.
-        $this->artisan('workflow:v2:backfill-failure-categories', ['--json' => true])
+        $this->artisan('workflow:v2:backfill-failure-categories', [
+            '--json' => true,
+        ])
             ->assertSuccessful();
 
         // The category should be unchanged.
@@ -168,7 +178,9 @@ final class V2BackfillFailureCategoriesTest extends TestCase
         // Clear categories on both.
         WorkflowFailure::query()
             ->whereIn('workflow_run_id', [$workflow1->runId(), $workflow2->runId()])
-            ->update(['failure_category' => null]);
+            ->update([
+                'failure_category' => null,
+            ]);
 
         // Backfill only the first run.
         $this->artisan('workflow:v2:backfill-failure-categories', [

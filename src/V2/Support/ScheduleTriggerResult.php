@@ -20,5 +20,6 @@ final class ScheduleTriggerResult
         public readonly ?string $instanceId,
         public readonly ?string $runId,
         public readonly ?string $reason,
-    ) {}
+    ) {
+    }
 }

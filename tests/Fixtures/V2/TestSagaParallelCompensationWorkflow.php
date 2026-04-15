@@ -6,8 +6,8 @@ namespace Tests\Fixtures\V2;
 
 use Throwable;
 use function Workflow\V2\activity;
-use function Workflow\V2\startActivity;
 use Workflow\V2\Attributes\Type;
+use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 
 #[Type('test-saga-parallel-compensation-workflow')]
@@ -19,18 +19,24 @@ final class TestSagaParallelCompensationWorkflow extends Workflow
 
         try {
             $flightId = activity(TestSagaBookingActivity::class, 'flight');
-            $this->addCompensation(fn () => startActivity(TestSagaCancelActivity::class, 'flight', $flightId));
+            $this->addCompensation(static fn () => startActivity(TestSagaCancelActivity::class, 'flight', $flightId));
 
             $hotelId = activity(TestSagaBookingActivity::class, 'hotel');
-            $this->addCompensation(fn () => startActivity(TestSagaCancelActivity::class, 'hotel', $hotelId));
+            $this->addCompensation(static fn () => startActivity(TestSagaCancelActivity::class, 'hotel', $hotelId));
 
             activity(TestFailingActivity::class);
 
-            return ['flight' => $flightId, 'hotel' => $hotelId];
+            return [
+                'flight' => $flightId,
+                'hotel' => $hotelId,
+            ];
         } catch (Throwable $e) {
             $this->compensate();
 
-            return ['compensated' => true, 'reason' => $e->getMessage()];
+            return [
+                'compensated' => true,
+                'reason' => $e->getMessage(),
+            ];
         }
     }
 }

@@ -39,14 +39,11 @@ final class V2LegacyEventCompatibilityTest extends TestCase
     public function testWorkflowStartedDispatchesLegacyEvent(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
-        Event::fake([
-            WorkflowStarted::class,
-            LegacyWorkflowStarted::class,
-            StateChanged::class,
-        ]);
+        Event::fake([WorkflowStarted::class, LegacyWorkflowStarted::class, StateChanged::class]);
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'legacy-compat-start');
         $workflow->start('Taylor');
@@ -54,14 +51,16 @@ final class V2LegacyEventCompatibilityTest extends TestCase
         Event::assertDispatched(WorkflowStarted::class, 1);
         Event::assertDispatched(LegacyWorkflowStarted::class, 1);
 
-        Event::assertDispatched(LegacyWorkflowStarted::class, function (LegacyWorkflowStarted $event) use ($workflow): bool {
+        Event::assertDispatched(LegacyWorkflowStarted::class, static function (LegacyWorkflowStarted $event) use (
+            $workflow
+        ): bool {
             return $event->workflowId === $workflow->id()
                 && str_contains($event->class, 'TestGreetingWorkflow')
                 && $event->arguments === '[]'
                 && $event->timestamp !== '';
         });
 
-        Event::assertDispatched(StateChanged::class, function (StateChanged $event): bool {
+        Event::assertDispatched(StateChanged::class, static function (StateChanged $event): bool {
             return $event->initialState === null
                 && $event->finalState instanceof WorkflowRunningStatus
                 && $event->field === 'status';
@@ -71,7 +70,8 @@ final class V2LegacyEventCompatibilityTest extends TestCase
     public function testSuccessfulWorkflowDispatchesFullLegacyLifecycle(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         Event::fake([
@@ -97,28 +97,34 @@ final class V2LegacyEventCompatibilityTest extends TestCase
         Event::assertDispatched(LegacyActivityCompleted::class, 1);
         Event::assertDispatched(LegacyWorkflowCompleted::class, 1);
 
-        Event::assertDispatched(LegacyActivityStarted::class, function (LegacyActivityStarted $event) use ($workflow): bool {
+        Event::assertDispatched(LegacyActivityStarted::class, static function (LegacyActivityStarted $event) use (
+            $workflow
+        ): bool {
             return $event->workflowId === $workflow->id()
                 && $event->activityId !== ''
                 && $event->index >= 1;
         });
 
-        Event::assertDispatched(LegacyActivityCompleted::class, function (LegacyActivityCompleted $event) use ($workflow): bool {
+        Event::assertDispatched(LegacyActivityCompleted::class, static function (LegacyActivityCompleted $event) use (
+            $workflow
+        ): bool {
             return $event->workflowId === $workflow->id()
                 && $event->activityId !== '';
         });
 
-        Event::assertDispatched(LegacyWorkflowCompleted::class, function (LegacyWorkflowCompleted $event) use ($workflow): bool {
+        Event::assertDispatched(LegacyWorkflowCompleted::class, static function (LegacyWorkflowCompleted $event) use (
+            $workflow
+        ): bool {
             return $event->workflowId === $workflow->id()
                 && $event->timestamp !== '';
         });
 
         // StateChanged fires for start (null→running) and complete (running→completed).
-        Event::assertDispatched(StateChanged::class, function (StateChanged $event): bool {
+        Event::assertDispatched(StateChanged::class, static function (StateChanged $event): bool {
             return $event->initialState === null
                 && $event->finalState instanceof WorkflowRunningStatus;
         });
-        Event::assertDispatched(StateChanged::class, function (StateChanged $event): bool {
+        Event::assertDispatched(StateChanged::class, static function (StateChanged $event): bool {
             return $event->initialState instanceof WorkflowRunningStatus
                 && $event->finalState instanceof WorkflowCompletedStatus;
         });
@@ -127,7 +133,8 @@ final class V2LegacyEventCompatibilityTest extends TestCase
     public function testFailedWorkflowDispatchesLegacyFailureEvents(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         Event::fake([
@@ -150,21 +157,25 @@ final class V2LegacyEventCompatibilityTest extends TestCase
         Event::assertDispatched(LegacyActivityFailed::class, 1);
         Event::assertDispatched(LegacyWorkflowFailed::class, 1);
 
-        Event::assertDispatched(LegacyActivityFailed::class, function (LegacyActivityFailed $event) use ($workflow): bool {
+        Event::assertDispatched(LegacyActivityFailed::class, static function (LegacyActivityFailed $event) use (
+            $workflow
+        ): bool {
             return $event->workflowId === $workflow->id()
                 && str_contains($event->output, 'RuntimeException')
                 && str_contains($event->output, 'boom');
         });
 
-        Event::assertDispatched(LegacyWorkflowFailed::class, function (LegacyWorkflowFailed $event) use ($workflow): bool {
+        Event::assertDispatched(LegacyWorkflowFailed::class, static function (LegacyWorkflowFailed $event) use (
+            $workflow
+        ): bool {
             return $event->workflowId === $workflow->id();
         });
 
         // StateChanged fires for start (null→running) and fail (running→failed).
-        Event::assertDispatched(StateChanged::class, function (StateChanged $event): bool {
+        Event::assertDispatched(StateChanged::class, static function (StateChanged $event): bool {
             return $event->finalState instanceof WorkflowRunningStatus;
         });
-        Event::assertDispatched(StateChanged::class, function (StateChanged $event): bool {
+        Event::assertDispatched(StateChanged::class, static function (StateChanged $event): bool {
             return $event->initialState instanceof WorkflowRunningStatus
                 && $event->finalState instanceof WorkflowFailedStatus;
         });
@@ -173,7 +184,8 @@ final class V2LegacyEventCompatibilityTest extends TestCase
     public function testNoLegacyEventsDispatchedDuringReplay(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'legacy-compat-no-replay');
@@ -186,11 +198,7 @@ final class V2LegacyEventCompatibilityTest extends TestCase
         $this->runNextReadyTask();
 
         // Now fake events and run the final workflow task (replay + completion).
-        Event::fake([
-            LegacyWorkflowStarted::class,
-            LegacyActivityStarted::class,
-            StateChanged::class,
-        ]);
+        Event::fake([LegacyWorkflowStarted::class, LegacyActivityStarted::class, StateChanged::class]);
 
         $this->drainReadyTasks();
         $this->assertTrue($workflow->refresh()->completed());
@@ -203,7 +211,8 @@ final class V2LegacyEventCompatibilityTest extends TestCase
     public function testStateChangedCarriesRunModelReference(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         Event::fake([StateChanged::class]);
@@ -211,7 +220,7 @@ final class V2LegacyEventCompatibilityTest extends TestCase
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'legacy-compat-model-ref');
         $workflow->start('Taylor');
 
-        Event::assertDispatched(StateChanged::class, function (StateChanged $event) use ($workflow): bool {
+        Event::assertDispatched(StateChanged::class, static function (StateChanged $event) use ($workflow): bool {
             return $event->model !== null
                 && $event->model->id === $workflow->runId()
                 && $event->field === 'status';

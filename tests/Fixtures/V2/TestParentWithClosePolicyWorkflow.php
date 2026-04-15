@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use function Workflow\V2\child;
 use Workflow\V2\Attributes\Type;
+use function Workflow\V2\child;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Workflow;
@@ -20,9 +20,7 @@ final class TestParentWithClosePolicyWorkflow extends Workflow
 {
     public function handle(string $policy = 'abandon'): array
     {
-        $options = new ChildWorkflowOptions(
-            parentClosePolicy: ParentClosePolicy::from($policy),
-        );
+        $options = new ChildWorkflowOptions(parentClosePolicy: ParentClosePolicy::from($policy));
 
         $childResult = child(TestLongRunningChildWorkflow::class, $options);
 

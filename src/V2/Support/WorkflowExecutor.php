@@ -26,10 +26,9 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
-use Workflow\V2\Enums\StructuralLimitKind;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
-use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Exceptions\WorkflowTimeoutException;
@@ -45,7 +44,6 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Workflow;
-use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -103,7 +101,10 @@ final class WorkflowExecutor
             if ($eventsInTransaction > 0) {
                 try {
                     StructuralLimits::guardHistoryTransactionSize($eventsInTransaction);
-                    $this->logApproachingLimit(StructuralLimits::warnApproachingHistoryTransaction($eventsInTransaction), $run);
+                    $this->logApproachingLimit(
+                        StructuralLimits::warnApproachingHistoryTransaction($eventsInTransaction),
+                        $run
+                    );
                 } catch (StructuralLimitExceededException $limitExceeded) {
                     $this->failRun($run, $task, $limitExceeded, 'workflow_run', $run->id);
 
@@ -1161,11 +1162,13 @@ final class WorkflowExecutor
         $options = $activityCall->options;
 
         $scheduleDeadlineAt = $options?->scheduleToStartTimeout !== null
-            ? now()->addSeconds($options->scheduleToStartTimeout)
+            ? now()
+                ->addSeconds($options->scheduleToStartTimeout)
             : null;
 
         $scheduleToCloseDeadlineAt = $options?->scheduleToCloseTimeout !== null
-            ? now()->addSeconds($options->scheduleToCloseTimeout)
+            ? now()
+                ->addSeconds($options->scheduleToCloseTimeout)
             : null;
 
         $serializedArguments = Serializer::serializeWithCodec($run->payload_codec, $activityCall->arguments);
@@ -2248,8 +2251,10 @@ final class WorkflowExecutor
 
         // Cancel all open tasks except the current one.
         $openTasks = $run->tasks
-            ->filter(static fn (WorkflowTask $t): bool => in_array($t->status, [TaskStatus::Ready, TaskStatus::Leased], true)
-                && $t->id !== $task->id);
+            ->filter(
+                static fn (WorkflowTask $t): bool => in_array($t->status, [TaskStatus::Ready, TaskStatus::Leased], true)
+                && $t->id !== $task->id
+            );
 
         foreach ($openTasks as $openTask) {
             $openTask->forceFill([
@@ -2265,7 +2270,12 @@ final class WorkflowExecutor
             ->keyBy(static fn (WorkflowTask $t): string => $t->payload['activity_execution_id']);
 
         $openActivityExecutions = $run->activityExecutions
-            ->filter(static fn (ActivityExecution $e): bool => in_array($e->status, [ActivityStatus::Pending, ActivityStatus::Running], true));
+            ->filter(
+                static fn (ActivityExecution $e): bool => in_array($e->status, [
+                    ActivityStatus::Pending,
+                    ActivityStatus::Running,
+                ], true)
+            );
 
         foreach ($openActivityExecutions as $execution) {
             $execution->forceFill([

@@ -68,8 +68,6 @@ final class HistoryPayloadCompression
      *
      * @param array<string, mixed> $payload
      * @return array<string, mixed>
-     *
-     * @throws RuntimeException If decompression fails.
      */
     public static function decompress(array $payload): array
     {
@@ -129,8 +127,6 @@ final class HistoryPayloadCompression
 
     /**
      * Compress a string using the given encoding.
-     *
-     * @throws RuntimeException If encoding fails.
      */
     private static function encode(string $data, string $encoding): string
     {
@@ -149,8 +145,6 @@ final class HistoryPayloadCompression
 
     /**
      * Decompress a string using the given encoding.
-     *
-     * @throws RuntimeException If decoding fails.
      */
     private static function decode(string $data, string $encoding): string
     {

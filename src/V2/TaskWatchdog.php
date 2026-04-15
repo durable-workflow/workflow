@@ -369,11 +369,7 @@ final class TaskWatchdog
         $now = now();
 
         $query = WorkflowRun::query()
-            ->whereIn('status', [
-                RunStatus::Pending->value,
-                RunStatus::Running->value,
-                RunStatus::Waiting->value,
-            ])
+            ->whereIn('status', [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value])
             ->where(static function ($deadline) use ($now): void {
                 $deadline->where(static function ($execution) use ($now): void {
                     $execution->whereNotNull('execution_deadline_at')

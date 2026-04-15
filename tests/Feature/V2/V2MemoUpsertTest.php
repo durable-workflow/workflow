@@ -177,7 +177,9 @@ final class V2MemoUpsertTest extends TestCase
         $this->expectException(\LogicException::class);
         $this->expectExceptionMessage('non-empty strings up to 64 characters');
 
-        new \Workflow\V2\Support\UpsertMemoCall(['' => 'value']);
+        new \Workflow\V2\Support\UpsertMemoCall([
+            '' => 'value',
+        ]);
     }
 
     public function testMemoUpsertCallAcceptsNestedStructures(): void

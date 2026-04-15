@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
-use function Workflow\V2\activity;
 use function Workflow\V2\all;
-use function Workflow\V2\startActivity;
 use Workflow\V2\Attributes\Type;
+use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 
 #[Type('test-many-activities-workflow')]

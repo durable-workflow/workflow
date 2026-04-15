@@ -51,12 +51,16 @@ final class StartOptionsTest extends TestCase
     {
         $options = StartOptions::withVisibility(
             businessKey: 'order-123',
-            labels: ['tenant' => 'acme'],
+            labels: [
+                'tenant' => 'acme',
+            ],
             duplicateStartPolicy: DuplicateStartPolicy::ReturnExistingActive,
         );
 
         $this->assertSame('order-123', $options->businessKey);
-        $this->assertSame(['tenant' => 'acme'], $options->labels);
+        $this->assertSame([
+            'tenant' => 'acme',
+        ], $options->labels);
         $this->assertSame(DuplicateStartPolicy::ReturnExistingActive, $options->duplicateStartPolicy);
     }
 
@@ -114,30 +118,51 @@ final class StartOptionsTest extends TestCase
 
     public function testValidLabels(): void
     {
-        $options = new StartOptions(labels: ['tenant' => 'acme', 'env' => 'production']);
+        $options = new StartOptions(labels: [
+            'tenant' => 'acme',
+            'env' => 'production',
+        ]);
 
-        $this->assertSame(['env' => 'production', 'tenant' => 'acme'], $options->labels);
+        $this->assertSame([
+            'env' => 'production',
+            'tenant' => 'acme',
+        ], $options->labels);
     }
 
     public function testLabelsSortedByKey(): void
     {
-        $options = new StartOptions(labels: ['z-key' => 'last', 'a-key' => 'first']);
+        $options = new StartOptions(labels: [
+            'z-key' => 'last',
+            'a-key' => 'first',
+        ]);
 
-        $this->assertSame(['a-key' => 'first', 'z-key' => 'last'], $options->labels);
+        $this->assertSame([
+            'a-key' => 'first',
+            'z-key' => 'last',
+        ], $options->labels);
     }
 
     public function testNullLabelValueIsSkipped(): void
     {
-        $options = new StartOptions(labels: ['present' => 'yes', 'absent' => null]);
+        $options = new StartOptions(labels: [
+            'present' => 'yes',
+            'absent' => null,
+        ]);
 
-        $this->assertSame(['present' => 'yes'], $options->labels);
+        $this->assertSame([
+            'present' => 'yes',
+        ], $options->labels);
     }
 
     public function testNumericLabelValueCastToString(): void
     {
-        $options = new StartOptions(labels: ['count' => 42]);
+        $options = new StartOptions(labels: [
+            'count' => 42,
+        ]);
 
-        $this->assertSame(['count' => '42'], $options->labels);
+        $this->assertSame([
+            'count' => '42',
+        ], $options->labels);
     }
 
     public function testInvalidLabelKeyThrows(): void
@@ -145,7 +170,9 @@ final class StartOptionsTest extends TestCase
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('URL-safe');
 
-        new StartOptions(labels: ['invalid key with spaces' => 'value']);
+        new StartOptions(labels: [
+            'invalid key with spaces' => 'value',
+        ]);
     }
 
     // ---------------------------------------------------------------
@@ -154,23 +181,43 @@ final class StartOptionsTest extends TestCase
 
     public function testValidMemo(): void
     {
-        $options = new StartOptions(memo: ['order_id' => 123, 'customer' => 'Taylor']);
+        $options = new StartOptions(memo: [
+            'order_id' => 123,
+            'customer' => 'Taylor',
+        ]);
 
-        $this->assertSame(['customer' => 'Taylor', 'order_id' => 123], $options->memo);
+        $this->assertSame([
+            'customer' => 'Taylor',
+            'order_id' => 123,
+        ], $options->memo);
     }
 
     public function testNestedMemo(): void
     {
-        $options = new StartOptions(memo: ['details' => ['name' => 'Taylor', 'amount' => 99.50]]);
+        $options = new StartOptions(memo: [
+            'details' => [
+                'name' => 'Taylor',
+                'amount' => 99.50,
+            ],
+        ]);
 
-        $this->assertSame(['details' => ['amount' => 99.50, 'name' => 'Taylor']], $options->memo);
+        $this->assertSame([
+            'details' => [
+                'amount' => 99.50,
+                'name' => 'Taylor',
+            ],
+        ], $options->memo);
     }
 
     public function testMemoListArray(): void
     {
-        $options = new StartOptions(memo: ['tags' => ['a', 'b', 'c']]);
+        $options = new StartOptions(memo: [
+            'tags' => ['a', 'b', 'c'],
+        ]);
 
-        $this->assertSame(['tags' => ['a', 'b', 'c']], $options->memo);
+        $this->assertSame([
+            'tags' => ['a', 'b', 'c'],
+        ], $options->memo);
     }
 
     public function testEmptyMemoKeyThrows(): void
@@ -178,7 +225,9 @@ final class StartOptionsTest extends TestCase
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('non-empty');
 
-        new StartOptions(memo: ['' => 'value']);
+        new StartOptions(memo: [
+            '' => 'value',
+        ]);
     }
 
     // ---------------------------------------------------------------
@@ -187,30 +236,53 @@ final class StartOptionsTest extends TestCase
 
     public function testValidSearchAttributes(): void
     {
-        $options = new StartOptions(searchAttributes: ['status' => 'active', 'priority' => 'high']);
+        $options = new StartOptions(searchAttributes: [
+            'status' => 'active',
+            'priority' => 'high',
+        ]);
 
-        $this->assertSame(['priority' => 'high', 'status' => 'active'], $options->searchAttributes);
+        $this->assertSame([
+            'priority' => 'high',
+            'status' => 'active',
+        ], $options->searchAttributes);
     }
 
     public function testSearchAttributesSortedByKey(): void
     {
-        $options = new StartOptions(searchAttributes: ['z-attr' => 'last', 'a-attr' => 'first']);
+        $options = new StartOptions(searchAttributes: [
+            'z-attr' => 'last',
+            'a-attr' => 'first',
+        ]);
 
-        $this->assertSame(['a-attr' => 'first', 'z-attr' => 'last'], $options->searchAttributes);
+        $this->assertSame([
+            'a-attr' => 'first',
+            'z-attr' => 'last',
+        ], $options->searchAttributes);
     }
 
     public function testNullSearchAttributeIsSkipped(): void
     {
-        $options = new StartOptions(searchAttributes: ['present' => 'yes', 'absent' => null]);
+        $options = new StartOptions(searchAttributes: [
+            'present' => 'yes',
+            'absent' => null,
+        ]);
 
-        $this->assertSame(['present' => 'yes'], $options->searchAttributes);
+        $this->assertSame([
+            'present' => 'yes',
+        ], $options->searchAttributes);
     }
 
     public function testBooleanSearchAttributeCastToString(): void
     {
-        $options = new StartOptions(searchAttributes: ['active' => true, 'deleted' => false]);
+        $options = new StartOptions(searchAttributes: [
+            'active' => true,
+            'deleted' => false,
+        ]);
 
-        $this->assertSame(['active' => '1', 'deleted' => '0'], $options->searchAttributes);
+        $this->assertSame([
+            'active' => '1',
+            'deleted' => '0',
+        ], $options->searchAttributes);
     }
 
     public function testInvalidSearchAttributeKeyThrows(): void
@@ -218,7 +290,9 @@ final class StartOptionsTest extends TestCase
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('URL-safe');
 
-        new StartOptions(searchAttributes: ['invalid key' => 'value']);
+        new StartOptions(searchAttributes: [
+            'invalid key' => 'value',
+        ]);
     }
 
     // ---------------------------------------------------------------
@@ -279,29 +353,53 @@ final class StartOptionsTest extends TestCase
 
     public function testWithLabelsReturnsNewInstance(): void
     {
-        $original = new StartOptions(labels: ['a' => '1']);
-        $modified = $original->withLabels(['b' => '2']);
+        $original = new StartOptions(labels: [
+            'a' => '1',
+        ]);
+        $modified = $original->withLabels([
+            'b' => '2',
+        ]);
 
-        $this->assertSame(['a' => '1'], $original->labels);
-        $this->assertSame(['b' => '2'], $modified->labels);
+        $this->assertSame([
+            'a' => '1',
+        ], $original->labels);
+        $this->assertSame([
+            'b' => '2',
+        ], $modified->labels);
     }
 
     public function testWithMemoReturnsNewInstance(): void
     {
-        $original = new StartOptions(memo: ['key' => 'value']);
-        $modified = $original->withMemo(['other' => 'data']);
+        $original = new StartOptions(memo: [
+            'key' => 'value',
+        ]);
+        $modified = $original->withMemo([
+            'other' => 'data',
+        ]);
 
-        $this->assertSame(['key' => 'value'], $original->memo);
-        $this->assertSame(['other' => 'data'], $modified->memo);
+        $this->assertSame([
+            'key' => 'value',
+        ], $original->memo);
+        $this->assertSame([
+            'other' => 'data',
+        ], $modified->memo);
     }
 
     public function testWithSearchAttributesReturnsNewInstance(): void
     {
-        $original = new StartOptions(searchAttributes: ['status' => 'active']);
-        $modified = $original->withSearchAttributes(['priority' => 'high']);
+        $original = new StartOptions(searchAttributes: [
+            'status' => 'active',
+        ]);
+        $modified = $original->withSearchAttributes([
+            'priority' => 'high',
+        ]);
 
-        $this->assertSame(['status' => 'active'], $original->searchAttributes);
-        $this->assertSame(['priority' => 'high'], $modified->searchAttributes);
+        $this->assertSame([
+            'status' => 'active',
+        ], $original->searchAttributes);
+        $this->assertSame([
+            'priority' => 'high',
+        ], $modified->searchAttributes);
     }
 
     public function testWithExecutionTimeoutReturnsNewInstance(): void
@@ -326,17 +424,29 @@ final class StartOptionsTest extends TestCase
     {
         $options = StartOptions::returnExistingActive()
             ->withBusinessKey('order-456')
-            ->withLabels(['tenant' => 'acme'])
-            ->withMemo(['note' => 'test'])
-            ->withSearchAttributes(['priority' => 'high'])
+            ->withLabels([
+                'tenant' => 'acme',
+            ])
+            ->withMemo([
+                'note' => 'test',
+            ])
+            ->withSearchAttributes([
+                'priority' => 'high',
+            ])
             ->withExecutionTimeout(3600)
             ->withRunTimeout(1800);
 
         $this->assertSame(DuplicateStartPolicy::ReturnExistingActive, $options->duplicateStartPolicy);
         $this->assertSame('order-456', $options->businessKey);
-        $this->assertSame(['tenant' => 'acme'], $options->labels);
-        $this->assertSame(['note' => 'test'], $options->memo);
-        $this->assertSame(['priority' => 'high'], $options->searchAttributes);
+        $this->assertSame([
+            'tenant' => 'acme',
+        ], $options->labels);
+        $this->assertSame([
+            'note' => 'test',
+        ], $options->memo);
+        $this->assertSame([
+            'priority' => 'high',
+        ], $options->searchAttributes);
         $this->assertSame(3600, $options->executionTimeoutSeconds);
         $this->assertSame(1800, $options->runTimeoutSeconds);
     }

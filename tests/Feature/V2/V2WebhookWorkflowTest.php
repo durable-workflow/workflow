@@ -2479,7 +2479,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskClaimWebhookReturnsStructuredClaimPayload(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-claim-webhook');
@@ -2528,7 +2529,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskHistoryWebhookReturnsFullHistoryPayload(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-history-webhook');
@@ -2610,7 +2612,8 @@ final class V2WebhookWorkflowTest extends TestCase
         $task->forceFill([
             'status' => TaskStatus::Leased,
             'lease_owner' => 'other-worker',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ])->save();
 
         $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/execute");
@@ -2625,7 +2628,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskExecuteWebhookReturns409ForCompletedTask(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-execute-completed');
@@ -2654,7 +2658,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskCompleteWebhookAppliesNonTerminalCommands(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-complete-webhook');
@@ -2673,8 +2678,14 @@ final class V2WebhookWorkflowTest extends TestCase
 
         $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
             'commands' => [
-                ['type' => 'schedule_activity', 'activity_type' => 'test-greeting-activity'],
-                ['type' => 'start_timer', 'delay_seconds' => 60],
+                [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'test-greeting-activity',
+                ],
+                [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 60,
+                ],
             ],
         ]);
 
@@ -2699,7 +2710,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskCompleteWebhookAppliesMetadataCommands(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-complete-metadata');
@@ -2718,10 +2730,18 @@ final class V2WebhookWorkflowTest extends TestCase
 
         $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
             'commands' => [
-                ['type' => 'record_side_effect', 'result' => Serializer::serialize(['seed' => 123])],
+                [
+                    'type' => 'record_side_effect',
+                    'result' => Serializer::serialize([
+                        'seed' => 123,
+                    ]),
+                ],
                 [
                     'type' => 'upsert_search_attributes',
-                    'attributes' => ['env' => 'staging', 'tenant' => 'acme'],
+                    'attributes' => [
+                        'env' => 'staging',
+                        'tenant' => 'acme',
+                    ],
                 ],
                 [
                     'type' => 'record_version_marker',
@@ -2730,7 +2750,10 @@ final class V2WebhookWorkflowTest extends TestCase
                     'min_supported' => 1,
                     'max_supported' => 2,
                 ],
-                ['type' => 'complete_workflow', 'result' => serialize('done')],
+                [
+                    'type' => 'complete_workflow',
+                    'result' => serialize('done'),
+                ],
             ],
         ]);
 
@@ -2769,7 +2792,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskCompleteWebhookAppliesTerminalCommand(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-complete-terminal');
@@ -2788,7 +2812,10 @@ final class V2WebhookWorkflowTest extends TestCase
 
         $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
             'commands' => [
-                ['type' => 'complete_workflow', 'result' => serialize('Hello from external worker!')],
+                [
+                    'type' => 'complete_workflow',
+                    'result' => serialize('Hello from external worker!'),
+                ],
             ],
         ]);
 
@@ -2833,7 +2860,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskFailWebhookRecordsTaskFailure(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-fail-webhook');
@@ -2866,7 +2894,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskFailWebhookAcceptsStructuredFailurePayload(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-fail-structured');
@@ -2923,7 +2952,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskHeartbeatWebhookExtendsLease(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-heartbeat-webhook');
@@ -2966,7 +2996,8 @@ final class V2WebhookWorkflowTest extends TestCase
     public function testWorkflowTaskHeartbeatWebhookReturns409ForUnleasedTask(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-heartbeat-unleased');

@@ -10,7 +10,6 @@ use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
-use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -18,7 +17,6 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
-use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -344,8 +342,12 @@ final class ActivityOutcomeRecorder
     /**
      * @return array{recorded: bool, reason: string|null, next_task: WorkflowTask|null}
      */
-    public static function recordForAttempt(string $attemptId, mixed $result, ?Throwable $throwable, ?string $codec = null): array
-    {
+    public static function recordForAttempt(
+        string $attemptId,
+        mixed $result,
+        ?Throwable $throwable,
+        ?string $codec = null
+    ): array {
         /** @var ActivityAttempt|null $attempt */
         $attempt = ActivityAttempt::query()
             ->with('execution')

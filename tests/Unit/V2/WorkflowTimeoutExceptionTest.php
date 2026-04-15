@@ -31,9 +31,6 @@ final class WorkflowTimeoutExceptionTest extends TestCase
 
     public function testExceptionClassMatchesStringReference(): void
     {
-        $this->assertSame(
-            'Workflow\V2\Exceptions\WorkflowTimeoutException',
-            WorkflowTimeoutException::class,
-        );
+        $this->assertSame('Workflow\V2\Exceptions\WorkflowTimeoutException', WorkflowTimeoutException::class);
     }
 }

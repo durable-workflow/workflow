@@ -6,13 +6,10 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
-use Tests\Fixtures\V2\TestContinueAsNewActivity;
-use Tests\Fixtures\V2\TestLongRunningChildWorkflow;
 use Tests\Fixtures\V2\TestParentWithClosePolicyContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWithClosePolicyWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -32,8 +29,10 @@ final class V2ParentClosePolicyTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
     }
 
@@ -58,7 +57,9 @@ final class V2ParentClosePolicyTest extends TestCase
             ->first();
 
         $scheduledEvent = $parentRun->historyEvents
-            ->first(fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled);
+            ->first(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
+            );
 
         $this->assertNotNull($scheduledEvent);
         $this->assertSame('request_cancel', $scheduledEvent->payload['parent_close_policy']);
@@ -348,9 +349,12 @@ final class V2ParentClosePolicyTest extends TestCase
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
             'available_at' => now(),
-            'payload' => ['deadline_expired' => true],
+            'payload' => [
+                'deadline_expired' => true,
+            ],
             'leased_at' => now(),
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         // Execute the task — the executor should detect the expired deadline.
@@ -409,9 +413,12 @@ final class V2ParentClosePolicyTest extends TestCase
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
             'available_at' => now(),
-            'payload' => ['deadline_expired' => true],
+            'payload' => [
+                'deadline_expired' => true,
+            ],
             'leased_at' => now(),
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         app(WorkflowExecutor::class)->run($parentRun->fresh(), $deadlineTask->fresh());

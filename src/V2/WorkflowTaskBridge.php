@@ -166,7 +166,6 @@ final class WorkflowTaskBridge
         return self::resolve()->heartbeat($taskId);
     }
 
-
     /**
      * @return array{
      *     task_id: string,

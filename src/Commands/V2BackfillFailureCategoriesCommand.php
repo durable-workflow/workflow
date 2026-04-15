@@ -8,7 +8,6 @@ use Illuminate\Console\Command;
 use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
-use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\FailureFactory;
@@ -93,7 +92,8 @@ class V2BackfillFailureCategoriesCommand extends Command
                         continue;
                     }
 
-                    $failure->forceFill($updates)->save();
+                    $failure->forceFill($updates)
+                        ->save();
                     $report['failures_updated']++;
                 } catch (Throwable $exception) {
                     $report['errors'][] = [
@@ -195,10 +195,7 @@ class V2BackfillFailureCategoriesCommand extends Command
         }
 
         if ($report['dry_run']) {
-            $this->info(sprintf(
-                'Would backfill %d failure row(s).',
-                $report['failures_would_update'],
-            ));
+            $this->info(sprintf('Would backfill %d failure row(s).', $report['failures_would_update']));
         } else {
             $this->info(sprintf('Backfilled %d failure row(s).', $report['failures_updated']));
         }
@@ -211,10 +208,7 @@ class V2BackfillFailureCategoriesCommand extends Command
         }
 
         if ($report['non_retryable_detected'] > 0) {
-            $this->info(sprintf(
-                'Detected %d non-retryable failure(s).',
-                $report['non_retryable_detected'],
-            ));
+            $this->info(sprintf('Detected %d non-retryable failure(s).', $report['non_retryable_detected']));
         }
 
         foreach ($report['errors'] as $error) {

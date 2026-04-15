@@ -130,16 +130,20 @@ abstract class Activity
                 ? $retryPolicy['heartbeat_timeout']
                 : null;
             $heartbeatDeadlineAt = $heartbeatTimeout !== null
-                ? $heartbeatAt->copy()->addSeconds($heartbeatTimeout)
+                ? $heartbeatAt->copy()
+                    ->addSeconds($heartbeatTimeout)
                 : null;
 
-            $executionUpdate = ['last_heartbeat_at' => $heartbeatAt];
+            $executionUpdate = [
+                'last_heartbeat_at' => $heartbeatAt,
+            ];
 
             if ($heartbeatDeadlineAt !== null) {
                 $executionUpdate['heartbeat_deadline_at'] = $heartbeatDeadlineAt;
             }
 
-            $execution->forceFill($executionUpdate)->save();
+            $execution->forceFill($executionUpdate)
+                ->save();
 
             if (
                 $attempt->activity_execution_id === $execution->id

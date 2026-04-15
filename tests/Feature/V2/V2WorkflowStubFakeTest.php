@@ -384,7 +384,9 @@ final class V2WorkflowStubFakeTest extends TestCase
         $this->expectException(\LogicException::class);
         $this->expectExceptionMessage('does not support mocking workflow classes');
 
-        WorkflowStub::mock(TestGreetingWorkflow::class, ['greeting' => 'fake']);
+        WorkflowStub::mock(TestGreetingWorkflow::class, [
+            'greeting' => 'fake',
+        ]);
     }
 
     public function testMockAcceptsActivityClass(): void

@@ -32,10 +32,7 @@ final class ActivityTimeoutEnforcer
         $now = now();
 
         return ActivityExecution::query()
-            ->whereIn('status', [
-                ActivityStatus::Pending->value,
-                ActivityStatus::Running->value,
-            ])
+            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
             ->where(static function ($query) use ($now): void {
                 $query->where(static function ($schedule) use ($now): void {
                     $schedule->where('status', ActivityStatus::Pending->value)
@@ -125,10 +122,25 @@ final class ActivityTimeoutEnforcer
                 // Schedule-to-close covers the entire execution lifecycle across
                 // all retries — retrying would not help.
                 if ($canRetry && $timeoutKind !== 'schedule_to_close') {
-                    return self::scheduleRetry($run, $execution, $existingTask, $attempt, $timeoutKind, $attemptCount, $maxAttempts);
+                    return self::scheduleRetry(
+                        $run,
+                        $execution,
+                        $existingTask,
+                        $attempt,
+                        $timeoutKind,
+                        $attemptCount,
+                        $maxAttempts
+                    );
                 }
 
-                return self::recordTerminalTimeout($run, $execution, $existingTask, $attempt, $timeoutKind, $attemptCount);
+                return self::recordTerminalTimeout(
+                    $run,
+                    $execution,
+                    $existingTask,
+                    $attempt,
+                    $timeoutKind,
+                    $attemptCount
+                );
             });
         } catch (Throwable $throwable) {
             report($throwable);
@@ -194,11 +206,13 @@ final class ActivityTimeoutEnforcer
         $now = now();
         $message = self::timeoutMessage($execution, $timeoutKind);
         $backoffSeconds = ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, $attemptCount);
-        $retryAvailableAt = $now->copy()->addSeconds($backoffSeconds);
+        $retryAvailableAt = $now->copy()
+            ->addSeconds($backoffSeconds);
 
         $scheduleToStartTimeout = self::scheduleToStartTimeoutFromPolicy($execution);
         $newScheduleDeadline = $scheduleToStartTimeout !== null
-            ? $retryAvailableAt->copy()->addSeconds($scheduleToStartTimeout)
+            ? $retryAvailableAt->copy()
+                ->addSeconds($scheduleToStartTimeout)
             : null;
 
         $execution->forceFill([

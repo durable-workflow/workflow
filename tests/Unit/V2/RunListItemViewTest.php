@@ -88,7 +88,8 @@ final class RunListItemViewTest extends TestCase
 
         $summary = $this->makeSummary([
             'started_at' => $now,
-            'closed_at' => $now->copy()->addHour(),
+            'closed_at' => $now->copy()
+                ->addHour(),
             'sort_timestamp' => $now,
             'duration_ms' => 3600000,
         ]);
@@ -139,14 +140,24 @@ final class RunListItemViewTest extends TestCase
     public function testFromSummaryProjectsOperatorMetadataAsArrays(): void
     {
         $summary = $this->makeSummary([
-            'visibility_labels' => ['tenant' => 'acme', 'region' => 'us-east'],
-            'search_attributes' => ['orderId' => '42'],
+            'visibility_labels' => [
+                'tenant' => 'acme',
+                'region' => 'us-east',
+            ],
+            'search_attributes' => [
+                'orderId' => '42',
+            ],
         ]);
 
         $item = RunListItemView::fromSummary($summary);
 
-        $this->assertSame(['tenant' => 'acme', 'region' => 'us-east'], $item['visibility_labels']);
-        $this->assertSame(['orderId' => '42'], $item['search_attributes']);
+        $this->assertSame([
+            'tenant' => 'acme',
+            'region' => 'us-east',
+        ], $item['visibility_labels']);
+        $this->assertSame([
+            'orderId' => '42',
+        ], $item['search_attributes']);
     }
 
     public function testFromSummaryDefaultsNullMetadataToEmptyArrays(): void

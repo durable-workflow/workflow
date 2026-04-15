@@ -112,16 +112,25 @@ final class PayloadEnvelopeResolver
     public static function resolveCommandPayloadWithCodec($value, string $field = 'result'): array
     {
         if ($value === null) {
-            return ['payload' => null, 'codec' => null];
+            return [
+                'payload' => null,
+                'codec' => null,
+            ];
         }
 
         if (is_array($value) && self::looksLikeEnvelope($value)) {
             $envelope = self::resolveExplicitEnvelope($value, $field);
 
-            return ['payload' => $envelope['blob'], 'codec' => $envelope['codec']];
+            return [
+                'payload' => $envelope['blob'],
+                'codec' => $envelope['codec'],
+            ];
         }
 
-        return ['payload' => $value, 'codec' => null];
+        return [
+            'payload' => $value,
+            'codec' => null,
+        ];
     }
 
     /**
@@ -133,7 +142,10 @@ final class PayloadEnvelopeResolver
     public static function resolve($input, string $field = 'input'): array
     {
         if ($input === null || $input === []) {
-            return ['codec' => null, 'blob' => null];
+            return [
+                'codec' => null,
+                'blob' => null,
+            ];
         }
 
         if (! is_array($input)) {
@@ -206,6 +218,9 @@ final class PayloadEnvelopeResolver
             ]);
         }
 
-        return ['codec' => $canonical, 'blob' => $blob];
+        return [
+            'codec' => $canonical,
+            'blob' => $blob,
+        ];
     }
 }

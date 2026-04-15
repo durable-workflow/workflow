@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use LogicException;
 use Throwable;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\CommandOutcome;
@@ -27,8 +29,6 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\UpdateResult;
 use Workflow\V2\WorkflowStub;
-use Workflow\Serializers\CodecRegistry;
-use Workflow\Serializers\Serializer;
 
 final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 {
@@ -36,7 +36,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     {
         $resolvedClass = $this->tryResolveWorkflowClass($workflowType);
         $arguments = $options['arguments'] ?? null;
-        $payloadCodec = isset($options['payload_codec']) && is_string($options['payload_codec']) && $options['payload_codec'] !== ''
+        $payloadCodec = isset($options['payload_codec']) && is_string(
+            $options['payload_codec']
+        ) && $options['payload_codec'] !== ''
             ? CodecRegistry::canonicalize($options['payload_codec'])
             : CodecRegistry::defaultCodec();
         $connection = $options['connection'] ?? null;
@@ -176,9 +178,13 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'workflow_type' => $workflowType,
                     'namespace' => $namespace,
                     'business_key' => $businessKey ?? $instance->business_key,
-                    'visibility_labels' => $labels ?? (is_array($instance->visibility_labels) ? $instance->visibility_labels : null),
+                    'visibility_labels' => $labels ?? (is_array(
+                        $instance->visibility_labels
+                    ) ? $instance->visibility_labels : null),
                     'memo' => $memo ?? (is_array($instance->memo) ? $instance->memo : null),
-                    'search_attributes' => is_array($searchAttributes) && $searchAttributes !== [] ? $searchAttributes : null,
+                    'search_attributes' => is_array(
+                        $searchAttributes
+                    ) && $searchAttributes !== [] ? $searchAttributes : null,
                     'run_timeout_seconds' => $runTimeoutSeconds,
                     'execution_deadline_at' => $executionDeadlineAt,
                     'run_deadline_at' => $runDeadlineAt,

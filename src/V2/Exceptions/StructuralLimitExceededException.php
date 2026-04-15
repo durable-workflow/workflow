@@ -31,11 +31,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::PendingActivityCount,
             $current,
             $limit,
-            sprintf(
-                'Structural limit exceeded: %d pending activities (limit %d).',
-                $current,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: %d pending activities (limit %d).', $current, $limit),
         );
     }
 
@@ -45,11 +41,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::PendingChildCount,
             $current,
             $limit,
-            sprintf(
-                'Structural limit exceeded: %d pending child workflows (limit %d).',
-                $current,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: %d pending child workflows (limit %d).', $current, $limit),
         );
     }
 
@@ -59,11 +51,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::PendingTimerCount,
             $current,
             $limit,
-            sprintf(
-                'Structural limit exceeded: %d pending timers (limit %d).',
-                $current,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: %d pending timers (limit %d).', $current, $limit),
         );
     }
 
@@ -73,11 +61,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::PendingSignalCount,
             $current,
             $limit,
-            sprintf(
-                'Structural limit exceeded: %d pending signals (limit %d).',
-                $current,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: %d pending signals (limit %d).', $current, $limit),
         );
     }
 
@@ -87,11 +71,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::PendingUpdateCount,
             $current,
             $limit,
-            sprintf(
-                'Structural limit exceeded: %d pending updates (limit %d).',
-                $current,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: %d pending updates (limit %d).', $current, $limit),
         );
     }
 
@@ -101,11 +81,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::CommandBatchSize,
             $current,
             $limit,
-            sprintf(
-                'Structural limit exceeded: command batch contains %d items (limit %d).',
-                $current,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: command batch contains %d items (limit %d).', $current, $limit),
         );
     }
 
@@ -115,11 +91,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::PayloadSize,
             $bytes,
             $limit,
-            sprintf(
-                'Structural limit exceeded: payload size %d bytes (limit %d bytes).',
-                $bytes,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: payload size %d bytes (limit %d bytes).', $bytes, $limit),
         );
     }
 
@@ -129,11 +101,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::MemoSize,
             $bytes,
             $limit,
-            sprintf(
-                'Structural limit exceeded: memo size %d bytes (limit %d bytes).',
-                $bytes,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: memo size %d bytes (limit %d bytes).', $bytes, $limit),
         );
     }
 
@@ -143,11 +111,7 @@ final class StructuralLimitExceededException extends RuntimeException
             StructuralLimitKind::SearchAttributeSize,
             $bytes,
             $limit,
-            sprintf(
-                'Structural limit exceeded: search attribute size %d bytes (limit %d bytes).',
-                $bytes,
-                $limit,
-            ),
+            sprintf('Structural limit exceeded: search attribute size %d bytes (limit %d bytes).', $bytes, $limit),
         );
     }
 

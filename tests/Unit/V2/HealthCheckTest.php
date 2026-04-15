@@ -569,7 +569,9 @@ final class HealthCheckTest extends TestCase
 
         WorkflowRunSummary::query()
             ->where('id', $run->id)
-            ->update(['projection_schema_version' => null]);
+            ->update([
+                'projection_schema_version' => null,
+            ]);
 
         $snapshot = HealthCheck::snapshot();
         $projection = collect($snapshot['checks'])->firstWhere('name', 'run_summary_projection');

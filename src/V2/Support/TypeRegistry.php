@@ -121,12 +121,13 @@ final class TypeRegistry
      * Checks that no class appears as the target of multiple different type keys
      * and that configured type keys do not conflict with #[Type] attributes on
      * the mapped class.
-     *
-     * @throws LogicException when a conflict is detected
      */
     public static function validateTypeMap(): void
     {
-        foreach (['workflows' => Workflow::class, 'activities' => Activity::class] as $configKey => $baseClass) {
+        foreach ([
+            'workflows' => Workflow::class,
+            'activities' => Activity::class,
+        ] as $configKey => $baseClass) {
             /** @var array<string, class-string>|null $types */
             $types = config("workflows.v2.types.{$configKey}");
 
@@ -135,9 +136,7 @@ final class TypeRegistry
             }
 
             // Detect the same class registered under multiple type keys.
-            $classCounts = array_count_values(
-                array_filter($types, 'is_string'),
-            );
+            $classCounts = array_count_values(array_filter($types, 'is_string'));
 
             foreach ($classCounts as $class => $count) {
                 if ($count > 1) {

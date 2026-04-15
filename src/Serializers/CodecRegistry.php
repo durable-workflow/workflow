@@ -23,14 +23,18 @@ use InvalidArgumentException;
  */
 final class CodecRegistry
 {
-    /** @var array<string, class-string<SerializerInterface>> */
+    /**
+     * @var array<string, class-string<SerializerInterface>>
+     */
     private const CODECS = [
         'json' => Json::class,
         'workflow-serializer-y' => Y::class,
         'workflow-serializer-base64' => Base64::class,
     ];
 
-    /** @var array<string, string> legacy FQCN → canonical name */
+    /**
+     * @var array<string, string> legacy FQCN → canonical name
+     */
     private const LEGACY_ALIASES = [
         Json::class => 'json',
         Y::class => 'workflow-serializer-y',
@@ -102,7 +106,9 @@ final class CodecRegistry
         return 'json';
     }
 
-    /** @return list<string> */
+    /**
+     * @return list<string>
+     */
     public static function names(): array
     {
         return array_keys(self::CODECS);

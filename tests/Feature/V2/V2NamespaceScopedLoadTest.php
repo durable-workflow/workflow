@@ -115,7 +115,8 @@ final class V2NamespaceScopedLoadTest extends TestCase
             'workflow_type' => 'workflow.test',
             'run_count' => 1,
             'namespace' => $namespace,
-            'started_at' => now()->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $run */
@@ -128,12 +129,18 @@ final class V2NamespaceScopedLoadTest extends TestCase
             'status' => $status,
             'namespace' => $namespace,
             'arguments' => Serializer::serialize([]),
-            'started_at' => now()->subMinutes(5),
-            'closed_at' => $isClosed ? now()->subMinute() : null,
-            'last_progress_at' => $isClosed ? now()->subMinute() : now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinutes(5),
+            'closed_at' => $isClosed ? now()
+                ->subMinute() : null,
+            'last_progress_at' => $isClosed ? now()
+                ->subMinute() : now()
+                ->subSeconds(30),
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         return $run;
     }

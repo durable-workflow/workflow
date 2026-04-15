@@ -837,7 +837,9 @@ final class HistoryTimeline
                     HistoryEventType::WorkflowTerminated => 'terminated',
                     HistoryEventType::WorkflowTimedOut => 'timeout',
                     HistoryEventType::WorkflowFailed => 'application',
-                    HistoryEventType::UpdateCompleted => (self::stringValue($failure['id'] ?? null) ?? $failureId) === null
+                    HistoryEventType::UpdateCompleted => (self::stringValue(
+                        $failure['id'] ?? null
+                    ) ?? $failureId) === null
                         ? null
                         : 'application',
                     default => null,

@@ -33,8 +33,10 @@ final class V2WorkflowControlPlaneTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         $this->controlPlane = $this->app->make(WorkflowControlPlane::class);
     }
@@ -280,16 +282,26 @@ final class V2WorkflowControlPlaneTest extends TestCase
             'connection' => 'redis',
             'queue' => 'default',
             'business_key' => 'order-12345',
-            'labels' => ['team' => 'payments', 'env' => 'staging'],
-            'memo' => ['description' => 'Test workflow'],
+            'labels' => [
+                'team' => 'payments',
+                'env' => 'staging',
+            ],
+            'memo' => [
+                'description' => 'Test workflow',
+            ],
         ]);
 
         $this->assertTrue($result['started']);
 
         $run = WorkflowRun::query()->find($result['workflow_run_id']);
         $this->assertSame('order-12345', $run->business_key);
-        $this->assertSame(['team' => 'payments', 'env' => 'staging'], $run->visibility_labels);
-        $this->assertSame(['description' => 'Test workflow'], $run->memo);
+        $this->assertSame([
+            'team' => 'payments',
+            'env' => 'staging',
+        ], $run->visibility_labels);
+        $this->assertSame([
+            'description' => 'Test workflow',
+        ], $run->memo);
     }
 
     public function testStartResolvesDottedDurableTypeKey(): void
@@ -562,7 +574,9 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertSame('waiting-for-name', $result['result']);
 
         $invalid = $this->controlPlane->query('ctrl-plane-query-detail-1', 'events-starting-with', [
-            'arguments' => ['extra' => 'start'],
+            'arguments' => [
+                'extra' => 'start',
+            ],
             'strict_configured_type_validation' => true,
         ]);
 
@@ -761,12 +775,14 @@ final class V2WorkflowControlPlaneTest extends TestCase
             return;
         }
 
-        Schema::create('jobs', function (Blueprint $table): void {
+        Schema::create('jobs', static function (Blueprint $table): void {
             $table->id();
-            $table->string('queue')->index();
+            $table->string('queue')
+                ->index();
             $table->longText('payload');
             $table->unsignedTinyInteger('attempts');
-            $table->unsignedInteger('reserved_at')->nullable();
+            $table->unsignedInteger('reserved_at')
+                ->nullable();
             $table->unsignedInteger('available_at');
             $table->unsignedInteger('created_at');
         });

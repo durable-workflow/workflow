@@ -66,28 +66,36 @@ final class StructuralLimitsTest extends TestCase
 
     public function testConfigOverridesPendingActivityLimit(): void
     {
-        config(['workflows.v2.structural_limits.pending_activity_count' => 100]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 100,
+        ]);
 
         $this->assertSame(100, StructuralLimits::pendingActivityLimit());
     }
 
     public function testConfigOverridesPayloadSizeLimit(): void
     {
-        config(['workflows.v2.structural_limits.payload_size_bytes' => 1048576]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 1048576,
+        ]);
 
         $this->assertSame(1048576, StructuralLimits::payloadSizeLimit());
     }
 
     public function testZeroDisablesLimit(): void
     {
-        config(['workflows.v2.structural_limits.pending_activity_count' => 0]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 0,
+        ]);
 
         $this->assertSame(0, StructuralLimits::pendingActivityLimit());
     }
 
     public function testNegativeValueClampedToZero(): void
     {
-        config(['workflows.v2.structural_limits.pending_activity_count' => -5]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => -5,
+        ]);
 
         $this->assertSame(0, StructuralLimits::pendingActivityLimit());
     }
@@ -98,7 +106,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardPayloadSizePassesUnderLimit(): void
     {
-        config(['workflows.v2.structural_limits.payload_size_bytes' => 100]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 100,
+        ]);
 
         StructuralLimits::guardPayloadSize(str_repeat('x', 99));
 
@@ -107,7 +117,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardPayloadSizeThrowsOverLimit(): void
     {
-        config(['workflows.v2.structural_limits.payload_size_bytes' => 10]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 10,
+        ]);
 
         $this->expectException(StructuralLimitExceededException::class);
 
@@ -116,7 +128,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardPayloadSizeSkipsWhenDisabled(): void
     {
-        config(['workflows.v2.structural_limits.payload_size_bytes' => 0]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 0,
+        ]);
 
         StructuralLimits::guardPayloadSize(str_repeat('x', 999999));
 
@@ -129,7 +143,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardMemoSizePassesUnderLimit(): void
     {
-        config(['workflows.v2.structural_limits.memo_size_bytes' => 100]);
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 100,
+        ]);
 
         StructuralLimits::guardMemoSize(str_repeat('x', 99));
 
@@ -138,7 +154,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardMemoSizeThrowsOverLimit(): void
     {
-        config(['workflows.v2.structural_limits.memo_size_bytes' => 10]);
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 10,
+        ]);
 
         $this->expectException(StructuralLimitExceededException::class);
 
@@ -151,7 +169,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardSearchAttributeSizeThrowsOverLimit(): void
     {
-        config(['workflows.v2.structural_limits.search_attribute_size_bytes' => 10]);
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => 10,
+        ]);
 
         $this->expectException(StructuralLimitExceededException::class);
 
@@ -164,7 +184,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardCommandBatchSizePassesUnderLimit(): void
     {
-        config(['workflows.v2.structural_limits.command_batch_size' => 100]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 100,
+        ]);
 
         StructuralLimits::guardCommandBatchSize(99);
 
@@ -173,7 +195,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardCommandBatchSizeThrowsOverLimit(): void
     {
-        config(['workflows.v2.structural_limits.command_batch_size' => 5]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 5,
+        ]);
 
         $this->expectException(StructuralLimitExceededException::class);
 
@@ -191,14 +215,18 @@ final class StructuralLimitsTest extends TestCase
 
     public function testConfigOverridesHistoryTransactionSizeLimit(): void
     {
-        config(['workflows.v2.structural_limits.history_transaction_size' => 200]);
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 200,
+        ]);
 
         $this->assertSame(200, StructuralLimits::historyTransactionSizeLimit());
     }
 
     public function testGuardHistoryTransactionSizePassesUnderLimit(): void
     {
-        config(['workflows.v2.structural_limits.history_transaction_size' => 100]);
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 100,
+        ]);
 
         StructuralLimits::guardHistoryTransactionSize(99);
 
@@ -207,7 +235,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardHistoryTransactionSizeThrowsOverLimit(): void
     {
-        config(['workflows.v2.structural_limits.history_transaction_size' => 5]);
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 5,
+        ]);
 
         $this->expectException(StructuralLimitExceededException::class);
 
@@ -216,7 +246,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testGuardHistoryTransactionSizeSkipsWhenDisabled(): void
     {
-        config(['workflows.v2.structural_limits.history_transaction_size' => 0]);
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+        ]);
 
         StructuralLimits::guardHistoryTransactionSize(999999);
 
@@ -234,21 +266,27 @@ final class StructuralLimitsTest extends TestCase
 
     public function testConfigOverridesWarningThreshold(): void
     {
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 90]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 90,
+        ]);
 
         $this->assertSame(90, StructuralLimits::warningThresholdPercent());
     }
 
     public function testWarningThresholdClampedToZeroMin(): void
     {
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => -10]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => -10,
+        ]);
 
         $this->assertSame(0, StructuralLimits::warningThresholdPercent());
     }
 
     public function testWarningThresholdClampedTo100Max(): void
     {
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 150]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 150,
+        ]);
 
         $this->assertSame(100, StructuralLimits::warningThresholdPercent());
     }
@@ -259,8 +297,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testCheckApproachingReturnsNullBelowThreshold(): void
     {
-        config(['workflows.v2.structural_limits.pending_activity_count' => 100]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 100,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingActivityCount, 79);
 
@@ -269,8 +311,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testCheckApproachingReturnsWarningAtThreshold(): void
     {
-        config(['workflows.v2.structural_limits.pending_activity_count' => 100]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 100,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingActivityCount, 80);
 
@@ -284,8 +330,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testCheckApproachingReturnsWarningAboveThreshold(): void
     {
-        config(['workflows.v2.structural_limits.command_batch_size' => 1000]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 1000,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::checkApproaching(StructuralLimitKind::CommandBatchSize, 950);
 
@@ -295,8 +345,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testCheckApproachingReturnsNullWhenLimitDisabled(): void
     {
-        config(['workflows.v2.structural_limits.pending_activity_count' => 0]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 0,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingActivityCount, 999);
 
@@ -305,8 +359,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testCheckApproachingReturnsNullWhenThresholdDisabled(): void
     {
-        config(['workflows.v2.structural_limits.pending_activity_count' => 100]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 0]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 100,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 0,
+        ]);
 
         $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingActivityCount, 99);
 
@@ -315,8 +373,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testCheckApproachingSignalCountReturnsWarningAtThreshold(): void
     {
-        config(['workflows.v2.structural_limits.pending_signal_count' => 100]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.pending_signal_count' => 100,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingSignalCount, 85);
 
@@ -328,8 +390,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testCheckApproachingUpdateCountReturnsWarningAtThreshold(): void
     {
-        config(['workflows.v2.structural_limits.pending_update_count' => 100]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.pending_update_count' => 100,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingUpdateCount, 90);
 
@@ -341,8 +407,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testCheckApproachingSignalCountReturnsNullBelowThreshold(): void
     {
-        config(['workflows.v2.structural_limits.pending_signal_count' => 5000]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.pending_signal_count' => 5000,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::checkApproaching(StructuralLimitKind::PendingSignalCount, 3999);
 
@@ -351,8 +421,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testWarnApproachingHistoryTransactionReturnsWarning(): void
     {
-        config(['workflows.v2.structural_limits.history_transaction_size' => 100]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 100,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::warnApproachingHistoryTransaction(85);
 
@@ -362,8 +436,12 @@ final class StructuralLimitsTest extends TestCase
 
     public function testWarnApproachingCommandBatchReturnsWarning(): void
     {
-        config(['workflows.v2.structural_limits.command_batch_size' => 50]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 50,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         $result = StructuralLimits::warnApproachingCommandBatch(45);
 
@@ -377,7 +455,9 @@ final class StructuralLimitsTest extends TestCase
 
     public function testLimitForKindReturnsConfiguredLimit(): void
     {
-        config(['workflows.v2.structural_limits.pending_timer_count' => 500]);
+        config([
+            'workflows.v2.structural_limits.pending_timer_count' => 500,
+        ]);
 
         $this->assertSame(500, StructuralLimits::limitForKind(StructuralLimitKind::PendingTimerCount));
     }

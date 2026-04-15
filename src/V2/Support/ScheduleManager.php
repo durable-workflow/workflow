@@ -5,9 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Cron\CronExpression;
-use DateTimeImmutable;
 use DateTimeInterface;
-use DateTimeZone;
 use Illuminate\Support\Facades\DB;
 use LogicException;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
@@ -155,7 +153,8 @@ final class ScheduleManager
             $updates['note'] = $reason;
         }
 
-        $schedule->forceFill($updates)->save();
+        $schedule->forceFill($updates)
+            ->save();
 
         return $schedule;
     }
@@ -219,7 +218,10 @@ final class ScheduleManager
             $currentAction = WorkflowSchedule::normalizeActionTimeouts($action);
         }
 
-        $updates = ['spec' => $currentSpec, 'action' => $currentAction];
+        $updates = [
+            'spec' => $currentSpec,
+            'action' => $currentAction,
+        ];
 
         if ($overlapPolicy !== null) {
             $updates['overlap_policy'] = $overlapPolicy->value;
@@ -248,7 +250,8 @@ final class ScheduleManager
                 : (int) $schedule->remaining_actions;
         }
 
-        $schedule->forceFill($updates)->save();
+        $schedule->forceFill($updates)
+            ->save();
 
         $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
@@ -275,8 +278,10 @@ final class ScheduleManager
      * Trigger a schedule once. Returns the started workflow instance id, or null
      * if the trigger was skipped (exhausted, overlap policy blocked it, etc.).
      */
-    public static function trigger(WorkflowSchedule $schedule, ?ScheduleOverlapPolicy $overlapPolicyOverride = null): ?string
-    {
+    public static function trigger(
+        WorkflowSchedule $schedule,
+        ?ScheduleOverlapPolicy $overlapPolicyOverride = null
+    ): ?string {
         return self::triggerDetailed($schedule, $overlapPolicyOverride)->instanceId;
     }
 
@@ -377,13 +382,20 @@ final class ScheduleManager
                 });
 
                 if ($instanceId !== null) {
-                    $results[] = ['schedule_id' => $schedule->schedule_id, 'instance_id' => $instanceId];
+                    $results[] = [
+                        'schedule_id' => $schedule->schedule_id,
+                        'instance_id' => $instanceId,
+                    ];
                 }
             } catch (\Throwable $e) {
                 $schedule->refresh();
                 $schedule->recordFailure($e->getMessage());
                 $schedule->save();
-                $results[] = ['schedule_id' => $schedule->schedule_id, 'instance_id' => null, 'error' => $e->getMessage()];
+                $results[] = [
+                    'schedule_id' => $schedule->schedule_id,
+                    'instance_id' => null,
+                    'error' => $e->getMessage(),
+                ];
             }
         }
 
@@ -538,7 +550,12 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $effectivePolicy);
             }
 
-            return self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'backfilled', effectiveOverlapPolicy: $effectivePolicy->value)->instanceId;
+            return self::startRun(
+                $schedule,
+                occurrenceTime: $occurrenceTime,
+                outcome: 'backfilled',
+                effectiveOverlapPolicy: $effectivePolicy->value
+            )->instanceId;
         });
     }
 
@@ -711,8 +728,12 @@ final class ScheduleManager
             $stub = WorkflowStub::load($latestInstanceId);
 
             match ($policy) {
-                ScheduleOverlapPolicy::CancelOther => $stub->attemptCancel('Schedule overlap: cancel_other policy applied.'),
-                ScheduleOverlapPolicy::TerminateOther => $stub->attemptTerminate('Schedule overlap: terminate_other policy applied.'),
+                ScheduleOverlapPolicy::CancelOther => $stub->attemptCancel(
+                    'Schedule overlap: cancel_other policy applied.'
+                ),
+                ScheduleOverlapPolicy::TerminateOther => $stub->attemptTerminate(
+                    'Schedule overlap: terminate_other policy applied.'
+                ),
                 default => null,
             };
         } catch (\Throwable) {

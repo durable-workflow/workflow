@@ -34,10 +34,6 @@ final class WorkflowTimeoutException extends RuntimeException
 
     public static function runTimeout(string $deadlineAt): self
     {
-        return new self(
-            'run_timeout',
-            $deadlineAt,
-            sprintf('Workflow run deadline expired at %s.', $deadlineAt),
-        );
+        return new self('run_timeout', $deadlineAt, sprintf('Workflow run deadline expired at %s.', $deadlineAt));
     }
 }
