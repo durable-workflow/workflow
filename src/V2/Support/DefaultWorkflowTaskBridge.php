@@ -428,7 +428,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ];
     }
 
-    public function fail(string $taskId, Throwable|array|string $failure): array
+    public function fail(string $taskId, Throwable|array|string $failure, ?string $codec = null): array
     {
         return DB::transaction(static function () use ($taskId, $failure): array {
             /** @var WorkflowTask|null $task */
@@ -441,6 +441,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'recorded' => false,
                     'task_id' => $taskId,
                     'reason' => 'task_not_found',
+                    'next_task_id' => null,
                 ];
             }
 
@@ -449,6 +450,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'recorded' => false,
                     'task_id' => $taskId,
                     'reason' => 'task_not_workflow',
+                    'next_task_id' => null,
                 ];
             }
 
@@ -457,6 +459,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'recorded' => false,
                     'task_id' => $taskId,
                     'reason' => 'task_not_active',
+                    'next_task_id' => null,
                 ];
             }
 
@@ -478,6 +481,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'recorded' => true,
                 'task_id' => $taskId,
                 'reason' => null,
+                'next_task_id' => null,
             ];
         });
     }

@@ -178,9 +178,10 @@ interface WorkflowTaskBridge
      *     recorded: bool,
      *     task_id: string,
      *     reason: string|null,
+     *     next_task_id: string|null,
      * }
      */
-    public function fail(string $taskId, Throwable|array|string $failure): array;
+    public function fail(string $taskId, Throwable|array|string $failure, ?string $codec = null): array;
 
     /**
      * Heartbeat to extend the lease on a claimed workflow task.
