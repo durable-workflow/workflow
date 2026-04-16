@@ -26,7 +26,7 @@ final class TestParentWaitingOnContinuingChildWorkflow extends Workflow
     #[QueryMethod('current-child-handle')]
     public function currentChildHandle(): ?array
     {
-        $handle = $this->child();
+        $handle = $this->lastChild();
 
         if ($handle === null) {
             return null;

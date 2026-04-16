@@ -27,7 +27,7 @@ final class TestChildHandleParentWorkflow extends Workflow
     #[QueryMethod('current-child-handle')]
     public function currentChildHandle(): ?array
     {
-        $handle = $this->child();
+        $handle = $this->lastChild();
 
         if ($handle === null) {
             return null;
@@ -43,6 +43,6 @@ final class TestChildHandleParentWorkflow extends Workflow
     #[UpdateMethod('approve-child')]
     public function approveChild(string $approvedBy): void
     {
-        $this->child()?->signal('approved-by', $approvedBy);
+        $this->lastChild()?->signal('approved-by', $approvedBy);
     }
 }

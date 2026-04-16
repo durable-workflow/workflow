@@ -31,7 +31,7 @@ final class TestQueryChildResolutionAuthorityWorkflow extends Workflow
     #[QueryMethod('current-state')]
     public function currentState(): array
     {
-        $handle = $this->child();
+        $handle = $this->lastChild();
 
         return [
             'stage' => $this->stage,

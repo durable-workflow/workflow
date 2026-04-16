@@ -12,6 +12,13 @@ class {{ class }} extends Workflow
 {
     public function handle(): mixed
     {
+        // Example:
+        //
+        //     $result = Workflow::activity(MyActivity::class, $input);
+        //     Workflow::timer('5 seconds');
+        //     Workflow::upsertMemo(['stage' => 'done']);
+        //
+        //     return $result;
         return null;
     }
 }

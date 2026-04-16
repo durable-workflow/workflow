@@ -71,6 +71,34 @@ Additive changes — new public methods, new optional parameters with
 defaults, new constants — are minor-version changes and do not require a
 major bump.
 
+## `Workflow\V2\Workflow` authoring facade
+
+The abstract base class `Workflow\V2\Workflow` is the canonical authoring
+API for v2 workflows. It exposes two surfaces, both covered by the
+semver guarantee:
+
+- **Instance members** applications rely on inside an `execute()` /
+  `handle()` method: `workflowId()`, `runId()`, `lastChild()`,
+  `children()`, `historyLength()`, `historySize()`, `shouldContinueAsNew()`,
+  `addCompensation()`, `setParallelCompensation()`,
+  `setContinueWithError()`, `compensate()`, and the public properties
+  `$run`, `$connection`, `$queue`.
+- **Static method facade** mirroring the helpers in
+  `Workflow\V2\functions.php`: `activity`, `executeActivity`, `child`,
+  `executeChildWorkflow`, `async`, `all`, `parallel`, `await`,
+  `awaitWithTimeout`, `awaitSignal`, `timer`, `sideEffect`,
+  `continueAsNew`, `getVersion`, `upsertMemo`, `upsertSearchAttributes`,
+  and the timer sugar `seconds`/`minutes`/`hours`/`days`/`weeks`/
+  `months`/`years`.
+
+The namespaced helper functions under `Workflow\V2\*` remain the
+equivalent functional-style surface and are equally stable. Choosing
+between the static facade and the namespaced helpers is a style
+preference; both produce identical `Support\*` Call value objects.
+
+Adding new static methods to the facade is an additive (non-breaking)
+change. Removing or renaming a documented method is a major change.
+
 ## Pre-existing `Contracts\*` interfaces
 
 Interfaces under `Workflow\V2\Contracts\*` are the preferred extension

@@ -38,7 +38,7 @@ final class TestParallelChildHandlesWorkflow extends Workflow
     #[QueryMethod('latest-child-handle')]
     public function latestChildHandle(): ?array
     {
-        $handle = $this->child();
+        $handle = $this->lastChild();
 
         if ($handle === null) {
             return null;
