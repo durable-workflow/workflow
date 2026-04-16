@@ -531,6 +531,91 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame(1, $events[6]->payload['skipped_trigger_count']);
     }
 
+    public function testScheduleHistorySequenceRecoversFromConcurrentCollision(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'sequence-race-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+        );
+
+        // ScheduleCreated was written with sequence = 1. Simulate another
+        // concurrent writer that has already claimed sequence = 2 before we
+        // attempt to record the next lifecycle event — exactly the collision
+        // the unique(workflow_schedule_id, sequence) constraint would raise.
+        WorkflowScheduleHistoryEvent::query()->create([
+            'workflow_schedule_id' => $schedule->id,
+            'schedule_id' => $schedule->schedule_id,
+            'namespace' => $schedule->namespace,
+            'sequence' => 2,
+            'event_type' => HistoryEventType::SchedulePaused->value,
+            'payload' => ['reason' => 'pre-claimed by racing writer'],
+            'recorded_at' => now(),
+        ]);
+
+        ScheduleManager::pause($schedule, 'operator hold');
+
+        $events = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->orderBy('sequence')
+            ->get();
+
+        // record() should have retried past the collision and landed on
+        // sequence = 3, preserving ordering rather than blowing up.
+        $this->assertSame([1, 2, 3], $events->pluck('sequence')->all());
+        $this->assertSame(
+            [
+                HistoryEventType::ScheduleCreated->value,
+                HistoryEventType::SchedulePaused->value,
+                HistoryEventType::SchedulePaused->value,
+            ],
+            $events->map(static fn (WorkflowScheduleHistoryEvent $event): string => $event->event_type->value)->all(),
+        );
+        $this->assertSame('pre-claimed by racing writer', $events[1]->payload['reason']);
+        $this->assertSame('operator hold', $events[2]->payload['reason']);
+    }
+
+    public function testConcurrentScheduleLifecycleWritesAllLandWithUniqueSequences(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'sequence-pileup-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+        );
+
+        // Pre-claim sequences 2..6 to force record() to retry five times
+        // before landing on the next free slot. This exercises the retry
+        // loop under a larger pileup than a single collision.
+        for ($claimed = 2; $claimed <= 6; $claimed++) {
+            WorkflowScheduleHistoryEvent::query()->create([
+                'workflow_schedule_id' => $schedule->id,
+                'schedule_id' => $schedule->schedule_id,
+                'namespace' => $schedule->namespace,
+                'sequence' => $claimed,
+                'event_type' => HistoryEventType::SchedulePaused->value,
+                'payload' => ['reason' => 'pileup ' . $claimed],
+                'recorded_at' => now(),
+            ]);
+        }
+
+        ScheduleManager::pause($schedule, 'post-pileup');
+
+        $sequences = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->orderBy('sequence')
+            ->pluck('sequence')
+            ->all();
+
+        $this->assertSame([1, 2, 3, 4, 5, 6, 7], $sequences);
+
+        $tail = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('sequence', 7)
+            ->first();
+        $this->assertNotNull($tail);
+        $this->assertSame('post-pileup', $tail->payload['reason']);
+    }
+
     public function testTriggerDeletedScheduleTracksSkipReason(): void
     {
         $schedule = ScheduleManager::create(

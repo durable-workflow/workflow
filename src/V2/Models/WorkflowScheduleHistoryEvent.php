@@ -8,12 +8,21 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowScheduleHistoryEvent extends Model
 {
     use HasUlids;
+
+    /**
+     * Upper bound on retry iterations when racing for the next schedule
+     * history sequence. Contention is expected to be low per-schedule, so this
+     * is large enough to clear any realistic pileup without masking a bug
+     * that would otherwise spin forever.
+     */
+    private const SEQUENCE_RETRY_LIMIT = 32;
 
     public $incrementing = false;
 
@@ -47,24 +56,41 @@ class WorkflowScheduleHistoryEvent extends Model
         HistoryEventType $eventType,
         array $payload = [],
     ): self {
-        $sequence = ((int) ConfiguredV2Models::query('schedule_history_event_model', self::class)
-            ->where('workflow_schedule_id', $schedule->id)
-            ->max('sequence')) + 1;
+        $snapshot = self::snapshotPayload($schedule, $payload);
+        $workflowInstanceId = self::stringValue($payload['workflow_instance_id'] ?? null);
+        $workflowRunId = self::stringValue($payload['workflow_run_id'] ?? null);
 
-        /** @var self $event */
-        $event = ConfiguredV2Models::query('schedule_history_event_model', self::class)->create([
-            'workflow_schedule_id' => $schedule->id,
-            'schedule_id' => $schedule->schedule_id,
-            'namespace' => $schedule->namespace,
-            'sequence' => $sequence,
-            'event_type' => $eventType->value,
-            'payload' => self::snapshotPayload($schedule, $payload),
-            'workflow_instance_id' => self::stringValue($payload['workflow_instance_id'] ?? null),
-            'workflow_run_id' => self::stringValue($payload['workflow_run_id'] ?? null),
-            'recorded_at' => now(),
-        ]);
+        for ($attempt = 1; $attempt <= self::SEQUENCE_RETRY_LIMIT; $attempt++) {
+            $sequence = ((int) ConfiguredV2Models::query('schedule_history_event_model', self::class)
+                ->where('workflow_schedule_id', $schedule->id)
+                ->max('sequence')) + 1;
 
-        return $event;
+            try {
+                /** @var self $event */
+                $event = ConfiguredV2Models::query('schedule_history_event_model', self::class)->create([
+                    'workflow_schedule_id' => $schedule->id,
+                    'schedule_id' => $schedule->schedule_id,
+                    'namespace' => $schedule->namespace,
+                    'sequence' => $sequence,
+                    'event_type' => $eventType->value,
+                    'payload' => $snapshot,
+                    'workflow_instance_id' => $workflowInstanceId,
+                    'workflow_run_id' => $workflowRunId,
+                    'recorded_at' => now(),
+                ]);
+
+                return $event;
+            } catch (UniqueConstraintViolationException $e) {
+                if ($attempt === self::SEQUENCE_RETRY_LIMIT) {
+                    throw $e;
+                }
+                // Another writer claimed this sequence first. Re-read the max
+                // and try the next slot.
+            }
+        }
+
+        // Unreachable: the loop either returns or re-throws at the final attempt.
+        throw new \LogicException('Schedule history sequence allocation exhausted retries.');
     }
 
     /**
