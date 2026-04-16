@@ -529,6 +529,10 @@ final class RunSummaryProjector
             return self::replayBlockedLiveness($replayBlockedTask);
         }
 
+        if ($nextTask !== null && self::hasActionableTransportFailure($nextTask)) {
+            return self::taskLiveness($nextTask, $run, self::taskLabelFor($nextTask));
+        }
+
         if ($diagnosticActivity !== null) {
             return [
                 'workflow_replay_blocked',
@@ -1246,6 +1250,22 @@ final class RunSummaryProjector
                 && in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true));
 
         return $task;
+    }
+
+    private static function hasActionableTransportFailure(WorkflowTask $task): bool
+    {
+        return TaskRepairPolicy::claimFailed($task)
+            || TaskRepairPolicy::leaseExpired($task)
+            || TaskRepairPolicy::dispatchFailed($task);
+    }
+
+    private static function taskLabelFor(WorkflowTask $task): string
+    {
+        return match ($task->task_type) {
+            TaskType::Activity => 'Activity',
+            TaskType::Timer => 'Timer',
+            default => 'Workflow',
+        };
     }
 
     /**
