@@ -33,8 +33,63 @@ final class OperatorDashboardSummary
             'fleet_overview' => self::fleetOverview($now),
             'workflow_type_health' => self::workflowTypeHealth($now),
             'needs_attention' => self::needsAttention($now),
+            'fleet_trends_series' => self::fleetTrendsSeries($now),
             'operator_metrics' => OperatorMetrics::snapshot($now),
         ];
+    }
+
+    /**
+     * Time-series data for fleet trends chart.
+     * Returns hourly bucketed counts over the last 7 days.
+     *
+     * @return array<string, mixed>
+     */
+    public static function fleetTrendsSeries(?CarbonInterface $now = null): array
+    {
+        $now ??= now();
+        $weekAgo = $now->copy()->subWeek();
+
+        // Get all terminal runs (completed, failed, cancelled, terminated) in last 7 days
+        // Group by hour
+        $runs = self::summaryModel()::query()
+            ->select(
+                DB::raw('DATE_FORMAT(closed_at, "%Y-%m-%d %H:00:00") as hour'),
+                'status_bucket',
+                DB::raw('COUNT(*) as count')
+            )
+            ->whereNotNull('closed_at')
+            ->where('closed_at', '>=', $weekAgo)
+            ->whereIn('status_bucket', ['completed', 'failed'])
+            ->groupBy('hour', 'status_bucket')
+            ->orderBy('hour')
+            ->get();
+
+        // Build time series with all hours (fill gaps with zeros)
+        $series = [
+            'timestamps' => [],
+            'completed' => [],
+            'failed' => [],
+        ];
+
+        $hourCounts = [];
+        foreach ($runs as $run) {
+            $hourCounts[$run->hour][$run->status_bucket] = $run->count;
+        }
+
+        // Generate all hours in the range
+        $current = $weekAgo->copy()->startOfHour();
+        $end = $now->copy()->startOfHour();
+
+        while ($current->lte($end)) {
+            $hourKey = $current->format('Y-m-d H:00:00');
+            $series['timestamps'][] = $current->timestamp * 1000; // milliseconds for ApexCharts
+            $series['completed'][] = $hourCounts[$hourKey]['completed'] ?? 0;
+            $series['failed'][] = $hourCounts[$hourKey]['failed'] ?? 0;
+
+            $current->addHour();
+        }
+
+        return $series;
     }
 
     /**
