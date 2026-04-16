@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use function Workflow\V2\sideEffect;
 use Workflow\V2\Workflow;
 
@@ -43,7 +43,7 @@ final class TestSideEffectWorkflow extends Workflow
 
         $this->stage = 'waiting-for-finish';
 
-        $finish = awaitSignal('finish');
+        $finish = signal('finish');
 
         $this->stage = 'completed';
 

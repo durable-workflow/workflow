@@ -6,7 +6,6 @@ namespace Tests\Fixtures\V2;
 
 use Throwable;
 use function Workflow\V2\activity;
-use function Workflow\V2\startActivity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Workflow;
 
@@ -20,10 +19,10 @@ final class TestSagaParallelContinueWithErrorWorkflow extends Workflow
 
         try {
             $flightId = activity(TestSagaBookingActivity::class, 'flight');
-            $this->addCompensation(fn () => startActivity(TestSagaFailingCancelActivity::class, 'flight', $flightId));
+            $this->addCompensation(fn () => activity(TestSagaFailingCancelActivity::class, 'flight', $flightId));
 
             $hotelId = activity(TestSagaBookingActivity::class, 'hotel');
-            $this->addCompensation(fn () => startActivity(TestSagaCancelActivity::class, 'hotel', $hotelId));
+            $this->addCompensation(fn () => activity(TestSagaCancelActivity::class, 'hotel', $hotelId));
 
             activity(TestFailingActivity::class);
 

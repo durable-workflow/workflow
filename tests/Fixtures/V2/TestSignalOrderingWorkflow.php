@@ -6,7 +6,7 @@ namespace Tests\Fixtures\V2;
 
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Type('test-signal-ordering-workflow')]
@@ -15,8 +15,8 @@ final class TestSignalOrderingWorkflow extends Workflow
 {
     public function handle(): array
     {
-        $first = awaitSignal('message');
-        $second = awaitSignal('message');
+        $first = signal('message');
+        $second = signal('message');
 
         return [
             'messages' => [$first, $second],

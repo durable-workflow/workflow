@@ -8,7 +8,7 @@ use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Type('test-aliased-update-workflow')]
@@ -29,7 +29,7 @@ final class TestAliasedUpdateWorkflow extends Workflow
         $this->stage = 'waiting-for-name';
         $this->events[] = 'started';
 
-        awaitSignal('name-provided');
+        signal('name-provided');
 
         $this->stage = 'completed';
         $this->events[] = 'signal:received';

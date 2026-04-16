@@ -6,7 +6,7 @@ namespace Tests\Fixtures\V2;
 
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use function Workflow\V2\timer;
 use Workflow\V2\Workflow;
 
@@ -30,7 +30,7 @@ final class TestHistoryTimerReplayWorkflow extends Workflow
         $this->stage = 'after-timer';
         $this->events[] = 'timer-fired';
 
-        $resume = awaitSignal('resume');
+        $resume = signal('resume');
 
         $this->stage = 'completed';
         $this->events[] = sprintf('signal:%s', $resume);

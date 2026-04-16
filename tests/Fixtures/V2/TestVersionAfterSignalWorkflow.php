@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use function Workflow\V2\getVersion;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
@@ -18,7 +18,7 @@ final class TestVersionAfterSignalWorkflow extends Workflow
 {
     public function handle(): array
     {
-        $gate = awaitSignal('go');
+        $gate = signal('go');
         $version = getVersion('step-2', WorkflowStub::DEFAULT_VERSION, 1);
 
         $result = $version === WorkflowStub::DEFAULT_VERSION

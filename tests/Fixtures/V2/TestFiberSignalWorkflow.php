@@ -8,7 +8,7 @@ use Workflow\QueryMethod;
 use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Type('test-fiber-signal-workflow')]
@@ -25,7 +25,7 @@ final class TestFiberSignalWorkflow extends Workflow
         $greeting = activity(TestGreetingActivity::class, $name);
 
         $this->stage = 'waiting-for-approval';
-        $approvedBy = awaitSignal('approved-by');
+        $approvedBy = signal('approved-by');
 
         $this->approvedBy = is_string($approvedBy) ? $approvedBy : null;
         $this->stage = 'completed';

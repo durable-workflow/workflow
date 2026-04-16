@@ -5,10 +5,9 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Workflow\QueryMethod;
+use function Workflow\V2\activity;
 use function Workflow\V2\all;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\parallel;
-use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 
 #[Type('test-nested-parallel-activity-workflow')]
@@ -21,10 +20,10 @@ final class TestNestedParallelActivityWorkflow extends Workflow
         $this->stage = 'waiting-for-activities';
 
         $results = all([
-            startActivity(TestGreetingActivity::class, $firstName),
-            parallel([
-                startActivity(TestGreetingActivity::class, $secondName),
-                startActivity(TestGreetingActivity::class, $thirdName),
+            fn () => activity(TestGreetingActivity::class, $firstName),
+            fn () => all([
+                fn () => activity(TestGreetingActivity::class, $secondName),
+                fn () => activity(TestGreetingActivity::class, $thirdName),
             ]),
         ]);
 

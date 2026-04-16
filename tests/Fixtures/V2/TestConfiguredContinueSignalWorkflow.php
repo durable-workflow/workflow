@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use function Workflow\V2\continueAsNew;
 use Workflow\V2\Workflow;
 
@@ -29,7 +29,7 @@ final class TestConfiguredContinueSignalWorkflow extends Workflow
             return continueAsNew($count + 1);
         }
 
-        $name = awaitSignal('name-provided');
+        $name = signal('name-provided');
 
         return [
             'name' => $name,

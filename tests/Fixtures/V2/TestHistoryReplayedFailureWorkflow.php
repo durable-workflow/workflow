@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Signal('resume')]
@@ -37,7 +37,7 @@ final class TestHistoryReplayedFailureWorkflow extends Workflow
             ];
         }
 
-        $resume = awaitSignal('resume');
+        $resume = signal('resume');
         $this->stage = 'completed';
 
         return [

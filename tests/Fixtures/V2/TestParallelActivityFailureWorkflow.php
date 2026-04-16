@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Workflow\QueryMethod;
+use function Workflow\V2\activity;
 use function Workflow\V2\all;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-activity-failure-workflow')]
@@ -22,7 +22,7 @@ final class TestParallelActivityFailureWorkflow extends Workflow
         $this->stage = 'waiting-for-activities';
 
         try {
-            all([startActivity(TestFailingActivity::class), startActivity(TestGreetingActivity::class, $name)]);
+            all([fn () => activity(TestFailingActivity::class), fn () => activity(TestGreetingActivity::class, $name)]);
         } catch (\Throwable $throwable) {
             $this->stage = 'caught-activity-failure';
             $this->message = $throwable->getMessage();

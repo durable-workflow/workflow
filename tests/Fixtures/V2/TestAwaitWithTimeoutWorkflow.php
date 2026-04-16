@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitWithTimeout;
+use function Workflow\V2\await;
 use Workflow\V2\Workflow;
 
 #[Type('test-await-timeout-workflow')]
@@ -23,7 +23,7 @@ final class TestAwaitWithTimeoutWorkflow extends Workflow
     {
         $this->stage = 'waiting-for-approval';
 
-        $approved = awaitWithTimeout(5, fn (): bool => $this->approved);
+        $approved = await(fn (): bool => $this->approved, timeout: 5);
 
         if (! $approved) {
             $this->timedOut = true;

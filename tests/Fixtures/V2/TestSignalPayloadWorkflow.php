@@ -6,7 +6,7 @@ namespace Tests\Fixtures\V2;
 
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Type('test-signal-payload-workflow')]
@@ -15,7 +15,7 @@ final class TestSignalPayloadWorkflow extends Workflow
 {
     public function handle(): array
     {
-        $payload = awaitSignal('payload-provided');
+        $payload = signal('payload-provided');
 
         return [
             'payload' => $payload,

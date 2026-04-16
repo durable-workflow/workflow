@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use function Workflow\V2\all;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\startChild;
+use function Workflow\V2\child;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-child-handles-workflow')]
@@ -16,9 +16,9 @@ final class TestParallelChildHandlesWorkflow extends Workflow
     public function handle(): array
     {
         return all([
-            startChild(TestChildHandleChildWorkflow::class),
-            startChild(TestChildHandleChildWorkflow::class),
-            startChild(TestChildHandleChildWorkflow::class),
+            fn () => child(TestChildHandleChildWorkflow::class),
+            fn () => child(TestChildHandleChildWorkflow::class),
+            fn () => child(TestChildHandleChildWorkflow::class),
         ]);
     }
 

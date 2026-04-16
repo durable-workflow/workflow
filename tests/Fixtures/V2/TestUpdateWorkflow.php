@@ -9,7 +9,7 @@ use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Type('test-update-workflow')]
@@ -35,7 +35,7 @@ final class TestUpdateWorkflow extends Workflow
         $this->stage = 'waiting-for-name';
         $this->events[] = 'started';
 
-        $name = awaitSignal('name-provided');
+        $name = signal('name-provided');
 
         $this->stage = 'completed';
         $this->events[] = sprintf('signal:%s', $name);

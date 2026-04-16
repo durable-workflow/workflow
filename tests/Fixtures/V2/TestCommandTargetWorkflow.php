@@ -8,7 +8,7 @@ use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Type('test-command-target-workflow')]
@@ -23,7 +23,7 @@ final class TestCommandTargetWorkflow extends Workflow
 {
     public function handle(): array
     {
-        awaitSignal('approved-by');
+        signal('approved-by');
 
         return [
             'workflow_id' => $this->workflowId(),

@@ -6,7 +6,6 @@ namespace Tests\Fixtures\V2;
 
 use function Workflow\V2\activity;
 use function Workflow\V2\all;
-use function Workflow\V2\startActivity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Workflow;
 
@@ -18,7 +17,7 @@ final class TestManyActivitiesWorkflow extends Workflow
         $calls = [];
 
         for ($i = 0; $i < $count; $i++) {
-            $calls[] = startActivity(TestGreetingActivity::class, "item-{$i}");
+            $calls[] = fn () => activity(TestGreetingActivity::class, "item-{$i}");
         }
 
         return all($calls);

@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Type('test-child-handle-child-workflow')]
@@ -20,7 +20,7 @@ final class TestChildHandleChildWorkflow extends Workflow
     {
         $this->stage = 'waiting-for-approval';
 
-        $approvedBy = awaitSignal('approved-by');
+        $approvedBy = signal('approved-by');
 
         $this->stage = 'approved';
 

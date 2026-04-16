@@ -6,10 +6,10 @@ namespace Tests\Fixtures\V2;
 
 use Throwable;
 use Workflow\QueryMethod;
+use function Workflow\V2\activity;
 use function Workflow\V2\all;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\startActivity;
-use function Workflow\V2\startChild;
+use function Workflow\V2\child;
 use Workflow\V2\Workflow;
 
 #[Type('test-mixed-parallel-failure-workflow')]
@@ -25,8 +25,8 @@ final class TestMixedParallelFailureWorkflow extends Workflow
 
         try {
             all([
-                startActivity(TestFailingActivity::class),
-                startChild(TestTimerWorkflow::class, $slowChildSeconds),
+                fn () => activity(TestFailingActivity::class),
+                fn () => child(TestTimerWorkflow::class, $slowChildSeconds),
             ]);
 
             $this->stage = 'unexpected-success';

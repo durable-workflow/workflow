@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use RuntimeException;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use function Workflow\V2\child;
 use Workflow\V2\Workflow;
 
@@ -36,7 +36,7 @@ final class TestBroadChildFailureCatchWorkflow extends Workflow
             ];
         }
 
-        $resume = awaitSignal('resume');
+        $resume = signal('resume');
         $this->stage = 'completed';
 
         return [

@@ -5,11 +5,10 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 use Workflow\QueryMethod;
+use function Workflow\V2\activity;
 use function Workflow\V2\all;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\parallel;
-use function Workflow\V2\startActivity;
-use function Workflow\V2\startChild;
+use function Workflow\V2\child;
 use Workflow\V2\Workflow;
 
 #[Type('test-fiber-parallel-workflow')]
@@ -22,10 +21,10 @@ final class TestFiberParallelWorkflow extends Workflow
         $this->stage = 'waiting-for-parallel-work';
 
         $results = all([
-            startActivity(TestGreetingActivity::class, $firstName),
-            parallel([
-                startActivity(TestGreetingActivity::class, $secondName),
-                startChild(TestChildGreetingWorkflow::class, $thirdName),
+            fn () => activity(TestGreetingActivity::class, $firstName),
+            fn () => all([
+                fn () => activity(TestGreetingActivity::class, $secondName),
+                fn () => child(TestChildGreetingWorkflow::class, $thirdName),
             ]),
         ]);
 

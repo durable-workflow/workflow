@@ -6,9 +6,9 @@ namespace Tests\Fixtures\V2;
 
 use Throwable;
 use Workflow\QueryMethod;
+use function Workflow\V2\activity;
 use function Workflow\V2\all;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\startActivity;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-multiple-activity-failure-workflow')]
@@ -24,8 +24,8 @@ final class TestParallelMultipleActivityFailureWorkflow extends Workflow
 
         try {
             all([
-                startActivity(TestNamedFailingActivity::class, 'first failure'),
-                startActivity(TestNamedFailingActivity::class, 'second failure'),
+                fn () => activity(TestNamedFailingActivity::class, 'first failure'),
+                fn () => activity(TestNamedFailingActivity::class, 'second failure'),
             ]);
 
             $this->stage = 'unexpected-success';

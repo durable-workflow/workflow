@@ -7,7 +7,7 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 use function Workflow\V2\timer;
 use Workflow\V2\Workflow;
 
@@ -27,7 +27,7 @@ final class TestQueryWorkflow extends Workflow
         $this->stage = 'waiting-for-name';
         $this->events[] = 'started';
 
-        $name = awaitSignal('name-provided');
+        $name = signal('name-provided');
 
         $this->stage = 'waiting-for-timer';
         $this->events[] = sprintf('name:%s', $name);

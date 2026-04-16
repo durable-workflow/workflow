@@ -8,7 +8,7 @@ use Throwable;
 use Workflow\QueryMethod;
 use function Workflow\V2\all;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\startChild;
+use function Workflow\V2\child;
 use Workflow\V2\Workflow;
 
 #[Type('test-parallel-child-failure-workflow')]
@@ -24,8 +24,8 @@ final class TestParallelChildFailureWorkflow extends Workflow
 
         try {
             all([
-                startChild(TestFailingChildWorkflow::class),
-                startChild(TestTimerWorkflow::class, $slowChildSeconds),
+                fn () => child(TestFailingChildWorkflow::class),
+                fn () => child(TestTimerWorkflow::class, $slowChildSeconds),
             ]);
 
             $this->stage = 'unexpected-success';

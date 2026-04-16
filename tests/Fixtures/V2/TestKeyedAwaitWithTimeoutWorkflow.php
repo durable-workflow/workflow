@@ -6,7 +6,7 @@ namespace Tests\Fixtures\V2;
 
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\awaitWithTimeout;
+use function Workflow\V2\await;
 use Workflow\V2\Workflow;
 
 #[Type('test-keyed-await-timeout-workflow')]
@@ -16,7 +16,7 @@ final class TestKeyedAwaitWithTimeoutWorkflow extends Workflow
 
     public function handle(): array
     {
-        $approved = awaitWithTimeout(5, fn (): bool => $this->approved, 'approval.ready');
+        $approved = await(fn (): bool => $this->approved, timeout: 5, conditionKey: 'approval.ready');
 
         return [
             'approved' => $approved,

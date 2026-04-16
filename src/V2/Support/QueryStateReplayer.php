@@ -544,7 +544,7 @@ final class QueryStateReplayer
 
             $this->syncWorkflowCursor($workflow, $sequence);
             throw new UnsupportedWorkflowYieldException(sprintf(
-                'Workflow %s yielded %s. v2 currently supports activity(), await(), awaitWithTimeout(), child(), all(), sideEffect(), getVersion(), timer(), awaitSignal(), and continueAsNew() only.',
+                'Workflow %s yielded %s. v2 currently supports activity(), child(), async(), all(), await(), signal(), timer(), sideEffect(), continueAsNew(), getVersion(), upsertMemo(), and upsertSearchAttributes() only.',
                 $run->workflow_class,
                 get_debug_type($current),
             ));
