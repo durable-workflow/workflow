@@ -450,7 +450,7 @@ final class TaskRepair
         }
 
         foreach (RunTimerView::timersForRun($run) as $snapshot) {
-            if (($snapshot['timer_kind'] ?? null) === 'condition_timeout') {
+            if (in_array($snapshot['timer_kind'] ?? null, ['condition_timeout', 'signal_timeout'], true)) {
                 continue;
             }
 

@@ -290,7 +290,13 @@ final class HistoryTimeline
             ),
             HistoryEventType::SignalWaitOpened => $signalName === null
                 ? 'Waiting for signal.'
-                : sprintf('Waiting for signal %s.', $signalName),
+                : (($payload['timeout_seconds'] ?? null) === null
+                    ? sprintf('Waiting for signal %s.', $signalName)
+                    : sprintf(
+                        'Waiting for signal %s or timeout after %s.',
+                        $signalName,
+                        self::durationLabel(self::intValue($payload['timeout_seconds'] ?? null) ?? 0),
+                    )),
             HistoryEventType::SignalReceived => $signalName === null
                 ? 'Signal received.'
                 : sprintf('Signal %s received.', $signalName),
@@ -368,23 +374,33 @@ final class HistoryTimeline
                 $version !== null => sprintf('Recorded version marker %d.', $version),
                 default => 'Recorded version marker.',
             },
-            HistoryEventType::TimerScheduled => $timerKind === 'condition_timeout'
-                ? ($delaySeconds === null
+            HistoryEventType::TimerScheduled => match ($timerKind) {
+                'condition_timeout' => $delaySeconds === null
                     ? 'Scheduled condition timeout.'
-                    : sprintf('Scheduled condition timeout for %s.', self::durationLabel($delaySeconds)))
-                : ($delaySeconds === null
+                    : sprintf('Scheduled condition timeout for %s.', self::durationLabel($delaySeconds)),
+                'signal_timeout' => $delaySeconds === null
+                    ? 'Scheduled signal timeout.'
+                    : sprintf('Scheduled signal timeout for %s.', self::durationLabel($delaySeconds)),
+                default => $delaySeconds === null
                     ? 'Scheduled timer.'
-                    : sprintf('Scheduled timer for %s.', self::durationLabel($delaySeconds))),
-            HistoryEventType::TimerFired => $timerKind === 'condition_timeout'
-                ? ($delaySeconds === null
+                    : sprintf('Scheduled timer for %s.', self::durationLabel($delaySeconds)),
+            },
+            HistoryEventType::TimerFired => match ($timerKind) {
+                'condition_timeout' => $delaySeconds === null
                     ? 'Condition timeout fired.'
-                    : sprintf('Condition timeout fired after %s.', self::durationLabel($delaySeconds)))
-                : ($delaySeconds === null
+                    : sprintf('Condition timeout fired after %s.', self::durationLabel($delaySeconds)),
+                'signal_timeout' => $delaySeconds === null
+                    ? 'Signal timeout fired.'
+                    : sprintf('Signal timeout fired after %s.', self::durationLabel($delaySeconds)),
+                default => $delaySeconds === null
                     ? 'Timer fired.'
-                    : sprintf('Timer fired after %s.', self::durationLabel($delaySeconds))),
-            HistoryEventType::TimerCancelled => $timerKind === 'condition_timeout'
-                ? 'Condition timeout cancelled.'
-                : 'Timer cancelled.',
+                    : sprintf('Timer fired after %s.', self::durationLabel($delaySeconds)),
+            },
+            HistoryEventType::TimerCancelled => match ($timerKind) {
+                'condition_timeout' => 'Condition timeout cancelled.',
+                'signal_timeout' => 'Signal timeout cancelled.',
+                default => 'Timer cancelled.',
+            },
             HistoryEventType::ParentClosePolicyApplied => sprintf(
                 'Applied parent-close policy %s to child %s.',
                 self::stringValue($payload['policy'] ?? null) ?? 'unknown',

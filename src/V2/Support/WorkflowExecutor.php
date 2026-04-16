@@ -632,12 +632,50 @@ final class WorkflowExecutor
                     continue;
                 }
 
+                /** @var WorkflowTimer|null $timeoutTimer */
+                $timeoutTimer = $current->timeoutSeconds !== null
+                    ? $run->timers->firstWhere('sequence', $sequence)
+                    : null;
+                $timeoutScheduledEvent = $current->timeoutSeconds !== null
+                    ? $this->signalTimeoutScheduledEvent($run, $sequence, $current->name)
+                    : null;
+                $timeoutFiredEvent = $current->timeoutSeconds !== null
+                    ? $this->signalTimeoutFiredEvent($run, $sequence, $current->name)
+                    : null;
+                $signalWaitId = $this->signalWaitId($run, $sequence, $current) ?? (string) Str::ulid();
+
+                if (
+                    $current->timeoutSeconds !== null
+                    && (
+                        $timeoutFiredEvent !== null
+                        || ($timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired)
+                    )
+                ) {
+                    $this->recordSignalWait($run, $task, $sequence, $current, $signalWaitId);
+
+                    try {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
+                        $current = $workflowExecution->send(null);
+                    } catch (Throwable $throwable) {
+                        $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                        return null;
+                    }
+
+                    ++$sequence;
+                    continue;
+                }
+
                 $signalCommand = $this->pendingSignalCommand($run, $current);
 
                 if ($signalCommand !== null) {
                     $signalWaitId = $this->signalWaitIdForCommand($run, $signalCommand, $current->name);
 
                     $this->recordSignalWait($run, $task, $sequence, $current, $signalWaitId);
+
+                    if ($timeoutTimer !== null) {
+                        $this->cancelSignalTimeout($run, $task, $timeoutTimer);
+                    }
 
                     $signalEvent = $this->applySignal(
                         $run,
@@ -661,7 +699,30 @@ final class WorkflowExecutor
                     continue;
                 }
 
-                $this->recordSignalWait($run, $task, $sequence, $current);
+                $this->recordSignalWait($run, $task, $sequence, $current, $signalWaitId);
+
+                if ($current->timeoutSeconds !== null) {
+                    if ($current->timeoutSeconds === 0) {
+                        $this->fireImmediateSignalTimeout($run, $task, $sequence, $signalWaitId, $current);
+
+                        try {
+                            $this->syncWorkflowCursor($workflow, $sequence + 1);
+                            $current = $workflowExecution->send(null);
+                        } catch (Throwable $throwable) {
+                            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                            return null;
+                        }
+
+                        ++$sequence;
+                        continue;
+                    }
+
+                    if ($timeoutTimer === null) {
+                        $this->syncWorkflowCursor($workflow, $sequence + 1);
+                        return $this->scheduleSignalTimeout($run, $task, $sequence, $signalWaitId, $current);
+                    }
+                }
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 return $this->waitForNextResumeSource($run, $task);
@@ -1297,6 +1358,58 @@ final class WorkflowExecutor
         return $timerTask;
     }
 
+    private function scheduleSignalTimeout(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $waitId,
+        SignalCall $signalCall,
+    ): WorkflowTask {
+        $timeoutSeconds = $signalCall->timeoutSeconds ?? 0;
+        $fireAt = now()
+            ->addSeconds($timeoutSeconds);
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => $timeoutSeconds,
+            'fire_at' => $fireAt,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $timer->fire_at?->toJSON(),
+            'timer_kind' => 'signal_timeout',
+            'signal_wait_id' => $waitId,
+            'signal_name' => $signalCall->name,
+        ], $task);
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Timer->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $fireAt,
+            'payload' => [
+                'timer_id' => $timer->id,
+                'signal_wait_id' => $waitId,
+                'signal_name' => $signalCall->name,
+            ],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        $this->markRunWaiting($run, $task);
+
+        return $timerTask;
+    }
+
     private function scheduleChildWorkflow(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -1612,6 +1725,49 @@ final class WorkflowExecutor
         return $timer;
     }
 
+    private function fireImmediateSignalTimeout(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $waitId,
+        SignalCall $signalCall,
+    ): WorkflowTimer {
+        $recordedAt = now();
+        $timeoutSeconds = $signalCall->timeoutSeconds ?? 0;
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'status' => TimerStatus::Fired->value,
+            'delay_seconds' => $timeoutSeconds,
+            'fire_at' => $recordedAt,
+            'fired_at' => $recordedAt,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $timer->fire_at?->toJSON(),
+            'timer_kind' => 'signal_timeout',
+            'signal_wait_id' => $waitId,
+            'signal_name' => $signalCall->name,
+        ], $task);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fired_at' => $timer->fired_at?->toJSON(),
+            'timer_kind' => 'signal_timeout',
+            'signal_wait_id' => $waitId,
+            'signal_name' => $signalCall->name,
+        ], $task);
+
+        return $timer;
+    }
+
     private function appliedSignalEvent(
         WorkflowRun $run,
         int $sequence,
@@ -1717,11 +1873,12 @@ final class WorkflowExecutor
             return;
         }
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::SignalWaitOpened, [
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalWaitOpened, array_filter([
             'signal_name' => $signalCall->name,
             'signal_wait_id' => $signalWaitId ?? (string) Str::ulid(),
             'sequence' => $sequence,
-        ], $task);
+            'timeout_seconds' => $signalCall->timeoutSeconds,
+        ], static fn (mixed $value): bool => $value !== null), $task);
     }
 
     private function signalWaitIdForCommand(WorkflowRun $run, WorkflowCommand $command, string $signalName): string
@@ -1741,11 +1898,42 @@ final class WorkflowExecutor
             ?? SignalWaits::bufferedWaitIdForCommandId($command->id);
     }
 
+    private function signalWaitId(WorkflowRun $run, int $sequence, SignalCall $signalCall): ?string
+    {
+        /** @var WorkflowHistoryEvent|null $openedEvent */
+        $openedEvent = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SignalWaitOpened
+                && ($event->payload['sequence'] ?? null) === $sequence
+                && ($event->payload['signal_name'] ?? null) === $signalCall->name
+        );
+
+        /** @var WorkflowHistoryEvent|null $timeoutEvent */
+        $timeoutEvent = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                [HistoryEventType::TimerScheduled, HistoryEventType::TimerFired, HistoryEventType::TimerCancelled],
+                true,
+            )
+                && ($event->payload['timer_kind'] ?? null) === 'signal_timeout'
+                && ($event->payload['sequence'] ?? null) === $sequence
+                && ($event->payload['signal_name'] ?? null) === $signalCall->name
+        );
+
+        return $this->stringValue($openedEvent?->payload['signal_wait_id'] ?? null)
+            ?? $this->stringValue($timeoutEvent?->payload['signal_wait_id'] ?? null)
+            ?? SignalWaits::openWaitIdForName($run, $signalCall->name);
+    }
+
     private function stringValue(mixed $value): ?string
     {
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    private static function isInternalTimeoutTimerKind(mixed $value): bool
+    {
+        return in_array($value, ['condition_timeout', 'signal_timeout'], true);
     }
 
     private function signalValue(WorkflowHistoryEvent $event): mixed
@@ -3214,7 +3402,7 @@ final class WorkflowExecutor
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
-                && ($event->payload['timer_kind'] ?? null) !== 'condition_timeout'
+                && ! self::isInternalTimeoutTimerKind($event->payload['timer_kind'] ?? null)
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
 
@@ -3226,7 +3414,7 @@ final class WorkflowExecutor
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
-                && ($event->payload['timer_kind'] ?? null) !== 'condition_timeout'
+                && ! self::isInternalTimeoutTimerKind($event->payload['timer_kind'] ?? null)
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
 
@@ -3252,6 +3440,32 @@ final class WorkflowExecutor
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
                 && ($event->payload['timer_kind'] ?? null) === 'condition_timeout'
                 && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function signalTimeoutFiredEvent(WorkflowRun $run, int $sequence, string $signalName): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
+                && ($event->payload['timer_kind'] ?? null) === 'signal_timeout'
+                && ($event->payload['sequence'] ?? null) === $sequence
+                && ($event->payload['signal_name'] ?? null) === $signalName
+        );
+
+        return $event;
+    }
+
+    private function signalTimeoutScheduledEvent(WorkflowRun $run, int $sequence, string $signalName): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
+                && ($event->payload['timer_kind'] ?? null) === 'signal_timeout'
+                && ($event->payload['sequence'] ?? null) === $sequence
+                && ($event->payload['signal_name'] ?? null) === $signalName
         );
 
         return $event;
@@ -3700,6 +3914,11 @@ final class WorkflowExecutor
                 'last_error' => null,
             ])->save();
         }
+    }
+
+    private function cancelSignalTimeout(WorkflowRun $run, WorkflowTask $task, WorkflowTimer $timer): void
+    {
+        $this->cancelConditionTimeout($run, $task, $timer);
     }
 
     private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence): void

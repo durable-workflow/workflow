@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -25,7 +26,11 @@ final class SignalWaits
      *     status: string,
      *     source_status: string,
      *     opened_at: \Carbon\CarbonInterface|null,
+     *     deadline_at: \Carbon\CarbonInterface|null,
      *     resolved_at: \Carbon\CarbonInterface|null,
+     *     timeout_fired_at: \Carbon\CarbonInterface|null,
+     *     timeout_seconds: int|null,
+     *     timer_id: string|null,
      *     command_id: string|null,
      *     command_sequence: int|null,
      *     command_status: string|null,
@@ -66,7 +71,11 @@ final class SignalWaits
                     'status' => 'open',
                     'source_status' => 'waiting',
                     'opened_at' => $event->recorded_at ?? $event->created_at,
+                    'deadline_at' => null,
                     'resolved_at' => null,
+                    'timeout_fired_at' => null,
+                    'timeout_seconds' => self::intValue($event->payload['timeout_seconds'] ?? null),
+                    'timer_id' => null,
                     'command_id' => null,
                     'command_sequence' => null,
                     'command_status' => null,
@@ -75,6 +84,57 @@ final class SignalWaits
 
                 $openWaitIdsByName[$signalName] ??= [];
                 $openWaitIdsByName[$signalName][] = $waitId;
+
+                continue;
+            }
+
+            if (
+                in_array($event->event_type, [
+                    HistoryEventType::TimerScheduled,
+                    HistoryEventType::TimerFired,
+                    HistoryEventType::TimerCancelled,
+                ], true)
+                && self::stringValue($event->payload['timer_kind'] ?? null) === 'signal_timeout'
+            ) {
+                if ($signalName === null) {
+                    continue;
+                }
+
+                $explicitWaitId = self::stringValue($event->payload['signal_wait_id'] ?? null);
+                $waitId = $event->event_type === HistoryEventType::TimerScheduled
+                    ? $explicitWaitId
+                    : self::consumeOpenWaitId($openWaitIdsByName, $signalName, $explicitWaitId);
+
+                if ($waitId === null || ! isset($waits[$waitId])) {
+                    continue;
+                }
+
+                $waits[$waitId]['timer_id'] = self::stringValue($event->payload['timer_id'] ?? null)
+                    ?? $waits[$waitId]['timer_id'];
+                $waits[$waitId]['timeout_seconds'] = self::intValue($event->payload['delay_seconds'] ?? null)
+                    ?? self::intValue($event->payload['timeout_seconds'] ?? null)
+                    ?? $waits[$waitId]['timeout_seconds'];
+                $waits[$waitId]['deadline_at'] = self::timestamp($event->payload['fire_at'] ?? null)
+                    ?? $waits[$waitId]['deadline_at'];
+
+                if ($event->event_type === HistoryEventType::TimerScheduled) {
+                    continue;
+                }
+
+                if (($waits[$waitId]['status'] ?? null) !== 'open') {
+                    continue;
+                }
+
+                $waits[$waitId]['status'] = $event->event_type === HistoryEventType::TimerFired
+                    ? 'resolved'
+                    : 'cancelled';
+                $waits[$waitId]['source_status'] = $event->event_type === HistoryEventType::TimerFired
+                    ? 'timed_out'
+                    : 'timeout_cancelled';
+                $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
+                $waits[$waitId]['timeout_fired_at'] = $event->event_type === HistoryEventType::TimerFired
+                    ? self::timestamp($event->payload['fired_at'] ?? null) ?? ($event->recorded_at ?? $event->created_at)
+                    : $waits[$waitId]['timeout_fired_at'];
 
                 continue;
             }
@@ -253,6 +313,17 @@ final class SignalWaits
 
         return is_string($value) && is_numeric($value)
             ? (int) $value
+            : null;
+    }
+
+    private static function timestamp(mixed $value): ?\Carbon\CarbonInterface
+    {
+        if ($value instanceof \Carbon\CarbonInterface) {
+            return $value;
+        }
+
+        return is_string($value) && $value !== ''
+            ? Carbon::parse($value)
             : null;
     }
 

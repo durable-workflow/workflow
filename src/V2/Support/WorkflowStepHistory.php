@@ -168,7 +168,7 @@ final class WorkflowStepHistory
             self::SIGNAL_WAIT => in_array($event->event_type, [
                 HistoryEventType::SignalWaitOpened,
                 HistoryEventType::SignalApplied,
-            ], true),
+            ], true) || self::isSignalWaitTimerEvent($event),
             self::MEMO_UPSERT => $event->event_type === HistoryEventType::MemoUpserted,
             self::SEARCH_ATTRIBUTES_UPSERT => $event->event_type === HistoryEventType::SearchAttributesUpserted,
             self::SIDE_EFFECT => $event->event_type === HistoryEventType::SideEffectRecorded,
@@ -283,7 +283,22 @@ final class WorkflowStepHistory
             HistoryEventType::TimerFired,
             HistoryEventType::TimerCancelled,
         ], true)
-            && self::stringValue($event->payload['timer_kind'] ?? null) !== 'condition_timeout';
+            && ! self::isInternalTimeoutTimerKind($event->payload['timer_kind'] ?? null);
+    }
+
+    private static function isSignalWaitTimerEvent(WorkflowHistoryEvent $event): bool
+    {
+        return in_array($event->event_type, [
+            HistoryEventType::TimerScheduled,
+            HistoryEventType::TimerFired,
+            HistoryEventType::TimerCancelled,
+        ], true)
+            && self::stringValue($event->payload['timer_kind'] ?? null) === 'signal_timeout';
+    }
+
+    private static function isInternalTimeoutTimerKind(mixed $value): bool
+    {
+        return in_array($value, ['condition_timeout', 'signal_timeout'], true);
     }
 
     private static function intValue(mixed $value): ?int

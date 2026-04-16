@@ -145,7 +145,11 @@ final class RunTimerView
                 continue;
             }
 
-            if (! $includeConditionTimeout && ($timer['timer_kind'] ?? null) === 'condition_timeout') {
+            if (! $includeConditionTimeout && in_array(
+                $timer['timer_kind'] ?? null,
+                ['condition_timeout', 'signal_timeout'],
+                true,
+            )) {
                 continue;
             }
 
@@ -269,6 +273,8 @@ final class RunTimerView
             'condition_definition_fingerprint' => self::stringValue(
                 $event->payload['condition_definition_fingerprint'] ?? null
             ),
+            'signal_wait_id' => self::stringValue($event->payload['signal_wait_id'] ?? null),
+            'signal_name' => self::stringValue($event->payload['signal_name'] ?? null),
             'history_authority' => self::HISTORY_AUTHORITY_TYPED,
             'history_event_types' => [$event->event_type->value],
             'history_unsupported_reason' => null,
@@ -317,6 +323,8 @@ final class RunTimerView
             'condition_wait_id' => null,
             'condition_key' => null,
             'condition_definition_fingerprint' => null,
+            'signal_wait_id' => null,
+            'signal_name' => null,
             'history_authority' => $unsupportedTerminal
                 ? self::HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL
                 : self::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK,
@@ -366,6 +374,8 @@ final class RunTimerView
             'condition_wait_id' => null,
             'condition_key' => null,
             'condition_definition_fingerprint' => null,
+            'signal_wait_id' => null,
+            'signal_name' => null,
             'history_authority' => self::HISTORY_AUTHORITY_TYPED,
             'diagnostic_only' => false,
             'history_event_types' => [],

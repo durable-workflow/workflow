@@ -258,17 +258,29 @@ final class QueryStateReplayer
 
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
 
-                if ($signalEvent === null) {
+                if ($signalEvent !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    return new ReplayState($workflow, $sequence, $current);
+                    $current = $workflowExecution->send($this->signalValue($signalEvent));
+
+                    ++$sequence;
+
+                    continue;
+                }
+
+                if (
+                    $current->timeoutSeconds !== null
+                    && $this->signalTimeoutFiredEvent($run, $sequence, $current->name) !== null
+                ) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    $current = $workflowExecution->send(null);
+
+                    ++$sequence;
+
+                    continue;
                 }
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send($this->signalValue($signalEvent));
-
-                ++$sequence;
-
-                continue;
+                return new ReplayState($workflow, $sequence, $current);
             }
 
             if ($current instanceof ChildWorkflowCall) {
@@ -688,7 +700,7 @@ final class QueryStateReplayer
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
-                && ($event->payload['timer_kind'] ?? null) !== 'condition_timeout'
+                && ! self::isInternalTimeoutTimerKind($event->payload['timer_kind'] ?? null)
                 && ($event->payload['sequence'] ?? null) === $sequence
         );
 
@@ -700,8 +712,21 @@ final class QueryStateReplayer
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled
-                && ($event->payload['timer_kind'] ?? null) !== 'condition_timeout'
+                && ! self::isInternalTimeoutTimerKind($event->payload['timer_kind'] ?? null)
                 && ($event->payload['sequence'] ?? null) === $sequence
+        );
+
+        return $event;
+    }
+
+    private function signalTimeoutFiredEvent(WorkflowRun $run, int $sequence, string $signalName): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerFired
+                && ($event->payload['timer_kind'] ?? null) === 'signal_timeout'
+                && ($event->payload['sequence'] ?? null) === $sequence
+                && ($event->payload['signal_name'] ?? null) === $signalName
         );
 
         return $event;
@@ -712,6 +737,11 @@ final class QueryStateReplayer
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    private static function isInternalTimeoutTimerKind(mixed $value): bool
+    {
+        return in_array($value, ['condition_timeout', 'signal_timeout'], true);
     }
 
     private function activityException(

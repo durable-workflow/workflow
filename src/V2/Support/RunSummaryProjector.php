@@ -76,7 +76,7 @@ final class RunSummaryProjector
             : collect($timers)
                 ->first(
                     static fn (array $timer): bool => self::isAuthoritativeOpenTimer($timer)
-                        && ($timer['timer_kind'] ?? null) !== 'condition_timeout'
+                        && ! in_array($timer['timer_kind'] ?? null, ['condition_timeout', 'signal_timeout'], true)
                         && ($timer['id'] ?? null) !== ($openConditionWait['timer_id'] ?? null)
                 );
         $diagnosticTimer = $isTerminal || $openUpdateWait !== null
@@ -105,7 +105,6 @@ final class RunSummaryProjector
             || $openSignalApplicationWait !== null
             || $openConditionWait !== null
             || $openTimer !== null
-            || $nextTask !== null
             || $diagnosticChildWait !== null
         )
             ? null
@@ -118,7 +117,6 @@ final class RunSummaryProjector
             || $openSignalApplicationWait !== null
             || $openConditionWait !== null
             || $openTimer !== null
-            || $nextTask !== null
             || $diagnosticChildWait !== null
             || $openChildWait !== null
             || $pendingChildResolutionWait !== null
@@ -133,7 +131,6 @@ final class RunSummaryProjector
             || $openSignalApplicationWait !== null
             || $openConditionWait !== null
             || $openTimer !== null
-            || $nextTask !== null
             || $diagnosticChildWait !== null
             || $openChildWait !== null
             || $pendingChildResolutionWait !== null
@@ -196,6 +193,16 @@ final class RunSummaryProjector
             $openWaitId = $openConditionWait['id'];
             $resumeSourceKind = $openConditionWait['resume_source_kind'];
             $resumeSourceId = $openConditionWait['resume_source_id'];
+        } elseif ($openSignalWait !== null) {
+            $waitKind = 'signal';
+            $waitReason = ($openSignalWait['timeout_seconds'] ?? null) === null
+                ? sprintf('Waiting for signal %s', $openSignalWait['name'])
+                : sprintf('Waiting for signal %s or timeout', $openSignalWait['name']);
+            $waitStartedAt = $openSignalWait['opened_at'];
+            $waitDeadlineAt = $openSignalWait['deadline_at'];
+            $openWaitId = $openSignalWait['id'];
+            $resumeSourceKind = $openSignalWait['resume_source_kind'];
+            $resumeSourceId = $openSignalWait['resume_source_id'];
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
@@ -229,13 +236,6 @@ final class RunSummaryProjector
             $openWaitId = $openChildWait['id'];
             $resumeSourceKind = $openChildWait['resume_source_kind'];
             $resumeSourceId = $openChildWait['resume_source_id'];
-        } elseif ($openSignalWait !== null) {
-            $waitKind = 'signal';
-            $waitReason = sprintf('Waiting for signal %s', $openSignalWait['name']);
-            $waitStartedAt = $openSignalWait['opened_at'];
-            $openWaitId = $openSignalWait['id'];
-            $resumeSourceKind = $openSignalWait['resume_source_kind'];
-            $resumeSourceId = $openSignalWait['resume_source_id'];
         }
 
         [$livenessState, $livenessReason] = self::liveness(
@@ -928,6 +928,8 @@ final class RunSummaryProjector
      *     id: string,
      *     name: string,
      *     opened_at: \Carbon\CarbonInterface,
+     *     deadline_at: \Carbon\CarbonInterface|null,
+     *     timeout_seconds: int|null,
      *     resume_source_kind: string,
      *     resume_source_id: string|null
      * }|null
@@ -968,6 +970,8 @@ final class RunSummaryProjector
             'id' => $signal['signal_wait_id'],
             'name' => $signal['signal_name'],
             'opened_at' => $signal['opened_at'],
+            'deadline_at' => self::timestamp($signal['deadline_at'] ?? null),
+            'timeout_seconds' => self::intValue($signal['timeout_seconds'] ?? null),
             'resume_source_kind' => 'signal',
             'resume_source_id' => null,
         ];

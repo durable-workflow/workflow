@@ -10,6 +10,7 @@ final class SignalCall implements YieldedCommand
 {
     public function __construct(
         public readonly string $name,
+        public readonly ?int $timeoutSeconds = null,
     ) {
     }
 }

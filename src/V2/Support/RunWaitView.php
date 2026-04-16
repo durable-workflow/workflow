@@ -61,6 +61,7 @@ final class RunWaitView
             if (
                 in_array($timer['id'] ?? null, $conditionTimerIds, true)
                 || ($timer['timer_kind'] ?? null) === 'condition_timeout'
+                || ($timer['timer_kind'] ?? null) === 'signal_timeout'
             ) {
                 continue;
             }
@@ -71,7 +72,7 @@ final class RunWaitView
         }
 
         $waits = array_merge($waits, self::childWaits($run, $taskByChildCallId, $taskByChildRunId));
-        $waits = array_merge($waits, self::signalWaits($run));
+        $waits = array_merge($waits, self::signalWaits($run, $taskByTimerId));
 
         usort($waits, static function (array $left, array $right): int {
             $statusPriority = [
@@ -239,53 +240,68 @@ final class RunWaitView
     /**
      * @return list<array<string, mixed>>
      */
-    private static function signalWaits(WorkflowRun $run): array
+    private static function signalWaits(WorkflowRun $run, array $taskByTimerId): array
     {
         $commands = $run->commands->keyBy('id');
 
-        return array_values(array_map(static function (array $wait) use ($commands): array {
+        return array_values(array_map(static function (array $wait) use ($commands, $taskByTimerId): array {
             /** @var WorkflowCommand|null $command */
             $command = $wait['command_id'] === null
                 ? null
                 : $commands->get($wait['command_id']);
+            $timeoutSeconds = self::intValue($wait['timeout_seconds'] ?? null);
+            $timerId = self::stringValue($wait['timer_id'] ?? null);
+            $task = $timerId === null ? null : ($taskByTimerId[$timerId] ?? null);
 
             $summary = match ($wait['status']) {
-                'open' => sprintf('Waiting for signal %s.', $wait['signal_name']),
+                'open' => $timeoutSeconds === null
+                    ? sprintf('Waiting for signal %s.', $wait['signal_name'])
+                    : sprintf(
+                        'Waiting for signal %s or timeout after %s.',
+                        $wait['signal_name'],
+                        self::durationLabel($timeoutSeconds),
+                    ),
                 'cancelled' => match ($wait['source_status']) {
+                    'timeout_cancelled' => sprintf('Signal %s timeout was cancelled.', $wait['signal_name']),
                     'cancelled' => 'Signal wait ended when the run was cancelled.',
                     'terminated' => 'Signal wait ended when the run was terminated.',
                     'continued' => 'Signal wait ended when the run continued as new.',
                     'closed' => 'Signal wait ended when the run closed.',
                     default => 'Signal wait ended when the run failed.',
                 },
-                default => sprintf('Signal %s received.', $wait['signal_name']),
+                default => $wait['source_status'] === 'timed_out'
+                    ? sprintf('Signal %s timed out after %s.', $wait['signal_name'], self::durationLabel($timeoutSeconds ?? 0))
+                    : sprintf('Signal %s received.', $wait['signal_name']),
             };
 
             return [
                 'id' => $wait['signal_wait_id'],
                 'signal_wait_id' => $wait['signal_wait_id'],
                 'signal_id' => $wait['signal_id'] ?? null,
+                'timer_id' => $timerId,
                 'kind' => 'signal',
                 'sequence' => $wait['sequence'],
                 'status' => $wait['status'],
                 'source_status' => $wait['source_status'],
                 'summary' => $summary,
                 'opened_at' => $wait['opened_at'],
-                'deadline_at' => null,
+                'deadline_at' => self::timestamp($wait['deadline_at'] ?? null),
+                'timeout_fired_at' => self::timestamp($wait['timeout_fired_at'] ?? null),
                 'resolved_at' => $wait['resolved_at'],
                 'target_name' => $wait['signal_name'],
                 'target_type' => null,
-                'task_backed' => false,
-                'external_only' => true,
-                'resume_source_kind' => 'signal',
-                'resume_source_id' => $wait['command_id'],
-                'task_id' => null,
-                'task_type' => null,
-                'task_status' => null,
+                'task_backed' => self::isOpenTask($task),
+                'external_only' => $timerId === null,
+                'resume_source_kind' => $wait['source_status'] === 'timed_out' ? 'timer' : 'signal',
+                'resume_source_id' => $wait['source_status'] === 'timed_out' ? $timerId : $wait['command_id'],
+                'task_id' => $task?->id,
+                'task_type' => $task?->task_type?->value,
+                'task_status' => $task?->status?->value,
                 'command_id' => $wait['command_id'],
                 'command_sequence' => $wait['command_sequence'] ?? $command?->command_sequence,
                 'command_status' => $wait['command_status'] ?? $command?->status?->value,
                 'command_outcome' => $wait['command_outcome'] ?? $command?->outcome?->value,
+                'timeout_seconds' => $timeoutSeconds,
             ];
         }, SignalWaits::forRun($run)));
     }

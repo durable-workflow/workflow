@@ -2189,7 +2189,7 @@ final class WorkflowStub
                 'signal_wait_id' => $signalWaitId,
             ], static fn (mixed $value): bool => $value !== null), null, $command);
 
-            if (! $this->hasOpenTask($run->id)) {
+            if (! $this->hasOpenWorkflowTask($run->id)) {
                 /** @var WorkflowTask $task */
                 $task = self::taskQuery()->create([
                     'workflow_run_id' => $run->id,
@@ -2385,7 +2385,7 @@ final class WorkflowStub
                     'signal_wait_id' => $signalWaitId,
                 ], static fn (mixed $value): bool => $value !== null), null, $signalCommand);
 
-                if (! $this->hasOpenTask($run->id)) {
+                if (! $this->hasOpenWorkflowTask($run->id)) {
                     /** @var WorkflowTask $task */
                     $task = self::taskQuery()->create([
                         'workflow_run_id' => $run->id,
@@ -3785,14 +3785,6 @@ final class WorkflowStub
     private function resolvedCommandContext(): CommandContext
     {
         return $this->commandContext ?? CommandContext::phpApi();
-    }
-
-    private function hasOpenTask(string $runId): bool
-    {
-        return self::taskQuery()
-            ->where('workflow_run_id', $runId)
-            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
-            ->exists();
     }
 
     private function hasOpenWorkflowTask(string $runId): bool

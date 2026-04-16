@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestAwaitSignalTimeoutWorkflow;
 use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
 use Tests\Fixtures\V2\TestAwaitWorkflow;
 use Tests\Fixtures\V2\TestKeyedAwaitWithTimeoutWorkflow;
@@ -23,6 +24,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\WorkflowStub;
@@ -87,7 +89,7 @@ final class V2AwaitWorkflowTest extends TestCase
             'run_id' => $workflow->runId(),
         ], $workflow->output());
 
-        $this->assertSame(8, $workflow->summary()?->history_event_count);
+        $this->assertSame(9, $workflow->summary()?->history_event_count);
         $this->assertTrue($workflow->summary()?->continue_as_new_recommended);
 
         $this->assertSame([
@@ -97,6 +99,7 @@ final class V2AwaitWorkflowTest extends TestCase
             'UpdateAccepted',
             'UpdateApplied',
             'UpdateCompleted',
+            'MessageCursorAdvanced',
             'ConditionWaitSatisfied',
             'WorkflowCompleted',
         ], WorkflowHistoryEvent::query()
@@ -640,6 +643,7 @@ final class V2AwaitWorkflowTest extends TestCase
             'UpdateAccepted',
             'UpdateApplied',
             'UpdateCompleted',
+            'MessageCursorAdvanced',
             'ConditionWaitSatisfied',
             'WorkflowCompleted',
         ], WorkflowHistoryEvent::query()
@@ -840,6 +844,7 @@ final class V2AwaitWorkflowTest extends TestCase
             'UpdateAccepted',
             'UpdateApplied',
             'UpdateCompleted',
+            'MessageCursorAdvanced',
             'TimerCancelled',
             'ConditionWaitSatisfied',
             'WorkflowCompleted',
@@ -1290,6 +1295,171 @@ final class V2AwaitWorkflowTest extends TestCase
         }
     }
 
+    public function testAwaitStringSignalReturnsPayloadAndCancelsTimeoutWhenSignalWins(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestAwaitSignalTimeoutWorkflow::class, 'await-signal-payload');
+        $workflow->start('approved-by', 5);
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame('signal', $workflow->summary()?->wait_kind);
+        $this->assertSame('Waiting for signal approved-by or timeout', $workflow->summary()?->wait_reason);
+        $this->assertNotNull($workflow->summary()?->wait_deadline_at);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+        $signalWait = $this->findSignalWait($detail['waits']);
+        $timerTask = $this->findTask($detail['tasks'], TaskType::Timer->value);
+
+        $this->assertSame('open', $signalWait['status']);
+        $this->assertSame('waiting', $signalWait['source_status']);
+        $this->assertSame('approved-by', $signalWait['target_name']);
+        $this->assertSame(5, $signalWait['timeout_seconds']);
+        $this->assertNotNull($signalWait['deadline_at']);
+        $this->assertTrue($signalWait['task_backed']);
+        $this->assertSame($signalWait['signal_wait_id'], $timerTask['signal_wait_id']);
+        $this->assertSame('approved-by', $timerTask['signal_name']);
+        $this->assertStringContainsString('Signal timeout for 5 seconds', $timerTask['summary']);
+
+        $result = $workflow->attemptSignal('approved-by', 'Jordan');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('signal_received', $result->outcome());
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'payload' => 'Jordan',
+            'timed_out' => false,
+            'stage' => 'received',
+            'workflow_id' => 'await-signal-payload',
+            'run_id' => $workflow->runId(),
+        ], $workflow->output());
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        $this->assertSame(TimerStatus::Cancelled->value, $timer->status->value);
+
+        /** @var WorkflowHistoryEvent $timerCancelled */
+        $timerCancelled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::TimerCancelled->value)
+            ->firstOrFail();
+
+        $this->assertSame('signal_timeout', $timerCancelled->payload['timer_kind'] ?? null);
+        $this->assertSame($signalWait['signal_wait_id'], $timerCancelled->payload['signal_wait_id'] ?? null);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+            'TimerScheduled',
+            'SignalReceived',
+            'TimerCancelled',
+            'MessageCursorAdvanced',
+            'SignalApplied',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
+    public function testAwaitStringSignalTimeoutReturnsNullAndReplaysForQueries(): void
+    {
+        Queue::fake();
+
+        try {
+            Carbon::setTestNow(Carbon::parse('2026-04-16 12:00:00'));
+
+            $workflow = WorkflowStub::make(TestAwaitSignalTimeoutWorkflow::class, 'await-signal-timeout');
+            $workflow->start('approved-by', 5);
+
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            Carbon::setTestNow(now()->addSeconds(5));
+
+            $this->runReadyTimerTask($workflow->runId());
+
+            /** @var WorkflowRun $run */
+            $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+            $this->assertSame([
+                'stage' => 'timed-out',
+            ], (new QueryStateReplayer())->query($run, 'currentState'));
+
+            $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($workflow->runId()));
+            $signalWait = $this->findSignalWait($detail['waits']);
+            $workflowTask = $this->findTask($detail['tasks'], TaskType::Workflow->value);
+
+            $this->assertSame('resolved', $signalWait['status']);
+            $this->assertSame('timed_out', $signalWait['source_status']);
+            $this->assertSame('timer', $signalWait['resume_source_kind']);
+            $this->assertNotNull($signalWait['timeout_fired_at']);
+            $this->assertSame('Workflow task ready to apply signal timeout.', $workflowTask['summary']);
+
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame([
+                'payload' => null,
+                'timed_out' => true,
+                'stage' => 'timed-out',
+                'workflow_id' => 'await-signal-timeout',
+                'run_id' => $workflow->runId(),
+            ], $workflow->output());
+
+            $this->assertSame([
+                'StartAccepted',
+                'WorkflowStarted',
+                'SignalWaitOpened',
+                'TimerScheduled',
+                'TimerFired',
+                'WorkflowCompleted',
+            ], WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $workflow->runId())
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($eventType) => $eventType->value)
+                ->all());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testAwaitStringSignalPreservesEmptyAndMultipleArgumentPayloadRules(): void
+    {
+        Queue::fake();
+
+        $empty = WorkflowStub::make(TestAwaitSignalTimeoutWorkflow::class, 'await-signal-empty');
+        $empty->start('empty', 30);
+        $this->runReadyWorkflowTask($empty->runId());
+
+        $empty->attemptSignal('empty');
+        $this->runReadyWorkflowTask($empty->runId());
+
+        $this->assertTrue($empty->refresh()->completed());
+        $this->assertTrue($empty->output()['payload'] ?? null);
+
+        $multi = WorkflowStub::make(TestAwaitSignalTimeoutWorkflow::class, 'await-signal-multi');
+        $multi->start('multi', 30);
+        $this->runReadyWorkflowTask($multi->runId());
+
+        $multi->attemptSignalWithArguments('multi', ['alpha', 'beta']);
+        $this->runReadyWorkflowTask($multi->runId());
+
+        $this->assertTrue($multi->refresh()->completed());
+        $this->assertSame(['alpha', 'beta'], $multi->output()['payload'] ?? null);
+    }
+
     private function runReadyWorkflowTask(string $runId): void
     {
         /** @var WorkflowTask $task */
@@ -1329,6 +1499,21 @@ final class V2AwaitWorkflowTest extends TestCase
         }
 
         $this->fail('Condition wait was not found.');
+    }
+
+    /**
+     * @param list<array<string, mixed>> $waits
+     * @return array<string, mixed>
+     */
+    private function findSignalWait(array $waits): array
+    {
+        foreach ($waits as $wait) {
+            if (($wait['kind'] ?? null) === 'signal') {
+                return $wait;
+            }
+        }
+
+        $this->fail('Signal wait was not found.');
     }
 
     /**

@@ -129,6 +129,17 @@ final class RunTimerTask implements ShouldQueue
             $conditionDefinitionFingerprint = is_string($task->payload['condition_definition_fingerprint'] ?? null)
                 ? $task->payload['condition_definition_fingerprint']
                 : null;
+            $signalWaitId = is_string($task->payload['signal_wait_id'] ?? null)
+                ? $task->payload['signal_wait_id']
+                : null;
+            $signalName = is_string($task->payload['signal_name'] ?? null)
+                ? $task->payload['signal_name']
+                : null;
+            $timerKind = match (true) {
+                $conditionWaitId !== null => 'condition_timeout',
+                $signalWaitId !== null => 'signal_timeout',
+                default => null,
+            };
 
             WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, array_filter([
                 'timer_id' => $timer->id,
@@ -136,10 +147,12 @@ final class RunTimerTask implements ShouldQueue
                 'delay_seconds' => $timer->delay_seconds,
                 'fire_at' => $timer->fire_at?->toJSON(),
                 'fired_at' => $timer->fired_at?->toJSON(),
-                'timer_kind' => $conditionWaitId === null ? null : 'condition_timeout',
+                'timer_kind' => $timerKind,
                 'condition_wait_id' => $conditionWaitId,
                 'condition_key' => $conditionKey,
                 'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+                'signal_wait_id' => $signalWaitId,
+                'signal_name' => $signalName,
             ], static fn (mixed $value): bool => $value !== null), $task);
 
             $task->forceFill([
@@ -155,15 +168,21 @@ final class RunTimerTask implements ShouldQueue
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
                 'payload' => array_filter([
-                    'workflow_wait_kind' => $conditionWaitId === null ? null : 'condition',
-                    'open_wait_id' => $conditionWaitId,
-                    'resume_source_kind' => $conditionWaitId === null ? null : 'timer',
-                    'resume_source_id' => $conditionWaitId === null ? null : $timer->id,
-                    'timer_id' => $conditionWaitId === null ? null : $timer->id,
+                    'workflow_wait_kind' => match ($timerKind) {
+                        'condition_timeout' => 'condition',
+                        'signal_timeout' => 'signal',
+                        default => null,
+                    },
+                    'open_wait_id' => $conditionWaitId ?? $signalWaitId,
+                    'resume_source_kind' => $timerKind === null ? null : 'timer',
+                    'resume_source_id' => $timerKind === null ? null : $timer->id,
+                    'timer_id' => $timerKind === null ? null : $timer->id,
                     'condition_wait_id' => $conditionWaitId,
                     'condition_key' => $conditionKey,
                     'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
-                    'workflow_sequence' => $conditionWaitId === null ? null : $timer->sequence,
+                    'signal_wait_id' => $signalWaitId,
+                    'signal_name' => $signalName,
+                    'workflow_sequence' => $timerKind === null ? null : $timer->sequence,
                 ], static fn (mixed $value): bool => $value !== null),
                 'connection' => $run->connection,
                 'queue' => $run->queue,

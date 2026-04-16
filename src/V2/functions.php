@@ -87,19 +87,40 @@ if (! function_exists(__NAMESPACE__ . '\\all')) {
 }
 
 if (! function_exists(__NAMESPACE__ . '\\await')) {
-    function await(callable $condition, int|string|CarbonInterval|null $timeout = null, ?string $conditionKey = null): mixed
+    function await(callable|string $condition, int|string|CarbonInterval|null $timeout = null, ?string $conditionKey = null): mixed
     {
-        $condition = \Closure::fromCallable($condition);
+        if (
+            ! is_string($condition)
+            && is_string($timeout)
+            && $conditionKey === null
+            && preg_match('/(^P(T|\d)|\b\d+\s*(microseconds?|milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|months?|years?)\b)/i', $timeout) !== 1
+        ) {
+            $conditionKey = $timeout;
+            $timeout = null;
+        }
 
+        $timeoutSeconds = null;
         if ($timeout !== null) {
             if ($timeout instanceof CarbonInterval) {
-                $timeout = (int) ceil($timeout->totalSeconds);
+                $timeoutSeconds = (int) ceil($timeout->totalSeconds);
             } elseif (is_string($timeout)) {
-                $timeout = (int) ceil(CarbonInterval::fromString($timeout)->totalSeconds);
+                $timeoutSeconds = (int) ceil(CarbonInterval::fromString($timeout)->totalSeconds);
+            } else {
+                $timeoutSeconds = $timeout;
             }
 
+            $timeoutSeconds = max(0, $timeoutSeconds);
+        }
+
+        if (is_string($condition)) {
+            return WorkflowFiberContext::suspend(new SignalCall($condition, $timeoutSeconds));
+        }
+
+        $condition = \Closure::fromCallable($condition);
+
+        if ($timeoutSeconds !== null) {
             return WorkflowFiberContext::suspend(new AwaitWithTimeoutCall(
-                max(0, $timeout),
+                $timeoutSeconds,
                 $condition,
                 Support\ConditionWaitKey::normalize($conditionKey),
                 Support\ConditionWaitDefinition::fingerprint($condition),
@@ -115,9 +136,12 @@ if (! function_exists(__NAMESPACE__ . '\\await')) {
 }
 
 if (! function_exists(__NAMESPACE__ . '\\signal')) {
+    /**
+     * @deprecated Use await($name) for durable workflow-code signal waits.
+     */
     function signal(string $name): mixed
     {
-        return WorkflowFiberContext::suspend(new SignalCall($name));
+        return await($name);
     }
 }
 

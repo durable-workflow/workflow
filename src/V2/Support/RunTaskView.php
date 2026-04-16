@@ -65,6 +65,8 @@ final class RunTaskView
                     $conditionDefinitionFingerprint = self::stringValue(
                         $task->payload['condition_definition_fingerprint'] ?? null
                     );
+                    $signalWaitId = self::stringValue($task->payload['signal_wait_id'] ?? null);
+                    $signalName = self::stringValue($task->payload['signal_name'] ?? null);
                     $workflowWaitKind = self::stringValue($task->payload['workflow_wait_kind'] ?? null);
                     $workflowResumeSourceKind = self::stringValue($task->payload['resume_source_kind'] ?? null);
                     $workflowResumeSourceId = self::stringValue($task->payload['resume_source_id'] ?? null);
@@ -132,6 +134,8 @@ final class RunTaskView
                         'condition_wait_id' => $conditionWaitId,
                         'condition_key' => $conditionKey,
                         'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+                        'signal_wait_id' => $signalWaitId,
+                        'signal_name' => $signalName,
                         'workflow_wait_kind' => $workflowWaitKind,
                         'workflow_open_wait_id' => self::stringValue($task->payload['open_wait_id'] ?? null),
                         'workflow_resume_source_kind' => $workflowResumeSourceKind,
@@ -658,6 +662,8 @@ final class RunTaskView
             'condition_wait_id' => null,
             'condition_key' => null,
             'condition_definition_fingerprint' => null,
+            'signal_wait_id' => null,
+            'signal_name' => null,
             'workflow_wait_kind' => null,
             'workflow_open_wait_id' => null,
             'workflow_resume_source_kind' => null,
@@ -834,13 +840,17 @@ final class RunTaskView
             TaskType::Workflow => match ($task->status) {
                 TaskStatus::Ready => match (self::stringValue($task->payload['workflow_wait_kind'] ?? null)) {
                     'update' => 'Workflow task ready to apply accepted update.',
-                    'signal' => 'Workflow task ready to apply accepted signal.',
+                    'signal' => self::stringValue($task->payload['resume_source_kind'] ?? null) === 'timer'
+                        ? 'Workflow task ready to apply signal timeout.'
+                        : 'Workflow task ready to apply accepted signal.',
                     'condition' => 'Workflow task ready to apply condition timeout.',
                     default => 'Workflow task ready to resume the selected run.',
                 },
                 TaskStatus::Leased => match (self::stringValue($task->payload['workflow_wait_kind'] ?? null)) {
                     'update' => 'Workflow task leased to apply accepted update.',
-                    'signal' => 'Workflow task leased to apply accepted signal.',
+                    'signal' => self::stringValue($task->payload['resume_source_kind'] ?? null) === 'timer'
+                        ? 'Workflow task leased to apply signal timeout.'
+                        : 'Workflow task leased to apply accepted signal.',
                     'condition' => 'Workflow task leased to apply condition timeout.',
                     default => 'Workflow task leased to a worker.',
                 },
@@ -980,6 +990,12 @@ final class RunTaskView
             return $delaySeconds === null
                 ? 'condition timeout'
                 : sprintf('condition timeout for %s second%s', $delaySeconds, $delaySeconds === 1 ? '' : 's');
+        }
+
+        if (self::stringValue($task->payload['signal_wait_id'] ?? null) !== null) {
+            return $delaySeconds === null
+                ? 'signal timeout'
+                : sprintf('signal timeout for %s second%s', $delaySeconds, $delaySeconds === 1 ? '' : 's');
         }
 
         return $delaySeconds === null
