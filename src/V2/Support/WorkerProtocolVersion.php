@@ -31,8 +31,14 @@ final class WorkerProtocolVersion
 
     /**
      * Default page size for paginated history responses.
+     *
+     * Aligned with the standalone server's WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT
+     * default (server.worker_protocol.history_page_size_default in config/server.php).
+     * The server is the authority on pagination size — this constant is the
+     * contract default that external workers and SDK authors should assume
+     * when the server has not advertised a value via server_capabilities.
      */
-    public const DEFAULT_HISTORY_PAGE_SIZE = 200;
+    public const DEFAULT_HISTORY_PAGE_SIZE = 500;
 
     /**
      * Maximum allowed page size for paginated history responses.
