@@ -46,7 +46,9 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Workflow;
 use Workflow\V2\Support\LifecycleEventDispatcher;
+use Workflow\V2\Support\MemoUpsertService;
 use Workflow\V2\Support\SearchAttributeUpsertService;
+use Workflow\V2\Support\UpsertMemosCall;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -3152,6 +3154,10 @@ final class WorkflowExecutor
         int $sequence,
         UpsertMemoCall $call,
     ): WorkflowHistoryEvent {
+        // Phase 1 dual-write: maintain JSON blob for backward compatibility
+        // while also writing to typed memos table
+
+        // Legacy JSON blob merge (backward compatibility)
         $existing = is_array($run->memo) ? $run->memo : [];
 
         $merged = $existing;
@@ -3170,6 +3176,22 @@ final class WorkflowExecutor
 
         $run->memo = $merged;
         $run->save();
+
+        // New: Write to typed memos table
+        // This enables structured memo storage with explicit size/count limits
+        try {
+            $memoService = app(MemoUpsertService::class);
+            // Convert UpsertMemoCall to UpsertMemosCall format
+            $memoService->upsert($run, new UpsertMemosCall($call->entries), $sequence);
+        } catch (\Throwable $e) {
+            // Log but don't fail the workflow if typed storage fails
+            // JSON blob is still authoritative during transition
+            Log::warning('Failed to write typed memos', [
+                'run_id' => $run->id,
+                'error' => $e->getMessage(),
+                'sequence' => $sequence,
+            ]);
+        }
 
         $event = WorkflowHistoryEvent::record(
             $run,
