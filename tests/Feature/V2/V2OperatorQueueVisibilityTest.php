@@ -1,0 +1,215 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\V2;
+
+use Illuminate\Support\Carbon;
+use Tests\TestCase;
+use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\OperatorQueueVisibility;
+
+final class V2OperatorQueueVisibilityTest extends TestCase
+{
+    public function testForQueueSummarizesBacklogPollersLeasesAndRepairCandidates(): void
+    {
+        Carbon::setTestNow('2026-04-16 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 7);
+
+        $run = $this->createRun('queue-visibility-instance', '01JQUEUEVISIBLE00000000001', 'default');
+
+        $this->createTask($run, '01JQUEUEVISIBLETASK000001', TaskType::Workflow, TaskStatus::Ready, [
+            'available_at' => now()->subSeconds(45),
+            'created_at' => now()->subSeconds(50),
+        ]);
+        $this->createTask($run, '01JQUEUEVISIBLETASK000002', TaskType::Activity, TaskStatus::Ready, [
+            'available_at' => now()->subSeconds(20),
+            'created_at' => now()->subSeconds(20),
+            'last_dispatch_attempt_at' => now()->subSecond(),
+            'last_dispatch_error' => 'Queue transport unavailable.',
+        ]);
+        $expiredWorkflowTask = $this->createTask($run, '01JQUEUEVISIBLETASK000003', TaskType::Workflow, TaskStatus::Leased, [
+            'lease_owner' => 'worker-active',
+            'lease_expires_at' => now()->subMinute(),
+            'attempt_count' => 2,
+        ]);
+        $activityTask = $this->createTask($run, '01JQUEUEVISIBLETASK000004', TaskType::Activity, TaskStatus::Leased, [
+            'lease_owner' => 'worker-active',
+            'lease_expires_at' => now()->addMinute(),
+        ]);
+
+        ActivityAttempt::query()->create([
+            'id' => '01JQUEUEVISIBLEATTEMPT001',
+            'workflow_run_id' => $run->id,
+            'activity_execution_id' => '01JQUEUEVISIBLEACTEXEC01',
+            'workflow_task_id' => $activityTask->id,
+            'attempt_number' => 3,
+            'status' => ActivityAttemptStatus::Running->value,
+            'started_at' => now()->subMinute(),
+        ]);
+
+        $detail = OperatorQueueVisibility::forQueue('default', 'critical', [
+            [
+                'worker_id' => 'worker-stale',
+                'runtime' => 'python',
+                'sdk_version' => '0.1.0',
+                'build_id' => 'build-b',
+                'last_heartbeat_at' => now()->subMinutes(5),
+                'supported_workflow_types' => ['workflow.test'],
+                'supported_activity_types' => ['activity.test'],
+                'max_concurrent_workflow_tasks' => 4,
+                'max_concurrent_activity_tasks' => 8,
+            ],
+            [
+                'worker_id' => 'worker-active',
+                'runtime' => 'php',
+                'sdk_version' => '2.0.0',
+                'build_id' => 'build-a',
+                'last_heartbeat_at' => now(),
+                'supported_workflow_types' => ['workflow.test'],
+                'supported_activity_types' => [],
+                'max_concurrent_workflow_tasks' => 10,
+                'max_concurrent_activity_tasks' => 0,
+            ],
+        ], now(), 60);
+        $payload = $detail->toArray();
+
+        $this->assertSame('critical', $payload['name']);
+        $this->assertSame(2, $payload['stats']['approximate_backlog_count']);
+        $this->assertSame('45s', $payload['stats']['approximate_backlog_age']);
+        $this->assertSame(45, $payload['stats']['approximate_backlog_age_seconds']);
+        $this->assertSame('queue-visibility-instance', $payload['stats']['oldest_ready_task']['workflow_id']);
+        $this->assertSame(1, $payload['stats']['workflow_tasks']['ready_count']);
+        $this->assertSame(1, $payload['stats']['workflow_tasks']['leased_count']);
+        $this->assertSame(1, $payload['stats']['workflow_tasks']['expired_lease_count']);
+        $this->assertSame(1, $payload['stats']['activity_tasks']['ready_count']);
+        $this->assertSame(1, $payload['stats']['activity_tasks']['leased_count']);
+        $this->assertSame(0, $payload['stats']['activity_tasks']['expired_lease_count']);
+        $this->assertSame(1, $payload['stats']['pollers']['active_count']);
+        $this->assertSame(1, $payload['stats']['pollers']['stale_count']);
+        $this->assertSame(60, $payload['stats']['pollers']['stale_after_seconds']);
+        $this->assertSame('worker-active', $payload['pollers'][0]['worker_id']);
+        $this->assertFalse($payload['pollers'][0]['is_stale']);
+        $this->assertSame('worker-stale', $payload['pollers'][1]['worker_id']);
+        $this->assertSame('stale', $payload['pollers'][1]['status']);
+        $this->assertSame(3, $payload['repair']['candidates']);
+        $this->assertSame(1, $payload['repair']['dispatch_failed']);
+        $this->assertSame(1, $payload['repair']['expired_leases']);
+        $this->assertSame(1, $payload['repair']['dispatch_overdue']);
+        $this->assertTrue($payload['repair']['needs_attention']);
+        $this->assertSame(7, $payload['repair']['policy']['redispatch_after_seconds']);
+        $this->assertSame($expiredWorkflowTask->id, $payload['current_leases'][0]['task_id']);
+        $this->assertSame('workflow', $payload['current_leases'][0]['task_type']);
+        $this->assertTrue($payload['current_leases'][0]['is_expired']);
+        $this->assertSame(2, $payload['current_leases'][0]['workflow_task_attempt']);
+        $this->assertSame($activityTask->id, $payload['current_leases'][1]['task_id']);
+        $this->assertSame('activity', $payload['current_leases'][1]['task_type']);
+        $this->assertFalse($payload['current_leases'][1]['is_expired']);
+        $this->assertSame(3, $payload['current_leases'][1]['attempt_number']);
+    }
+
+    public function testForNamespaceListsTaskQueuesFromTasksAndInjectedPollerOnlyQueues(): void
+    {
+        Carbon::setTestNow('2026-04-16 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $defaultRun = $this->createRun('queue-default-instance', '01JQUEUENSDEFAULT00000001', 'default');
+        $otherRun = $this->createRun('queue-other-instance', '01JQUEUENSOTHER000000001', 'other');
+
+        $this->createTask($defaultRun, '01JQUEUENSDEFAULTTASK001', TaskType::Workflow, TaskStatus::Ready, [
+            'queue' => 'alpha',
+        ]);
+        $this->createTask($otherRun, '01JQUEUENSOTHERTASK0001', TaskType::Workflow, TaskStatus::Ready, [
+            'queue' => 'beta',
+        ]);
+
+        $snapshot = OperatorQueueVisibility::forNamespace('default', [
+            'poller-only' => [
+                [
+                    'worker_id' => 'worker-poller-only',
+                    'runtime' => 'python',
+                    'last_heartbeat_at' => now(),
+                ],
+            ],
+        ], now(), 60)->toArray();
+
+        $this->assertSame('default', $snapshot['namespace']);
+        $this->assertSame(['alpha', 'poller-only'], array_column($snapshot['task_queues'], 'name'));
+        $queues = collect($snapshot['task_queues'])->keyBy('name');
+        $this->assertSame(1, $queues->get('alpha')['stats']['approximate_backlog_count']);
+        $this->assertSame(1, $queues->get('poller-only')['stats']['pollers']['active_count']);
+        $this->assertSame(0, $queues->get('poller-only')['stats']['approximate_backlog_count']);
+        $this->assertFalse($queues->has('beta'));
+    }
+
+    private function createRun(string $instanceId, string $runId, string $namespace): WorkflowRun
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => $instanceId,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'namespace' => $namespace,
+            'run_count' => 1,
+            'started_at' => now()->subMinutes(5),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'id' => $runId,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'namespace' => $namespace,
+            'status' => 'waiting',
+            'started_at' => now()->subMinutes(5),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        return $run;
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    private function createTask(
+        WorkflowRun $run,
+        string $taskId,
+        TaskType $taskType,
+        TaskStatus $status,
+        array $attributes = [],
+    ): WorkflowTask {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create(array_merge([
+            'id' => $taskId,
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => $taskType->value,
+            'status' => $status->value,
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'critical',
+            'available_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $attributes));
+
+        return $task;
+    }
+}
