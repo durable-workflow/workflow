@@ -7,10 +7,10 @@ namespace Tests\Feature;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
-use Workflow\V2\WorkflowStub;
+use Workflow\V2\Activity;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Workflow;
-use Workflow\V2\Activity;
+use Workflow\V2\WorkflowStub;
 
 /**
  * Tests v1→v2 migration path to ensure:
@@ -26,23 +26,13 @@ class MigrationTest extends TestCase
     {
         parent::setUp();
 
-        // Fresh database for each test
-        DB::statement('SET FOREIGN_KEY_CHECKS=0');
-        $tables = DB::select('SHOW TABLES');
-        foreach ($tables as $table) {
-            $tableName = array_values((array) $table)[0];
-            if ($tableName !== 'migrations') {
-                Schema::dropIfExists($tableName);
-            }
-        }
-        DB::statement('SET FOREIGN_KEY_CHECKS=1');
-        DB::table('migrations')->truncate();
+        Schema::dropAllTables();
+
+        $this->artisan('migrate:install');
     }
 
-    /**
-     * @test
-     */
-    public function it_runs_v1_migrations_without_errors()
+
+    public function testItRunsV1MigrationsWithoutErrors()
     {
         $this->runV1Migrations();
 
@@ -56,14 +46,12 @@ class MigrationTest extends TestCase
 
         // Assert v1 table structure
         $this->assertTrue(Schema::hasColumns('workflows', [
-            'id', 'class', 'arguments', 'output', 'status', 'created_at', 'updated_at'
+            'id', 'class', 'arguments', 'output', 'status', 'created_at', 'updated_at',
         ]));
     }
 
-    /**
-     * @test
-     */
-    public function it_preserves_v1_workflow_data_after_v2_migration()
+
+    public function testItPreservesV1WorkflowDataAfterV2Migration()
     {
         // Set up v1 schema and data
         $this->runV1Migrations();
@@ -96,14 +84,18 @@ class MigrationTest extends TestCase
         $this->assertEquals($v1Workflow->arguments, $v1WorkflowAfter->arguments);
 
         // Assert v1 related data is unchanged
-        $this->assertEquals($v1LogCount, DB::table('workflow_logs')->where('stored_workflow_id', $v1WorkflowId)->count());
-        $this->assertEquals($v1SignalCount, DB::table('workflow_signals')->where('stored_workflow_id', $v1WorkflowId)->count());
+        $this->assertEquals(
+            $v1LogCount,
+            DB::table('workflow_logs')->where('stored_workflow_id', $v1WorkflowId)->count()
+        );
+        $this->assertEquals(
+            $v1SignalCount,
+            DB::table('workflow_signals')->where('stored_workflow_id', $v1WorkflowId)->count()
+        );
     }
 
-    /**
-     * @test
-     */
-    public function it_allows_v2_workflows_after_migration()
+
+    public function testItAllowsV2WorkflowsAfterMigration()
     {
         // Set up v1 schema and data
         $this->runV1Migrations();
@@ -114,30 +106,34 @@ class MigrationTest extends TestCase
 
         // Start a v2 workflow
         $workflow = WorkflowStub::make(TestMigrationWorkflow::class, 'migration-test-v2-1');
-        $runId = $workflow->start(['test' => true], StartOptions::rejectDuplicate());
+        $result = $workflow->start([
+            'test' => true,
+        ], StartOptions::rejectDuplicate());
+        $runId = $result->runId();
 
         // Assert v2 data was created
-        $this->assertNotNull($runId);
+        $this->assertIsString($runId);
+        $this->assertSame('migration-test-v2-1', $result->instanceId());
 
         $instance = DB::table('workflow_instances')
-            ->where('instance_id', 'migration-test-v2-1')
+            ->where('id', 'migration-test-v2-1')
             ->first();
         $this->assertNotNull($instance);
+        $this->assertEquals($runId, $instance->current_run_id);
 
         $run = DB::table('workflow_runs')
-            ->where('run_id', $runId)
+            ->where('id', $runId)
             ->first();
         $this->assertNotNull($run);
+        $this->assertEquals('migration-test-v2-1', $run->workflow_instance_id);
 
         // Assert v1 data is still intact
         $v1Count = DB::table('workflows')->count();
         $this->assertGreaterThan(0, $v1Count, 'v1 workflows should still exist');
     }
 
-    /**
-     * @test
-     */
-    public function it_tracks_v1_workflows_separately_from_v2()
+
+    public function testItTracksV1WorkflowsSeparatelyFromV2()
     {
         // Set up v1 schema and data
         $this->runV1Migrations();
@@ -148,7 +144,10 @@ class MigrationTest extends TestCase
 
         // Start a v2 workflow
         $workflow = WorkflowStub::make(TestMigrationWorkflow::class, 'migration-test-coexist');
-        $runId = $workflow->start(['test' => true], StartOptions::rejectDuplicate());
+        $result = $workflow->start([
+            'test' => true,
+        ], StartOptions::rejectDuplicate());
+        $this->assertIsString($result->runId());
 
         // v1 workflow should be in workflows table
         $v1Exists = DB::table('workflows')->where('id', $v1Id)->exists();
@@ -156,7 +155,7 @@ class MigrationTest extends TestCase
 
         // v2 workflow should be in workflow_instances table
         $v2Exists = DB::table('workflow_instances')
-            ->where('instance_id', 'migration-test-coexist')
+            ->where('id', 'migration-test-coexist')
             ->exists();
         $this->assertTrue($v2Exists, 'v2 workflow should exist in workflow_instances table');
 
@@ -168,22 +167,22 @@ class MigrationTest extends TestCase
 
         // v1 workflow should NOT be in workflow_instances table
         $v1InV2Table = DB::table('workflow_instances')
-            ->where('instance_id', 'test-v1-workflow')
+            ->where('id', 'test-v1-workflow')
             ->exists();
         $this->assertFalse($v1InV2Table, 'v1 workflow should not appear in v2 workflow_instances table');
     }
 
-    /**
-     * @test
-     */
-    public function it_preserves_v1_workflow_with_timer()
+
+    public function testItPreservesV1WorkflowWithTimer()
     {
         $this->runV1Migrations();
 
         // Create v1 workflow with timer
         $workflowId = DB::table('workflows')->insertGetId([
             'class' => 'App\\TestWorkflow',
-            'arguments' => json_encode(['test' => true]),
+            'arguments' => json_encode([
+                'test' => true,
+            ]),
             'status' => 'running',
             'created_at' => now(),
             'updated_at' => now(),
@@ -192,7 +191,8 @@ class MigrationTest extends TestCase
         DB::table('workflow_timers')->insert([
             'stored_workflow_id' => $workflowId,
             'index' => 1,
-            'stop_at' => now()->addHours(2),
+            'stop_at' => now()
+                ->addHours(2),
             'created_at' => now(),
         ]);
 
@@ -207,17 +207,17 @@ class MigrationTest extends TestCase
         $this->assertEquals(1, $timer->index);
     }
 
-    /**
-     * @test
-     */
-    public function it_preserves_v1_workflow_with_signals()
+
+    public function testItPreservesV1WorkflowWithSignals()
     {
         $this->runV1Migrations();
 
         // Create v1 workflow with signals
         $workflowId = DB::table('workflows')->insertGetId([
             'class' => 'App\\OrderWorkflow',
-            'arguments' => json_encode(['order_id' => 123]),
+            'arguments' => json_encode([
+                'order_id' => 123,
+            ]),
             'status' => 'running',
             'created_at' => now(),
             'updated_at' => now(),
@@ -226,15 +226,20 @@ class MigrationTest extends TestCase
         DB::table('workflow_signals')->insert([
             'stored_workflow_id' => $workflowId,
             'method' => 'approve',
-            'arguments' => json_encode(['approved_by' => 'admin']),
+            'arguments' => json_encode([
+                'approved_by' => 'admin',
+            ]),
             'created_at' => now(),
         ]);
 
         DB::table('workflow_signals')->insert([
             'stored_workflow_id' => $workflowId,
             'method' => 'payment_received',
-            'arguments' => json_encode(['amount' => 99.99]),
-            'created_at' => now()->addMinutes(5),
+            'arguments' => json_encode([
+                'amount' => 99.99,
+            ]),
+            'created_at' => now()
+                ->addMinutes(5),
         ]);
 
         // Run v2 migrations
@@ -250,17 +255,17 @@ class MigrationTest extends TestCase
         $this->assertEquals('payment_received', $signals[1]->method);
     }
 
-    /**
-     * @test
-     */
-    public function it_preserves_v1_workflow_with_exception()
+
+    public function testItPreservesV1WorkflowWithException()
     {
         $this->runV1Migrations();
 
         // Create v1 workflow with exception
         $workflowId = DB::table('workflows')->insertGetId([
             'class' => 'App\\FailedWorkflow',
-            'arguments' => json_encode(['test' => true]),
+            'arguments' => json_encode([
+                'test' => true,
+            ]),
             'status' => 'failed',
             'created_at' => now(),
             'updated_at' => now(),
@@ -305,8 +310,8 @@ class MigrationTest extends TestCase
 
         foreach ($migrations as $migrationFile) {
             $path = __DIR__ . '/../../src/migrations/' . $migrationFile;
-            if (!file_exists($path)) {
-                throw new \RuntimeException("Migration not found: $path");
+            if (! file_exists($path)) {
+                throw new \RuntimeException("Migration not found: {$path}");
             }
 
             $migration = include $path;
@@ -354,45 +359,66 @@ class MigrationTest extends TestCase
         // Create a completed v1 workflow
         $completedId = DB::table('workflows')->insertGetId([
             'class' => 'App\\SimpleWorkflow',
-            'arguments' => json_encode(['name' => 'test']),
-            'output' => json_encode(['result' => 'success']),
+            'arguments' => json_encode([
+                'name' => 'test',
+            ]),
+            'output' => json_encode([
+                'result' => 'success',
+            ]),
             'status' => 'completed',
-            'created_at' => now()->subHours(2),
-            'updated_at' => now()->subHours(1),
+            'created_at' => now()
+                ->subHours(2),
+            'updated_at' => now()
+                ->subHours(1),
         ]);
 
         DB::table('workflow_logs')->insert([
             'stored_workflow_id' => $completedId,
             'index' => 1,
-            'now' => now()->subHours(2),
+            'now' => now()
+                ->subHours(2),
             'class' => 'App\\TestActivity',
-            'result' => json_encode(['done' => true]),
-            'created_at' => now()->subHours(2),
+            'result' => json_encode([
+                'done' => true,
+            ]),
+            'created_at' => now()
+                ->subHours(2),
         ]);
 
         // Create a running v1 workflow with signal
         $runningId = DB::table('workflows')->insertGetId([
             'class' => 'App\\OrderWorkflow',
-            'arguments' => json_encode(['order_id' => 123]),
+            'arguments' => json_encode([
+                'order_id' => 123,
+            ]),
             'status' => 'running',
-            'created_at' => now()->subMinutes(30),
-            'updated_at' => now()->subMinutes(10),
+            'created_at' => now()
+                ->subMinutes(30),
+            'updated_at' => now()
+                ->subMinutes(10),
         ]);
 
         DB::table('workflow_signals')->insert([
             'stored_workflow_id' => $runningId,
             'method' => 'approve',
-            'arguments' => json_encode(['approved_by' => 'admin']),
-            'created_at' => now()->subMinutes(20),
+            'arguments' => json_encode([
+                'approved_by' => 'admin',
+            ]),
+            'created_at' => now()
+                ->subMinutes(20),
         ]);
 
         // Create a pending v1 workflow
         $pendingId = DB::table('workflows')->insertGetId([
             'class' => 'App\\InvoiceWorkflow',
-            'arguments' => json_encode(['invoice_id' => 456]),
+            'arguments' => json_encode([
+                'invoice_id' => 456,
+            ]),
             'status' => 'pending',
-            'created_at' => now()->subMinutes(5),
-            'updated_at' => now()->subMinutes(5),
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now()
+                ->subMinutes(5),
         ]);
 
         return $completedId; // Return one for verification
@@ -406,7 +432,9 @@ class TestMigrationWorkflow extends Workflow
 {
     public function handle(array $input)
     {
-        return ['migration_test' => 'passed'];
+        return [
+            'migration_test' => 'passed',
+        ];
     }
 }
 
@@ -417,6 +445,8 @@ class TestMigrationActivity extends Activity
 {
     public function handle(array $input)
     {
-        return ['activity_result' => 'ok'];
+        return [
+            'activity_result' => 'ok',
+        ];
     }
 }
