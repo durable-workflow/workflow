@@ -46,6 +46,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Workflow;
 use Workflow\V2\Support\LifecycleEventDispatcher;
+use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -3082,8 +3083,11 @@ final class WorkflowExecutor
         int $sequence,
         UpsertSearchAttributesCall $call,
     ): WorkflowHistoryEvent {
-        $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
+        // Phase 1 dual-write: maintain JSON blob for backward compatibility
+        // while also writing to typed search attributes table
 
+        // Legacy JSON blob merge (backward compatibility)
+        $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
         $merged = $existing;
 
         foreach ($call->attributes as $key => $value) {
@@ -3095,11 +3099,25 @@ final class WorkflowExecutor
         }
 
         ksort($merged);
-
         StructuralLimits::guardSearchAttributeSize(json_encode($merged, JSON_THROW_ON_ERROR));
 
         $run->search_attributes = $merged;
         $run->save();
+
+        // New: Write to typed search attributes table
+        // This enables efficient Waterline visibility queries
+        try {
+            $searchAttributeService = app(SearchAttributeUpsertService::class);
+            $searchAttributeService->upsert($run, $call, $sequence);
+        } catch (\Throwable $e) {
+            // Log but don't fail the workflow if typed storage fails
+            // JSON blob is still authoritative during transition
+            Log::warning('Failed to write typed search attributes', [
+                'run_id' => $run->id,
+                'error' => $e->getMessage(),
+                'sequence' => $sequence,
+            ]);
+        }
 
         $event = WorkflowHistoryEvent::record(
             $run,
