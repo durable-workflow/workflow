@@ -397,8 +397,29 @@ final class VisibilityFilters
             $query->where("visibility_labels->{$key}", $value);
         }
 
+        // Phase 1 typed search attributes: use indexed typed table for filtering
+        // This leverages per-type indexes for efficient Waterline visibility queries
         foreach ($normalized['search_attributes'] ?? [] as $key => $value) {
-            $query->where("search_attributes->{$key}", $value);
+            $query->whereHas('searchAttributes', function ($q) use ($key, $value) {
+                $q->where('key', $key);
+
+                // Route to appropriate typed column based on value type
+                // This uses the indexes: workflow_search_attrs_key_{keyword,int,float,bool,datetime}
+                if (is_bool($value)) {
+                    $q->where('value_bool', $value);
+                } elseif (is_int($value)) {
+                    $q->where('value_int', $value);
+                } elseif (is_float($value)) {
+                    $q->where('value_float', $value);
+                } elseif ($value instanceof \DateTimeInterface) {
+                    $q->where('value_datetime', $value);
+                } elseif (is_string($value) && mb_strlen($value) <= 255) {
+                    $q->where('value_keyword', $value);
+                } else {
+                    // Long strings use value_string (not indexed, but rare in filters)
+                    $q->where('value_string', $value);
+                }
+            });
         }
 
         return $query;
