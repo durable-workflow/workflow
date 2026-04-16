@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\WorkflowStub;
 
 /**
  * Single source of truth for workflow schedule lifecycle.
@@ -32,6 +33,11 @@ use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
  *   - {@see createFromSpec()}   — rich spec/action form (used by the HTTP layer)
  *
  * All overlap and buffer semantics live in this class — no external enforcer.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static and instance method signatures on this class are
+ *      covered by the workflow package's semver guarantee. See
+ *      docs/api-stability.md.
  */
 final class ScheduleManager
 {

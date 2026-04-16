@@ -19,6 +19,14 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
+/**
+ * Sweeps activity executions whose schedule-to-start or start-to-close
+ * deadline has passed and fails them with a deterministic timeout record.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures on this class are covered by
+ *      the workflow package's semver guarantee. See docs/api-stability.md.
+ */
 final class ActivityTimeoutEnforcer
 {
     /**

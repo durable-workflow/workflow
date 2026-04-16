@@ -17,6 +17,10 @@ use Illuminate\Validation\ValidationException;
  *
  * Extracted from App\Http\Controllers\Api\WorkerController so the server
  * is no longer the source of truth for the command grammar.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures on this class are covered by
+ *      the workflow package's semver guarantee. See docs/api-stability.md.
  */
 final class WorkflowCommandNormalizer
 {

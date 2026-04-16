@@ -20,6 +20,10 @@ use RuntimeException;
  * Callers that do not understand compression can check whether
  * 'history_events_compressed' is present and fall back to re-fetching
  * without compression.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures on this class are covered by
+ *      the workflow package's semver guarantee. See docs/api-stability.md.
  */
 final class HistoryPayloadCompression
 {

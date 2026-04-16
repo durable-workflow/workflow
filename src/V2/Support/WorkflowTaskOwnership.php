@@ -20,6 +20,11 @@ use Workflow\V2\Models\WorkflowTask;
  *
  * Used by worker protocol endpoints (complete, fail, heartbeat) to verify
  * the worker has authority to modify the task.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The constructor signature and public instance method signatures on
+ *      this class are covered by the workflow package's semver guarantee.
+ *      See docs/api-stability.md.
  */
 class WorkflowTaskOwnership
 {

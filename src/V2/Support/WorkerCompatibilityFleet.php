@@ -10,6 +10,15 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 
+/**
+ * Tracks the fleet of worker compatibility heartbeats used by fleet and
+ * queue visibility APIs to determine which protocol versions are currently
+ * live against a given namespace/queue.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures on this class are covered by
+ *      the workflow package's semver guarantee. See docs/api-stability.md.
+ */
 final class WorkerCompatibilityFleet
 {
     private const LEGACY_CACHE_KEY = 'workflow:v2:compatibility:fleet';

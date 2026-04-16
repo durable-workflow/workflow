@@ -22,6 +22,15 @@ use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
+/**
+ * Periodic repair loop that scans for stuck workflow tasks, expired activity
+ * leases, and missing projections. Invoked by the embedded queue runner and
+ * by the standalone server's background sweep process.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures on this class are covered by
+ *      the workflow package's semver guarantee. See docs/api-stability.md.
+ */
 final class TaskWatchdog
 {
     public const LOOP_THROTTLE_KEY = 'workflow:v2:task-watchdog:looping';

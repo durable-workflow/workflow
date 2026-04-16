@@ -11,6 +11,11 @@ namespace Workflow\V2\Support;
  * and protocol version that external workers (including the standalone server)
  * must align to. Bump the version when the verb set, request/response shapes,
  * or pagination contract changes in a backwards-incompatible way.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures and constant names on this class
+ *      are covered by the workflow package's semver guarantee. See
+ *      docs/api-stability.md.
  */
 final class WorkerProtocolVersion
 {

@@ -11,6 +11,14 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 
+/**
+ * Scans the task table for stuck or expired workflow tasks that need to be
+ * redispatched, returning a fair round-robin batch of candidate task ids.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures on this class are covered by
+ *      the workflow package's semver guarantee. See docs/api-stability.md.
+ */
 final class TaskRepairCandidates
 {
     /**

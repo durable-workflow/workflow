@@ -29,6 +29,11 @@ use Workflow\V2\Models\WorkflowUpdate;
  * percentage of its hard ceiling. This gives operators time to
  * react (continue-as-new, scale, raise limits) before the hard
  * guard terminates the run.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures and constant names on this class
+ *      are covered by the workflow package's semver guarantee. See
+ *      docs/api-stability.md.
  */
 final class StructuralLimits
 {

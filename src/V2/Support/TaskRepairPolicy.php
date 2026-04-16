@@ -8,6 +8,17 @@ use Carbon\CarbonInterface;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowTask;
 
+/**
+ * Central policy for task-repair timing, throttling, and backoff.
+ *
+ * All redispatch, scan, and failure-backoff knobs live here so the workflow
+ * package and the standalone server agree on identical semantics.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures and constant names on this class
+ *      are covered by the workflow package's semver guarantee. See
+ *      docs/api-stability.md.
+ */
 final class TaskRepairPolicy
 {
     public const REDISPATCH_AFTER_SECONDS = 3;

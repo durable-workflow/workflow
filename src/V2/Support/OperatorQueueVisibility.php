@@ -14,6 +14,14 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
+/**
+ * Produces a per-namespace snapshot of queue depth and active leases for the
+ * operator/fleet visibility APIs.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures on this class are covered by
+ *      the workflow package's semver guarantee. See docs/api-stability.md.
+ */
 final class OperatorQueueVisibility
 {
     private const CURRENT_LEASE_LIMIT = 50;

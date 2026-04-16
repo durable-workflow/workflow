@@ -22,6 +22,10 @@ use Workflow\Serializers\Serializer;
  * payloads (or any other codec) preserve the exact bytes they produced.
  *
  * @see docs/configuration/worker-protocol.md
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ *      The public static method signatures on this class are covered by
+ *      the workflow package's semver guarantee. See docs/api-stability.md.
  */
 final class PayloadEnvelopeResolver
 {
