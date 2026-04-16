@@ -6,6 +6,7 @@ namespace Workflow\V2\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\RepairBlockedReason;
@@ -58,6 +59,23 @@ class WorkflowRunSummary extends Model
     public function run(): BelongsTo
     {
         return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'id', 'id');
+    }
+
+    /**
+     * Typed search attributes relationship.
+     *
+     * Enables efficient Waterline visibility filtering via JOIN:
+     * WorkflowRunSummary::whereHas('searchAttributes', fn($q) =>
+     *     $q->where('key', 'customer_id')->where('value_keyword', 'cust_123')
+     * )->get();
+     */
+    public function searchAttributes(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('search_attribute_model', WorkflowSearchAttribute::class),
+            'workflow_run_id',
+            'id',
+        );
     }
 
     public function getInstanceIdAttribute(): string
@@ -117,5 +135,66 @@ class WorkflowRunSummary extends Model
             is_string($this->liveness_state) ? $this->liveness_state : null,
             is_string($this->wait_kind) ? $this->wait_kind : null,
         );
+    }
+
+    /**
+     * Get search attributes with dual-read fallback.
+     *
+     * Phase 1 dual-read: prefer typed table when available, fall back to JSON blob.
+     * This enables gradual migration without breaking existing Waterline queries.
+     *
+     * @return array<string, mixed> Key-value pairs
+     */
+    public function getTypedSearchAttributes(): array
+    {
+        // Try typed table first (optimal for new runs)
+        if ($this->relationLoaded('searchAttributes')) {
+            $typed = $this->searchAttributes->mapWithKeys(function (WorkflowSearchAttribute $attr) {
+                return [$attr->key => $attr->getValue()];
+            })->toArray();
+
+            if (! empty($typed)) {
+                return $typed;
+            }
+        }
+
+        // Fallback to JSON blob (for old runs or if typed storage failed)
+        return is_array($this->search_attributes) ? $this->search_attributes : [];
+    }
+
+    /**
+     * Scope query to runs with specific search attribute value.
+     *
+     * Efficient filtering using typed table indexes.
+     *
+     * Example:
+     * WorkflowRunSummary::withSearchAttribute('customer_id', 'cust_123')->get();
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param string $key Attribute key
+     * @param mixed $value Attribute value
+     *
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeWithSearchAttribute($query, string $key, mixed $value)
+    {
+        return $query->whereHas('searchAttributes', function ($q) use ($key, $value) {
+            $q->where('key', $key);
+
+            // Route to appropriate typed column
+            if (is_bool($value)) {
+                $q->where('value_bool', $value);
+            } elseif (is_int($value)) {
+                $q->where('value_int', $value);
+            } elseif (is_float($value)) {
+                $q->where('value_float', $value);
+            } elseif ($value instanceof \DateTimeInterface) {
+                $q->where('value_datetime', $value);
+            } elseif (is_string($value) && mb_strlen($value) <= 255) {
+                $q->where('value_keyword', $value);
+            } else {
+                $q->where('value_string', $value);
+            }
+        });
     }
 }
