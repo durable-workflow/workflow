@@ -375,9 +375,9 @@ Filters bind to versioned visibility contracts (not raw SQL).
 
 ## Next Steps
 
-1. **Update WorkflowExecutor** to use SearchAttributeUpsertService instead of JSON merge
-2. **Update Projections** - WorkflowRunSummary should expose typed attributes
-3. **Waterline Adapters** - Update visibility query builders to use typed table
+1. ✅ **Update WorkflowExecutor** to use SearchAttributeUpsertService instead of JSON merge (4613a19)
+2. ✅ **Update Projections** - WorkflowRunSummary should expose typed attributes (8211304)
+3. ✅ **Waterline Adapters** - Update visibility query builders to use typed table (3021205)
 4. **Documentation** - Update user-facing docs on search attribute limits and types
 5. **Performance Testing** - Benchmark indexed queries at scale (10k, 100k, 1M runs)
 6. **Memo Implementation** - Separate non-indexed memo table (Phase 1 parallel deliverable)
@@ -398,4 +398,5 @@ Filters bind to versioned visibility contracts (not raw SQL).
 - Migration: `src/migrations/2026_04_15_000150_create_workflow_search_attributes_table.php`
 - Model: `src/V2/Models/WorkflowSearchAttribute.php`
 - Service: `src/V2/Support/SearchAttributeUpsertService.php`
+- Visibility: `src/V2/Support/VisibilityFilters.php` - Waterline query adapter
 - Tests: `tests/Unit/V2/SearchAttributeTest.php`
