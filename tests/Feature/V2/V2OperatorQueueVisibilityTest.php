@@ -154,6 +154,32 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $this->assertFalse($queues->has('beta'));
     }
 
+    public function testOldestReadyTaskPrefersNullAvailableAtOverScheduledTasks(): void
+    {
+        Carbon::setTestNow('2026-04-16 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createRun('queue-null-instance', '01JQUEUENULL000000000001', 'default');
+
+        $this->createTask($run, '01JQUEUENULLTASK00000001', TaskType::Workflow, TaskStatus::Ready, [
+            'available_at' => now()->subSeconds(90),
+            'created_at' => now()->subSeconds(120),
+        ]);
+        $nullTask = $this->createTask($run, '01JQUEUENULLTASK00000002', TaskType::Activity, TaskStatus::Ready, [
+            'available_at' => null,
+            'created_at' => now()->subSeconds(30),
+        ]);
+
+        $detail = OperatorQueueVisibility::forQueue('default', 'critical', [], now())->toArray();
+
+        $this->assertSame($nullTask->id, $detail['stats']['oldest_ready_task']['task_id']);
+        $this->assertSame('activity', $detail['stats']['oldest_ready_task']['task_type']);
+        $this->assertSame(30, $detail['stats']['approximate_backlog_age_seconds']);
+        $this->assertSame(2, $detail['stats']['approximate_backlog_count']);
+    }
+
     private function createRun(string $instanceId, string $runId, string $namespace): WorkflowRun
     {
         $instance = WorkflowInstance::query()->create([

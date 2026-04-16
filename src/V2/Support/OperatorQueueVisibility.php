@@ -183,7 +183,7 @@ final class OperatorQueueVisibility
         $oldestReadyTask = self::readyTaskQuery($namespace, $taskQueue, $now)
             ->join($runTable, $runTable . '.id', '=', $taskTable . '.workflow_run_id')
             ->select($taskTable . '.*', $runTable . '.workflow_instance_id')
-            ->orderByRaw($taskTable . '.available_at is null desc')
+            ->orderByRaw('case when ' . $taskTable . '.available_at is null then 1 else 0 end desc')
             ->orderBy($taskTable . '.available_at')
             ->orderBy($taskTable . '.created_at')
             ->orderBy($taskTable . '.id')
