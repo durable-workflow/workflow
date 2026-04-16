@@ -10,6 +10,7 @@ use DateTimeZone;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
 
@@ -76,6 +77,14 @@ class WorkflowSchedule extends Model
             ConfiguredV2Models::resolve('instance_model', WorkflowInstance::class),
             'latest_workflow_instance_id',
         );
+    }
+
+    public function historyEvents(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('schedule_history_event_model', WorkflowScheduleHistoryEvent::class),
+            'workflow_schedule_id',
+        )->orderBy('sequence');
     }
 
     // ── Convenience accessors projecting spec/action JSON ────────────

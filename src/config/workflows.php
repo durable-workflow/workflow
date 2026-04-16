@@ -36,6 +36,7 @@ return [
         'run_timer_entry_model' => Workflow\V2\Models\WorkflowRunTimerEntry::class,
         'run_lineage_entry_model' => Workflow\V2\Models\WorkflowRunLineageEntry::class,
         'schedule_model' => Workflow\V2\Models\WorkflowSchedule::class,
+        'schedule_history_event_model' => Workflow\V2\Models\WorkflowScheduleHistoryEvent::class,
         'types' => [
             'workflows' => [
                 // 'billing.invoice-sync' => App\Workflows\InvoiceSyncWorkflow::class,

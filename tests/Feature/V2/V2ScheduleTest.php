@@ -12,6 +12,7 @@ use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ScheduleDescription;
 use Workflow\V2\Support\ScheduleManager;
@@ -458,6 +459,76 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame($schedule->id, $event->payload['schedule_ulid']);
         $this->assertSame('* * * * *', $event->payload['cron_expression']);
         $this->assertSame(1, $event->payload['trigger_number']);
+    }
+
+    public function testScheduleLifecycleRecordsScheduleLevelHistoryEvents(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'schedule-audit-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+
+        ScheduleManager::pause($schedule, 'operator hold');
+        $schedule->refresh();
+
+        ScheduleManager::resume($schedule);
+        $schedule->refresh();
+
+        ScheduleManager::update($schedule, notes: 'operator updated schedule');
+        $schedule->refresh();
+
+        $instanceId = ScheduleManager::trigger($schedule);
+        $this->assertNotNull($instanceId);
+        $schedule->refresh();
+
+        ScheduleManager::delete($schedule);
+        $schedule->refresh();
+
+        $skippedInstanceId = ScheduleManager::trigger($schedule);
+        $this->assertNull($skippedInstanceId);
+
+        $events = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertSame([
+            HistoryEventType::ScheduleCreated->value,
+            HistoryEventType::SchedulePaused->value,
+            HistoryEventType::ScheduleResumed->value,
+            HistoryEventType::ScheduleUpdated->value,
+            HistoryEventType::ScheduleTriggered->value,
+            HistoryEventType::ScheduleDeleted->value,
+            HistoryEventType::ScheduleTriggerSkipped->value,
+        ], $events
+            ->map(static fn (WorkflowScheduleHistoryEvent $event): string => $event->event_type->value)
+            ->all());
+
+        $this->assertSame(range(1, 7), $events->pluck('sequence')->all());
+
+        $created = $events[0];
+        $this->assertSame('schedule-audit-test', $created->schedule_id);
+        $this->assertSame($schedule->id, $created->workflow_schedule_id);
+        $this->assertSame('schedule-audit-test', $created->payload['schedule']['schedule_id']);
+        $this->assertSame(['* * * * *'], $created->payload['spec']['cron_expressions']);
+
+        $this->assertSame('operator hold', $events[1]->payload['reason']);
+        $this->assertContains('note', $events[3]->payload['changed_fields']);
+        $this->assertSame('operator updated schedule', $events[3]->payload['schedule']['note']);
+
+        $triggered = $events[4];
+        $this->assertSame($instanceId, $triggered->workflow_instance_id);
+        $this->assertSame(1, $triggered->payload['trigger_number']);
+        $this->assertSame('scheduled', $triggered->payload['outcome']);
+        $this->assertNotNull($triggered->workflow_run_id);
+
+        $this->assertSame('deleted', $events[5]->payload['reason']);
+        $this->assertSame('status_not_triggerable', $events[6]->payload['reason']);
+        $this->assertSame(1, $events[6]->payload['skipped_trigger_count']);
     }
 
     public function testTriggerDeletedScheduleTracksSkipReason(): void

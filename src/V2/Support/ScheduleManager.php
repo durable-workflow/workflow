@@ -18,6 +18,7 @@ use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 
 /**
  * Single source of truth for workflow schedule lifecycle.
@@ -137,6 +138,13 @@ final class ScheduleManager
         $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
 
+        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleCreated, [
+            'spec' => is_array($schedule->spec) ? $schedule->spec : [],
+            'action' => is_array($schedule->action) ? $schedule->action : [],
+            'overlap_policy' => $schedule->overlap_policy,
+            'next_fire_at' => $schedule->next_fire_at?->toIso8601String(),
+        ]);
+
         return $schedule;
     }
 
@@ -157,6 +165,11 @@ final class ScheduleManager
 
         $schedule->forceFill($updates)->save();
 
+        self::recordScheduleEvent($schedule, HistoryEventType::SchedulePaused, array_filter([
+            'reason' => $reason,
+            'paused_at' => $schedule->paused_at?->toIso8601String(),
+        ], static fn (mixed $value): bool => $value !== null));
+
         return $schedule;
     }
 
@@ -173,6 +186,10 @@ final class ScheduleManager
 
         $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
+
+        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleResumed, [
+            'next_fire_at' => $schedule->next_fire_at?->toIso8601String(),
+        ]);
 
         return $schedule;
     }
@@ -248,10 +265,20 @@ final class ScheduleManager
                 : (int) $schedule->remaining_actions;
         }
 
+        $changedFields = array_values(array_keys($updates));
+
         $schedule->forceFill($updates)->save();
 
         $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
+
+        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleUpdated, [
+            'changed_fields' => $changedFields,
+            'spec' => is_array($schedule->spec) ? $schedule->spec : [],
+            'action' => is_array($schedule->action) ? $schedule->action : [],
+            'overlap_policy' => $schedule->overlap_policy,
+            'next_fire_at' => $schedule->next_fire_at?->toIso8601String(),
+        ]);
 
         return $schedule;
     }
@@ -267,6 +294,11 @@ final class ScheduleManager
             'deleted_at' => now(),
             'next_fire_at' => null,
         ])->save();
+
+        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleDeleted, [
+            'reason' => 'deleted',
+            'deleted_at' => $schedule->deleted_at?->toIso8601String(),
+        ]);
 
         return $schedule;
     }
@@ -523,14 +555,20 @@ final class ScheduleManager
             $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
 
             if (! $schedule->status->allowsTrigger()) {
+                self::recordSkip($schedule, 'status_not_triggerable');
+
                 return null;
             }
 
             if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
+                self::recordSkip($schedule, 'remaining_actions_exhausted');
+
                 return null;
             }
 
             if (! self::overlapAllowed($schedule, $effectivePolicy)) {
+                self::recordSkip($schedule, 'overlap_policy_' . $effectivePolicy->value);
+
                 return null;
             }
 
@@ -564,6 +602,14 @@ final class ScheduleManager
         }
 
         self::recordScheduleTriggered($schedule, $result->runId, $occurrenceTime);
+        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleTriggered, array_filter([
+            'workflow_instance_id' => $result->instanceId,
+            'workflow_run_id' => $result->runId,
+            'outcome' => $outcome,
+            'effective_overlap_policy' => $effectiveOverlapPolicy ?? $schedule->overlap_policy,
+            'trigger_number' => (int) $schedule->fires_count + 1,
+            'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
+        ], static fn (mixed $value): bool => $value !== null));
 
         $schedule->recordFire($result->instanceId, $result->runId, $outcome);
         $schedule->forceFill([
@@ -583,6 +629,10 @@ final class ScheduleManager
                 'deleted_at' => now(),
                 'next_fire_at' => null,
             ])->save();
+            self::recordScheduleEvent($schedule, HistoryEventType::ScheduleDeleted, [
+                'reason' => 'max_runs_exhausted',
+                'deleted_at' => $schedule->deleted_at?->toIso8601String(),
+            ]);
         }
 
         return $result;
@@ -627,6 +677,23 @@ final class ScheduleManager
             'last_skipped_at' => now(),
             'skipped_trigger_count' => ($schedule->skipped_trigger_count ?? 0) + 1,
         ])->save();
+
+        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleTriggerSkipped, [
+            'reason' => $reason,
+            'skipped_trigger_count' => (int) $schedule->skipped_trigger_count,
+            'last_skipped_at' => $schedule->last_skipped_at?->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private static function recordScheduleEvent(
+        WorkflowSchedule $schedule,
+        HistoryEventType $eventType,
+        array $payload = [],
+    ): void {
+        WorkflowScheduleHistoryEvent::record($schedule, $eventType, $payload);
     }
 
     /**
