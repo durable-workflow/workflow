@@ -78,6 +78,21 @@ class WorkflowRunSummary extends Model
         );
     }
 
+    /**
+     * Workflow memos relationship.
+     *
+     * Memos are non-indexed returned-only metadata for describe/detail views.
+     * Unlike search attributes, memos are NOT filterable by contract.
+     */
+    public function memos(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('memo_model', WorkflowMemo::class),
+            'workflow_run_id',
+            'id',
+        );
+    }
+
     public function getInstanceIdAttribute(): string
     {
         return $this->workflow_instance_id;
@@ -160,6 +175,31 @@ class WorkflowRunSummary extends Model
 
         // Fallback to JSON blob (for old runs or if typed storage failed)
         return is_array($this->search_attributes) ? $this->search_attributes : [];
+    }
+
+    /**
+     * Get memos with dual-read fallback.
+     *
+     * Phase 1 dual-read: prefer typed table when available, fall back to JSON blob.
+     * Memos are returned-only metadata, excluded from filtering by contract.
+     *
+     * @return array<string, mixed> Key-value pairs
+     */
+    public function getMemos(): array
+    {
+        // Try typed table first (optimal for new runs)
+        if ($this->relationLoaded('memos')) {
+            $typed = $this->memos->mapWithKeys(function (WorkflowMemo $memo) {
+                return [$memo->key => $memo->getValue()];
+            })->toArray();
+
+            if (! empty($typed)) {
+                return $typed;
+            }
+        }
+
+        // Fallback to JSON blob (for old runs or if typed storage failed)
+        return is_array($this->memo) ? $this->memo : [];
     }
 
     /**
