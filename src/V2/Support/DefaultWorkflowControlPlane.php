@@ -46,6 +46,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         $memo = $options['memo'] ?? null;
         $searchAttributes = $options['search_attributes'] ?? null;
         $namespace = $this->resolveNamespace($options);
+        $commandContext = $this->commandContext($options);
         $executionTimeoutSeconds = isset($options['execution_timeout_seconds']) ? (int) $options['execution_timeout_seconds'] : null;
         $runTimeoutSeconds = isset($options['run_timeout_seconds']) ? (int) $options['run_timeout_seconds'] : null;
         $duplicatePolicy = ($options['duplicate_start_policy'] ?? null) === 'return_existing_active'
@@ -72,6 +73,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $memo,
             $searchAttributes,
             $namespace,
+            $commandContext,
             $executionTimeoutSeconds,
             $runTimeoutSeconds,
             $duplicatePolicy,
@@ -93,7 +95,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                         true
                     );
 
-                $command = WorkflowCommand::record($instance, $currentRun, $this->commandAttributes([
+                $command = WorkflowCommand::record($instance, $currentRun, $this->commandAttributes($commandContext, [
                     'command_type' => CommandType::Start->value,
                     'target_scope' => 'instance',
                     'status' => $canReturnExisting
@@ -193,7 +195,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'last_history_sequence' => 0,
                 ]);
 
-            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes($commandContext, [
                 'command_type' => CommandType::Start->value,
                 'target_scope' => 'instance',
                 'status' => CommandStatus::Accepted->value,
@@ -797,9 +799,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
      * @param array<string, mixed> $attributes
      * @return array<string, mixed>
      */
-    private function commandAttributes(array $attributes): array
+    private function commandAttributes(CommandContext $commandContext, array $attributes): array
     {
-        return array_merge(CommandContext::controlPlane()->attributes(), $attributes);
+        return array_merge($commandContext->attributes(), $attributes);
     }
 
     /**

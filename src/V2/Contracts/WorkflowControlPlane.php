@@ -36,6 +36,7 @@ interface WorkflowControlPlane
      * - business_key: string|null — caller-supplied business key
      * - labels: array<string, string>|null — visibility labels
      * - memo: array<string, mixed>|null — non-indexed metadata
+     * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - duplicate_start_policy: 'reject_duplicate'|'return_existing_active'
      *
      * @return array{

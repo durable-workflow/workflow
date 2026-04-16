@@ -143,7 +143,7 @@ class CacheLongPollWakeStore implements LongPollWakeStore
             default => [],
         };
 
-        $this->signal(...$channels);
+        $this->signal(...$this->normalizeChannels($channels));
     }
 
     /**
@@ -206,7 +206,7 @@ class CacheLongPollWakeStore implements LongPollWakeStore
             default => [],
         };
 
-        $this->signal(...$channels);
+        $this->signal(...$this->normalizeChannels($channels));
     }
 
     private function namespaceForTask(WorkflowTask $task): ?string

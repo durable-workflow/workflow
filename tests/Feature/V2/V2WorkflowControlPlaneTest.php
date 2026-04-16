@@ -133,6 +133,37 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertNotNull($result['workflow_run_id']);
     }
 
+    public function testStartSupportsCommandContext(): void
+    {
+        $result = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-start-context-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+            'command_context' => CommandContext::controlPlane()->with([
+                'caller' => [
+                    'type' => 'server',
+                    'label' => 'Standalone Server',
+                ],
+                'server' => [
+                    'namespace' => 'default',
+                    'command' => 'start',
+                ],
+            ]),
+        ]);
+
+        $this->assertTrue($result['started']);
+
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'ctrl-plane-start-context-1')
+            ->where('outcome', 'started_new')
+            ->firstOrFail();
+
+        $this->assertSame('control_plane', $command->source);
+        $this->assertSame('server', $command->commandContext()['caller']['type'] ?? null);
+        $this->assertSame('Standalone Server', $command->commandContext()['caller']['label'] ?? null);
+        $this->assertSame('default', $command->commandContext()['server']['namespace'] ?? null);
+        $this->assertSame('start', $command->commandContext()['server']['command'] ?? null);
+    }
+
     public function testStartRejectsDuplicate(): void
     {
         $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-dup-1', [
@@ -140,12 +171,31 @@ final class V2WorkflowControlPlaneTest extends TestCase
             'queue' => 'default',
         ]);
 
-        $result = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-dup-1');
+        $result = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-dup-1', [
+            'command_context' => CommandContext::controlPlane()->with([
+                'caller' => [
+                    'type' => 'server',
+                    'label' => 'Standalone Server',
+                ],
+                'server' => [
+                    'namespace' => 'default',
+                    'command' => 'start',
+                ],
+            ]),
+        ]);
 
         $this->assertFalse($result['started']);
         $this->assertSame('ctrl-plane-dup-1', $result['workflow_instance_id']);
         $this->assertSame('rejected_duplicate', $result['outcome']);
         $this->assertSame('instance_already_started', $result['reason']);
+
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'ctrl-plane-dup-1')
+            ->where('outcome', 'rejected_duplicate')
+            ->firstOrFail();
+
+        $this->assertSame('server', $command->commandContext()['caller']['type'] ?? null);
+        $this->assertSame('default', $command->commandContext()['server']['namespace'] ?? null);
     }
 
     public function testStartReturnExistingActive(): void
