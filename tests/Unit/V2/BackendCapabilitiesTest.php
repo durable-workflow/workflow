@@ -149,4 +149,62 @@ final class BackendCapabilitiesTest extends TestCase
 
         $this->assertArrayNotHasKey('concurrent_write_safety', $snapshot['structural_limits']['backend_adjustments']);
     }
+
+    // ---------------------------------------------------------------
+    //  Poll-mode queue relaxations (#286)
+    // ---------------------------------------------------------------
+
+    public function testPollModeAllowsSyncQueueDriver(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()->set('queue.default', 'sync');
+        config()->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertTrue($snapshot['queue']['supported']);
+        $this->assertTrue(BackendCapabilities::isSupported($snapshot));
+        $this->assertFalse($snapshot['queue']['capabilities']['requires_worker']);
+
+        $queueIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'queue_sync_unsupported');
+
+        $this->assertNotNull($queueIssue, 'The queue_sync_unsupported note should still be recorded informationally.');
+        $this->assertSame('info', $queueIssue['severity']);
+    }
+
+    public function testPollModeAllowsMissingQueueConnection(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()->set('queue.default', null);
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertTrue($snapshot['queue']['supported']);
+        $this->assertTrue(BackendCapabilities::isSupported($snapshot));
+
+        $queueIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'queue_connection_missing');
+
+        $this->assertNotNull($queueIssue);
+        $this->assertSame('info', $queueIssue['severity']);
+    }
+
+    public function testQueueModeStillRejectsSyncQueueDriver(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'queue');
+        config()->set('queue.default', 'sync');
+        config()->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertFalse($snapshot['queue']['supported']);
+        $this->assertFalse(BackendCapabilities::isSupported($snapshot));
+
+        $queueIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'queue_sync_unsupported');
+
+        $this->assertNotNull($queueIssue);
+        $this->assertSame('error', $queueIssue['severity']);
+    }
 }

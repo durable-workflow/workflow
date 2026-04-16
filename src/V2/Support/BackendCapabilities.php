@@ -103,19 +103,30 @@ final class BackendCapabilities
             : self::normalize(config(sprintf('queue.connections.%s.driver', $connection)));
         $issues = [];
 
+        // In poll mode, tasks are delivered to workers via HTTP poll rather than
+        // through a Laravel queue, so a sync or missing queue driver is an
+        // acceptable configuration — the queue backend is simply unused for
+        // task delivery. We still surface an informational note so operators
+        // can see what will happen if they later flip back to queue mode.
+        $pollMode = self::normalize(config('workflows.v2.task_dispatch_mode')) === 'poll';
+
         if ($connection === null || $driver === null) {
             $issues[] = self::issue(
                 'queue',
-                'error',
+                $pollMode ? 'info' : 'error',
                 'queue_connection_missing',
-                'Workflow v2 requires a configured asynchronous queue connection for durable task delivery.',
+                $pollMode
+                    ? 'No queue connection is configured; task dispatch runs in poll mode so workers receive tasks over HTTP instead of a queue worker.'
+                    : 'Workflow v2 requires a configured asynchronous queue connection for durable task delivery.',
             );
         } elseif ($driver === 'sync') {
             $issues[] = self::issue(
                 'queue',
-                'error',
+                $pollMode ? 'info' : 'error',
                 'queue_sync_unsupported',
-                'Workflow v2 requires an asynchronous queue worker; the sync queue driver executes jobs inline and cannot provide the worker/lease boundary.',
+                $pollMode
+                    ? 'Queue driver is [sync], which is acceptable in poll mode because tasks are delivered over HTTP instead of a queue worker.'
+                    : 'Workflow v2 requires an asynchronous queue worker; the sync queue driver executes jobs inline and cannot provide the worker/lease boundary.',
             );
         }
 
@@ -126,7 +137,7 @@ final class BackendCapabilities
             'capabilities' => [
                 'async_delivery' => $driver !== null && $driver !== 'sync',
                 'delayed_delivery' => $driver !== null && $driver !== 'sync',
-                'requires_worker' => true,
+                'requires_worker' => ! $pollMode,
                 'max_delay_seconds' => $driver === 'sqs' ? 900 : null,
                 'after_commit_option' => $connection === null ? null : config(
                     sprintf('queue.connections.%s.after_commit', $connection)
