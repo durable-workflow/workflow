@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Http\Request;
 use LogicException;
 use Tests\Fixtures\V2\TestScheduledWorkflow;
 use Tests\TestCase;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
@@ -1566,5 +1568,128 @@ final class V2ScheduleTest extends TestCase
 
         $schedule->refresh();
         $this->assertSame(2, (int) $schedule->fires_count);
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    //  CommandContext attribution on schedule operations (#297)
+    // ───────────────────────────────────────────────────────────────
+
+    public function testPauseRecordsCommandContextInHistoryEvent(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'pause-context-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+        );
+
+        ScheduleManager::pause(
+            $schedule,
+            reason: 'Operator requested pause',
+            context: CommandContext::waterline($this->newWaterlineRequest()),
+        );
+
+        $event = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::SchedulePaused->value)
+            ->firstOrFail();
+
+        $payload = $event->payload;
+        $this->assertIsArray($payload);
+        $this->assertArrayHasKey('command_context', $payload);
+        $this->assertSame('waterline', $payload['command_context']['source']);
+        $this->assertSame('waterline', $payload['command_context']['context']['caller']['type']);
+    }
+
+    public function testResumeRecordsCommandContextInHistoryEvent(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'resume-context-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+        );
+        ScheduleManager::pause($schedule);
+
+        ScheduleManager::resume(
+            $schedule->fresh(),
+            CommandContext::waterline($this->newWaterlineRequest()),
+        );
+
+        $event = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleResumed->value)
+            ->firstOrFail();
+
+        $this->assertSame('waterline', $event->payload['command_context']['source'] ?? null);
+    }
+
+    public function testDeleteRecordsCommandContextInHistoryEvent(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'delete-context-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+        );
+
+        ScheduleManager::delete(
+            $schedule,
+            CommandContext::waterline($this->newWaterlineRequest()),
+        );
+
+        $event = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleDeleted->value)
+            ->firstOrFail();
+
+        $this->assertSame('waterline', $event->payload['command_context']['source'] ?? null);
+    }
+
+    public function testTriggerRecordsCommandContextInScheduleTriggeredEvent(): void
+    {
+        WorkflowStub::fake();
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'trigger-context-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '*/5 * * * *',
+        );
+
+        $instanceId = ScheduleManager::trigger(
+            $schedule,
+            context: CommandContext::waterline($this->newWaterlineRequest()),
+        );
+
+        $this->assertNotNull($instanceId);
+
+        $event = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+            ->firstOrFail();
+
+        $this->assertSame('waterline', $event->payload['command_context']['source'] ?? null);
+    }
+
+    public function testScheduleOperationsWithoutContextDoNotAddCommandContextKey(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'no-context-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+        );
+        ScheduleManager::pause($schedule);
+
+        $event = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::SchedulePaused->value)
+            ->firstOrFail();
+
+        $this->assertArrayNotHasKey('command_context', (array) $event->payload);
+    }
+
+    private function newWaterlineRequest(): Request
+    {
+        $request = Request::create('/waterline/v2/schedules/test/pause', 'POST');
+        $request->headers->set('X-Request-Id', 'test-request-id');
+
+        return $request;
     }
 }

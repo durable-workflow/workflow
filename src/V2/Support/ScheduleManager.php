@@ -10,6 +10,7 @@ use DateTimeInterface;
 use DateTimeZone;
 use Illuminate\Support\Facades\DB;
 use LogicException;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -154,8 +155,11 @@ final class ScheduleManager
         return $schedule;
     }
 
-    public static function pause(WorkflowSchedule $schedule, ?string $reason = null): WorkflowSchedule
-    {
+    public static function pause(
+        WorkflowSchedule $schedule,
+        ?string $reason = null,
+        ?CommandContext $context = null,
+    ): WorkflowSchedule {
         if ($schedule->status === ScheduleStatus::Deleted) {
             throw new LogicException(sprintf('Cannot pause deleted schedule [%s].', $schedule->schedule_id));
         }
@@ -174,13 +178,15 @@ final class ScheduleManager
         self::recordScheduleEvent($schedule, HistoryEventType::SchedulePaused, array_filter([
             'reason' => $reason,
             'paused_at' => $schedule->paused_at?->toIso8601String(),
-        ], static fn (mixed $value): bool => $value !== null));
+        ], static fn (mixed $value): bool => $value !== null), $context);
 
         return $schedule;
     }
 
-    public static function resume(WorkflowSchedule $schedule): WorkflowSchedule
-    {
+    public static function resume(
+        WorkflowSchedule $schedule,
+        ?CommandContext $context = null,
+    ): WorkflowSchedule {
         if ($schedule->status !== ScheduleStatus::Paused) {
             throw new LogicException(sprintf('Schedule [%s] is not paused.', $schedule->schedule_id));
         }
@@ -195,7 +201,7 @@ final class ScheduleManager
 
         self::recordScheduleEvent($schedule, HistoryEventType::ScheduleResumed, [
             'next_fire_at' => $schedule->next_fire_at?->toIso8601String(),
-        ]);
+        ], $context);
 
         return $schedule;
     }
@@ -289,8 +295,10 @@ final class ScheduleManager
         return $schedule;
     }
 
-    public static function delete(WorkflowSchedule $schedule): WorkflowSchedule
-    {
+    public static function delete(
+        WorkflowSchedule $schedule,
+        ?CommandContext $context = null,
+    ): WorkflowSchedule {
         if ($schedule->status === ScheduleStatus::Deleted) {
             return $schedule;
         }
@@ -304,7 +312,7 @@ final class ScheduleManager
         self::recordScheduleEvent($schedule, HistoryEventType::ScheduleDeleted, [
             'reason' => 'deleted',
             'deleted_at' => $schedule->deleted_at?->toIso8601String(),
-        ]);
+        ], $context);
 
         return $schedule;
     }
@@ -313,16 +321,20 @@ final class ScheduleManager
      * Trigger a schedule once. Returns the started workflow instance id, or null
      * if the trigger was skipped (exhausted, overlap policy blocked it, etc.).
      */
-    public static function trigger(WorkflowSchedule $schedule, ?ScheduleOverlapPolicy $overlapPolicyOverride = null): ?string
-    {
-        return self::triggerDetailed($schedule, $overlapPolicyOverride)->instanceId;
+    public static function trigger(
+        WorkflowSchedule $schedule,
+        ?ScheduleOverlapPolicy $overlapPolicyOverride = null,
+        ?CommandContext $context = null,
+    ): ?string {
+        return self::triggerDetailed($schedule, $overlapPolicyOverride, $context)->instanceId;
     }
 
     public static function triggerDetailed(
         WorkflowSchedule $schedule,
         ?ScheduleOverlapPolicy $overlapPolicyOverride = null,
+        ?CommandContext $context = null,
     ): ScheduleTriggerResult {
-        return DB::transaction(static function () use ($schedule, $overlapPolicyOverride): ScheduleTriggerResult {
+        return DB::transaction(static function () use ($schedule, $overlapPolicyOverride, $context): ScheduleTriggerResult {
             /** @var WorkflowSchedule $schedule */
             $schedule = WorkflowSchedule::query()
                 ->lockForUpdate()
@@ -375,7 +387,11 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $overlapPolicy);
             }
 
-            $startResult = self::startRun($schedule, effectiveOverlapPolicy: $overlapPolicy->value);
+            $startResult = self::startRun(
+                $schedule,
+                effectiveOverlapPolicy: $overlapPolicy->value,
+                context: $context,
+            );
 
             return new ScheduleTriggerResult('triggered', $startResult->instanceId, $startResult->runId, null);
         });
@@ -502,6 +518,7 @@ final class ScheduleManager
         DateTimeInterface $from,
         DateTimeInterface $to,
         ?ScheduleOverlapPolicy $overlapPolicyOverride = null,
+        ?CommandContext $context = null,
     ): array {
         if ($schedule->status === ScheduleStatus::Deleted) {
             throw new LogicException(sprintf('Cannot backfill deleted schedule [%s].', $schedule->schedule_id));
@@ -516,7 +533,7 @@ final class ScheduleManager
             $effectivePolicy = $overlapPolicyOverride ?? $originalPolicy;
 
             try {
-                $instanceId = self::triggerForBackfill($schedule, $effectivePolicy, $occurrence['at']);
+                $instanceId = self::triggerForBackfill($schedule, $effectivePolicy, $occurrence['at'], $context);
                 $schedule->refresh();
 
                 $results[] = [
@@ -551,12 +568,13 @@ final class ScheduleManager
         WorkflowSchedule $schedule,
         ScheduleOverlapPolicy $overlapPolicy,
         DateTimeInterface $occurrenceTime,
+        ?CommandContext $context = null,
     ): ?string {
         $effectivePolicy = $overlapPolicy->isBuffer()
             ? ScheduleOverlapPolicy::AllowAll
             : $overlapPolicy;
 
-        return DB::transaction(static function () use ($schedule, $effectivePolicy, $occurrenceTime): ?string {
+        return DB::transaction(static function () use ($schedule, $effectivePolicy, $occurrenceTime, $context): ?string {
             /** @var WorkflowSchedule $schedule */
             $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
 
@@ -582,7 +600,13 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $effectivePolicy);
             }
 
-            return self::startRun($schedule, occurrenceTime: $occurrenceTime, outcome: 'backfilled', effectiveOverlapPolicy: $effectivePolicy->value)->instanceId;
+            return self::startRun(
+                $schedule,
+                occurrenceTime: $occurrenceTime,
+                outcome: 'backfilled',
+                effectiveOverlapPolicy: $effectivePolicy->value,
+                context: $context,
+            )->instanceId;
         });
     }
 
@@ -595,6 +619,7 @@ final class ScheduleManager
         ?DateTimeInterface $occurrenceTime = null,
         string $outcome = 'scheduled',
         ?string $effectiveOverlapPolicy = null,
+        ?CommandContext $context = null,
     ): ScheduleStartResult {
         $starter = app(ScheduleWorkflowStarter::class);
 
@@ -615,7 +640,7 @@ final class ScheduleManager
             'effective_overlap_policy' => $effectiveOverlapPolicy ?? $schedule->overlap_policy,
             'trigger_number' => (int) $schedule->fires_count + 1,
             'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
-        ], static fn (mixed $value): bool => $value !== null));
+        ], static fn (mixed $value): bool => $value !== null), $context);
 
         $schedule->recordFire($result->instanceId, $result->runId, $outcome);
         $schedule->forceFill([
@@ -698,7 +723,12 @@ final class ScheduleManager
         WorkflowSchedule $schedule,
         HistoryEventType $eventType,
         array $payload = [],
+        ?CommandContext $context = null,
     ): void {
+        if ($context !== null && ! array_key_exists('command_context', $payload)) {
+            $payload['command_context'] = $context->attributes();
+        }
+
         WorkflowScheduleHistoryEvent::record($schedule, $eventType, $payload);
     }
 
