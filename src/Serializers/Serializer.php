@@ -20,17 +20,19 @@ final class Serializer
      * Legacy magic dispatch — preserves the pre-codec-registry behavior for
      * the codec-specific surface: {@see serialize()} / {@see unserialize()}.
      *
-     * - serialize(): uses config('workflows.serializer') (default "json").
+     * - serialize(): uses config('workflows.serializer') (default "avro").
      * - unserialize(): sniffs the blob ("base64:" prefix → Base64, JSON-like →
-     *   Json, else Y).
+     *   Json, else Y). Avro blobs are not detectable by sniff alone, so
+     *   call sites with codec context should prefer
+     *   {@see self::unserializeWithCodec()}.
      *
      * Codec-independent helpers ({@see serializable()}, {@see serializeModels()},
      * {@see unserializeModels()}) are declared as first-class static methods
      * on this class and short-circuit before __callStatic so they produce the
-     * same result regardless of the configured codec. That is important for
-     * the JSON default: {@see Json} does not implement those helpers, and
-     * silently returning null from them used to drop exception trace frames
-     * and failure-property values during v2 failure normalization.
+     * same result regardless of the configured codec. They originated to
+     * keep the JSON path safe ({@see Json} does not implement those helpers
+     * itself), and silently returning null from them used to drop exception
+     * trace frames and failure-property values during v2 failure normalization.
      *
      * New code should prefer {@see self::serializeWithCodec()} /
      * {@see self::unserializeWithCodec()} which make the codec choice explicit.
@@ -106,7 +108,7 @@ final class Serializer
     /**
      * Serialize using an explicit codec name.
      *
-     * If $codec is null, falls back to the default codec (config value or "json").
+     * If $codec is null, falls back to the default codec (config value or "avro").
      */
     public static function serializeWithCodec(?string $codec, $data): string
     {
