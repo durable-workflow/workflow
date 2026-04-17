@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Models\WorkflowWorkerCompatibilityHeartbeat;
+use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 
 final class OperatorDashboardSummary
 {
@@ -49,19 +49,14 @@ final class OperatorDashboardSummary
         $now ??= now();
         $weekAgo = $now->copy()->subWeek();
 
-        // Get all terminal runs (completed, failed, cancelled, terminated) in last 7 days
-        // Group by hour
-        $runs = self::summaryModel()::query()
-            ->select(
-                DB::raw('DATE_FORMAT(closed_at, "%Y-%m-%d %H:00:00") as hour'),
-                'status_bucket',
-                DB::raw('COUNT(*) as count')
-            )
+        // Fetch terminal-run rows in the last 7 days and bucket them hourly in PHP
+        // to avoid DB-specific date formatting (DATE_FORMAT is MySQL-only).
+        $rows = self::summaryModel()::query()
+            ->select('closed_at', 'status_bucket')
             ->whereNotNull('closed_at')
             ->where('closed_at', '>=', $weekAgo)
             ->whereIn('status_bucket', ['completed', 'failed'])
-            ->groupBy('hour', 'status_bucket')
-            ->orderBy('hour')
+            ->orderBy('closed_at')
             ->get();
 
         // Build time series with all hours (fill gaps with zeros)
@@ -72,8 +67,9 @@ final class OperatorDashboardSummary
         ];
 
         $hourCounts = [];
-        foreach ($runs as $run) {
-            $hourCounts[$run->hour][$run->status_bucket] = $run->count;
+        foreach ($rows as $row) {
+            $hourKey = $row->closed_at->copy()->startOfHour()->format('Y-m-d H:00:00');
+            $hourCounts[$hourKey][$row->status_bucket] = ($hourCounts[$hourKey][$row->status_bucket] ?? 0) + 1;
         }
 
         // Generate all hours in the range
@@ -246,9 +242,9 @@ final class OperatorDashboardSummary
 
         // 1. Stuck workers (no heartbeat in last 5 minutes)
         $staleHeartbeatThreshold = $now->copy()->subMinutes(5);
-        $stuckWorkers = WorkflowWorkerCompatibilityHeartbeat::query()
-            ->where('last_heartbeat_at', '<', $staleHeartbeatThreshold)
-            ->where('last_heartbeat_at', '>', $now->copy()->subHour()) // Still recently active
+        $stuckWorkers = WorkerCompatibilityHeartbeat::query()
+            ->where('recorded_at', '<', $staleHeartbeatThreshold)
+            ->where('recorded_at', '>', $now->copy()->subHour()) // Still recently active
             ->count();
 
         if ($stuckWorkers > 0) {
