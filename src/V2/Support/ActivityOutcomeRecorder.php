@@ -106,13 +106,19 @@ final class ActivityOutcomeRecorder
                 return self::recorded(null);
             }
 
+            $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+                ? $run->payload_codec
+                : null;
+
             if (in_array($run->status, [RunStatus::Completed, RunStatus::Failed], true)) {
                 $lockedExecution->forceFill([
                     'status' => $throwable === null ? ActivityStatus::Completed : ActivityStatus::Failed,
-                    'result' => $throwable === null ? Serializer::serialize($result) : $lockedExecution->result,
+                    'result' => $throwable === null
+                        ? self::serializeWithCodec($result, $codec, $runCodec)
+                        : $lockedExecution->result,
                     'exception' => $throwable === null
                         ? $lockedExecution->exception
-                        : Serializer::serialize(FailureFactory::payload($throwable)),
+                        : self::serializeWithCodec(FailureFactory::payload($throwable), null, $runCodec),
                     'closed_at' => $lockedExecution->closed_at ?? now(),
                 ])->save();
 
@@ -138,9 +144,7 @@ final class ActivityOutcomeRecorder
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
             if ($throwable === null) {
-                $serializedResult = $codec !== null
-                    ? $result
-                    : Serializer::serialize($result);
+                $serializedResult = self::serializeWithCodec($result, $codec, $runCodec);
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,
@@ -434,5 +438,28 @@ final class ActivityOutcomeRecorder
     {
         return ! $throwable instanceof NonRetryableExceptionContract
             && $attemptCount < $maxAttempts;
+    }
+
+    /**
+     * Serialize an activity payload, preferring the worker-supplied codec
+     * (treats $value as already-serialized bytes), then the parent run's
+     * codec, then falling back to the package default.
+     *
+     * The encoded blob is stamped on the activity row; the workflow side
+     * later decodes it with the run codec (see ActivityExecution::activityResult).
+     * Pinning to the run codec keeps the bytes and the decode codec aligned
+     * even when the package default differs from the run codec.
+     */
+    private static function serializeWithCodec(mixed $value, ?string $workerCodec, ?string $runCodec): string
+    {
+        if (is_string($workerCodec) && $workerCodec !== '' && is_string($value)) {
+            return $value;
+        }
+
+        if (is_string($runCodec) && $runCodec !== '') {
+            return Serializer::serializeWithCodec($runCodec, $value);
+        }
+
+        return Serializer::serialize($value);
     }
 }

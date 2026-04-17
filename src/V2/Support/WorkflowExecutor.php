@@ -142,7 +142,7 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                            $current = $workflowExecution->send($this->activityResult($activityCompletion));
+                            $current = $workflowExecution->send($this->activityResult($activityCompletion, $run));
                         } else {
                             $failureId = $activityCompletion->payload['failure_id'] ?? null;
 
@@ -411,7 +411,7 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send($this->sideEffectResult($sideEffectEvent));
+                    $current = $workflowExecution->send($this->sideEffectResult($sideEffectEvent, $run));
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -909,7 +909,7 @@ final class WorkflowExecutor
 
                         if ($activityCompletion !== null) {
                             if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                                $results[$offset] = $this->activityResult($activityCompletion);
+                                $results[$offset] = $this->activityResult($activityCompletion, $run);
 
                                 continue;
                             }
@@ -1426,7 +1426,14 @@ final class WorkflowExecutor
         $commandContract = RunCommandContract::snapshot($childWorkflowCall->workflow);
         $now = now();
 
-        $serializedChildArguments = Serializer::serializeWithCodec($run->payload_codec, $metadata->arguments);
+        // Inherit the parent's run codec for the child so the encoded
+        // arguments (next line) match the codec stamped on the child run.
+        // Falling back to the package default when the parent has none
+        // keeps pre-pinned parents working.
+        $childCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+            ? $run->payload_codec
+            : CodecRegistry::defaultCodec();
+        $serializedChildArguments = Serializer::serializeWithCodec($childCodec, $metadata->arguments);
         StructuralLimits::guardPayloadSize($serializedChildArguments);
 
         /** @var WorkflowInstance $childInstance */
@@ -1448,7 +1455,7 @@ final class WorkflowExecutor
             'visibility_labels' => null,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
-            'payload_codec' => CodecRegistry::defaultCodec(),
+            'payload_codec' => $childCodec,
             'arguments' => $serializedChildArguments,
             'connection' => RoutingResolver::workflowConnection($childWorkflowCall->workflow, $metadata),
             'queue' => RoutingResolver::workflowQueue($childWorkflowCall->workflow, $metadata),
@@ -3120,7 +3127,7 @@ final class WorkflowExecutor
         return true;
     }
 
-    private function activityResult(WorkflowHistoryEvent $event): mixed
+    private function activityResult(WorkflowHistoryEvent $event, ?WorkflowRun $run = null): mixed
     {
         $serialized = $event->payload['result'] ?? null;
 
@@ -3128,15 +3135,29 @@ final class WorkflowExecutor
             return null;
         }
 
-        return Serializer::unserialize($serialized);
+        return $this->unserializePayloadWithRun($serialized, $run);
     }
 
-    private function sideEffectResult(WorkflowHistoryEvent $event): mixed
+    private function sideEffectResult(WorkflowHistoryEvent $event, ?WorkflowRun $run = null): mixed
     {
         $serialized = $event->payload['result'] ?? null;
 
         if (! is_string($serialized)) {
             return null;
+        }
+
+        return $this->unserializePayloadWithRun($serialized, $run);
+    }
+
+    /**
+     * Decode a payload bytes string using the run's pinned codec, falling
+     * back to the legacy codec-blind sniffer when no run codec is available
+     * (history events written before payload_codec was populated).
+     */
+    private function unserializePayloadWithRun(string $serialized, ?WorkflowRun $run): mixed
+    {
+        if ($run !== null && is_string($run->payload_codec) && $run->payload_codec !== '') {
+            return Serializer::unserializeWithCodec($run->payload_codec, $serialized);
         }
 
         return Serializer::unserialize($serialized);
