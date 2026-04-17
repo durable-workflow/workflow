@@ -107,4 +107,40 @@ final class CodecRegistry
     {
         return array_keys(self::CODECS);
     }
+
+    /**
+     * Language-neutral codecs that any SDK is expected to be able to decode.
+     *
+     * Public wire contract: only these codec names should be advertised to
+     * polyglot clients on `/api/cluster/info` and equivalent public endpoints.
+     * PHP-specific codecs are exposed separately via {@see engineSpecific()}.
+     *
+     * @return list<string>
+     */
+    public static function universal(): array
+    {
+        return ['json'];
+    }
+
+    /**
+     * Codecs that require an engine-specific runtime to decode.
+     *
+     * Keyed by engine name so polyglot SDKs can selectively opt in to a codec
+     * they know how to decode without PHP-flavored identifiers leaking into
+     * the primary `payload_codecs` wire field.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function engineSpecific(): array
+    {
+        $universal = self::universal();
+
+        $phpOnly = array_values(array_diff(array_keys(self::CODECS), $universal));
+
+        if ($phpOnly === []) {
+            return [];
+        }
+
+        return ['php' => $phpOnly];
+    }
 }
