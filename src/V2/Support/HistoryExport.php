@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Workflow\Serializers\Avro;
 use Workflow\Serializers\CodecRegistry;
 use Closure;
 use InvalidArgumentException;
@@ -163,7 +164,63 @@ final class HistoryExport
             ],
         ];
 
+        $bundle['codec_schemas'] = self::collectCodecSchemas($bundle);
+
         return self::withIntegrity(self::withRedaction($bundle, $run, $redactor));
+    }
+
+    /**
+     * Collect the well-known wire schemas needed to decode the payloads in
+     * this bundle offline.
+     *
+     * For Avro: embeds the generic-wrapper schema (used by every codec=avro
+     * payload that does not carry a typed schema). Consumers reading the
+     * export without the workflow runtime can use this to decode the
+     * `0x00`-prefixed Avro payloads.
+     *
+     * For JSON and other self-describing codecs: the map is empty.
+     *
+     * @param  array<string, mixed>  $bundle
+     * @return array<string, array<string, string>>
+     */
+    private static function collectCodecSchemas(array $bundle): array
+    {
+        $schemas = [];
+
+        if (self::bundleUsesCodec($bundle, 'avro')) {
+            $schemas['avro'] = [
+                'wrapper_schema' => Avro::wrapperSchemaJson(),
+                'wrapper_prefix_hex' => '00',
+                'typed_prefix_hex' => '01',
+            ];
+        }
+
+        return $schemas;
+    }
+
+    /**
+     * @param  array<string, mixed>  $bundle
+     */
+    private static function bundleUsesCodec(array $bundle, string $codec): bool
+    {
+        $payloadsCodec = $bundle['payloads']['codec'] ?? null;
+        if ($payloadsCodec === $codec) {
+            return true;
+        }
+
+        foreach (['commands', 'updates', 'signals', 'tasks'] as $section) {
+            if (! isset($bundle[$section]) || ! is_array($bundle[$section])) {
+                continue;
+            }
+
+            foreach ($bundle[$section] as $row) {
+                if (is_array($row) && ($row['payload_codec'] ?? null) === $codec) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

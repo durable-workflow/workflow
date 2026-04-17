@@ -1464,6 +1464,40 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('inline-redacted:payloads.arguments.data', $stubBundle['payloads']['arguments']['data']);
     }
 
+    public function testItEmbedsAvroWrapperSchemaWhenBundleContainsAvroPayloads(): void
+    {
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
+        config()->set('workflows.serializer', 'avro');
+        $run = $this->createMinimalCompletedRun('history-export-avro');
+        $run->forceFill(['payload_codec' => 'avro'])->save();
+
+        $bundle = HistoryExport::forRun($run->refresh(), Carbon::parse('2026-04-09 13:00:00'));
+
+        $this->assertArrayHasKey('codec_schemas', $bundle);
+        $this->assertArrayHasKey('avro', $bundle['codec_schemas']);
+        $schema = json_decode($bundle['codec_schemas']['avro']['wrapper_schema'], true);
+        $this->assertSame('record', $schema['type']);
+        $this->assertSame('Payload', $schema['name']);
+        $this->assertSame('durable_workflow', $schema['namespace']);
+        $this->assertSame('00', $bundle['codec_schemas']['avro']['wrapper_prefix_hex']);
+        $this->assertSame('01', $bundle['codec_schemas']['avro']['typed_prefix_hex']);
+    }
+
+    public function testItOmitsAvroSchemasWhenBundleHasNoAvroPayloads(): void
+    {
+        config()->set('workflows.serializer', 'json');
+        $run = $this->createMinimalCompletedRun('history-export-json');
+        $run->forceFill(['payload_codec' => 'json'])->save();
+
+        $bundle = HistoryExport::forRun($run->refresh(), Carbon::parse('2026-04-09 13:00:00'));
+
+        $this->assertArrayHasKey('codec_schemas', $bundle);
+        $this->assertSame([], $bundle['codec_schemas']);
+    }
+
     public function testItSignsHistoryExportIntegrityWhenSigningKeyIsConfigured(): void
     {
         config()->set('workflows.v2.history_export.signing_key', 'history-export-secret');
