@@ -66,7 +66,7 @@ class ActivityExecution extends Model
         }
 
         /** @var array<int, mixed> $arguments */
-        $arguments = Serializer::unserialize($this->arguments);
+        $arguments = $this->unserializeWithRunCodec($this->arguments);
 
         return $arguments;
     }
@@ -77,6 +77,24 @@ class ActivityExecution extends Model
             return null;
         }
 
-        return Serializer::unserialize($this->result);
+        return $this->unserializeWithRunCodec($this->result);
+    }
+
+    /**
+     * Decode an activity payload using the parent run's payload_codec when
+     * available. Activity executions inherit the run's codec — they do not
+     * carry their own payload_codec column. Falls back to the legacy
+     * codec-blind unserialize path when the run row is unreachable so that
+     * pre-codec-pinned rows still decode.
+     */
+    private function unserializeWithRunCodec(string $blob): mixed
+    {
+        $codec = $this->run?->payload_codec;
+
+        if (is_string($codec) && $codec !== '') {
+            return Serializer::unserializeWithCodec($codec, $blob);
+        }
+
+        return Serializer::unserialize($blob);
     }
 }

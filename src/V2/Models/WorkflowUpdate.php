@@ -76,7 +76,9 @@ class WorkflowUpdate extends Model
             return [];
         }
 
-        $arguments = Serializer::unserialize($this->arguments);
+        $arguments = is_string($this->payload_codec) && $this->payload_codec !== ''
+            ? Serializer::unserializeWithCodec($this->payload_codec, $this->arguments)
+            : Serializer::unserialize($this->arguments);
 
         return is_array($arguments)
             ? array_values($arguments)
@@ -89,7 +91,9 @@ class WorkflowUpdate extends Model
             return null;
         }
 
-        return Serializer::unserialize($this->result);
+        return is_string($this->payload_codec) && $this->payload_codec !== ''
+            ? Serializer::unserializeWithCodec($this->payload_codec, $this->result)
+            : Serializer::unserialize($this->result);
     }
 
     /**

@@ -214,7 +214,7 @@ class WorkflowRun extends Model
         }
 
         /** @var array<int, mixed> $arguments */
-        $arguments = Serializer::unserialize($this->arguments);
+        $arguments = $this->unserializePayload($this->arguments);
 
         return $arguments;
     }
@@ -225,7 +225,21 @@ class WorkflowRun extends Model
             return null;
         }
 
-        return Serializer::unserialize($this->output);
+        return $this->unserializePayload($this->output);
+    }
+
+    /**
+     * Decode a payload (arguments or output) with the run's pinned codec
+     * when available. Falls back to the legacy codec-blind sniffer so rows
+     * persisted before payload_codec was populated keep decoding.
+     */
+    private function unserializePayload(string $blob): mixed
+    {
+        if (is_string($this->payload_codec) && $this->payload_codec !== '') {
+            return Serializer::unserializeWithCodec($this->payload_codec, $blob);
+        }
+
+        return Serializer::unserialize($blob);
     }
 
     /**

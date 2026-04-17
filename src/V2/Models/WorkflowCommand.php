@@ -396,7 +396,13 @@ class WorkflowCommand extends Model
             return null;
         }
 
-        $payload = Serializer::unserialize($this->payload);
+        $codec = is_string($this->payload_codec) && $this->payload_codec !== ''
+            ? $this->payload_codec
+            : null;
+
+        $payload = $codec !== null
+            ? Serializer::unserializeWithCodec($codec, $this->payload)
+            : Serializer::unserialize($this->payload);
 
         return is_array($payload)
             ? $payload

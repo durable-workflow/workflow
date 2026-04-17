@@ -68,7 +68,9 @@ class WorkflowSignal extends Model
             return [];
         }
 
-        $arguments = Serializer::unserialize($this->arguments);
+        $arguments = is_string($this->payload_codec) && $this->payload_codec !== ''
+            ? Serializer::unserializeWithCodec($this->payload_codec, $this->arguments)
+            : Serializer::unserialize($this->arguments);
 
         return is_array($arguments)
             ? array_values($arguments)
