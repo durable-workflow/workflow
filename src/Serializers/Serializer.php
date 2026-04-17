@@ -4,13 +4,33 @@ declare(strict_types=1);
 
 namespace Workflow\Serializers;
 
+use Illuminate\Queue\SerializesAndRestoresModelIdentifiers;
+use Throwable;
+
 final class Serializer
 {
     /**
-     * Legacy magic dispatch — preserves the pre-codec-registry behavior.
+     * Shared codec-independent normalization helpers live on this object so
+     * that static calls like {@see Serializer::serializable()} can reach them
+     * without coupling callers to the configured codec.
+     */
+    private static ?ModelIdentifierHelper $helper = null;
+
+    /**
+     * Legacy magic dispatch — preserves the pre-codec-registry behavior for
+     * the codec-specific surface: {@see serialize()} / {@see unserialize()}.
      *
-     * - serialize(): uses config('workflows.serializer') (default Y).
-     * - unserialize(): sniffs the blob ("base64:" prefix → Base64, else Y).
+     * - serialize(): uses config('workflows.serializer') (default "json").
+     * - unserialize(): sniffs the blob ("base64:" prefix → Base64, JSON-like →
+     *   Json, else Y).
+     *
+     * Codec-independent helpers ({@see serializable()}, {@see serializeModels()},
+     * {@see unserializeModels()}) are declared as first-class static methods
+     * on this class and short-circuit before __callStatic so they produce the
+     * same result regardless of the configured codec. That is important for
+     * the JSON default: {@see Json} does not implement those helpers, and
+     * silently returning null from them used to drop exception trace frames
+     * and failure-property values during v2 failure normalization.
      *
      * New code should prefer {@see self::serializeWithCodec()} /
      * {@see self::unserializeWithCodec()} which make the codec choice explicit.
@@ -18,26 +38,69 @@ final class Serializer
     public static function __callStatic(string $name, array $arguments)
     {
         if ($name === 'unserialize') {
-            $instance = self::legacyUnserializeInstance((string) ($arguments[0] ?? ''));
+            $class = self::legacyUnserializeClass((string) ($arguments[0] ?? ''));
         } else {
-            $instance = self::defaultInstance();
+            $class = self::defaultCodecClass();
         }
 
-        if (method_exists($instance, $name)) {
-            return $instance->{$name}(...$arguments);
+        if ($name === 'serialize' && ! is_subclass_of($class, AbstractSerializer::class)) {
+            $arguments[0] = self::normalizeForCodec($arguments[0] ?? null);
+        }
+
+        if (method_exists($class, $name)) {
+            return $class::{$name}(...$arguments);
         }
     }
 
-    private static function defaultInstance(): SerializerInterface
+    /**
+     * Codec-independent replacement for the legacy AbstractSerializer helper:
+     * is this value safe to pass to PHP's native serialize()?
+     *
+     * Used by exception-trace filtering and v2 failure property capture. Must
+     * be safe to call regardless of the configured codec.
+     */
+    public static function serializable(mixed $data): bool
     {
-        $configured = function_exists('config') ? config('workflows.serializer') : null;
+        try {
+            serialize($data);
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
+    }
 
-        if (is_string($configured) && $configured !== '') {
-            $class = CodecRegistry::resolve($configured);
-            return $class::getInstance();
+    /**
+     * Recursively replace Eloquent models inside $data with their serialized
+     * identifier representation, and convert Throwable instances into plain
+     * arrays. Always applied by v1 and v2 failure normalization paths.
+     *
+     * Codec-independent: returns the same shape regardless of whether the
+     * configured codec is "json", Y, or Base64.
+     */
+    public static function serializeModels(mixed $data): mixed
+    {
+        if ($data instanceof Throwable) {
+            return self::throwableToArray($data);
         }
 
-        return Json::getInstance();
+        if (is_array($data)) {
+            return self::helper()->serializeValue($data);
+        }
+
+        return $data;
+    }
+
+    /**
+     * Inverse of {@see serializeModels()} for nested arrays. Scalars and
+     * non-array values are returned unchanged.
+     */
+    public static function unserializeModels(mixed $data): mixed
+    {
+        if (is_array($data)) {
+            return self::helper()->unserializeValue($data);
+        }
+
+        return $data;
     }
 
     /**
@@ -48,6 +111,11 @@ final class Serializer
     public static function serializeWithCodec(?string $codec, $data): string
     {
         $class = CodecRegistry::resolve($codec);
+
+        if (! is_subclass_of($class, AbstractSerializer::class)) {
+            $data = self::normalizeForCodec($data);
+        }
+
         return $class::serialize($data);
     }
 
@@ -60,19 +128,74 @@ final class Serializer
         return $class::unserialize($data);
     }
 
-    private static function legacyUnserializeInstance(string $blob): SerializerInterface
+    /**
+     * @return class-string<SerializerInterface>
+     */
+    private static function defaultCodecClass(): string
+    {
+        $configured = function_exists('config') ? config('workflows.serializer') : null;
+
+        if (is_string($configured) && $configured !== '') {
+            return CodecRegistry::resolve($configured);
+        }
+
+        return CodecRegistry::resolve(null);
+    }
+
+    /**
+     * Pre-normalize $data before handing it to a codec that does not itself
+     * apply model/Throwable normalization (for example {@see Json}). Legacy
+     * codecs that extend {@see AbstractSerializer} already call serializeModels
+     * internally and must not be double-normalized here.
+     */
+    private static function normalizeForCodec(mixed $data): mixed
+    {
+        return self::serializeModels($data);
+    }
+
+    /**
+     * @return array{class: class-string<Throwable>, message: string, code: int|string, line: int, file: string, trace: list<array<string, mixed>>}
+     */
+    private static function throwableToArray(Throwable $throwable): array
+    {
+        return [
+            'class' => get_class($throwable),
+            'message' => $throwable->getMessage(),
+            'code' => $throwable->getCode(),
+            'line' => $throwable->getLine(),
+            'file' => $throwable->getFile(),
+            'trace' => collect($throwable->getTrace())
+                ->filter(static fn ($trace) => self::serializable($trace))
+                ->values()
+                ->toArray(),
+        ];
+    }
+
+    private static function helper(): ModelIdentifierHelper
+    {
+        if (self::$helper === null) {
+            self::$helper = new ModelIdentifierHelper();
+        }
+
+        return self::$helper;
+    }
+
+    /**
+     * @return class-string<SerializerInterface>
+     */
+    private static function legacyUnserializeClass(string $blob): string
     {
         if (str_starts_with($blob, 'base64:')) {
-            return Base64::getInstance();
+            return Base64::class;
         }
 
         // JSON blobs always start with "{", "[", a digit, quote, minus, "t"/"f"/"n".
         // PHP-serialized-closure blobs start with "O:".
         if ($blob !== '' && $blob[0] !== 'O' && self::looksLikeJson($blob)) {
-            return Json::getInstance();
+            return Json::class;
         }
 
-        return Y::getInstance();
+        return Y::class;
     }
 
     private static function looksLikeJson(string $blob): bool
@@ -85,5 +208,42 @@ final class Serializer
             return true;
         }
         return in_array($blob, ['true', 'false', 'null'], true);
+    }
+}
+
+/**
+ * @internal
+ */
+final class ModelIdentifierHelper
+{
+    use SerializesAndRestoresModelIdentifiers {
+        getSerializedPropertyValue as public;
+        getRestoredPropertyValue as public;
+    }
+
+    public function serializeValue(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            foreach ($value as $key => $nested) {
+                $value[$key] = $this->serializeValue($nested);
+            }
+
+            return $value;
+        }
+
+        return $this->getSerializedPropertyValue($value);
+    }
+
+    public function unserializeValue(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            foreach ($value as $key => $nested) {
+                $value[$key] = $this->unserializeValue($nested);
+            }
+
+            return $value;
+        }
+
+        return $this->getRestoredPropertyValue($value);
     }
 }
