@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\Exceptions\NonRetryableExceptionContract;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -145,6 +146,7 @@ final class ActivityOutcomeRecorder
 
             if ($throwable === null) {
                 $serializedResult = self::serializeWithCodec($result, $codec, $runCodec);
+                $resultCodec = self::payloadCodec($codec, $runCodec);
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,
@@ -161,6 +163,7 @@ final class ActivityOutcomeRecorder
                     'sequence' => $lockedExecution->sequence,
                     'attempt_number' => $attemptCount,
                     'result' => $lockedExecution->result,
+                    'payload_codec' => $resultCodec,
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $parallelMetadata ?? []), $task);
 
@@ -461,5 +464,18 @@ final class ActivityOutcomeRecorder
         }
 
         return Serializer::serialize($value);
+    }
+
+    private static function payloadCodec(?string $workerCodec, ?string $runCodec): string
+    {
+        if (is_string($workerCodec) && $workerCodec !== '') {
+            return $workerCodec;
+        }
+
+        if (is_string($runCodec) && $runCodec !== '') {
+            return $runCodec;
+        }
+
+        return CodecRegistry::defaultCodec();
     }
 }

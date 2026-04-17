@@ -144,6 +144,48 @@ final class V2ActivityExceptionCodecTest extends TestCase
         $this->assertSame('avro boom', $decoded['message']);
     }
 
+    public function testCompletionHistoryStampsWorkerResultCodec(): void
+    {
+        config()->set('workflows.serializer', 'json');
+
+        [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
+            pinnedCodec: 'json',
+            maxAttempts: 1,
+            instanceId: 'td090-result-avro',
+        );
+
+        $avroResult = Serializer::serializeWithCodec('avro', 'hello from avro worker');
+
+        $outcome = ActivityOutcomeRecorder::record(
+            taskId: $task->id,
+            attemptId: $attempt->id,
+            attemptCount: 1,
+            result: $avroResult,
+            throwable: null,
+            maxAttempts: 1,
+            backoffSeconds: 0,
+            codec: 'avro',
+        );
+
+        $this->assertTrue($outcome['recorded']);
+
+        /** @var WorkflowHistoryEvent $completed */
+        $completed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityCompleted->value)
+            ->firstOrFail();
+
+        $this->assertSame('avro', $completed->payload['payload_codec'] ?? null);
+        $this->assertSame($avroResult, $completed->payload['result'] ?? null);
+        $this->assertSame(
+            'hello from avro worker',
+            Serializer::unserializeWithCodec(
+                (string) $completed->payload['payload_codec'],
+                (string) $completed->payload['result'],
+            ),
+        );
+    }
+
     /**
      * @return array{0: WorkflowRun, 1: ActivityExecution, 2: WorkflowTask, 3: ActivityAttempt}
      */

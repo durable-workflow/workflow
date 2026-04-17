@@ -3168,6 +3168,12 @@ final class WorkflowExecutor
             return null;
         }
 
+        $codec = $this->stringValue($event->payload['payload_codec'] ?? null);
+
+        if ($codec !== null) {
+            return Serializer::unserializeWithCodec($codec, $serialized);
+        }
+
         return $this->unserializePayloadWithRun($serialized, $run);
     }
 
