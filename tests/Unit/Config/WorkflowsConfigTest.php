@@ -22,7 +22,7 @@ final class WorkflowsConfigTest extends TestCase
             'stored_workflow_signal_model' => \Workflow\Models\StoredWorkflowSignal::class,
             'stored_workflow_timer_model' => \Workflow\Models\StoredWorkflowTimer::class,
             'workflow_relationships_table' => 'workflow_relationships',
-            'serializer' => \Workflow\Serializers\Y::class,
+            'serializer' => 'json',
             'prune_age' => '1 month',
             'webhooks_route' => env('WORKFLOW_WEBHOOKS_ROUTE', 'webhooks'),
         ];
