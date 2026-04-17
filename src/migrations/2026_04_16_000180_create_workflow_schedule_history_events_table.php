@@ -9,6 +9,24 @@ use Illuminate\Support\Facades\Schema;
 return new class() extends Migration {
     public function up(): void
     {
+        if (Schema::hasTable('workflow_schedule_history_events')) {
+            if (Schema::hasColumns('workflow_schedule_history_events', [
+                'id',
+                'workflow_schedule_id',
+                'schedule_id',
+                'sequence',
+                'event_type',
+                'payload',
+                'recorded_at',
+            ])) {
+                return;
+            }
+
+            throw new RuntimeException(
+                'workflow_schedule_history_events already exists but is missing expected schedule-history columns.'
+            );
+        }
+
         Schema::create('workflow_schedule_history_events', static function (Blueprint $table): void {
             $table->string('id', 26)->primary();
             $table->string('workflow_schedule_id', 26)->index();

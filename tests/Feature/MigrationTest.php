@@ -51,6 +51,38 @@ class MigrationTest extends TestCase
     }
 
 
+    public function testScheduleHistoryMigrationCanResumeAfterTableWasCreatedWithoutMigrationRecord()
+    {
+        $path = __DIR__ . '/../../src/migrations/2026_04_16_000180_create_workflow_schedule_history_events_table.php';
+
+        $migration = include $path;
+        $migration->up();
+
+        $this->assertTrue(Schema::hasTable('workflow_schedule_history_events'));
+        $this->assertFalse(
+            DB::table('migrations')
+                ->where('migration', '2026_04_16_000180_create_workflow_schedule_history_events_table')
+                ->exists()
+        );
+
+        $migration = include $path;
+        $migration->up();
+
+        $this->assertTrue(Schema::hasColumns('workflow_schedule_history_events', [
+            'id',
+            'workflow_schedule_id',
+            'schedule_id',
+            'namespace',
+            'sequence',
+            'event_type',
+            'payload',
+            'workflow_instance_id',
+            'workflow_run_id',
+            'recorded_at',
+        ]));
+    }
+
+
     public function testItPreservesV1WorkflowDataAfterV2Migration()
     {
         // Set up v1 schema and data
