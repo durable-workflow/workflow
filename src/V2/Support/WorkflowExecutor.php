@@ -621,7 +621,7 @@ final class WorkflowExecutor
                 if ($signalEvent !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $workflowExecution->send($this->signalValue($signalEvent));
+                        $current = $workflowExecution->send($this->signalValue($signalEvent, $run));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -688,7 +688,7 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $workflowExecution->send($this->signalValue($signalEvent));
+                        $current = $workflowExecution->send($this->signalValue($signalEvent, $run));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -1943,7 +1943,7 @@ final class WorkflowExecutor
         return in_array($value, ['condition_timeout', 'signal_timeout'], true);
     }
 
-    private function signalValue(WorkflowHistoryEvent $event): mixed
+    private function signalValue(WorkflowHistoryEvent $event, ?WorkflowRun $run = null): mixed
     {
         $serialized = $event->payload['value'] ?? null;
 
@@ -1951,7 +1951,7 @@ final class WorkflowExecutor
             return null;
         }
 
-        return Serializer::unserialize($serialized);
+        return $this->unserializePayloadWithRun($serialized, $run);
     }
 
     private function signalPayloadValue(WorkflowCommand $command): mixed
