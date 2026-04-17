@@ -429,18 +429,34 @@ final class ChildRunHistory
             $serialized = self::outputPayloadForChildRun($childRun);
         }
 
-        return is_string($serialized)
-            ? Serializer::unserialize($serialized)
+        if (! is_string($serialized)) {
+            return null;
+        }
+
+        $codec = is_string($childRun?->payload_codec) && $childRun->payload_codec !== ''
+            ? $childRun->payload_codec
             : null;
+
+        return $codec !== null
+            ? Serializer::unserializeWithCodec($codec, $serialized)
+            : Serializer::unserialize($serialized);
     }
 
     public static function outputForChildRun(?WorkflowRun $childRun): mixed
     {
         $serialized = self::outputPayloadForChildRun($childRun);
 
-        return is_string($serialized)
-            ? Serializer::unserialize($serialized)
+        if (! is_string($serialized)) {
+            return null;
+        }
+
+        $codec = is_string($childRun?->payload_codec) && $childRun->payload_codec !== ''
+            ? $childRun->payload_codec
             : null;
+
+        return $codec !== null
+            ? Serializer::unserializeWithCodec($codec, $serialized)
+            : Serializer::unserialize($serialized);
     }
 
     public static function exceptionForResolution(

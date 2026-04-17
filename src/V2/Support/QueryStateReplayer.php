@@ -81,7 +81,7 @@ final class QueryStateReplayer
                 if ($activityCompletion !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                        $current = $workflowExecution->send($this->activityResult($activityCompletion));
+                        $current = $workflowExecution->send($this->activityResult($activityCompletion, $run));
                     } else {
                         $current = $workflowExecution->throw($this->activityException($activityCompletion, null, $run));
                     }
@@ -205,7 +205,7 @@ final class QueryStateReplayer
                 }
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send($this->sideEffectResult($sideEffectEvent));
+                $current = $workflowExecution->send($this->sideEffectResult($sideEffectEvent, $run));
 
                 ++$sequence;
 
@@ -260,7 +260,7 @@ final class QueryStateReplayer
 
                 if ($signalEvent !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send($this->signalValue($signalEvent));
+                    $current = $workflowExecution->send($this->signalValue($signalEvent, $run));
 
                     ++$sequence;
 
@@ -387,7 +387,7 @@ final class QueryStateReplayer
 
                         if ($activityCompletion !== null) {
                             if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                                $results[$offset] = $this->activityResult($activityCompletion);
+                                $results[$offset] = $this->activityResult($activityCompletion, $run);
 
                                 continue;
                             }
@@ -578,7 +578,7 @@ final class QueryStateReplayer
         return $event;
     }
 
-    private function signalValue(WorkflowHistoryEvent $event): mixed
+    private function signalValue(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed
     {
         $serialized = $event->payload['value'] ?? null;
 
@@ -586,10 +586,10 @@ final class QueryStateReplayer
             return null;
         }
 
-        return Serializer::unserialize($serialized);
+        return $this->unserializeWithRun($serialized, $run);
     }
 
-    private function activityResult(WorkflowHistoryEvent $event): mixed
+    private function activityResult(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed
     {
         $serialized = $event->payload['result'] ?? null;
 
@@ -597,15 +597,24 @@ final class QueryStateReplayer
             return null;
         }
 
-        return Serializer::unserialize($serialized);
+        return $this->unserializeWithRun($serialized, $run);
     }
 
-    private function sideEffectResult(WorkflowHistoryEvent $event): mixed
+    private function sideEffectResult(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed
     {
         $serialized = $event->payload['result'] ?? null;
 
         if (! is_string($serialized)) {
             return null;
+        }
+
+        return $this->unserializeWithRun($serialized, $run);
+    }
+
+    private function unserializeWithRun(string $serialized, ?WorkflowRun $run): mixed
+    {
+        if ($run !== null && is_string($run->payload_codec) && $run->payload_codec !== '') {
+            return Serializer::unserializeWithCodec($run->payload_codec, $serialized);
         }
 
         return Serializer::unserialize($serialized);
@@ -831,7 +840,7 @@ final class QueryStateReplayer
                 ));
             }
 
-            $arguments = $this->updateArguments($event, $command);
+            $arguments = $this->updateArguments($event, $command, $run);
             $parameters = $workflow->resolveMethodDependencies(
                 $arguments,
                 new ReflectionMethod($workflow, $method),
@@ -858,12 +867,15 @@ final class QueryStateReplayer
     /**
      * @return array<int, mixed>
      */
-    private function updateArguments(WorkflowHistoryEvent $event, ?WorkflowCommand $command): array
-    {
+    private function updateArguments(
+        WorkflowHistoryEvent $event,
+        ?WorkflowCommand $command,
+        ?WorkflowRun $run,
+    ): array {
         $serialized = $event->payload['arguments'] ?? null;
 
         if (is_string($serialized)) {
-            $arguments = Serializer::unserialize($serialized);
+            $arguments = $this->unserializeWithRun($serialized, $run);
 
             return is_array($arguments)
                 ? array_values($arguments)
