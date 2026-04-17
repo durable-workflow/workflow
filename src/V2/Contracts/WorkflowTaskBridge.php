@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Contracts;
 
 use Throwable;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 /**
  * Public contract for external workflow-task workers.
@@ -146,7 +147,11 @@ interface WorkflowTaskBridge
      *     }>,
      * }|null
      */
-    public function historyPayloadPaginated(string $taskId, int $afterSequence = 0, int $pageSize = 200): ?array;
+    public function historyPayloadPaginated(
+        string $taskId,
+        int $afterSequence = 0,
+        int $pageSize = WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+    ): ?array;
 
     /**
      * Execute a claimed workflow task in-process using the package executor.

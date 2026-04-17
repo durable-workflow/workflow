@@ -86,6 +86,37 @@ final class WorkerProtocolVersionTest extends TestCase
         );
     }
 
+    /**
+     * Regression for TD-080: bridge contract and default implementation must
+     * use {@see WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE} as the
+     * historyPayloadPaginated default — a hard-coded literal here would let
+     * the wire-protocol advertised default and the package call default
+     * silently drift apart again.
+     */
+    public function testHistoryPayloadPaginatedDefaultsMatchProtocolConstant(): void
+    {
+        $contract = (new \ReflectionMethod(
+            \Workflow\V2\Contracts\WorkflowTaskBridge::class,
+            'historyPayloadPaginated',
+        ))->getParameters()[2];
+
+        $bridge = (new \ReflectionMethod(
+            \Workflow\V2\Support\DefaultWorkflowTaskBridge::class,
+            'historyPayloadPaginated',
+        ))->getParameters()[2];
+
+        $this->assertSame(
+            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+            $contract->getDefaultValue(),
+            'WorkflowTaskBridge::historyPayloadPaginated default must use the protocol constant.',
+        );
+        $this->assertSame(
+            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+            $bridge->getDefaultValue(),
+            'DefaultWorkflowTaskBridge::historyPayloadPaginated default must use the protocol constant.',
+        );
+    }
+
     public function testSupportedHistoryEncodingsAreFrozen(): void
     {
         $this->assertSame(['gzip', 'deflate'], WorkerProtocolVersion::supportedHistoryEncodings());

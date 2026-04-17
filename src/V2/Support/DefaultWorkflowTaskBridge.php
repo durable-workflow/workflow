@@ -269,8 +269,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ];
     }
 
-    public function historyPayloadPaginated(string $taskId, int $afterSequence = 0, int $pageSize = 200): ?array
-    {
+    public function historyPayloadPaginated(
+        string $taskId,
+        int $afterSequence = 0,
+        int $pageSize = WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+    ): ?array {
         $pageSize = max(1, min($pageSize, WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE));
 
         /** @var WorkflowTask|null $task */
