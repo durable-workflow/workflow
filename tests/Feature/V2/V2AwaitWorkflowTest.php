@@ -1435,6 +1435,101 @@ final class V2AwaitWorkflowTest extends TestCase
         }
     }
 
+    public function testAwaitStringSignalReceivedBeforeTimeoutFiredWinsByHistoryOrder(): void
+    {
+        Queue::fake();
+
+        try {
+            Carbon::setTestNow(Carbon::parse('2026-04-16 12:00:00'));
+
+            $workflow = WorkflowStub::make(TestAwaitSignalTimeoutWorkflow::class, 'await-signal-before-timeout-race');
+            $workflow->start('approved-by', 5);
+
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            $signal = $workflow->attemptSignal('approved-by', 'Jordan');
+
+            $this->assertTrue($signal->accepted());
+
+            Carbon::setTestNow(now()->addSeconds(5));
+
+            $this->runReadyTimerTask($workflow->runId());
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame([
+                'payload' => 'Jordan',
+                'timed_out' => false,
+                'stage' => 'received',
+                'workflow_id' => 'await-signal-before-timeout-race',
+                'run_id' => $workflow->runId(),
+            ], $workflow->output());
+
+            $eventTypes = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $workflow->runId())
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($eventType) => $eventType->value)
+                ->all();
+
+            $this->assertLessThan(
+                array_search('TimerFired', $eventTypes, true),
+                array_search('SignalReceived', $eventTypes, true),
+            );
+            $this->assertContains('SignalApplied', $eventTypes);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testAwaitStringSignalTimeoutFiredBeforeSignalReceivedWinsByHistoryOrder(): void
+    {
+        Queue::fake();
+
+        try {
+            Carbon::setTestNow(Carbon::parse('2026-04-16 12:00:00'));
+
+            $workflow = WorkflowStub::make(TestAwaitSignalTimeoutWorkflow::class, 'await-timeout-before-signal-race');
+            $workflow->start('approved-by', 5);
+
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            Carbon::setTestNow(now()->addSeconds(5));
+
+            $this->runReadyTimerTask($workflow->runId());
+
+            $signal = $workflow->attemptSignal('approved-by', 'Jordan');
+
+            $this->assertTrue($signal->accepted());
+
+            $this->runReadyWorkflowTask($workflow->runId());
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame([
+                'payload' => null,
+                'timed_out' => true,
+                'stage' => 'timed-out',
+                'workflow_id' => 'await-timeout-before-signal-race',
+                'run_id' => $workflow->runId(),
+            ], $workflow->output());
+
+            $eventTypes = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $workflow->runId())
+                ->orderBy('sequence')
+                ->pluck('event_type')
+                ->map(static fn ($eventType) => $eventType->value)
+                ->all();
+
+            $this->assertLessThan(
+                array_search('SignalReceived', $eventTypes, true),
+                array_search('TimerFired', $eventTypes, true),
+            );
+            $this->assertNotContains('SignalApplied', $eventTypes);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testAwaitStringSignalPreservesEmptyAndMultipleArgumentPayloadRules(): void
     {
         Queue::fake();

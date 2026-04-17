@@ -663,14 +663,28 @@ final class WorkflowExecutor
                     ? $this->signalTimeoutFiredEvent($run, $sequence, $current->name)
                     : null;
                 $signalWaitId = $this->signalWaitId($run, $sequence, $current) ?? (string) Str::ulid();
+                $signalCommand = $this->pendingSignalCommand($run, $current);
 
-                if (
+                $timeoutHasWon = (
                     $current->timeoutSeconds !== null
                     && (
                         $timeoutFiredEvent !== null
                         || ($timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired)
                     )
-                ) {
+                );
+
+                if ($timeoutHasWon && $signalCommand !== null && $timeoutFiredEvent !== null) {
+                    $signalReceivedEvent = $this->signalReceivedEventForCommand($run, $signalCommand);
+
+                    if (
+                        $signalReceivedEvent !== null
+                        && $signalReceivedEvent->sequence < $timeoutFiredEvent->sequence
+                    ) {
+                        $timeoutHasWon = false;
+                    }
+                }
+
+                if ($timeoutHasWon) {
                     $this->recordSignalWait($run, $task, $sequence, $current, $signalWaitId);
 
                     try {
@@ -688,8 +702,6 @@ final class WorkflowExecutor
                     ++$sequence;
                     continue;
                 }
-
-                $signalCommand = $this->pendingSignalCommand($run, $current);
 
                 if ($signalCommand !== null) {
                     $signalWaitId = $this->signalWaitIdForCommand($run, $signalCommand, $current->name);
@@ -1855,6 +1867,17 @@ final class WorkflowExecutor
         return $command;
     }
 
+    private function signalReceivedEventForCommand(WorkflowRun $run, WorkflowCommand $command): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SignalReceived
+                && $event->workflow_command_id === $command->id
+        );
+
+        return $event;
+    }
+
     private function applySignal(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -1923,11 +1946,7 @@ final class WorkflowExecutor
 
     private function signalWaitIdForCommand(WorkflowRun $run, WorkflowCommand $command, string $signalName): string
     {
-        /** @var WorkflowHistoryEvent|null $receivedEvent */
-        $receivedEvent = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SignalReceived
-                && $event->workflow_command_id === $command->id
-        );
+        $receivedEvent = $this->signalReceivedEventForCommand($run, $command);
 
         $signalWaitId = $receivedEvent === null
             ? null
