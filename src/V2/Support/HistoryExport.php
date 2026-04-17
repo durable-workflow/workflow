@@ -841,7 +841,7 @@ final class HistoryExport
             'command_id' => $update->workflow_command_id,
             'command_sequence' => $update->command_sequence,
             'workflow_sequence' => $update->workflow_sequence,
-            'name' => $update->name,
+            'name' => $update->update_name,
             'status' => $update->status->value,
             'outcome' => $update->outcome?->value,
             'rejection_reason' => $update->rejection_reason,
@@ -851,6 +851,7 @@ final class HistoryExport
             'applied_at' => self::timestamp($update->applied_at),
             'rejected_at' => self::timestamp($update->rejected_at),
             'closed_at' => self::timestamp($update->closed_at),
+            'payload_codec' => $update->payload_codec,
             'arguments' => $update->arguments,
             'result' => $update->result,
         ];
@@ -879,6 +880,7 @@ final class HistoryExport
             'applied_at' => self::timestamp($signal->applied_at),
             'rejected_at' => self::timestamp($signal->rejected_at),
             'closed_at' => self::timestamp($signal->closed_at),
+            'payload_codec' => $signal->payload_codec,
             'arguments' => $signal->arguments,
         ];
     }

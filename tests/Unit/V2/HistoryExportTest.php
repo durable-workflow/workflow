@@ -33,6 +33,7 @@ use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunLineageProjector;
@@ -329,6 +330,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($signal->id, $bundle['signals'][0]['id']);
         $this->assertSame('approved-by', $bundle['signals'][0]['name']);
         $this->assertSame('applied', $bundle['signals'][0]['status']);
+        $this->assertSame(config('workflows.serializer'), $bundle['signals'][0]['payload_codec']);
         $this->assertSame($task->id, $bundle['tasks'][0]['id']);
         $this->assertSame($activity->id, $bundle['activities'][0]['id']);
         $this->assertSame($activity->id, $bundle['activities'][0]['idempotency_key']);
@@ -1484,6 +1486,105 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('durable_workflow', $schema['namespace']);
         $this->assertSame('00', $bundle['codec_schemas']['avro']['wrapper_prefix_hex']);
         $this->assertSame('01', $bundle['codec_schemas']['avro']['typed_prefix_hex']);
+    }
+
+    public function testItStampsRowLocalPayloadCodecOnSignalAndUpdateExportRows(): void
+    {
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
+        config()->set('workflows.serializer', 'json');
+        $run = $this->createMinimalCompletedRun('history-export-mixed-codec');
+        $run->forceFill(['payload_codec' => 'json'])->save();
+
+        $instance = $run->instance;
+
+        $signalCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Signal->value,
+            'target_scope' => 'instance',
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'name' => 'approved-by',
+                'arguments' => ['Taylor'],
+            ]),
+            'source' => 'webhook',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::SignalReceived->value,
+            'accepted_at' => now()->subMinute(),
+            'applied_at' => now()->subMinute(),
+        ]);
+
+        $signal = WorkflowSignal::query()->create([
+            'workflow_command_id' => $signalCommand->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'instance',
+            'resolved_workflow_run_id' => $run->id,
+            'signal_name' => 'approved-by',
+            'signal_wait_id' => 'signal-wait-avro',
+            'status' => 'applied',
+            'outcome' => 'signal_received',
+            'command_sequence' => $signalCommand->command_sequence,
+            'workflow_sequence' => 1,
+            'payload_codec' => 'avro',
+            'arguments' => 'avro-encoded-signal-blob',
+            'received_at' => now()->subMinute(),
+            'applied_at' => now()->subMinute(),
+            'closed_at' => now()->subMinute(),
+        ]);
+
+        $updateCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Update->value,
+            'target_scope' => 'instance',
+            'payload_codec' => config('workflows.serializer'),
+            'payload' => Serializer::serialize([
+                'name' => 'mark-approved',
+                'arguments' => [true, 'api'],
+            ]),
+            'source' => 'api',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::UpdateCompleted->value,
+            'accepted_at' => now()->subMinute(),
+            'applied_at' => now()->subMinute(),
+        ]);
+
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $updateCommand->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'command_sequence' => $updateCommand->command_sequence,
+            'workflow_sequence' => 1,
+            'update_name' => 'mark-approved',
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+            'payload_codec' => 'avro',
+            'arguments' => 'avro-encoded-update-args',
+            'result' => 'avro-encoded-update-result',
+            'accepted_at' => now()->subMinute(),
+            'applied_at' => now()->subMinute(),
+            'closed_at' => now()->subMinute(),
+        ]);
+
+        $bundle = HistoryExport::forRun($run->refresh(), Carbon::parse('2026-04-17 14:00:00'));
+
+        $signalRow = collect($bundle['signals'])->firstWhere('id', $signal->id);
+        $this->assertIsArray($signalRow);
+        $this->assertSame('avro', $signalRow['payload_codec']);
+        $this->assertSame('avro-encoded-signal-blob', $signalRow['arguments']);
+
+        $updateRow = collect($bundle['updates'])->firstWhere('id', $update->id);
+        $this->assertIsArray($updateRow);
+        $this->assertSame('avro', $updateRow['payload_codec']);
+        $this->assertSame('mark-approved', $updateRow['name']);
+        $this->assertSame('avro-encoded-update-args', $updateRow['arguments']);
+        $this->assertSame('avro-encoded-update-result', $updateRow['result']);
+
+        // The run itself is JSON-coded, but the Avro signal/update rows must
+        // trigger codec_schemas.avro so an offline consumer has the wrapper
+        // schema needed to decode those blobs.
+        $this->assertArrayHasKey('avro', $bundle['codec_schemas']);
+        $this->assertSame('00', $bundle['codec_schemas']['avro']['wrapper_prefix_hex']);
     }
 
     public function testItOmitsAvroSchemasWhenBundleHasNoAvroPayloads(): void
