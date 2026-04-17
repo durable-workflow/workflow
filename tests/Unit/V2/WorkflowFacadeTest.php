@@ -29,48 +29,42 @@ use Workflow\V2\Workflow;
  */
 class WorkflowFacadeTest extends TestCase
 {
-    /** @test */
-    public function activity_returns_an_activity_call(): void
+    public function testActivityReturnsAnActivityCall(): void
     {
         $call = Workflow::activity('App\\Activities\\Example', 'a', 'b');
 
         $this->assertInstanceOf(ActivityCall::class, $call);
     }
 
-    /** @test */
-    public function execute_activity_aliases_activity(): void
+    public function testExecuteActivityAliasesActivity(): void
     {
         $call = Workflow::executeActivity('App\\Activities\\Example');
 
         $this->assertInstanceOf(ActivityCall::class, $call);
     }
 
-    /** @test */
-    public function child_returns_a_child_workflow_call(): void
+    public function testChildReturnsAChildWorkflowCall(): void
     {
         $call = Workflow::child('App\\Workflows\\Example');
 
         $this->assertInstanceOf(ChildWorkflowCall::class, $call);
     }
 
-    /** @test */
-    public function execute_child_workflow_aliases_child(): void
+    public function testExecuteChildWorkflowAliasesChild(): void
     {
         $call = Workflow::executeChildWorkflow('App\\Workflows\\Example');
 
         $this->assertInstanceOf(ChildWorkflowCall::class, $call);
     }
 
-    /** @test */
-    public function timer_returns_a_timer_call(): void
+    public function testTimerReturnsATimerCall(): void
     {
         $call = Workflow::timer(42);
 
         $this->assertInstanceOf(TimerCall::class, $call);
     }
 
-    /** @test */
-    public function timer_sugar_methods_return_timer_calls(): void
+    public function testTimerSugarMethodsReturnTimerCalls(): void
     {
         $this->assertInstanceOf(TimerCall::class, Workflow::seconds(5));
         $this->assertInstanceOf(TimerCall::class, Workflow::minutes(2));
@@ -81,62 +75,54 @@ class WorkflowFacadeTest extends TestCase
         $this->assertInstanceOf(TimerCall::class, Workflow::years(1));
     }
 
-    /** @test */
-    public function await_with_signal_name_returns_signal_call(): void
+    public function testAwaitWithSignalNameReturnsSignalCall(): void
     {
         $call = Workflow::await('some-signal');
 
         $this->assertInstanceOf(SignalCall::class, $call);
     }
 
-    /** @test */
-    public function await_signal_is_equivalent_to_await_by_name(): void
+    public function testAwaitSignalIsEquivalentToAwaitByName(): void
     {
         $this->assertInstanceOf(SignalCall::class, Workflow::awaitSignal('some-signal'));
     }
 
-    /** @test */
-    public function await_with_condition_returns_await_call(): void
+    public function testAwaitWithConditionReturnsAwaitCall(): void
     {
         $call = Workflow::await(static fn (): bool => true);
 
         $this->assertInstanceOf(AwaitCall::class, $call);
     }
 
-    /** @test */
-    public function await_with_timeout_returns_await_with_timeout_call(): void
+    public function testAwaitWithTimeoutReturnsAwaitWithTimeoutCall(): void
     {
         $call = Workflow::awaitWithTimeout(5, static fn (): bool => true);
 
         $this->assertInstanceOf(AwaitWithTimeoutCall::class, $call);
     }
 
-    /** @test */
-    public function side_effect_returns_a_side_effect_call(): void
+    public function testSideEffectReturnsASideEffectCall(): void
     {
         $call = Workflow::sideEffect(static fn (): int => 7);
 
         $this->assertInstanceOf(SideEffectCall::class, $call);
     }
 
-    /** @test */
-    public function continue_as_new_returns_a_continue_as_new_call(): void
+    public function testContinueAsNewReturnsAContinueAsNewCall(): void
     {
         $call = Workflow::continueAsNew('arg1', 'arg2');
 
         $this->assertInstanceOf(ContinueAsNewCall::class, $call);
     }
 
-    /** @test */
-    public function get_version_returns_a_version_call(): void
+    public function testGetVersionReturnsAVersionCall(): void
     {
         $call = Workflow::getVersion('change-one');
 
         $this->assertInstanceOf(VersionCall::class, $call);
     }
 
-    /** @test */
-    public function all_returns_an_all_call(): void
+    public function testAllReturnsAnAllCall(): void
     {
         $call = Workflow::all([
             Workflow::activity('App\\Activities\\A'),
@@ -146,16 +132,14 @@ class WorkflowFacadeTest extends TestCase
         $this->assertInstanceOf(AllCall::class, $call);
     }
 
-    /** @test */
-    public function parallel_aliases_all(): void
+    public function testParallelAliasesAll(): void
     {
         $call = Workflow::parallel([Workflow::activity('App\\Activities\\A')]);
 
         $this->assertInstanceOf(AllCall::class, $call);
     }
 
-    /** @test */
-    public function upsert_memo_suspends_with_an_upsert_memo_call(): void
+    public function testUpsertMemoSuspendsWithAnUpsertMemoCall(): void
     {
         // Outside a fiber, suspend returns the call instance; upsertMemo is
         // typed void, so we can only assert it does not error.
@@ -166,8 +150,7 @@ class WorkflowFacadeTest extends TestCase
         $this->assertInstanceOf(UpsertMemoCall::class, new UpsertMemoCall(['a' => 1]));
     }
 
-    /** @test */
-    public function upsert_search_attributes_suspends_with_the_right_call(): void
+    public function testUpsertSearchAttributesSuspendsWithTheRightCall(): void
     {
         Workflow::upsertSearchAttributes(['region' => 'us']);
         $this->assertTrue(true);
@@ -178,8 +161,7 @@ class WorkflowFacadeTest extends TestCase
         );
     }
 
-    /** @test */
-    public function every_facade_method_is_static(): void
+    public function testEveryFacadeMethodIsStatic(): void
     {
         $facadeMethods = [
             'activity',
