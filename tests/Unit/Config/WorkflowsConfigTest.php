@@ -37,4 +37,58 @@ final class WorkflowsConfigTest extends TestCase
             );
         }
     }
+
+    /**
+     * A fresh installation must be able to boot with no v2 environment
+     * variables set. The compatibility markers and history-export signing
+     * keys default to null ("no marker required" / "unsigned"), the namespace
+     * defaults to null ("no namespace isolation"), and every other v2 key
+     * ships with a working fallback.
+     */
+    public function testV2SectionBootsWithoutEnvironmentOverrides(): void
+    {
+        $envKeys = [
+            'WORKFLOW_V2_NAMESPACE',
+            'WORKFLOW_V2_CURRENT_COMPATIBILITY',
+            'WORKFLOW_V2_SUPPORTED_COMPATIBILITIES',
+            'WORKFLOW_V2_COMPATIBILITY_NAMESPACE',
+            'WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY',
+            'WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID',
+        ];
+
+        $previous = [];
+
+        foreach ($envKeys as $key) {
+            $previous[$key] = getenv($key) === false ? null : getenv($key);
+            putenv($key);
+            unset($_ENV[$key], $_SERVER[$key]);
+        }
+
+        try {
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+
+            $this->assertNull($config['v2']['namespace']);
+            $this->assertNull($config['v2']['compatibility']['current']);
+            $this->assertNull($config['v2']['compatibility']['supported']);
+            $this->assertNull($config['v2']['compatibility']['namespace']);
+            $this->assertNull($config['v2']['history_export']['signing_key']);
+            $this->assertNull($config['v2']['history_export']['signing_key_id']);
+
+            // Defaults that must still be active regardless of env vars.
+            $this->assertSame(30, $config['v2']['compatibility']['heartbeat_ttl_seconds']);
+            $this->assertSame('queue', $config['v2']['task_dispatch_mode']);
+            $this->assertSame('warn', $config['v2']['guardrails']['boot']);
+        } finally {
+            foreach ($previous as $key => $value) {
+                if ($value === null) {
+                    putenv($key);
+                    unset($_ENV[$key], $_SERVER[$key]);
+                } else {
+                    putenv(sprintf('%s=%s', $key, $value));
+                    $_ENV[$key] = $value;
+                    $_SERVER[$key] = $value;
+                }
+            }
+        }
+    }
 }

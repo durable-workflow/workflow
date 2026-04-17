@@ -87,11 +87,13 @@ final class CodecIndependentHelpersTest extends TestCase
             $this->markTestSkipped('apache/avro package is not installed in this environment.');
         }
 
-        config(['workflows.serializer' => $codec]);
-
+        // Use the explicit-codec round trip: the legacy __callStatic('unserialize')
+        // sniffs the blob and cannot auto-detect binary Avro. Callers that start a
+        // run with a specific codec always persist the codec name alongside the
+        // blob and reopen through {@see Serializer::unserializeWithCodec()}.
         $throwable = new Exception('boom', 9);
-        $serialized = Serializer::serialize($throwable);
-        $decoded = Serializer::unserialize($serialized);
+        $serialized = Serializer::serializeWithCodec($codec, $throwable);
+        $decoded = Serializer::unserializeWithCodec($codec, $serialized);
 
         $this->assertIsArray($decoded);
         $this->assertSame(Exception::class, $decoded['class']);

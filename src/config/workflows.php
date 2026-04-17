@@ -18,7 +18,10 @@ return [
     'workflow_relationships_table' => 'workflow_relationships',
 
     'v2' => [
-        'namespace' => env('WORKFLOW_V2_NAMESPACE'),
+        // Optional. When null, workflow instances are not scoped to a namespace and
+        // are visible to every consumer. Set to a string (e.g. "production") to
+        // isolate multi-namespace deployments.
+        'namespace' => env('WORKFLOW_V2_NAMESPACE', null),
 
         'instance_model' => Workflow\V2\Models\WorkflowInstance::class,
         'run_model' => Workflow\V2\Models\WorkflowRun::class,
@@ -51,10 +54,20 @@ return [
                 // App\Exceptions\LegacyInvoiceDeclined::class => App\Exceptions\InvoiceDeclined::class,
             ],
         ],
+        // Worker-compatibility markers let you pin workflow runs to a specific
+        // worker build and block incompatible workers from claiming tasks. All
+        // three keys default to null ("no marker required"), which is the right
+        // value for single-fleet deployments.
+        //
+        // Set WORKFLOW_V2_CURRENT_COMPATIBILITY to the marker this worker
+        // advertises (e.g. "build-2026-04-17"). Set WORKFLOW_V2_SUPPORTED_COMPATIBILITIES
+        // to a comma-separated list or "*" to accept any marker. Set
+        // WORKFLOW_V2_COMPATIBILITY_NAMESPACE when multiple apps share one
+        // workflow database but maintain independent compatibility fleets.
         'compatibility' => [
-            'current' => env('WORKFLOW_V2_CURRENT_COMPATIBILITY'),
-            'supported' => env('WORKFLOW_V2_SUPPORTED_COMPATIBILITIES'),
-            'namespace' => env('WORKFLOW_V2_COMPATIBILITY_NAMESPACE'),
+            'current' => env('WORKFLOW_V2_CURRENT_COMPATIBILITY', null),
+            'supported' => env('WORKFLOW_V2_SUPPORTED_COMPATIBILITIES', null),
+            'namespace' => env('WORKFLOW_V2_COMPATIBILITY_NAMESPACE', null),
             'heartbeat_ttl_seconds' => (int) env('WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL', 30),
         ],
         'history_budget' => [
@@ -64,10 +77,13 @@ return [
                 5242880
             ),
         ],
+        // History export signing is opt-in. When signing_key is null, exports
+        // are emitted unsigned. Provide a key (and optional key id for rotation)
+        // only if you need the export to be authenticated at the receiver.
         'history_export' => [
             'redactor' => null,
-            'signing_key' => env('WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY'),
-            'signing_key_id' => env('WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID'),
+            'signing_key' => env('WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY', null),
+            'signing_key_id' => env('WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID', null),
         ],
         'update_wait' => [
             'completion_timeout_seconds' => (int) env('WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS', 10),
