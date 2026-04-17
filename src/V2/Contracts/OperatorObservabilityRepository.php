@@ -8,6 +8,18 @@ use Carbon\CarbonInterface;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 
+/**
+ * Repository contract for operator-facing observability payloads (Waterline
+ * detail, list projection, history export, dashboard, metrics).
+ *
+ * @internal Accepts Eloquent models ({@see WorkflowRun}, {@see WorkflowRunSummary})
+ *           as arguments and is coupled to the package's own model hierarchy.
+ *           Intended for Waterline and v2 polyglot-server integrations that
+ *           already run on top of the workflow package's PHP runtime; not a
+ *           stable cross-language contract and not subject to the v2
+ *           backwards-compatibility guarantee. Use the HTTP surfaces
+ *           (Waterline API, `/webhooks/...`) for external consumers instead.
+ */
 interface OperatorObservabilityRepository
 {
     /**
