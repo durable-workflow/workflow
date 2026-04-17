@@ -14,11 +14,16 @@ class {{ class }} extends Workflow
     {
         // Example:
         //
+        //     $startedAt = Workflow::now();
         //     $result = Workflow::activity(MyActivity::class, $input);
         //     Workflow::timer('5 seconds');
         //     Workflow::upsertMemo(['stage' => 'done']);
         //
         //     return $result;
+        //
+        // Determinism: prefer Workflow::now() over Laravel's now() inside a
+        // workflow body. Workflow::now() advances with history events during
+        // replay, so the same workflow run always observes the same timeline.
         return null;
     }
 }

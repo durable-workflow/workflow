@@ -58,11 +58,16 @@ final class WorkflowFiberContext
     }
 
     /**
-     * Set the deterministic workflow time for the current fiber.
+     * Set the deterministic workflow time.
+     *
+     * When called from inside a workflow fiber, stores the time for that
+     * fiber. When called from the executor (outside the fiber), the fiber
+     * reference must be supplied so the executor can seed the time before
+     * resuming the workflow.
      */
-    public static function setTime(CarbonInterface $time): void
+    public static function setTime(CarbonInterface $time, ?Fiber $fiber = null): void
     {
-        $fiber = Fiber::getCurrent();
+        $fiber ??= Fiber::getCurrent();
 
         if ($fiber instanceof Fiber) {
             self::$workflowTime[spl_object_id($fiber)] = $time;

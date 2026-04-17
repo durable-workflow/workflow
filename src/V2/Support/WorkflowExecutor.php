@@ -81,7 +81,7 @@ final class WorkflowExecutor
         $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
 
         try {
-            $workflowExecution = WorkflowExecution::start($workflow, $arguments);
+            $workflowExecution = WorkflowExecution::start($workflow, $arguments, $run->started_at);
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -97,7 +97,7 @@ final class WorkflowExecutor
         $current = $workflowExecution->current();
 
         $sequence = 1;
-        $this->syncWorkflowCursor($workflow, $sequence, $run->started_at);
+        $this->syncWorkflowCursor($workflow, $sequence);
         $historySequenceAtTaskStart = $run->last_history_sequence ?? 0;
 
         while (true) {
@@ -116,7 +116,7 @@ final class WorkflowExecutor
 
             if (! $workflowExecution->valid()) {
                 try {
-                    $this->syncWorkflowCursor($workflow, $sequence, $run->started_at);
+                    $this->syncWorkflowCursor($workflow, $sequence);
                     $this->completeRun($run, $task, $workflowExecution->getReturn());
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -142,12 +142,16 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
-                            $current = $workflowExecution->send($this->activityResult($activityCompletion, $run));
+                            $current = $workflowExecution->send(
+                                $this->activityResult($activityCompletion, $run),
+                                $activityCompletion->recorded_at,
+                            );
                         } else {
                             $failureId = $activityCompletion->payload['failure_id'] ?? null;
 
                             $current = $workflowExecution->throw(
-                                $this->activityException($activityCompletion, null, $run)
+                                $this->activityException($activityCompletion, null, $run),
+                                $activityCompletion->recorded_at,
                             );
 
                             $this->recordFailureHandled(
@@ -202,12 +206,18 @@ final class WorkflowExecutor
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($execution->status === ActivityStatus::Completed) {
-                        $current = $workflowExecution->send($execution->activityResult());
+                        $current = $workflowExecution->send(
+                            $execution->activityResult(),
+                            $execution->closed_at,
+                        );
                     } else {
                         $failure = $run->failures
                             ->firstWhere('source_id', $execution->id);
 
-                        $current = $workflowExecution->throw($this->activityException(null, $execution, $run));
+                        $current = $workflowExecution->throw(
+                            $this->activityException(null, $execution, $run),
+                            $execution->closed_at,
+                        );
 
                         $this->recordFailureHandled(
                             $run,
@@ -253,7 +263,8 @@ final class WorkflowExecutor
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->send(
-                            $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied
+                            $resolutionEvent->event_type === HistoryEventType::ConditionWaitSatisfied,
+                            $resolutionEvent->recorded_at,
                         );
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -309,7 +320,10 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $workflowExecution->send(false);
+                        $current = $workflowExecution->send(
+                            false,
+                            $timeoutFiredEvent?->recorded_at ?? $timeoutTimer?->fired_at,
+                        );
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -333,11 +347,11 @@ final class WorkflowExecutor
                         $this->cancelConditionTimeout($run, $task, $timeoutTimer);
                     }
 
-                    $this->recordConditionWaitSatisfied($run, $task, $sequence, $waitId, $timeoutTimer, $current);
+                    $satisfiedEvent = $this->recordConditionWaitSatisfied($run, $task, $sequence, $waitId, $timeoutTimer, $current);
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $workflowExecution->send(true);
+                        $current = $workflowExecution->send(true, $satisfiedEvent->recorded_at);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -358,7 +372,7 @@ final class WorkflowExecutor
                             $current,
                         );
 
-                        $this->recordConditionWaitTimedOut(
+                        $timedOutEvent = $this->recordConditionWaitTimedOut(
                             $run,
                             $task,
                             $sequence,
@@ -371,7 +385,7 @@ final class WorkflowExecutor
 
                         try {
                             $this->syncWorkflowCursor($workflow, $sequence + 1);
-                            $current = $workflowExecution->send(false);
+                            $current = $workflowExecution->send(false, $timedOutEvent->recorded_at);
                         } catch (Throwable $throwable) {
                             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -411,7 +425,10 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send($this->sideEffectResult($sideEffectEvent, $run));
+                    $current = $workflowExecution->send(
+                        $this->sideEffectResult($sideEffectEvent, $run),
+                        $sideEffectEvent->recorded_at,
+                    );
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -444,7 +461,7 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
-                    $current = $workflowExecution->send($version);
+                    $current = $workflowExecution->send($version, $versionMarkerEvent?->recorded_at);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -482,7 +499,7 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(null);
+                    $current = $workflowExecution->send(null, $upsertEvent?->recorded_at);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -512,7 +529,7 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(null);
+                    $current = $workflowExecution->send(null, $memoEvent?->recorded_at);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -534,10 +551,10 @@ final class WorkflowExecutor
                     return null;
                 }
 
-                if ($this->timerFiredEvent($run, $sequence) !== null) {
+                if (($timerFired = $this->timerFiredEvent($run, $sequence)) !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $workflowExecution->send(true);
+                        $current = $workflowExecution->send(true, $timerFired->recorded_at);
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -559,11 +576,11 @@ final class WorkflowExecutor
 
                 if ($timer === null) {
                     if ($current->seconds === 0) {
-                        $this->fireImmediateTimer($run, $task, $sequence, $current);
+                        $fired = $this->fireImmediateTimer($run, $task, $sequence, $current);
 
                         try {
                             $this->syncWorkflowCursor($workflow, $sequence + 1);
-                            $current = $workflowExecution->send(true);
+                            $current = $workflowExecution->send(true, $fired->recorded_at);
                         } catch (Throwable $throwable) {
                             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -594,7 +611,7 @@ final class WorkflowExecutor
 
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(true);
+                    $current = $workflowExecution->send(true, $timer->fired_at);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -621,7 +638,10 @@ final class WorkflowExecutor
                 if ($signalEvent !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $workflowExecution->send($this->signalValue($signalEvent, $run));
+                        $current = $workflowExecution->send(
+                            $this->signalValue($signalEvent, $run),
+                            $signalEvent->recorded_at,
+                        );
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -655,7 +675,10 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $workflowExecution->send(null);
+                        $current = $workflowExecution->send(
+                            null,
+                            $timeoutFiredEvent?->recorded_at ?? $timeoutTimer?->fired_at,
+                        );
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -688,7 +711,10 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
-                        $current = $workflowExecution->send($this->signalValue($signalEvent, $run));
+                        $current = $workflowExecution->send(
+                            $this->signalValue($signalEvent, $run),
+                            $signalEvent?->recorded_at,
+                        );
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -703,11 +729,11 @@ final class WorkflowExecutor
 
                 if ($current->timeoutSeconds !== null) {
                     if ($current->timeoutSeconds === 0) {
-                        $this->fireImmediateSignalTimeout($run, $task, $sequence, $signalWaitId, $current);
+                        $firedTimer = $this->fireImmediateSignalTimeout($run, $task, $sequence, $signalWaitId, $current);
 
                         try {
                             $this->syncWorkflowCursor($workflow, $sequence + 1);
-                            $current = $workflowExecution->send(null);
+                            $current = $workflowExecution->send(null, $firedTimer->fired_at);
                         } catch (Throwable $throwable) {
                             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -747,12 +773,14 @@ final class WorkflowExecutor
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                             $current = $workflowExecution->send(
-                                ChildRunHistory::outputForResolution($resolutionEvent, $childRun)
+                                ChildRunHistory::outputForResolution($resolutionEvent, $childRun),
+                                $resolutionEvent->recorded_at,
                             );
                         } else {
                             $failureId = $resolutionEvent->payload['failure_id'] ?? null;
                             $current = $workflowExecution->throw(
-                                ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun)
+                                ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
+                                $resolutionEvent->recorded_at,
                             );
 
                             $this->recordFailureHandled(
@@ -815,12 +843,14 @@ final class WorkflowExecutor
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                         $current = $workflowExecution->send(
-                            ChildRunHistory::outputForResolution($resolutionEvent, $childRun)
+                            ChildRunHistory::outputForResolution($resolutionEvent, $childRun),
+                            $resolutionEvent->recorded_at,
                         );
                     } else {
                         $failureId = $resolutionEvent->payload['failure_id'] ?? null;
                         $current = $workflowExecution->throw(
-                            ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun)
+                            ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
+                            $resolutionEvent->recorded_at,
                         );
 
                         $this->recordFailureHandled(
@@ -862,7 +892,7 @@ final class WorkflowExecutor
 
                 if ($groupSize === 0) {
                     try {
-                        $this->syncWorkflowCursor($workflow, $sequence, $run->started_at);
+                        $this->syncWorkflowCursor($workflow, $sequence);
                         $current = $workflowExecution->send($current->nestedResults([]));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -1133,7 +1163,10 @@ final class WorkflowExecutor
                 if ($failure !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                        $current = $workflowExecution->throw($failure['exception']);
+                        $failureTime = isset($failure['recorded_at']) && is_int($failure['recorded_at']) && $failure['recorded_at'] !== PHP_INT_MAX
+                            ? \Carbon\Carbon::createFromTimestampMs($failure['recorded_at'])
+                            : null;
+                        $current = $workflowExecution->throw($failure['exception'], $failureTime);
 
                         $this->recordFailureHandled(
                             $run,
@@ -1660,7 +1693,7 @@ final class WorkflowExecutor
         WorkflowTask $task,
         int $sequence,
         TimerCall $timerCall,
-    ): void {
+    ): WorkflowHistoryEvent {
         $recordedAt = now();
 
         /** @var WorkflowTimer $timer */
@@ -1680,7 +1713,7 @@ final class WorkflowExecutor
             'fire_at' => $timer->fire_at?->toJSON(),
         ], $task);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
+        return WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
             'timer_id' => $timer->id,
             'sequence' => $sequence,
             'delay_seconds' => $timer->delay_seconds,
@@ -3942,7 +3975,7 @@ final class WorkflowExecutor
         $this->cancelConditionTimeout($run, $task, $timer);
     }
 
-    private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence, ?\Carbon\CarbonInterface $eventTime = null): void
+    private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence): void
     {
         $workflow->syncExecutionCursor($visibleSequence);
         $workflow->setCommandDispatchEnabled(true);

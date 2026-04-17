@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use Fiber;
 use Throwable;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
@@ -21,13 +22,14 @@ final class WorkflowExecution
     /**
      * @param array<int|string, mixed> $arguments
      */
-    public static function start(Workflow $workflow, array $arguments): self
+    public static function start(Workflow $workflow, array $arguments, ?CarbonInterface $eventTime = null): self
     {
         $entryMethod = EntryMethod::forWorkflow($workflow);
 
         return self::startCallback(
             static fn (): mixed => $workflow->{$entryMethod->getName()}(...$arguments),
             straightLineError: StraightLineWorkflowRequiredException::forWorkflow($workflow::class),
+            eventTime: $eventTime,
         );
     }
 
@@ -38,6 +40,7 @@ final class WorkflowExecution
         callable $callback,
         array $arguments = [],
         ?StraightLineWorkflowRequiredException $straightLineError = null,
+        ?CarbonInterface $eventTime = null,
     ): self {
         $fiber = new Fiber(static function () use ($callback, $arguments): mixed {
             WorkflowFiberContext::enter();
@@ -48,6 +51,10 @@ final class WorkflowExecution
                 WorkflowFiberContext::leave();
             }
         });
+
+        if ($eventTime !== null) {
+            WorkflowFiberContext::setTime($eventTime, $fiber);
+        }
 
         $current = $fiber->start();
 
@@ -69,6 +76,11 @@ final class WorkflowExecution
         return $this->current;
     }
 
+    public function fiber(): ?Fiber
+    {
+        return $this->fiber;
+    }
+
     public function valid(): bool
     {
         if ($this->fiber instanceof Fiber) {
@@ -78,10 +90,14 @@ final class WorkflowExecution
         return false;
     }
 
-    public function send(mixed $value): mixed
+    public function send(mixed $value, ?CarbonInterface $eventTime = null): mixed
     {
         if (! $this->fiber instanceof Fiber) {
             return null;
+        }
+
+        if ($eventTime !== null) {
+            WorkflowFiberContext::setTime($eventTime, $this->fiber);
         }
 
         $result = $this->fiber->resume($value);
@@ -98,10 +114,14 @@ final class WorkflowExecution
         return null;
     }
 
-    public function throw(Throwable $throwable): mixed
+    public function throw(Throwable $throwable, ?CarbonInterface $eventTime = null): mixed
     {
         if (! $this->fiber instanceof Fiber) {
             throw $throwable;
+        }
+
+        if ($eventTime !== null) {
+            WorkflowFiberContext::setTime($eventTime, $this->fiber);
         }
 
         $result = $this->fiber->throw($throwable);
