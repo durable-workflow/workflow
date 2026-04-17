@@ -35,9 +35,10 @@ final class PayloadEnvelopeResolver
      * Used for control-plane surfaces (signal, query, update) where the
      * package API expects a PHP array, not a codec-tagged blob. Accepts
      * either a plain array of positional arguments or a {codec, blob}
-     * envelope — when an envelope is received, the blob is decoded using
-     * the declared codec. Only the "json" codec is supported for array
-     * surfaces; other codecs cannot be losslessly represented as PHP arrays.
+     * envelope. When an envelope is received, the blob is decoded using
+     * the declared codec — any codec in the {@see CodecRegistry} that can
+     * round-trip an array is accepted (json, avro, and the legacy PHP
+     * closure codecs). The decoded value must be an array.
      *
      * @param  mixed  $input  the `input` field from a validated request
      * @return array<int|string, mixed>  arguments (positional or named)
@@ -60,17 +61,18 @@ final class PayloadEnvelopeResolver
 
         $envelope = self::resolveExplicitEnvelope($input, $field);
 
-        if ($envelope['codec'] !== 'json') {
+        try {
+            $decoded = Serializer::unserializeWithCodec($envelope['codec'], $envelope['blob']);
+        } catch (\Throwable $e) {
             throw ValidationException::withMessages([
-                $field . '.codec' => [sprintf(
-                    'Only the "json" codec is supported for %s on this surface. Got "%s".',
+                $field . '.blob' => [sprintf(
+                    'The %s envelope blob could not be decoded with codec "%s": %s',
                     $field,
                     $envelope['codec'],
+                    $e->getMessage(),
                 )],
             ]);
         }
-
-        $decoded = json_decode($envelope['blob'], true);
 
         if (! is_array($decoded)) {
             throw ValidationException::withMessages([
