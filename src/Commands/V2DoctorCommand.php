@@ -66,17 +66,19 @@ class V2DoctorCommand extends Command
                 continue;
             }
 
+            $severity = (string) ($issue['severity'] ?? 'warn');
             $message = sprintf(
-                '[%s] %s',
+                '[%s] [%s] %s',
+                strtoupper($severity),
                 (string) ($issue['code'] ?? 'capability_issue'),
                 (string) ($issue['message'] ?? 'Capability issue detected.'),
             );
 
-            if (($issue['severity'] ?? null) === 'error') {
-                $this->error($message);
-            } else {
-                $this->warn($message);
-            }
+            match ($severity) {
+                'error' => $this->error($message),
+                'info' => $this->line($message),
+                default => $this->warn($message),
+            };
         }
     }
 
