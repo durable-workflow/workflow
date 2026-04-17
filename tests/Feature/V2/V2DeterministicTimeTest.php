@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestDeterministicTimeWorkflow;
+use Tests\Fixtures\V2\TestParallelDeterministicTimeWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -27,6 +28,7 @@ final class V2DeterministicTimeTest extends TestCase
 
         config()->set('queue.default', 'redis');
         config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
         Queue::fake();
     }
 
@@ -88,6 +90,62 @@ final class V2DeterministicTimeTest extends TestCase
             $output['time_at_start_ms'],
             $output['time_after_activity_ms'],
             'Workflow::now() must advance as replay progresses past history events.'
+        );
+    }
+
+    public function testNowAdvancesToLatestParallelCompletionDuringReplay(): void
+    {
+        $frozen = Carbon::parse('2026-01-02T00:00:00Z');
+        Carbon::setTestNow($frozen);
+
+        try {
+            $workflow = WorkflowStub::make(TestParallelDeterministicTimeWorkflow::class, 'deterministic-time-parallel');
+            $workflow->start('Taylor', 'Abigail');
+
+            $this->runReadyTaskOfType(TaskType::Workflow);
+
+            Carbon::setTestNow($frozen->copy()->addMinutes(2));
+            $this->runReadyTaskOfType(TaskType::Activity);
+
+            Carbon::setTestNow($frozen->copy()->addMinutes(7));
+            $this->runReadyTaskOfType(TaskType::Activity);
+            $this->runReadyTaskOfType(TaskType::Workflow);
+        } finally {
+            Carbon::setTestNow(null);
+        }
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $output = $workflow->output();
+
+        $this->assertSame(['Hello, Taylor!', 'Hello, Abigail!'], $output['results']);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        $latestActivityCompletionMs = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityCompleted->value)
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): ?int => $event->recorded_at?->getTimestampMs())
+            ->filter(static fn (?int $timestamp): bool => $timestamp !== null)
+            ->max();
+
+        $this->assertSame(
+            $run->started_at?->getTimestampMs(),
+            $output['time_at_start_ms'],
+            'Workflow::now() at the start of a parallel run should equal the run started_at.'
+        );
+
+        $this->assertSame(
+            $latestActivityCompletionMs,
+            $output['time_after_parallel_ms'],
+            'Workflow::now() after a successful parallel group should equal the latest completed leaf event.'
+        );
+
+        $this->assertGreaterThan(
+            $output['time_at_start_ms'],
+            $output['time_after_parallel_ms'],
+            'Workflow::now() must advance as replay progresses through successful parallel groups.'
         );
     }
 

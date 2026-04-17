@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use LogicException;
@@ -939,6 +940,7 @@ final class WorkflowExecutor
                 $pending = false;
                 $results = [];
                 $failure = null;
+                $successTime = null;
 
                 foreach ($leafDescriptors as $descriptor) {
                     $call = $descriptor['call'];
@@ -952,6 +954,10 @@ final class WorkflowExecutor
                         if ($activityCompletion !== null) {
                             if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
                                 $results[$offset] = $this->activityResult($activityCompletion, $run);
+                                $successTime = $this->latestReplayTime(
+                                    $successTime,
+                                    $activityCompletion->recorded_at ?? $activityCompletion->created_at,
+                                );
 
                                 continue;
                             }
@@ -1029,6 +1035,10 @@ final class WorkflowExecutor
 
                         if ($execution->status === ActivityStatus::Completed) {
                             $results[$offset] = $execution->activityResult();
+                            $successTime = $this->latestReplayTime(
+                                $successTime,
+                                $execution->closed_at ?? $execution->updated_at ?? $execution->created_at,
+                            );
 
                             continue;
                         }
@@ -1080,6 +1090,10 @@ final class WorkflowExecutor
                     if ($resolutionEvent !== null) {
                         if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                             $results[$offset] = ChildRunHistory::outputForResolution($resolutionEvent, $childRun);
+                            $successTime = $this->latestReplayTime(
+                                $successTime,
+                                $resolutionEvent->recorded_at ?? $resolutionEvent->created_at,
+                            );
 
                             continue;
                         }
@@ -1160,6 +1174,10 @@ final class WorkflowExecutor
 
                     if ($childStatus === RunStatus::Completed) {
                         $results[$offset] = ChildRunHistory::outputForChildRun($childRun);
+                        $successTime = $this->latestReplayTime(
+                            $successTime,
+                            $childRun->closed_at ?? $childRun->updated_at ?? $childRun->created_at,
+                        );
 
                         continue;
                     }
@@ -1203,7 +1221,10 @@ final class WorkflowExecutor
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                        $current = $workflowExecution->send($current->nestedResults(array_values($results)));
+                        $current = $workflowExecution->send(
+                            $current->nestedResults(array_values($results)),
+                            $successTime,
+                        );
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -3998,6 +4019,19 @@ final class WorkflowExecutor
     private function cancelSignalTimeout(WorkflowRun $run, WorkflowTask $task, WorkflowTimer $timer): void
     {
         $this->cancelConditionTimeout($run, $task, $timer);
+    }
+
+    private function latestReplayTime(?CarbonInterface $current, mixed $candidate): ?CarbonInterface
+    {
+        if (! $candidate instanceof CarbonInterface) {
+            return $current;
+        }
+
+        if ($current === null || $candidate->getTimestampMs() > $current->getTimestampMs()) {
+            return $candidate;
+        }
+
+        return $current;
     }
 
     private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence): void
