@@ -618,6 +618,82 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame('post-pileup', $tail->payload['reason']);
     }
 
+    public function testRecordRetriesWhenStaleMaxSequenceCollidesWithUniqueIndex(): void
+    {
+        // Prior regression coverage (the two tests above) exercised the happy
+        // path where record() reads a fresh max(sequence) and lands on the
+        // next free slot. They do NOT hit the UniqueConstraintViolationException
+        // branch of record(), because by the time record() runs the
+        // pre-inserted rows have already pushed max() up.
+        //
+        // This test forces the collision path: we hook the Eloquent `creating`
+        // event so the *first* create() call inside record() runs into a
+        // sibling row at the same sequence, racing the unique index. The hook
+        // fires exactly once — record()'s retry loop must then re-read max()
+        // and insert at the next free slot.
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'stale-max-race-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+        );
+
+        $raced = false;
+
+        WorkflowScheduleHistoryEvent::creating(function (WorkflowScheduleHistoryEvent $event) use (&$raced, $schedule): void {
+            // Only race the very first attempt inside record(). The retry
+            // re-reads max(sequence) and should land on the next slot, which
+            // this hook no longer interferes with.
+            if ($raced || (int) $event->sequence !== 2) {
+                return;
+            }
+
+            $raced = true;
+
+            // Commit a sibling row at the exact sequence record() is about to
+            // try. On MySQL/Postgres this produces UniqueConstraintViolationException
+            // when record()'s create() runs; on SQLite the same unique-index
+            // violation is raised by Laravel as UniqueConstraintViolationException.
+            WorkflowScheduleHistoryEvent::query()->create([
+                'workflow_schedule_id' => $schedule->id,
+                'schedule_id' => $schedule->schedule_id,
+                'namespace' => $schedule->namespace,
+                'sequence' => 2,
+                'event_type' => HistoryEventType::SchedulePaused->value,
+                'payload' => ['reason' => 'raced the pending writer'],
+                'recorded_at' => now(),
+            ]);
+        });
+
+        try {
+            ScheduleManager::pause($schedule, 'after retry');
+        } finally {
+            WorkflowScheduleHistoryEvent::flushEventListeners();
+        }
+
+        $this->assertTrue($raced, 'The creating-hook race was not exercised; test fixture is broken.');
+
+        $events = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->orderBy('sequence')
+            ->get();
+
+        // record() must land the SchedulePaused event at sequence 3 after the
+        // retry, preserving monotonic ordering without a duplicate-key fatal.
+        $this->assertSame([1, 2, 3], $events->pluck('sequence')->all());
+
+        $this->assertSame(
+            HistoryEventType::ScheduleCreated->value,
+            $events[0]->event_type->value,
+        );
+        $this->assertSame('raced the pending writer', $events[1]->payload['reason']);
+        $this->assertSame(
+            HistoryEventType::SchedulePaused->value,
+            $events[2]->event_type->value,
+        );
+        $this->assertSame('after retry', $events[2]->payload['reason']);
+    }
+
     public function testTriggerDeletedScheduleTracksSkipReason(): void
     {
         $schedule = ScheduleManager::create(
