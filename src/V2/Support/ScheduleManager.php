@@ -115,6 +115,7 @@ final class ScheduleManager
         ?string $queue = null,
         ?string $note = null,
         ?string $namespace = null,
+        ?CommandContext $context = null,
     ): WorkflowSchedule {
         $namespace ??= config('workflows.v2.namespace') ?? 'default';
         $action = WorkflowSchedule::normalizeActionTimeouts($action);
@@ -150,7 +151,7 @@ final class ScheduleManager
             'action' => is_array($schedule->action) ? $schedule->action : [],
             'overlap_policy' => $schedule->overlap_policy,
             'next_fire_at' => $schedule->next_fire_at?->toIso8601String(),
-        ]);
+        ], $context);
 
         return $schedule;
     }
@@ -222,6 +223,7 @@ final class ScheduleManager
         ?array $memo = null,
         ?array $searchAttributes = null,
         ?int $maxRuns = null,
+        ?CommandContext $context = null,
     ): WorkflowSchedule {
         if ($schedule->status === ScheduleStatus::Deleted) {
             throw new LogicException(sprintf('Cannot update deleted schedule [%s].', $schedule->schedule_id));
@@ -290,7 +292,7 @@ final class ScheduleManager
             'action' => is_array($schedule->action) ? $schedule->action : [],
             'overlap_policy' => $schedule->overlap_policy,
             'next_fire_at' => $schedule->next_fire_at?->toIso8601String(),
-        ]);
+        ], $context);
 
         return $schedule;
     }
@@ -341,13 +343,13 @@ final class ScheduleManager
                 ->findOrFail($schedule->id);
 
             if (! $schedule->status->allowsTrigger()) {
-                self::recordSkip($schedule, 'status_not_triggerable');
+                self::recordSkip($schedule, 'status_not_triggerable', $context);
 
                 return new ScheduleTriggerResult('skipped', null, null, 'status_not_triggerable');
             }
 
             if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
-                self::recordSkip($schedule, 'remaining_actions_exhausted');
+                self::recordSkip($schedule, 'remaining_actions_exhausted', $context);
 
                 return new ScheduleTriggerResult('skipped', null, null, 'remaining_actions_exhausted');
             }
@@ -358,7 +360,7 @@ final class ScheduleManager
 
             if ($overlapPolicy->isBuffer() && self::runningRunExists($schedule)) {
                 if ($schedule->isAtBufferCapacity($overlapPolicy->value)) {
-                    self::recordSkip($schedule, 'buffer_full');
+                    self::recordSkip($schedule, 'buffer_full', $context);
                     $schedule->forceFill([
                         'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
                     ])->save();
@@ -375,7 +377,7 @@ final class ScheduleManager
 
             if (! self::overlapAllowed($schedule, $overlapPolicy)) {
                 $reason = 'overlap_policy_' . $overlapPolicy->value;
-                self::recordSkip($schedule, $reason);
+                self::recordSkip($schedule, $reason, $context);
                 $schedule->forceFill([
                     'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
                 ])->save();
@@ -579,19 +581,19 @@ final class ScheduleManager
             $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
 
             if (! $schedule->status->allowsTrigger()) {
-                self::recordSkip($schedule, 'status_not_triggerable');
+                self::recordSkip($schedule, 'status_not_triggerable', $context);
 
                 return null;
             }
 
             if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
-                self::recordSkip($schedule, 'remaining_actions_exhausted');
+                self::recordSkip($schedule, 'remaining_actions_exhausted', $context);
 
                 return null;
             }
 
             if (! self::overlapAllowed($schedule, $effectivePolicy)) {
-                self::recordSkip($schedule, 'overlap_policy_' . $effectivePolicy->value);
+                self::recordSkip($schedule, 'overlap_policy_' . $effectivePolicy->value, $context);
 
                 return null;
             }
@@ -663,7 +665,7 @@ final class ScheduleManager
             self::recordScheduleEvent($schedule, HistoryEventType::ScheduleDeleted, [
                 'reason' => 'max_runs_exhausted',
                 'deleted_at' => $schedule->deleted_at?->toIso8601String(),
-            ]);
+            ], $context);
         }
 
         return $result;
@@ -701,8 +703,11 @@ final class ScheduleManager
         ], static fn (mixed $v): bool => $v !== null));
     }
 
-    private static function recordSkip(WorkflowSchedule $schedule, string $reason): void
-    {
+    private static function recordSkip(
+        WorkflowSchedule $schedule,
+        string $reason,
+        ?CommandContext $context = null,
+    ): void {
         $schedule->forceFill([
             'last_skip_reason' => $reason,
             'last_skipped_at' => now(),
@@ -713,7 +718,7 @@ final class ScheduleManager
             'reason' => $reason,
             'skipped_trigger_count' => (int) $schedule->skipped_trigger_count,
             'last_skipped_at' => $schedule->last_skipped_at?->toIso8601String(),
-        ]);
+        ], $context);
     }
 
     /**
