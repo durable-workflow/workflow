@@ -153,10 +153,11 @@ final class PayloadEnvelopeResolver
         }
 
         $values = array_values($input);
+        $codec = CodecRegistry::defaultCodec();
 
         return [
-            'codec' => CodecRegistry::defaultCodec(),
-            'blob' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), $values),
+            'codec' => $codec,
+            'blob' => Serializer::serializeWithCodec($codec, $values),
         ];
     }
 
