@@ -14,7 +14,8 @@ use InvalidArgumentException;
  * so any SDK can pick the right decoder without sniffing.
  *
  * Canonical names:
- *   - "json"                    — language-neutral JSON (default for new workflows)
+ *   - "avro"                    — Apache Avro binary codec (default for new workflows)
+ *   - "json"                    — language-neutral JSON (supported, not default)
  *   - "workflow-serializer-y"   — PHP SerializableClosure with byte-escape encoding (legacy)
  *   - "workflow-serializer-base64" — PHP SerializableClosure with base64 encoding (legacy)
  *
@@ -26,6 +27,7 @@ final class CodecRegistry
     /** @var array<string, class-string<SerializerInterface>> */
     private const CODECS = [
         'json' => Json::class,
+        'avro' => Avro::class,
         'workflow-serializer-y' => Y::class,
         'workflow-serializer-base64' => Base64::class,
     ];
@@ -99,7 +101,7 @@ final class CodecRegistry
             }
         }
 
-        return 'json';
+        return 'avro';
     }
 
     /** @return list<string> */
@@ -119,7 +121,7 @@ final class CodecRegistry
      */
     public static function universal(): array
     {
-        return ['json'];
+        return ['json', 'avro'];
     }
 
     /**
