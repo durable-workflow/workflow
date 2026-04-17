@@ -73,13 +73,13 @@ final class V2AvroParitySuiteTest extends TestCase
         $this->assertIsFloat($output['input_amount'], '3.14 must stay float');
         $this->assertSame(42, $output['input_items_count']);
         $this->assertIsInt($output['input_items_count'], '42 must stay int');
-        $this->assertSame(3, $output['three_point_zero']);
+        $this->assertSame(3.0, $output['three_point_zero']); $this->assertIsFloat($output['three_point_zero']);
 
         $activityResult = $output['activity_result'];
         $this->assertSame('ORD-2', $activityResult['order_id']);
         $this->assertIsFloat($activityResult['amount'], 'activity result float must survive');
         $this->assertIsInt($activityResult['items_count'], 'activity result int must survive');
-        $this->assertSame(3, $activityResult['three_point_zero']);
+        $this->assertSame(3.0, $activityResult['three_point_zero']); $this->assertIsFloat($activityResult['three_point_zero']);
 
         $this->assertSame(['priority' => true, 'discount' => 0.15], $output['signal_payload']);
     }

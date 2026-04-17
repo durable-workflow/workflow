@@ -202,7 +202,7 @@ final class Avro implements SerializerInterface
             // Prefix: 0x00 = generic wrapper mode
             $io->write("\x00");
             $writer->write([
-                'json' => json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                'json' => json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
                 'version' => 1,
             ], $encoder);
 
