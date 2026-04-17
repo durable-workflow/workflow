@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
@@ -51,12 +52,23 @@ class MigrationTest extends TestCase
     }
 
 
-    public function testScheduleHistoryMigrationCanResumeAfterTableWasCreatedWithoutMigrationRecord()
+    public function testScheduleHistoryMigrationCanResumeAfterPartialMysqlIndexFailure()
     {
         $path = __DIR__ . '/../../src/migrations/2026_04_16_000180_create_workflow_schedule_history_events_table.php';
 
-        $migration = include $path;
-        $migration->up();
+        Schema::create('workflow_schedule_history_events', static function (Blueprint $table): void {
+            $table->string('id', 26)->primary();
+            $table->string('workflow_schedule_id', 26);
+            $table->string('schedule_id', 255);
+            $table->string('namespace', 255)->nullable();
+            $table->unsignedInteger('sequence');
+            $table->string('event_type');
+            $table->json('payload')->nullable();
+            $table->string('workflow_instance_id', 191)->nullable();
+            $table->string('workflow_run_id', 26)->nullable();
+            $table->timestamp('recorded_at', 6)->nullable();
+            $table->timestamps(6);
+        });
 
         $this->assertTrue(Schema::hasTable('workflow_schedule_history_events'));
         $this->assertFalse(
@@ -80,6 +92,18 @@ class MigrationTest extends TestCase
             'workflow_run_id',
             'recorded_at',
         ]));
+        $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['workflow_schedule_id']));
+        $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['schedule_id']));
+        $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['namespace']));
+        $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['workflow_instance_id']));
+        $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['workflow_run_id']));
+        $this->assertTrue(Schema::hasIndex(
+            'workflow_schedule_history_events',
+            ['workflow_schedule_id', 'sequence'],
+            'unique'
+        ));
+        $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['namespace', 'schedule_id']));
+        $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['event_type', 'recorded_at']));
     }
 
 
