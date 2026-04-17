@@ -268,13 +268,26 @@ final class BackendCapabilities
             try {
                 $canonical = CodecRegistry::canonicalize($configured);
             } catch (\InvalidArgumentException) {
+                $universalList = implode('", "', CodecRegistry::universal());
                 $issues[] = self::issue(
                     'codec',
                     'error',
                     'codec_unknown',
                     sprintf(
-                        'The configured workflows.serializer [%s] is not a known payload codec.',
+                        'The configured workflows.serializer [%s] is not a known payload codec. '
+                        .'v2 does not support custom serializer classes — only the built-in codecs '
+                        .'("%s") and the legacy PHP-only codecs ("workflow-serializer-y", "workflow-serializer-base64") '
+                        .'are resolvable. '
+                        .'To migrate a v1 deployment that used a custom serializer, choose one of: '
+                        .'(a) set workflows.serializer to "avro" or "json" for new runs and accept that '
+                        .'old history written under the custom codec becomes unreadable, '
+                        .'(b) keep the custom serializer classes loaded and re-encode old history to a '
+                        .'supported codec before upgrading, '
+                        .'(c) stay on v1 until the old runs drain. '
+                        .'Meanwhile default-codec resolution silently falls back to "avro" so new runs '
+                        .'still encode successfully — but the configured value is never consulted.',
                         $configured,
+                        $universalList,
                     ),
                 );
             }

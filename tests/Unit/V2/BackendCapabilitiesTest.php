@@ -262,4 +262,30 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertSame('error', $codecIssue['severity']);
         $this->assertFalse(BackendCapabilities::isSupported($snapshot));
     }
+
+    public function testUnknownCodecDiagnosticIncludesMigrationGuidance(): void
+    {
+        config()->set('workflows.serializer', 'App\\Custom\\V1Serializer');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $codecIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'codec_unknown');
+
+        $this->assertNotNull($codecIssue);
+
+        // The diagnostic must name the unsupported value and explain that
+        // custom serializer classes are not resolvable in v2.
+        $this->assertStringContainsString('App\\Custom\\V1Serializer', $codecIssue['message']);
+        $this->assertStringContainsString('does not support custom serializer classes', $codecIssue['message']);
+
+        // It must name the universal codec options an operator can migrate to.
+        $this->assertStringContainsString('avro', $codecIssue['message']);
+        $this->assertStringContainsString('json', $codecIssue['message']);
+
+        // It must mention that default-codec resolution silently falls back
+        // to avro so operators understand why new runs still work — and that
+        // the unsupported value is being ignored.
+        $this->assertStringContainsString('falls back to "avro"', $codecIssue['message']);
+    }
 }
