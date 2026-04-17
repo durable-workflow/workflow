@@ -10,31 +10,75 @@ final class WorkflowsConfigTest extends TestCase
 {
     public function testConfigIsLoaded(): void
     {
-        $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+        $previousSerializer = getenv('WORKFLOW_SERIALIZER') === false ? null : getenv('WORKFLOW_SERIALIZER');
+        putenv('WORKFLOW_SERIALIZER');
+        unset($_ENV['WORKFLOW_SERIALIZER'], $_SERVER['WORKFLOW_SERIALIZER']);
 
-        $this->assertNotEmpty($config, 'The workflows config file is not loaded.');
+        try {
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
 
-        $expectedConfig = [
-            'workflows_folder' => 'Workflows',
-            'stored_workflow_model' => \Workflow\Models\StoredWorkflow::class,
-            'stored_workflow_exception_model' => \Workflow\Models\StoredWorkflowException::class,
-            'stored_workflow_log_model' => \Workflow\Models\StoredWorkflowLog::class,
-            'stored_workflow_signal_model' => \Workflow\Models\StoredWorkflowSignal::class,
-            'stored_workflow_timer_model' => \Workflow\Models\StoredWorkflowTimer::class,
-            'workflow_relationships_table' => 'workflow_relationships',
-            'serializer' => 'avro',
-            'prune_age' => '1 month',
-            'webhooks_route' => env('WORKFLOW_WEBHOOKS_ROUTE', 'webhooks'),
-        ];
+            $this->assertNotEmpty($config, 'The workflows config file is not loaded.');
 
-        foreach ($expectedConfig as $key => $expectedValue) {
-            $this->assertTrue(array_key_exists($key, $config), "The config key [workflows.{$key}] is missing.");
+            $expectedConfig = [
+                'workflows_folder' => 'Workflows',
+                'stored_workflow_model' => \Workflow\Models\StoredWorkflow::class,
+                'stored_workflow_exception_model' => \Workflow\Models\StoredWorkflowException::class,
+                'stored_workflow_log_model' => \Workflow\Models\StoredWorkflowLog::class,
+                'stored_workflow_signal_model' => \Workflow\Models\StoredWorkflowSignal::class,
+                'stored_workflow_timer_model' => \Workflow\Models\StoredWorkflowTimer::class,
+                'workflow_relationships_table' => 'workflow_relationships',
+                'serializer' => 'avro',
+                'prune_age' => '1 month',
+                'webhooks_route' => env('WORKFLOW_WEBHOOKS_ROUTE', 'webhooks'),
+            ];
 
-            $this->assertEquals(
-                $expectedValue,
-                $config[$key],
-                "The config key [workflows.{$key}] does not match the expected value."
-            );
+            foreach ($expectedConfig as $key => $expectedValue) {
+                $this->assertTrue(array_key_exists($key, $config), "The config key [workflows.{$key}] is missing.");
+
+                $this->assertEquals(
+                    $expectedValue,
+                    $config[$key],
+                    "The config key [workflows.{$key}] does not match the expected value."
+                );
+            }
+        } finally {
+            if ($previousSerializer === null) {
+                putenv('WORKFLOW_SERIALIZER');
+                unset($_ENV['WORKFLOW_SERIALIZER'], $_SERVER['WORKFLOW_SERIALIZER']);
+            } else {
+                putenv(sprintf('WORKFLOW_SERIALIZER=%s', $previousSerializer));
+                $_ENV['WORKFLOW_SERIALIZER'] = $previousSerializer;
+                $_SERVER['WORKFLOW_SERIALIZER'] = $previousSerializer;
+            }
+        }
+    }
+
+    /**
+     * Operators must be able to override the payload codec at deploy time
+     * via the WORKFLOW_SERIALIZER env var without rebuilding the image or
+     * mounting a config override file.
+     */
+    public function testSerializerHonoursEnvironmentOverride(): void
+    {
+        $previous = getenv('WORKFLOW_SERIALIZER') === false ? null : getenv('WORKFLOW_SERIALIZER');
+
+        putenv('WORKFLOW_SERIALIZER=json');
+        $_ENV['WORKFLOW_SERIALIZER'] = 'json';
+        $_SERVER['WORKFLOW_SERIALIZER'] = 'json';
+
+        try {
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+
+            $this->assertSame('json', $config['serializer']);
+        } finally {
+            if ($previous === null) {
+                putenv('WORKFLOW_SERIALIZER');
+                unset($_ENV['WORKFLOW_SERIALIZER'], $_SERVER['WORKFLOW_SERIALIZER']);
+            } else {
+                putenv(sprintf('WORKFLOW_SERIALIZER=%s', $previous));
+                $_ENV['WORKFLOW_SERIALIZER'] = $previous;
+                $_SERVER['WORKFLOW_SERIALIZER'] = $previous;
+            }
         }
     }
 
