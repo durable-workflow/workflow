@@ -183,7 +183,7 @@ final class ActivityOutcomeRecorder
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Pending,
-                    'exception' => Serializer::serialize($exceptionPayload),
+                    'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec),
                     'last_heartbeat_at' => null,
                 ])->save();
 
@@ -260,7 +260,7 @@ final class ActivityOutcomeRecorder
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Failed,
-                    'exception' => Serializer::serialize($exceptionPayload),
+                    'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec),
                     'closed_at' => now(),
                 ])->save();
 

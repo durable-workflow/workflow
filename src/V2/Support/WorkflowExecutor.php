@@ -3500,7 +3500,7 @@ final class WorkflowExecutor
         $payload = is_array($event?->payload['exception'] ?? null)
             ? $event->payload['exception']
             : (is_string($execution?->exception)
-                ? Serializer::unserialize($execution->exception)
+                ? $this->unserializePayloadWithRun($execution->exception, $run)
                 : []);
 
         if (! is_array($payload) && $event !== null && $run !== null) {

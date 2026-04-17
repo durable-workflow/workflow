@@ -752,7 +752,7 @@ final class QueryStateReplayer
         $payload = is_array($event?->payload['exception'] ?? null)
             ? $event->payload['exception']
             : (is_string($execution?->exception)
-                ? Serializer::unserialize($execution->exception)
+                ? $this->unserializeExceptionWithRun($execution->exception, $run)
                 : []);
 
         if (! is_array($payload) && $event !== null && $run !== null) {
@@ -789,6 +789,15 @@ final class QueryStateReplayer
             : 0;
 
         return FailureFactory::restoreForReplay($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
+    }
+
+    private function unserializeExceptionWithRun(string $serialized, ?WorkflowRun $run): mixed
+    {
+        if ($run !== null && is_string($run->payload_codec) && $run->payload_codec !== '') {
+            return Serializer::unserializeWithCodec($run->payload_codec, $serialized);
+        }
+
+        return Serializer::unserialize($serialized);
     }
 
     private function applyRecordedUpdates(
