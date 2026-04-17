@@ -207,4 +207,59 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertNotNull($queueIssue);
         $this->assertSame('error', $queueIssue['severity']);
     }
+
+    public function testDefaultJsonCodecIsUniversalAndHasNoIssues(): void
+    {
+        config()->set('workflows.serializer', 'json');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame('json', $snapshot['codec']['canonical']);
+        $this->assertTrue($snapshot['codec']['universal']);
+        $this->assertTrue($snapshot['codec']['supported']);
+        $this->assertEmpty($snapshot['codec']['issues']);
+        $this->assertNull(
+            collect($snapshot['issues'])->firstWhere('component', 'codec'),
+        );
+    }
+
+    public function testLegacyPhpCodecEmitsPolyglotCompatibilityWarning(): void
+    {
+        config()->set('workflows.serializer', \Workflow\Serializers\Y::class);
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertSame('workflow-serializer-y', $snapshot['codec']['canonical']);
+        $this->assertFalse($snapshot['codec']['universal']);
+
+        $codecIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'codec_legacy_php_only');
+
+        $this->assertNotNull($codecIssue);
+        $this->assertSame('warning', $codecIssue['severity']);
+        $this->assertSame('codec', $codecIssue['component']);
+        $this->assertStringContainsString('workflow-serializer-y', $codecIssue['message']);
+
+        // A polyglot warning must not fail the codec component itself —
+        // the deployment is still functional, just suboptimal for non-PHP
+        // workers. (Other components in the test env may still fail, so we
+        // only assert on the codec's own `supported` flag here.)
+        $this->assertTrue($snapshot['codec']['supported']);
+    }
+
+    public function testUnknownCodecStringProducesErrorSeverity(): void
+    {
+        config()->set('workflows.serializer', 'not-a-real-codec');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $this->assertNull($snapshot['codec']['canonical']);
+
+        $codecIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'codec_unknown');
+
+        $this->assertNotNull($codecIssue);
+        $this->assertSame('error', $codecIssue['severity']);
+        $this->assertFalse(BackendCapabilities::isSupported($snapshot));
+    }
 }

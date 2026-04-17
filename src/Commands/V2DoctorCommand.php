@@ -51,6 +51,7 @@ class V2DoctorCommand extends Command
         $this->componentLine('database', $snapshot['database'] ?? []);
         $this->componentLine('queue', $snapshot['queue'] ?? []);
         $this->componentLine('cache', $snapshot['cache'] ?? []);
+        $this->componentLine('codec', $snapshot['codec'] ?? []);
 
         $issues = $snapshot['issues'] ?? [];
 
@@ -96,6 +97,7 @@ class V2DoctorCommand extends Command
             ),
             'queue' => sprintf('%s/%s', $component['connection'] ?? 'unknown', $component['driver'] ?? 'unknown'),
             'cache' => sprintf('%s/%s', $component['store'] ?? 'unknown', $component['driver'] ?? 'unknown'),
+            'codec' => (string) ($component['canonical'] ?? 'unknown'),
             default => 'unknown',
         };
 

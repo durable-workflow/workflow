@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Support\Facades\Cache;
+use Workflow\Serializers\CodecRegistry;
 
 final class BackendCapabilities
 {
@@ -24,8 +25,15 @@ final class BackendCapabilities
         $database = self::database($databaseConnection);
         $queue = self::queue($queueConnection);
         $cache = self::cache($cacheStore);
+        $codec = self::codec();
         $limits = self::structuralLimits($database, $queue);
-        $issues = array_values(array_merge($database['issues'], $queue['issues'], $cache['issues'], $limits['issues']));
+        $issues = array_values(array_merge(
+            $database['issues'],
+            $queue['issues'],
+            $cache['issues'],
+            $codec['issues'],
+            $limits['issues'],
+        ));
 
         return [
             'generated_at' => $now->toJSON(),
@@ -33,6 +41,7 @@ final class BackendCapabilities
             'database' => $database,
             'queue' => $queue,
             'cache' => $cache,
+            'codec' => $codec,
             'structural_limits' => $limits,
             'issues' => $issues,
         ];
@@ -242,6 +251,57 @@ final class BackendCapabilities
             'configured' => $configured,
             'backend_adjustments' => $backendAdjustments,
             'effective' => array_merge($configured, $backendAdjustments),
+            'issues' => $issues,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function codec(): array
+    {
+        $configured = config('workflows.serializer');
+        $issues = [];
+
+        $canonical = null;
+        if (is_string($configured) && $configured !== '') {
+            try {
+                $canonical = CodecRegistry::canonicalize($configured);
+            } catch (\InvalidArgumentException) {
+                $issues[] = self::issue(
+                    'codec',
+                    'error',
+                    'codec_unknown',
+                    sprintf(
+                        'The configured workflows.serializer [%s] is not a known payload codec.',
+                        $configured,
+                    ),
+                );
+            }
+        } else {
+            $canonical = CodecRegistry::defaultCodec();
+        }
+
+        $universal = CodecRegistry::universal();
+        $isUniversal = $canonical !== null && in_array($canonical, $universal, true);
+
+        if ($canonical !== null && ! $isUniversal) {
+            $issues[] = self::issue(
+                'codec',
+                'warning',
+                'codec_legacy_php_only',
+                sprintf(
+                    'workflows.serializer is set to [%s], a PHP-only legacy codec. New v2 workflows written with this codec cannot be decoded by Python, Go, or TypeScript workers. Set workflows.serializer to "json" for polyglot compatibility; keep the legacy codec only if you still need to read v1 history with it.',
+                    $canonical,
+                ),
+            );
+        }
+
+        return [
+            'configured' => $configured,
+            'canonical' => $canonical,
+            'universal' => $isUniversal,
+            'supported' => self::hasErrors($issues) === false,
             'issues' => $issues,
         ];
     }

@@ -20,12 +20,24 @@ final class Serializer
         if ($name === 'unserialize') {
             $instance = self::legacyUnserializeInstance((string) ($arguments[0] ?? ''));
         } else {
-            $instance = config('workflows.serializer', Y::class)::getInstance();
+            $instance = self::defaultInstance();
         }
 
         if (method_exists($instance, $name)) {
             return $instance->{$name}(...$arguments);
         }
+    }
+
+    private static function defaultInstance(): SerializerInterface
+    {
+        $configured = function_exists('config') ? config('workflows.serializer') : null;
+
+        if (is_string($configured) && $configured !== '') {
+            $class = CodecRegistry::resolve($configured);
+            return $class::getInstance();
+        }
+
+        return Json::getInstance();
     }
 
     /**
