@@ -598,7 +598,7 @@ final class WorkflowStub
 
     public function payloadCodec(): string
     {
-        return $this->run?->payload_codec ?? config('workflows.serializer_name', 'json');
+        return $this->run?->payload_codec ?? CodecRegistry::defaultCodec();
     }
 
     public function currentRunId(): ?string

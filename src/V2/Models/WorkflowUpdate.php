@@ -7,6 +7,7 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\UpdateStatus;
@@ -108,7 +109,7 @@ class WorkflowUpdate extends Model
         $run = $this->run;
 
         return [
-            'codec' => $run?->payload_codec ?? config('workflows.serializer_name', 'json'),
+            'codec' => $run?->payload_codec ?? CodecRegistry::defaultCodec(),
             'blob' => $this->result,
         ];
     }

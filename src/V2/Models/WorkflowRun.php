@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -252,7 +253,7 @@ class WorkflowRun extends Model
         }
 
         return [
-            'codec' => $this->payload_codec ?? config('workflows.serializer_name', 'json'),
+            'codec' => $this->payload_codec ?? CodecRegistry::defaultCodec(),
             'blob' => $this->arguments,
         ];
     }
@@ -267,7 +268,7 @@ class WorkflowRun extends Model
         }
 
         return [
-            'codec' => $this->payload_codec ?? config('workflows.serializer_name', 'json'),
+            'codec' => $this->payload_codec ?? CodecRegistry::defaultCodec(),
             'blob' => $this->output,
         ];
     }
