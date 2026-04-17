@@ -268,3 +268,17 @@ if (! function_exists(__NAMESPACE__ . '\\years')) {
         return timer("{$years} years");
     }
 }
+
+if (! function_exists(__NAMESPACE__ . '\\now')) {
+    /**
+     * Read the deterministic workflow time.
+     *
+     * Inside a workflow fiber, returns the timestamp of the last history
+     * event the executor replayed before resuming.
+     * Outside a workflow fiber, falls back to wall-clock time.
+     */
+    function now(): \Carbon\CarbonInterface
+    {
+        return WorkflowFiberContext::getTime();
+    }
+}

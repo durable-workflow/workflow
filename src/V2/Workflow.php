@@ -191,6 +191,19 @@ abstract class Workflow
     // operand/return types come from the underlying helper functions.
 
     /**
+     * Read the deterministic workflow time.
+     *
+     * Inside a workflow fiber, returns the timestamp of the last history
+     * event the executor replayed. Outside a workflow, returns wall-clock.
+     *
+     * @see \Workflow\V2\now()
+     */
+    public static function now(): \Carbon\CarbonInterface
+    {
+        return \Workflow\V2\Support\WorkflowFiberContext::getTime();
+    }
+
+    /**
      * Invoke an activity and wait for its result.
      *
      * @see activity()

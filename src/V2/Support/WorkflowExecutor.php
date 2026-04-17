@@ -97,7 +97,7 @@ final class WorkflowExecutor
         $current = $workflowExecution->current();
 
         $sequence = 1;
-        $this->syncWorkflowCursor($workflow, $sequence);
+        $this->syncWorkflowCursor($workflow, $sequence, $run->started_at);
         $historySequenceAtTaskStart = $run->last_history_sequence ?? 0;
 
         while (true) {
@@ -116,7 +116,7 @@ final class WorkflowExecutor
 
             if (! $workflowExecution->valid()) {
                 try {
-                    $this->syncWorkflowCursor($workflow, $sequence);
+                    $this->syncWorkflowCursor($workflow, $sequence, $run->started_at);
                     $this->completeRun($run, $task, $workflowExecution->getReturn());
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -862,7 +862,7 @@ final class WorkflowExecutor
 
                 if ($groupSize === 0) {
                     try {
-                        $this->syncWorkflowCursor($workflow, $sequence);
+                        $this->syncWorkflowCursor($workflow, $sequence, $run->started_at);
                         $current = $workflowExecution->send($current->nestedResults([]));
                     } catch (Throwable $throwable) {
                         $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -3942,7 +3942,7 @@ final class WorkflowExecutor
         $this->cancelConditionTimeout($run, $task, $timer);
     }
 
-    private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence): void
+    private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence, ?\Carbon\CarbonInterface $eventTime = null): void
     {
         $workflow->syncExecutionCursor($visibleSequence);
         $workflow->setCommandDispatchEnabled(true);
