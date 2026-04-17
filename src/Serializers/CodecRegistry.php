@@ -84,8 +84,10 @@ final class CodecRegistry
     /**
      * The default codec, derived from config('workflows.serializer').
      *
-     * Defaults to "json" for new deployments; existing deployments that pin
-     * the PHP codec via config keep the legacy behavior.
+     * Defaults to "avro" for new deployments. Installations that pin
+     * "json" (or a legacy PHP codec) via config keep that codec for new
+     * runs; legacy fully-qualified class names resolve to their canonical
+     * codec names so v1 deployments keep working.
      */
     public static function defaultCodec(): string
     {
