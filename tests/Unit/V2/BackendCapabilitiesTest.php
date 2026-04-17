@@ -208,19 +208,15 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertSame('error', $queueIssue['severity']);
     }
 
-    public function testDefaultJsonCodecIsUniversalAndHasNoIssues(): void
+    public function testJsonCodecIsNotUniversalInV2(): void
     {
         config()->set('workflows.serializer', 'json');
 
         $snapshot = BackendCapabilities::snapshot();
 
         $this->assertSame('json', $snapshot['codec']['canonical']);
-        $this->assertTrue($snapshot['codec']['universal']);
+        $this->assertFalse($snapshot['codec']['universal']);
         $this->assertTrue($snapshot['codec']['supported']);
-        $this->assertEmpty($snapshot['codec']['issues']);
-        $this->assertNull(
-            collect($snapshot['issues'])->firstWhere('component', 'codec'),
-        );
     }
 
     public function testLegacyPhpCodecEmitsPolyglotCompatibilityWarning(): void
@@ -281,7 +277,7 @@ final class BackendCapabilitiesTest extends TestCase
 
         // It must name the universal codec options an operator can migrate to.
         $this->assertStringContainsString('avro', $codecIssue['message']);
-        $this->assertStringContainsString('json', $codecIssue['message']);
+        // json is no longer recommended for new workflows (Avro-only per #334)
 
         // It must mention that default-codec resolution silently falls back
         // to avro so operators understand why new runs still work — and that

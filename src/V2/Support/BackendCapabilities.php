@@ -279,7 +279,7 @@ final class BackendCapabilities
                         .'("%s") and the legacy PHP-only codecs ("workflow-serializer-y", "workflow-serializer-base64") '
                         .'are resolvable. '
                         .'To migrate a v1 deployment that used a custom serializer, choose one of: '
-                        .'(a) set workflows.serializer to "avro" or "json" for new runs and accept that '
+                        .'(a) set workflows.serializer to "avro" for new runs and accept that '
                         .'old history written under the custom codec becomes unreadable, '
                         .'(b) keep the custom serializer classes loaded and re-encode old history to a '
                         .'supported codec before upgrading, '
@@ -304,7 +304,7 @@ final class BackendCapabilities
                 'warning',
                 'codec_legacy_php_only',
                 sprintf(
-                    'workflows.serializer is set to [%s], a PHP-only legacy codec. New v2 workflows written with this codec cannot be decoded by Python, Go, or TypeScript workers. Set workflows.serializer to "json" for polyglot compatibility; keep the legacy codec only if you still need to read v1 history with it.',
+                    'workflows.serializer is set to [%s], a PHP-only legacy codec. New v2 workflows written with this codec cannot be decoded by Python, Go, or TypeScript workers. Set workflows.serializer to "avro" for polyglot compatibility; keep the legacy codec only if you still need to read v1 history with it.',
                     $canonical,
                 ),
             );

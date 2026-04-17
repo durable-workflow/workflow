@@ -139,7 +139,10 @@ final class CodecRegistry
     {
         $universal = self::universal();
 
-        $phpOnly = array_values(array_diff(array_keys(self::CODECS), $universal));
+        // Exclude both universal codecs and json (language-neutral, kept for
+        // decode of existing data but not advertised as engine-specific).
+        $excluded = array_merge($universal, ['json']);
+        $phpOnly = array_values(array_diff(array_keys(self::CODECS), $excluded));
 
         if ($phpOnly === []) {
             return [];
