@@ -131,8 +131,8 @@ return [
     // Payload codec name. v2 defaults to "avro" for typed binary payloads
     // with cross-language type fidelity (int stays int, float stays float).
     //
-    // "json" is also a first-class language-neutral option for callers that
-    // prefer a textual wire format. Legacy PHP-only codecs
+    // "json" is retained for decoding existing data only. It is not
+    // recommended for new v2 workflows. Legacy PHP-only codecs
     // ("workflow-serializer-y", "workflow-serializer-base64") remain
     // supported for reading v1 history but are not recommended for new
     // workflows. Setting this to a legacy codec will be flagged by
