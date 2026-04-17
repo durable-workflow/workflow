@@ -169,9 +169,9 @@ final class RunUpdateView
             'validation_errors' => self::validationErrors($rejected) ?: $update->normalizedValidationErrors(),
             'payload_codec' => $update->payload_codec,
             'arguments_available' => is_string($arguments),
-            'arguments' => self::normalizeTypedValue($arguments),
+            'arguments' => self::normalizeTypedValue($arguments, $update->payload_codec),
             'result_available' => is_string($result) && $failureId === null,
-            'result' => $failureId === null ? self::normalizeTypedValue($result) : null,
+            'result' => $failureId === null ? self::normalizeTypedValue($result, $update->payload_codec) : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot)
                 ?? $update->failure_message
@@ -234,7 +234,7 @@ final class RunUpdateView
             'arguments_available' => true,
             'arguments' => $command->payloadArguments(),
             'result_available' => is_string($result) && $failureId === null,
-            'result' => $failureId === null ? self::normalizeTypedValue($result) : null,
+            'result' => $failureId === null ? self::normalizeTypedValue($result, $command->payload_codec) : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot),
             'exception_type' => $failureSnapshot['exception_type'] ?? null,
@@ -292,9 +292,17 @@ final class RunUpdateView
             'validation_errors' => self::validationErrors($rejected),
             'payload_codec' => self::stringValue($commandSnapshot['payload_codec'] ?? null),
             'arguments_available' => is_string($arguments),
-            'arguments' => self::normalizeTypedValue($arguments),
+            'arguments' => self::normalizeTypedValue(
+                $arguments,
+                self::stringValue($commandSnapshot['payload_codec'] ?? null)
+            ),
             'result_available' => is_string($result) && $failureId === null,
-            'result' => $failureId === null ? self::normalizeTypedValue($result) : null,
+            'result' => $failureId === null
+                ? self::normalizeTypedValue(
+                    $result,
+                    self::stringValue($commandSnapshot['payload_codec'] ?? null)
+                )
+                : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot),
             'exception_type' => $failureSnapshot['exception_type'] ?? null,
@@ -616,13 +624,21 @@ final class RunUpdateView
             : null;
     }
 
-    private static function normalizeTypedValue(mixed $value): mixed
+    private static function normalizeTypedValue(mixed $value, ?string $codec = null): mixed
     {
         if (! is_string($value)) {
             return $value;
         }
 
-        return Serializer::unserialize($value);
+        if ($codec === null || $codec === '') {
+            return Serializer::unserialize($value);
+        }
+
+        try {
+            return Serializer::unserializeWithCodec($codec, $value);
+        } catch (\Throwable) {
+            return $value;
+        }
     }
 
     private static function timestamp(mixed $value): ?string

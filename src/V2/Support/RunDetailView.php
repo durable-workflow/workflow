@@ -288,7 +288,10 @@ final class RunDetailView
                         'target_name' => $command->targetName(),
                         'payload_codec' => $command->payload_codec,
                         'payload_available' => CommandPayloadPreview::available($command->payload),
-                        'payload' => CommandPayloadPreview::preview($command->payload),
+                        'payload' => CommandPayloadPreview::previewWithCodec(
+                            $command->payload,
+                            is_string($command->payload_codec) ? $command->payload_codec : null,
+                        ),
                         'source' => $command->source,
                         'context' => $command->publicContext(),
                         'caller_label' => $command->callerLabel(),

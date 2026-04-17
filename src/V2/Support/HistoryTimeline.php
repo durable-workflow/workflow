@@ -546,6 +546,11 @@ final class HistoryTimeline
             return null;
         }
 
+        $payloadCodec = self::stringValue($snapshot['payload_codec'] ?? null)
+            ?? (is_string($command?->payload_codec ?? null) ? $command->payload_codec : null);
+        $payloadBlob = self::stringValue($snapshot['payload'] ?? null)
+            ?? (is_string($command?->payload ?? null) ? $command->payload : null);
+
         return [
             'id' => $resolvedCommandId,
             'sequence' => self::intValue($snapshot['sequence'] ?? null) ?? $command?->command_sequence,
@@ -562,16 +567,9 @@ final class HistoryTimeline
                 ?? $command?->targetName()
                 ?? self::stringValue($payload['signal_name'] ?? null)
                 ?? self::stringValue($payload['update_name'] ?? null),
-            'payload_codec' => self::stringValue($snapshot['payload_codec'] ?? null)
-                ?? (is_string($command?->payload_codec ?? null) ? $command->payload_codec : null),
-            'payload_available' => CommandPayloadPreview::available(
-                self::stringValue($snapshot['payload'] ?? null)
-                ?? (is_string($command?->payload ?? null) ? $command->payload : null)
-            ),
-            'payload' => CommandPayloadPreview::preview(
-                self::stringValue($snapshot['payload'] ?? null)
-                ?? (is_string($command?->payload ?? null) ? $command->payload : null)
-            ),
+            'payload_codec' => $payloadCodec,
+            'payload_available' => CommandPayloadPreview::available($payloadBlob),
+            'payload' => CommandPayloadPreview::previewWithCodec($payloadBlob, $payloadCodec),
             'source' => self::stringValue($snapshot['source'] ?? null) ?? $command?->source,
             'context' => self::arrayValue(
                 $snapshot['context'] ?? null
