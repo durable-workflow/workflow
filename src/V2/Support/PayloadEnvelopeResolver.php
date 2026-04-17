@@ -14,7 +14,7 @@ use Workflow\Serializers\Serializer;
  * The worker protocol carries every payload as `{codec, blob}`. Clients may
  * send `input` in two shapes on the HTTP API:
  *
- *   1. A plain JSON array of arguments  →  codec "json", blob = JSON bytes
+ *   1. A plain array of arguments  →  encoded with the configured default codec (Avro)
  *   2. An explicit envelope object `{codec: "<name>", blob: "<opaque>"}`
  *      →  codec = the declared name, blob = the opaque string as-is
  *
@@ -155,8 +155,8 @@ final class PayloadEnvelopeResolver
         $values = array_values($input);
 
         return [
-            'codec' => 'json',
-            'blob' => Serializer::serializeWithCodec('json', $values),
+            'codec' => CodecRegistry::defaultCodec(),
+            'blob' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), $values),
         ];
     }
 

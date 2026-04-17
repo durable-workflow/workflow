@@ -15,7 +15,7 @@ use InvalidArgumentException;
  *
  * Canonical names:
  *   - "avro"                    — Apache Avro binary codec (default for new workflows)
- *   - "json"                    — language-neutral JSON (supported, not default)
+ *   - "json"                    — language-neutral JSON (v1 migration reads only, not for new v2 workflows)
  *   - "workflow-serializer-y"   — PHP SerializableClosure with byte-escape encoding (legacy)
  *   - "workflow-serializer-base64" — PHP SerializableClosure with base64 encoding (legacy)
  *
@@ -123,7 +123,7 @@ final class CodecRegistry
      */
     public static function universal(): array
     {
-        return ['json', 'avro'];
+        return ['avro'];
     }
 
     /**
