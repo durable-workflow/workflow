@@ -13,6 +13,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Workflow\Models\StoredWorkflow;
 use Workflow\States\WorkflowPendingStatus;
 
@@ -37,11 +38,19 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
 
     public static function wake(string $connection, ?string $queue = null): void
     {
+        if (! self::storedWorkflowTableExists()) {
+            return;
+        }
+
         $timeout = self::timeout();
 
         $queue = self::normalizeQueue($queue);
 
         DB::afterCommit(static function () use ($connection, $queue, $timeout): void {
+            if (! self::storedWorkflowTableExists()) {
+                return;
+            }
+
             if (Cache::has(self::CACHE_KEY)) {
                 return;
             }
@@ -78,6 +87,10 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
 
     public function handle(): void
     {
+        if (! self::storedWorkflowTableExists()) {
+            return;
+        }
+
         $timeout = self::timeout();
 
         Cache::put(self::CACHE_KEY, true, $timeout);
@@ -129,6 +142,10 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
 
     private static function hasRecoverablePendingWorkflows(int $timeout): bool
     {
+        if (! self::storedWorkflowTableExists()) {
+            return false;
+        }
+
         $model = config('workflows.stored_workflow_model', StoredWorkflow::class);
 
         return $model::where('status', WorkflowPendingStatus::$name)
@@ -157,5 +174,20 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
         }
 
         return null;
+    }
+
+    private static function storedWorkflowTableExists(): bool
+    {
+        try {
+            $model = config('workflows.stored_workflow_model', StoredWorkflow::class);
+
+            if (! is_string($model) || ! is_a($model, StoredWorkflow::class, true)) {
+                $model = StoredWorkflow::class;
+            }
+
+            return Schema::hasTable((new $model())->getTable());
+        } catch (\Throwable) {
+            return false;
+        }
     }
 }

@@ -6,11 +6,15 @@ namespace Workflow\V2;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -70,6 +74,10 @@ final class TaskWatchdog
         array $runIds = [],
         ?string $instanceId = null,
     ): array {
+        if (! self::tablesReady()) {
+            return self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
+        }
+
         WorkerCompatibilityFleet::heartbeat($connection, $queue);
 
         if ($respectThrottle) {
@@ -379,6 +387,27 @@ final class TaskWatchdog
         }
 
         return $query->limit(TaskRepairPolicy::scanLimit())->pluck('id')->all();
+    }
+
+    private static function tablesReady(): bool
+    {
+        try {
+            foreach ([
+                new WorkerCompatibilityHeartbeat(),
+                new WorkflowTask(),
+                new WorkflowRun(),
+                new WorkflowRunSummary(),
+                new ActivityExecution(),
+            ] as $model) {
+                if (! Schema::hasTable($model->getTable())) {
+                    return false;
+                }
+            }
+        } catch (Throwable) {
+            return false;
+        }
+
+        return true;
     }
 
     /**

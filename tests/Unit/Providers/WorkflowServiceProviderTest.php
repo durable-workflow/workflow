@@ -211,6 +211,24 @@ final class WorkflowServiceProviderTest extends TestCase
         Queue::assertNotPushed(Watchdog::class);
     }
 
+    public function testLoopingEventSkipsWatchdogsBeforeWorkflowTablesExist(): void
+    {
+        Queue::fake();
+        Cache::forget('workflow:watchdog');
+        Cache::forget('workflow:watchdog:looping');
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        Schema::dropIfExists('workflows');
+        Schema::dropIfExists('workflow_worker_compatibility_heartbeats');
+
+        Event::dispatch(new Looping('redis', 'default'));
+
+        Queue::assertNothingPushed();
+        $this->assertFalse(Cache::has('workflow:watchdog'));
+        $this->assertFalse(Cache::has('workflow:watchdog:looping'));
+        $this->assertFalse(Cache::has(TaskWatchdog::LOOP_THROTTLE_KEY));
+    }
+
     public function testLoopingEventRepairsOverdueV2Task(): void
     {
         Queue::fake();

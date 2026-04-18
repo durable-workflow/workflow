@@ -7,7 +7,9 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Throwable;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 
 /**
@@ -195,7 +197,10 @@ final class WorkerCompatibilityFleet
 
     public static function clear(): void
     {
-        WorkerCompatibilityHeartbeat::query()->delete();
+        if (self::heartbeatTableExists()) {
+            WorkerCompatibilityHeartbeat::query()->delete();
+        }
+
         Cache::forget(self::LEGACY_CACHE_KEY);
         self::$lastRecorded = [];
         self::$lastPrunedAt = null;
@@ -266,45 +271,55 @@ final class WorkerCompatibilityFleet
             return;
         }
 
-        self::pruneExpired();
+        if (! self::heartbeatTableExists()) {
+            return;
+        }
 
-        $now = now();
-        $expiresAt = $now->copy()
-            ->addSeconds(self::ttlSeconds());
-        $rows = collect($queues === [] ? [null] : $queues)
-            ->map(static function (?string $scopeQueue) use (
-                $workerId,
-                $namespace,
-                $connection,
-                $supported,
-                $now,
-                $expiresAt,
-            ): array {
-                return [
-                    'worker_id' => $workerId,
-                    'namespace' => $namespace,
-                    'scope_key' => self::scopeKey($namespace, $connection, $scopeQueue),
-                    'host' => self::hostName(),
-                    'process_id' => self::processId(),
-                    'connection' => $connection,
-                    'queue' => $scopeQueue,
-                    'supported' => json_encode($supported),
-                    'recorded_at' => $now,
-                    'expires_at' => $expiresAt,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ];
-            })
-            ->all();
+        try {
+            self::pruneExpired();
 
-        DB::transaction(static function () use ($workerId, $rows): void {
-            WorkerCompatibilityHeartbeat::query()
-                ->where('worker_id', $workerId)
-                ->delete();
+            $now = now();
+            $expiresAt = $now->copy()
+                ->addSeconds(self::ttlSeconds());
+            $rows = collect($queues === [] ? [null] : $queues)
+                ->map(static function (?string $scopeQueue) use (
+                    $workerId,
+                    $namespace,
+                    $connection,
+                    $supported,
+                    $now,
+                    $expiresAt,
+                ): array {
+                    return [
+                        'worker_id' => $workerId,
+                        'namespace' => $namespace,
+                        'scope_key' => self::scopeKey($namespace, $connection, $scopeQueue),
+                        'host' => self::hostName(),
+                        'process_id' => self::processId(),
+                        'connection' => $connection,
+                        'queue' => $scopeQueue,
+                        'supported' => json_encode($supported),
+                        'recorded_at' => $now,
+                        'expires_at' => $expiresAt,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                })
+                ->all();
 
-            WorkerCompatibilityHeartbeat::query()
-                ->insert($rows);
-        });
+            DB::transaction(static function () use ($workerId, $rows): void {
+                WorkerCompatibilityHeartbeat::query()
+                    ->where('worker_id', $workerId)
+                    ->delete();
+
+                WorkerCompatibilityHeartbeat::query()
+                    ->insert($rows);
+            }, 3);
+        } catch (Throwable $throwable) {
+            report($throwable);
+
+            return;
+        }
 
         self::$lastRecorded[$workerId] = [
             'supported' => $supported,
@@ -416,6 +431,13 @@ final class WorkerCompatibilityFleet
             ->getTimestamp();
 
         if (self::$snapshotCache !== null && self::$snapshotCacheSecond === $nowSecond) {
+            return self::$snapshotCache;
+        }
+
+        if (! self::heartbeatTableExists()) {
+            self::$snapshotCache = self::legacyCacheSnapshots();
+            self::$snapshotCacheSecond = $nowSecond;
+
             return self::$snapshotCache;
         }
 
@@ -807,5 +829,14 @@ final class WorkerCompatibilityFleet
         }
 
         return self::normalizeMarkers(explode(',', $queue));
+    }
+
+    private static function heartbeatTableExists(): bool
+    {
+        try {
+            return Schema::hasTable((new WorkerCompatibilityHeartbeat())->getTable());
+        } catch (Throwable) {
+            return false;
+        }
     }
 }
