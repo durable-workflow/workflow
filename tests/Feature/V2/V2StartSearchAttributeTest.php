@@ -46,12 +46,9 @@ final class V2StartSearchAttributeTest extends TestCase
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
 
         $workflow = WorkflowStub::make(TestSearchAttributeWorkflow::class, 'sa-start-2');
-        $workflow->start(
-            'Taylor',
-            StartOptions::rejectDuplicate()->withSearchAttributes([
-                'tenant' => 'acme',
-            ]),
-        );
+        $workflow->start('Taylor', StartOptions::rejectDuplicate()->withSearchAttributes([
+            'tenant' => 'acme',
+        ]),);
 
         $this->assertTrue($workflow->refresh()->completed());
 
@@ -88,12 +85,9 @@ final class V2StartSearchAttributeTest extends TestCase
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
 
         $workflow = WorkflowStub::make(TestSearchAttributeWorkflow::class, 'sa-start-4');
-        $workflow->start(
-            'Taylor',
-            StartOptions::rejectDuplicate()->withSearchAttributes([
-                'env' => 'staging',
-            ]),
-        );
+        $workflow->start('Taylor', StartOptions::rejectDuplicate()->withSearchAttributes([
+            'env' => 'staging',
+        ]),);
 
         $this->assertTrue($workflow->refresh()->completed());
 
@@ -102,14 +96,18 @@ final class V2StartSearchAttributeTest extends TestCase
             ->where('event_type', HistoryEventType::StartAccepted)
             ->firstOrFail();
 
-        $this->assertSame(['env' => 'staging'], $startAccepted->payload['search_attributes']);
+        $this->assertSame([
+            'env' => 'staging',
+        ], $startAccepted->payload['search_attributes']);
 
         $workflowStarted = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->where('event_type', HistoryEventType::WorkflowStarted)
             ->firstOrFail();
 
-        $this->assertSame(['env' => 'staging'], $workflowStarted->payload['search_attributes']);
+        $this->assertSame([
+            'env' => 'staging',
+        ], $workflowStarted->payload['search_attributes']);
     }
 
     public function testStartTimeSearchAttributesMergeWithWorkflowUpserts(): void
@@ -141,12 +139,22 @@ final class V2StartSearchAttributeTest extends TestCase
     {
         $options = StartOptions::rejectDuplicate()
             ->withBusinessKey('order-123')
-            ->withMemo(['note' => 'test'])
-            ->withSearchAttributes(['env' => 'staging', 'region' => 'eu-west']);
+            ->withMemo([
+                'note' => 'test',
+            ])
+            ->withSearchAttributes([
+                'env' => 'staging',
+                'region' => 'eu-west',
+            ]);
 
         $this->assertSame('order-123', $options->businessKey);
-        $this->assertSame(['note' => 'test'], $options->memo);
-        $this->assertSame(['env' => 'staging', 'region' => 'eu-west'], $options->searchAttributes);
+        $this->assertSame([
+            'note' => 'test',
+        ], $options->memo);
+        $this->assertSame([
+            'env' => 'staging',
+            'region' => 'eu-west',
+        ], $options->searchAttributes);
     }
 
     public function testStartOptionsSearchAttributeValidation(): void
@@ -166,7 +174,9 @@ final class V2StartSearchAttributeTest extends TestCase
             'drop' => null,
         ]);
 
-        $this->assertSame(['keep' => 'yes'], $options->searchAttributes);
+        $this->assertSame([
+            'keep' => 'yes',
+        ], $options->searchAttributes);
     }
 
     public function testStartWithoutSearchAttributesLeavesFieldNull(): void

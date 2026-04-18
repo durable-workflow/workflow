@@ -162,8 +162,10 @@ class WorkflowRunSummary extends Model
     {
         // Try typed table first (optimal for new runs)
         if ($this->relationLoaded('searchAttributes')) {
-            $typed = $this->searchAttributes->mapWithKeys(function (WorkflowSearchAttribute $attr) {
-                return [$attr->key => $attr->getValue()];
+            $typed = $this->searchAttributes->mapWithKeys(static function (WorkflowSearchAttribute $attr) {
+                return [
+                    $attr->key => $attr->getValue(),
+                ];
             })->toArray();
 
             if (! empty($typed)) {
@@ -187,8 +189,10 @@ class WorkflowRunSummary extends Model
     {
         // Try typed table first (optimal for new runs)
         if ($this->relationLoaded('memos')) {
-            $typed = $this->memos->mapWithKeys(function (WorkflowMemo $memo) {
-                return [$memo->key => $memo->getValue()];
+            $typed = $this->memos->mapWithKeys(static function (WorkflowMemo $memo) {
+                return [
+                    $memo->key => $memo->getValue(),
+                ];
             })->toArray();
 
             if (! empty($typed)) {
@@ -216,7 +220,7 @@ class WorkflowRunSummary extends Model
      */
     public function scopeWithSearchAttribute($query, string $key, mixed $value)
     {
-        return $query->whereHas('searchAttributes', function ($q) use ($key, $value) {
+        return $query->whereHas('searchAttributes', static function ($q) use ($key, $value) {
             $q->where('key', $key);
 
             // Route to appropriate typed column

@@ -5,10 +5,8 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
-use Tests\Fixtures\V2\TestAvroParityActivity;
 use Tests\Fixtures\V2\TestAvroParityWorkflow;
 use Tests\TestCase;
-use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -28,9 +26,12 @@ final class V2AvroParitySuiteTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config()->set('workflows.serializer', 'avro');
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.serializer', 'avro');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
     }
 
@@ -62,7 +63,10 @@ final class V2AvroParitySuiteTest extends TestCase
         $this->assertSame('avro', $run->payload_codec);
         $this->assertSame('waiting', $workflow->refresh()->status());
 
-        $workflow->signal('order-updated', ['priority' => true, 'discount' => 0.15]);
+        $workflow->signal('order-updated', [
+            'priority' => true,
+            'discount' => 0.15,
+        ]);
         $this->drainReadyTasks();
         $this->assertTrue($workflow->refresh()->completed());
 
@@ -73,15 +77,20 @@ final class V2AvroParitySuiteTest extends TestCase
         $this->assertIsFloat($output['input_amount'], '3.14 must stay float');
         $this->assertSame(42, $output['input_items_count']);
         $this->assertIsInt($output['input_items_count'], '42 must stay int');
-        $this->assertSame(3.0, $output['three_point_zero']); $this->assertIsFloat($output['three_point_zero']);
+        $this->assertSame(3.0, $output['three_point_zero']);
+        $this->assertIsFloat($output['three_point_zero']);
 
         $activityResult = $output['activity_result'];
         $this->assertSame('ORD-2', $activityResult['order_id']);
         $this->assertIsFloat($activityResult['amount'], 'activity result float must survive');
         $this->assertIsInt($activityResult['items_count'], 'activity result int must survive');
-        $this->assertSame(3.0, $activityResult['three_point_zero']); $this->assertIsFloat($activityResult['three_point_zero']);
+        $this->assertSame(3.0, $activityResult['three_point_zero']);
+        $this->assertIsFloat($activityResult['three_point_zero']);
 
-        $this->assertSame(['priority' => true, 'discount' => 0.15], $output['signal_payload']);
+        $this->assertSame([
+            'priority' => true,
+            'discount' => 0.15,
+        ], $output['signal_payload']);
     }
 
     public function testEveryPayloadRowIsTaggedAvro(): void
@@ -89,17 +98,23 @@ final class V2AvroParitySuiteTest extends TestCase
         $workflow = WorkflowStub::make(TestAvroParityWorkflow::class, 'avro-tagging');
         $workflow->start('ORD-3', 10.0, 1);
         $this->drainReadyTasks();
-        $workflow->signal('order-updated', ['tagged' => true]);
+        $workflow->signal('order-updated', [
+            'tagged' => true,
+        ]);
         $this->drainReadyTasks();
 
         $run = WorkflowRun::query()->where('workflow_instance_id', 'avro-tagging')->first();
         $this->assertSame('avro', $run->payload_codec);
 
-        $commands = $run->commands()->get();
+        $commands = $run->commands()
+            ->get();
         foreach ($commands as $command) {
             if ($command->payload_codec !== null) {
-                $this->assertSame('avro', $command->payload_codec,
-                    "Command {$command->id} has codec {$command->payload_codec}, expected avro");
+                $this->assertSame(
+                    'avro',
+                    $command->payload_codec,
+                    "Command {$command->id} has codec {$command->payload_codec}, expected avro"
+                );
             }
         }
     }
@@ -109,7 +124,9 @@ final class V2AvroParitySuiteTest extends TestCase
         $workflow = WorkflowStub::make(TestAvroParityWorkflow::class, 'avro-export');
         $workflow->start('ORD-4', 55.5, 7);
         $this->drainReadyTasks();
-        $workflow->signal('order-updated', ['exported' => true]);
+        $workflow->signal('order-updated', [
+            'exported' => true,
+        ]);
         $this->drainReadyTasks();
 
         $run = WorkflowRun::query()->where('workflow_instance_id', 'avro-export')->first();
@@ -117,8 +134,7 @@ final class V2AvroParitySuiteTest extends TestCase
 
         $this->assertIsArray($export);
         $this->assertArrayHasKey('payloads', $export);
-        $this->assertSame('avro', $export['payloads']['codec'] ?? null,
-            'Export must tag the run codec as avro');
+        $this->assertSame('avro', $export['payloads']['codec'] ?? null, 'Export must tag the run codec as avro');
     }
 
     public function testSchemaEvolutionDecodesV1PayloadWithV2ReaderSchema(): void
@@ -128,21 +144,47 @@ final class V2AvroParitySuiteTest extends TestCase
         }
 
         $writerSchemaJson = json_encode([
-            'type' => 'record', 'name' => 'OrderPayload', 'namespace' => 'durable_workflow.test',
+            'type' => 'record',
+            'name' => 'OrderPayload',
+            'namespace' => 'durable_workflow.test',
             'fields' => [
-                ['name' => 'order_id', 'type' => 'string'],
-                ['name' => 'amount', 'type' => 'double'],
-                ['name' => 'items_count', 'type' => 'int'],
+                [
+                    'name' => 'order_id',
+                    'type' => 'string',
+                ],
+                [
+                    'name' => 'amount',
+                    'type' => 'double',
+                ],
+                [
+                    'name' => 'items_count',
+                    'type' => 'int',
+                ],
             ],
         ]);
 
         $readerSchemaJson = json_encode([
-            'type' => 'record', 'name' => 'OrderPayload', 'namespace' => 'durable_workflow.test',
+            'type' => 'record',
+            'name' => 'OrderPayload',
+            'namespace' => 'durable_workflow.test',
             'fields' => [
-                ['name' => 'order_id', 'type' => 'string'],
-                ['name' => 'amount', 'type' => 'double'],
-                ['name' => 'items_count', 'type' => 'int'],
-                ['name' => 'region', 'type' => 'string', 'default' => 'us-east'],
+                [
+                    'name' => 'order_id',
+                    'type' => 'string',
+                ],
+                [
+                    'name' => 'amount',
+                    'type' => 'double',
+                ],
+                [
+                    'name' => 'items_count',
+                    'type' => 'int',
+                ],
+                [
+                    'name' => 'region',
+                    'type' => 'string',
+                    'default' => 'us-east',
+                ],
             ],
         ]);
 
@@ -152,7 +194,11 @@ final class V2AvroParitySuiteTest extends TestCase
         $io = new \Apache\Avro\IO\AvroStringIO();
         $encoder = new \Apache\Avro\Datum\AvroIOBinaryEncoder($io);
         $writer = new \Apache\Avro\Datum\AvroIODatumWriter($writerSchema);
-        $writer->write(['order_id' => 'ORD-EVOLVE', 'amount' => 42.0, 'items_count' => 3], $encoder);
+        $writer->write([
+            'order_id' => 'ORD-EVOLVE',
+            'amount' => 42.0,
+            'items_count' => 3,
+        ], $encoder);
         $v1Bytes = $io->string();
 
         $readIo = new \Apache\Avro\IO\AvroStringIO($v1Bytes);
@@ -180,8 +226,11 @@ final class V2AvroParitySuiteTest extends TestCase
             Serializer::unserializeWithCodec('avro', '{"x":1}');
             $this->fail('Should have thrown');
         } catch (\Workflow\Serializers\CodecDecodeException $e) {
-            $this->assertStringContainsString('json', strtolower($e->getMessage()),
-                'Error should mention the bytes look like JSON');
+            $this->assertStringContainsString(
+                'json',
+                strtolower($e->getMessage()),
+                'Error should mention the bytes look like JSON'
+            );
         }
     }
 

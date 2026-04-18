@@ -16,23 +16,30 @@ final class TestSagaWorkflow extends Workflow
     {
         try {
             $flightId = activity(TestSagaBookingActivity::class, 'flight');
-            $this->addCompensation(fn () => activity(TestSagaCancelActivity::class, 'flight', $flightId));
+            $this->addCompensation(static fn () => activity(TestSagaCancelActivity::class, 'flight', $flightId));
 
             $hotelId = activity(TestSagaBookingActivity::class, 'hotel');
-            $this->addCompensation(fn () => activity(TestSagaCancelActivity::class, 'hotel', $hotelId));
+            $this->addCompensation(static fn () => activity(TestSagaCancelActivity::class, 'hotel', $hotelId));
 
             if ($failOnThirdStep) {
                 activity(TestFailingActivity::class);
             }
 
             $carId = activity(TestSagaBookingActivity::class, 'car');
-            $this->addCompensation(fn () => activity(TestSagaCancelActivity::class, 'car', $carId));
+            $this->addCompensation(static fn () => activity(TestSagaCancelActivity::class, 'car', $carId));
 
-            return ['flight' => $flightId, 'hotel' => $hotelId, 'car' => $carId];
+            return [
+                'flight' => $flightId,
+                'hotel' => $hotelId,
+                'car' => $carId,
+            ];
         } catch (Throwable $e) {
             $this->compensate();
 
-            return ['compensated' => true, 'reason' => $e->getMessage()];
+            return [
+                'compensated' => true,
+                'reason' => $e->getMessage(),
+            ];
         }
     }
 }

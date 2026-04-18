@@ -47,9 +47,46 @@ class LongPollCacheValidator
             default => [
                 'capable' => false,
                 'backend' => $backend,
-                'reason' => "Unknown cache backend '$backend'. Supported multi-node backends: redis, database, memcached.",
+                'reason' => "Unknown cache backend '{$backend}'. Supported multi-node backends: redis, database, memcached.",
             ],
         };
+    }
+
+    /**
+     * Check if current configuration is safe for multi-node deployment.
+     *
+     * @return array{
+     *     safe: bool,
+     *     message: string|null
+     * }
+     */
+    public function checkMultiNodeSafety(CacheRepository $cache, bool $multiNode): array
+    {
+        $validation = $this->validateMultiNodeCapable($cache);
+
+        if (! $multiNode) {
+            // Single-node deployment, any cache backend is acceptable
+            return [
+                'safe' => true,
+                'message' => null,
+            ];
+        }
+
+        if ($validation['capable']) {
+            return [
+                'safe' => true,
+                'message' => null,
+            ];
+        }
+
+        return [
+            'safe' => false,
+            'message' => sprintf(
+                'Multi-node deployment detected (WORKFLOW_V2_MULTI_NODE=true) but cache backend is "%s". %s',
+                $validation['backend'],
+                $validation['reason']
+            ),
+        ];
     }
 
     /**
@@ -98,42 +135,5 @@ class LongPollCacheValidator
         }
 
         return 'unknown';
-    }
-
-    /**
-     * Check if current configuration is safe for multi-node deployment.
-     *
-     * @return array{
-     *     safe: bool,
-     *     message: string|null
-     * }
-     */
-    public function checkMultiNodeSafety(CacheRepository $cache, bool $multiNode): array
-    {
-        $validation = $this->validateMultiNodeCapable($cache);
-
-        if (! $multiNode) {
-            // Single-node deployment, any cache backend is acceptable
-            return [
-                'safe' => true,
-                'message' => null,
-            ];
-        }
-
-        if ($validation['capable']) {
-            return [
-                'safe' => true,
-                'message' => null,
-            ];
-        }
-
-        return [
-            'safe' => false,
-            'message' => sprintf(
-                'Multi-node deployment detected (WORKFLOW_V2_MULTI_NODE=true) but cache backend is "%s". %s',
-                $validation['backend'],
-                $validation['reason']
-            ),
-        ];
     }
 }

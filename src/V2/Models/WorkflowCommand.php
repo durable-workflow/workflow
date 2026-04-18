@@ -21,6 +21,8 @@ class WorkflowCommand extends Model
 {
     use HasUlids;
 
+    private const MESSAGE_COMMAND_TYPES = ['signal', 'update'];
+
     public $incrementing = false;
 
     protected $table = 'workflow_commands';
@@ -42,8 +44,6 @@ class WorkflowCommand extends Model
         'applied_at' => 'datetime',
         'rejected_at' => 'datetime',
     ];
-
-    private const MESSAGE_COMMAND_TYPES = ['signal', 'update'];
 
     /**
      * @param array<string, mixed> $attributes

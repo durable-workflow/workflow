@@ -298,10 +298,7 @@ final class RunUpdateView
             ),
             'result_available' => is_string($result) && $failureId === null,
             'result' => $failureId === null
-                ? self::normalizeTypedValue(
-                    $result,
-                    self::stringValue($commandSnapshot['payload_codec'] ?? null)
-                )
+                ? self::normalizeTypedValue($result, self::stringValue($commandSnapshot['payload_codec'] ?? null))
                 : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot),

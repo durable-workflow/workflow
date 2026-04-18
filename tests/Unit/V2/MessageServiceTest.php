@@ -38,8 +38,7 @@ class MessageServiceTest extends TestCase
         $this->service = new MessageService();
     }
 
-    /** @test */
-    public function it_sends_message_creating_outbound_and_inbound_records(): void
+    public function testItSendsMessageCreatingOutboundAndInboundRecords(): void
     {
         $sourceRun = $this->createRun();
         $targetInstance = $this->createInstance();
@@ -80,8 +79,7 @@ class MessageServiceTest extends TestCase
         $this->assertEquals($sourceRun->id, $inboundMessage->source_workflow_run_id);
     }
 
-    /** @test */
-    public function it_reserves_sequential_message_numbers_per_stream(): void
+    public function testItReservesSequentialMessageNumbersPerStream(): void
     {
         $sourceRun = $this->createRun();
         $targetInstance = $this->createInstance();
@@ -106,8 +104,7 @@ class MessageServiceTest extends TestCase
         $this->assertEquals([1, 2, 3], $inbound);
     }
 
-    /** @test */
-    public function it_receives_unconsumed_inbound_messages(): void
+    public function testItReceivesUnconsumedInboundMessages(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
@@ -125,12 +122,12 @@ class MessageServiceTest extends TestCase
         $this->assertEquals(MessageConsumeState::Pending, $messages[0]->consume_state);
 
         // Messages should be in sequence order
-        $sequences = $messages->pluck('sequence')->toArray();
+        $sequences = $messages->pluck('sequence')
+            ->toArray();
         $this->assertEquals([1, 2, 3], $sequences);
     }
 
-    /** @test */
-    public function it_consumes_message_and_advances_cursor(): void
+    public function testItConsumesMessageAndAdvancesCursor(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
@@ -156,8 +153,7 @@ class MessageServiceTest extends TestCase
         $this->assertEquals(1, $targetRun->message_cursor_position);
     }
 
-    /** @test */
-    public function it_consumes_message_batch_and_advances_to_highest_sequence(): void
+    public function testItConsumesMessageBatchAndAdvancesToHighestSequence(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
@@ -185,8 +181,7 @@ class MessageServiceTest extends TestCase
         $this->assertEquals(3, $targetRun->message_cursor_position);
     }
 
-    /** @test */
-    public function it_only_receives_messages_after_cursor_position(): void
+    public function testItOnlyReceivesMessagesAfterCursorPosition(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
@@ -210,12 +205,12 @@ class MessageServiceTest extends TestCase
         // Receive again - should only get messages 3, 4, 5
         $remainingMessages = $this->service->receiveMessages($targetRun);
         $this->assertCount(3, $remainingMessages);
-        $sequences = $remainingMessages->pluck('sequence')->toArray();
+        $sequences = $remainingMessages->pluck('sequence')
+            ->toArray();
         $this->assertEquals([3, 4, 5], $sequences);
     }
 
-    /** @test */
-    public function it_gets_unconsumed_count(): void
+    public function testItGetsUnconsumedCount(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
@@ -238,8 +233,7 @@ class MessageServiceTest extends TestCase
         $this->assertEquals(2, $this->service->getUnconsumedCount($targetRun));
     }
 
-    /** @test */
-    public function it_checks_for_unconsumed_messages(): void
+    public function testItChecksForUnconsumedMessages(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
@@ -251,8 +245,7 @@ class MessageServiceTest extends TestCase
         $this->assertTrue($this->service->hasUnconsumedMessages($targetRun));
     }
 
-    /** @test */
-    public function it_transfers_messages_on_continue_as_new(): void
+    public function testItTransfersMessagesOnContinueAsNew(): void
     {
         $sourceRun = $this->createRun();
         $closingRun = $this->createRun();
@@ -293,35 +286,58 @@ class MessageServiceTest extends TestCase
         // Continued run can receive remaining messages
         $remaining = $this->service->receiveMessages($continuedRun);
         $this->assertCount(3, $remaining);
-        $sequences = $remaining->pluck('sequence')->toArray();
+        $sequences = $remaining->pluck('sequence')
+            ->toArray();
         $this->assertEquals([3, 4, 5], $sequences);
     }
 
-    /** @test */
-    public function it_isolates_messages_by_stream_key(): void
+    public function testItIsolatesMessagesByStreamKey(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
 
         // Send to different streams
-        $this->service->sendMessage($sourceRun, MessageChannel::Signal, $targetRun->workflow_instance_id, null, 'stream_a');
-        $this->service->sendMessage($sourceRun, MessageChannel::Signal, $targetRun->workflow_instance_id, null, 'stream_a');
-        $this->service->sendMessage($sourceRun, MessageChannel::Signal, $targetRun->workflow_instance_id, null, 'stream_b');
-        $this->service->sendMessage($sourceRun, MessageChannel::Signal, $targetRun->workflow_instance_id, null, 'stream_b');
+        $this->service->sendMessage(
+            $sourceRun,
+            MessageChannel::Signal,
+            $targetRun->workflow_instance_id,
+            null,
+            'stream_a'
+        );
+        $this->service->sendMessage(
+            $sourceRun,
+            MessageChannel::Signal,
+            $targetRun->workflow_instance_id,
+            null,
+            'stream_a'
+        );
+        $this->service->sendMessage(
+            $sourceRun,
+            MessageChannel::Signal,
+            $targetRun->workflow_instance_id,
+            null,
+            'stream_b'
+        );
+        $this->service->sendMessage(
+            $sourceRun,
+            MessageChannel::Signal,
+            $targetRun->workflow_instance_id,
+            null,
+            'stream_b'
+        );
 
         // Receive from stream_a
         $streamA = $this->service->receiveMessages($targetRun, 'stream_a');
         $this->assertCount(2, $streamA);
-        $this->assertTrue($streamA->every(fn ($msg) => $msg->stream_key === 'stream_a'));
+        $this->assertTrue($streamA->every(static fn ($msg) => $msg->stream_key === 'stream_a'));
 
         // Receive from stream_b
         $streamB = $this->service->receiveMessages($targetRun, 'stream_b');
         $this->assertCount(2, $streamB);
-        $this->assertTrue($streamB->every(fn ($msg) => $msg->stream_key === 'stream_b'));
+        $this->assertTrue($streamB->every(static fn ($msg) => $msg->stream_key === 'stream_b'));
     }
 
-    /** @test */
-    public function it_prevents_consuming_non_consumable_message(): void
+    public function testItPreventsConsumingNonConsumableMessage(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
@@ -340,8 +356,7 @@ class MessageServiceTest extends TestCase
         $this->service->consumeMessage($targetRun, $message, 11);
     }
 
-    /** @test */
-    public function it_supports_correlation_id_tracking(): void
+    public function testItSupportsCorrelationIdTracking(): void
     {
         $sourceRun = $this->createRun();
         $targetInstance = $this->createInstance();
@@ -367,15 +382,17 @@ class MessageServiceTest extends TestCase
 
         // Query by correlation ID
         $correlated = $this->service->getMessagesByCorrelationId('request_123');
-        $this->assertCount(2, $correlated); // outbound + inbound for each = 4, but we get outbound only? Actually we get all
+        $this->assertCount(
+            2,
+            $correlated
+        ); // outbound + inbound for each = 4, but we get outbound only? Actually we get all
 
         // Actually both inbound and outbound have same correlation_id
         $this->assertGreaterThanOrEqual(2, $correlated->count());
-        $this->assertTrue($correlated->every(fn ($msg) => $msg->correlation_id === 'request_123'));
+        $this->assertTrue($correlated->every(static fn ($msg) => $msg->correlation_id === 'request_123'));
     }
 
-    /** @test */
-    public function it_supports_idempotency_key(): void
+    public function testItSupportsIdempotencyKey(): void
     {
         $sourceRun = $this->createRun();
         $targetInstance = $this->createInstance();
@@ -397,13 +414,13 @@ class MessageServiceTest extends TestCase
         // This allows flexible idempotency strategies
     }
 
-    /** @test */
-    public function it_supports_message_expiry(): void
+    public function testItSupportsMessageExpiry(): void
     {
         $sourceRun = $this->createRun();
         $targetRun = $this->createRun();
 
-        $expiresAt = now()->addMinutes(5);
+        $expiresAt = now()
+            ->addMinutes(5);
 
         $this->service->sendMessage(
             $sourceRun,
@@ -424,14 +441,14 @@ class MessageServiceTest extends TestCase
         $this->assertTrue($message->isConsumable()); // Not expired yet
 
         // Artificially expire
-        $message->expires_at = now()->subMinute();
+        $message->expires_at = now()
+            ->subMinute();
         $message->save();
 
         $this->assertFalse($message->isConsumable()); // Now expired
     }
 
-    /** @test */
-    public function it_gets_messages_for_stream(): void
+    public function testItGetsMessagesForStream(): void
     {
         $sourceRun = $this->createRun();
         $targetInstance = $this->createInstance();
@@ -445,7 +462,7 @@ class MessageServiceTest extends TestCase
         $messages = $this->service->getMessagesForStream($targetInstance->id, $streamKey);
 
         $this->assertCount(3, $messages); // Gets inbound messages
-        $this->assertTrue($messages->every(fn ($msg) => $msg->stream_key === $streamKey));
+        $this->assertTrue($messages->every(static fn ($msg) => $msg->stream_key === $streamKey));
     }
 
     private function createInstance(): WorkflowInstance

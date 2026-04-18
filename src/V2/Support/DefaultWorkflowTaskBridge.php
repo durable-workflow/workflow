@@ -5,14 +5,13 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
-use Workflow\Serializers\CodecRegistry;
 use Illuminate\Support\Str;
 use LogicException;
 use RuntimeException;
 use Throwable;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
-use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
@@ -27,8 +26,6 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
-use Workflow\V2\Support\LifecycleEventDispatcher;
-use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 {
@@ -48,12 +45,18 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     ) {
     }
 
-    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null, ?string $namespace = null): array
-    {
+    public function poll(
+        ?string $connection,
+        ?string $queue,
+        int $limit = 1,
+        ?string $compatibility = null,
+        ?string $namespace = null
+    ): array {
         // Use a 1-second ceiling on the availability cutoff so that tasks created
         // in the same request tick are reliably surfaced across all backends,
         // including SQLite where timestamp precision can vary.
-        $availabilityCutoff = now()->addSecond();
+        $availabilityCutoff = now()
+            ->addSecond();
 
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Workflow->value)
@@ -306,7 +309,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         $lastEventSequence = $historyEvents->isNotEmpty()
-            ? (int) $historyEvents->last()->sequence
+            ? (int) $historyEvents->last()
+->sequence
             : null;
 
         return [
@@ -554,7 +558,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         });
     }
 
-
     public function status(string $taskId): array
     {
         /** @var WorkflowTask|null $task */
@@ -775,7 +778,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $exceptionType = is_string($command['exception_type'] ?? null) ? $command['exception_type'] : null;
 
         $failureCategory = FailureFactory::classifyFromStrings('terminal', 'workflow_run', $exceptionClass, $message);
-        $nonRetryable = (bool) ($command['non_retryable'] ?? FailureFactory::isNonRetryableFromStrings($exceptionClass));
+        $nonRetryable = (bool) ($command['non_retryable'] ?? FailureFactory::isNonRetryableFromStrings(
+            $exceptionClass
+        ));
 
         /** @var WorkflowFailure $failure */
         $failure = WorkflowFailure::query()->create([
@@ -944,8 +949,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      * @param array{type: string, delay_seconds: int} $command
      * @param list<string> $createdTaskIds
      */
-    private function applyStartTimer(WorkflowRun $run, WorkflowTask $task, array $command, int $sequence, array &$createdTaskIds): int
-    {
+    private function applyStartTimer(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds
+    ): int {
         $delaySeconds = max(0, (int) ($command['delay_seconds'] ?? 0));
         $fireAt = now()
             ->addSeconds($delaySeconds);

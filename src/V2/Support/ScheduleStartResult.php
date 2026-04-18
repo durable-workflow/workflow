@@ -18,5 +18,6 @@ final class ScheduleStartResult
     public function __construct(
         public readonly string $instanceId,
         public readonly ?string $runId,
-    ) {}
+    ) {
+    }
 }

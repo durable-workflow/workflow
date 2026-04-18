@@ -6,7 +6,6 @@ namespace Workflow\V2\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Workflow\V2\Enums\MessageChannel;
 use Workflow\V2\Enums\MessageConsumeState;
 use Workflow\V2\Enums\MessageDirection;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -15,7 +14,9 @@ class WorkflowMessage extends Model
 {
     // Structural limits
     public const MAX_MESSAGES_PER_STREAM = 10000;
+
     public const MAX_PAYLOAD_REFERENCE_LENGTH = 191;
+
     public const MAX_CORRELATION_ID_LENGTH = 191;
 
     public $incrementing = true;
@@ -40,10 +41,7 @@ class WorkflowMessage extends Model
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(
-            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
-            'workflow_run_id',
-        );
+        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
     }
 
     public function instance(): BelongsTo

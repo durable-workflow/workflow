@@ -13,7 +13,9 @@ class WorkflowMemo extends Model
 {
     // Size and count limits (Phase 1 structural limits)
     public const MAX_MEMOS_PER_RUN = 100;
+
     public const MAX_VALUE_SIZE_BYTES = 10240; // 10KB per memo
+
     public const MAX_TOTAL_SIZE_BYTES = 65536; // 64KB total per run
 
     public $incrementing = true;
@@ -32,10 +34,7 @@ class WorkflowMemo extends Model
 
     public function run(): BelongsTo
     {
-        return $this->belongsTo(
-            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
-            'workflow_run_id',
-        );
+        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
     }
 
     /**
@@ -52,8 +51,6 @@ class WorkflowMemo extends Model
      * Set the memo value with size validation.
      *
      * @param mixed $value JSON-encodable value
-     *
-     * @throws InvalidArgumentException if value exceeds size limit
      */
     public function setValue(mixed $value): void
     {
@@ -76,14 +73,12 @@ class WorkflowMemo extends Model
      * Validate total memo size for a run.
      *
      * @param string $runId The workflow run ID
-     *
-     * @throws InvalidArgumentException if total size exceeds limit
      */
     public static function validateTotalSize(string $runId): void
     {
         $memos = static::where('workflow_run_id', $runId)->get();
 
-        $totalSize = $memos->sum(function (self $memo): int {
+        $totalSize = $memos->sum(static function (self $memo): int {
             return strlen(json_encode($memo->value, JSON_THROW_ON_ERROR));
         });
 
@@ -101,8 +96,6 @@ class WorkflowMemo extends Model
      * Validate memo count for a run.
      *
      * @param string $runId The workflow run ID
-     *
-     * @throws InvalidArgumentException if count exceeds limit
      */
     public static function validateCount(string $runId): void
     {

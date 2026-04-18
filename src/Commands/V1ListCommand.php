@@ -23,7 +23,9 @@ class V1ListCommand extends Command
         $query = DB::table('workflows')
             ->whereNotIn('status', ['completed', 'failed', 'cancelled']);
 
-        if ($status = $this->option('status')) {
+        $status = $this->option('status');
+
+        if (is_string($status) && $status !== '') {
             $query->where('status', $status);
         }
 

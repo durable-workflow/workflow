@@ -1475,9 +1475,12 @@ final class HistoryExportTest extends TestCase
             $this->markTestSkipped('apache/avro package is not installed in this environment.');
         }
 
-        config()->set('workflows.serializer', 'avro');
+        config()
+            ->set('workflows.serializer', 'avro');
         $run = $this->createMinimalCompletedRun('history-export-avro');
-        $run->forceFill(['payload_codec' => 'avro'])->save();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
 
         $bundle = HistoryExport::forRun($run->refresh(), Carbon::parse('2026-04-09 13:00:00'));
 
@@ -1497,9 +1500,12 @@ final class HistoryExportTest extends TestCase
             $this->markTestSkipped('apache/avro package is not installed in this environment.');
         }
 
-        config()->set('workflows.serializer', 'json');
+        config()
+            ->set('workflows.serializer', 'json');
         $run = $this->createMinimalCompletedRun('history-export-mixed-codec');
-        $run->forceFill(['payload_codec' => 'json'])->save();
+        $run->forceFill([
+            'payload_codec' => 'json',
+        ])->save();
 
         $instance = $run->instance;
 
@@ -1514,8 +1520,10 @@ final class HistoryExportTest extends TestCase
             'source' => 'webhook',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::SignalReceived->value,
-            'accepted_at' => now()->subMinute(),
-            'applied_at' => now()->subMinute(),
+            'accepted_at' => now()
+                ->subMinute(),
+            'applied_at' => now()
+                ->subMinute(),
         ]);
 
         $signal = WorkflowSignal::query()->create([
@@ -1532,9 +1540,12 @@ final class HistoryExportTest extends TestCase
             'workflow_sequence' => 1,
             'payload_codec' => 'avro',
             'arguments' => 'avro-encoded-signal-blob',
-            'received_at' => now()->subMinute(),
-            'applied_at' => now()->subMinute(),
-            'closed_at' => now()->subMinute(),
+            'received_at' => now()
+                ->subMinute(),
+            'applied_at' => now()
+                ->subMinute(),
+            'closed_at' => now()
+                ->subMinute(),
         ]);
 
         $updateCommand = WorkflowCommand::record($instance, $run, [
@@ -1548,8 +1559,10 @@ final class HistoryExportTest extends TestCase
             'source' => 'api',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::UpdateCompleted->value,
-            'accepted_at' => now()->subMinute(),
-            'applied_at' => now()->subMinute(),
+            'accepted_at' => now()
+                ->subMinute(),
+            'applied_at' => now()
+                ->subMinute(),
         ]);
 
         $update = WorkflowUpdate::query()->create([
@@ -1564,9 +1577,12 @@ final class HistoryExportTest extends TestCase
             'payload_codec' => 'avro',
             'arguments' => 'avro-encoded-update-args',
             'result' => 'avro-encoded-update-result',
-            'accepted_at' => now()->subMinute(),
-            'applied_at' => now()->subMinute(),
-            'closed_at' => now()->subMinute(),
+            'accepted_at' => now()
+                ->subMinute(),
+            'applied_at' => now()
+                ->subMinute(),
+            'closed_at' => now()
+                ->subMinute(),
         ]);
 
         $bundle = HistoryExport::forRun($run->refresh(), Carbon::parse('2026-04-17 14:00:00'));
@@ -1594,7 +1610,9 @@ final class HistoryExportTest extends TestCase
     {
         config()->set('workflows.serializer', 'json');
         $run = $this->createMinimalCompletedRun('history-export-json');
-        $run->forceFill(['payload_codec' => 'json'])->save();
+        $run->forceFill([
+            'payload_codec' => 'json',
+        ])->save();
 
         $bundle = HistoryExport::forRun($run->refresh(), Carbon::parse('2026-04-09 13:00:00'));
 

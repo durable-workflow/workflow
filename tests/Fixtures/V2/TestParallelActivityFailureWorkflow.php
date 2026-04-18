@@ -22,7 +22,10 @@ final class TestParallelActivityFailureWorkflow extends Workflow
         $this->stage = 'waiting-for-activities';
 
         try {
-            all([fn () => activity(TestFailingActivity::class), fn () => activity(TestGreetingActivity::class, $name)]);
+            all([
+                static fn () => activity(TestFailingActivity::class),
+                static fn () => activity(TestGreetingActivity::class, $name),
+            ]);
         } catch (\Throwable $throwable) {
             $this->stage = 'caught-activity-failure';
             $this->message = $throwable->getMessage();

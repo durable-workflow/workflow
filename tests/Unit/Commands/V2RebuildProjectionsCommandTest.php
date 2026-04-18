@@ -859,7 +859,6 @@ final class V2RebuildProjectionsCommandTest extends TestCase
 
         return [$instance->refresh(), $run->refresh()];
     }
-
 }
 
 final class ProjectionCommandWorkflowRun extends WorkflowRun

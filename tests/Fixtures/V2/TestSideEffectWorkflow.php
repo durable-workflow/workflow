@@ -7,8 +7,8 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\signal;
 use function Workflow\V2\sideEffect;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Type('test-side-effect-workflow')]

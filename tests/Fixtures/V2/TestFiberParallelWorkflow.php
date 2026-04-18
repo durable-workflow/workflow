@@ -21,10 +21,10 @@ final class TestFiberParallelWorkflow extends Workflow
         $this->stage = 'waiting-for-parallel-work';
 
         $results = all([
-            fn () => activity(TestGreetingActivity::class, $firstName),
-            fn () => all([
-                fn () => activity(TestGreetingActivity::class, $secondName),
-                fn () => child(TestChildGreetingWorkflow::class, $thirdName),
+            static fn () => activity(TestGreetingActivity::class, $firstName),
+            static fn () => all([
+                static fn () => activity(TestGreetingActivity::class, $secondName),
+                static fn () => child(TestChildGreetingWorkflow::class, $thirdName),
             ]),
         ]);
 

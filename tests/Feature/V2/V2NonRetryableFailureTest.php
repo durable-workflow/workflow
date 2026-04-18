@@ -7,7 +7,6 @@ namespace Tests\Feature\V2;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
-use Tests\Fixtures\V2\TestNonRetryableActivity;
 use Tests\Fixtures\V2\TestNonRetryableWorkflow;
 use Tests\TestCase;
 use Workflow\Exceptions\NonRetryableException;
@@ -26,8 +25,10 @@ final class V2NonRetryableFailureTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
     }
 
     public function testNonRetryableActivitySkipsRetryAndRecordsFlag(): void
@@ -102,7 +103,8 @@ final class V2NonRetryableFailureTest extends TestCase
 
         $this->assertNotEmpty($snapshots);
 
-        $activitySnapshot = collect($snapshots)->firstWhere('source_kind', 'activity_execution');
+        $activitySnapshot = collect($snapshots)
+            ->firstWhere('source_kind', 'activity_execution');
 
         $this->assertNotNull($activitySnapshot);
         $this->assertTrue($activitySnapshot['non_retryable']);

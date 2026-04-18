@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
-use Workflow\Serializers\Avro;
-use Workflow\Serializers\CodecRegistry;
 use Closure;
 use InvalidArgumentException;
 use LogicException;
 use Throwable;
+use Workflow\Serializers\Avro;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;

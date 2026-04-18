@@ -32,7 +32,6 @@ class MigrationTest extends TestCase
         $this->artisan('migrate:install');
     }
 
-
     public function testItRunsV1MigrationsWithoutErrors()
     {
         $this->runV1Migrations();
@@ -51,22 +50,27 @@ class MigrationTest extends TestCase
         ]));
     }
 
-
     public function testScheduleHistoryMigrationCanResumeAfterPartialMysqlIndexFailure()
     {
         $path = __DIR__ . '/../../src/migrations/2026_04_16_000180_create_workflow_schedule_history_events_table.php';
 
         Schema::create('workflow_schedule_history_events', static function (Blueprint $table): void {
-            $table->string('id', 26)->primary();
+            $table->string('id', 26)
+                ->primary();
             $table->string('workflow_schedule_id', 26);
             $table->string('schedule_id', 255);
-            $table->string('namespace', 255)->nullable();
+            $table->string('namespace', 255)
+                ->nullable();
             $table->unsignedInteger('sequence');
             $table->string('event_type');
-            $table->json('payload')->nullable();
-            $table->string('workflow_instance_id', 191)->nullable();
-            $table->string('workflow_run_id', 26)->nullable();
-            $table->timestamp('recorded_at', 6)->nullable();
+            $table->json('payload')
+                ->nullable();
+            $table->string('workflow_instance_id', 191)
+                ->nullable();
+            $table->string('workflow_run_id', 26)
+                ->nullable();
+            $table->timestamp('recorded_at', 6)
+                ->nullable();
             $table->timestamps(6);
         });
 
@@ -105,7 +109,6 @@ class MigrationTest extends TestCase
         $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['namespace', 'schedule_id']));
         $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['event_type', 'recorded_at']));
     }
-
 
     public function testItPreservesV1WorkflowDataAfterV2Migration()
     {
@@ -150,7 +153,6 @@ class MigrationTest extends TestCase
         );
     }
 
-
     public function testItAllowsV2WorkflowsAfterMigration()
     {
         // Set up v1 schema and data
@@ -187,7 +189,6 @@ class MigrationTest extends TestCase
         $v1Count = DB::table('workflows')->count();
         $this->assertGreaterThan(0, $v1Count, 'v1 workflows should still exist');
     }
-
 
     public function testItTracksV1WorkflowsSeparatelyFromV2()
     {
@@ -228,7 +229,6 @@ class MigrationTest extends TestCase
         $this->assertFalse($v1InV2Table, 'v1 workflow should not appear in v2 workflow_instances table');
     }
 
-
     public function testItPreservesV1WorkflowWithTimer()
     {
         $this->runV1Migrations();
@@ -262,7 +262,6 @@ class MigrationTest extends TestCase
         $this->assertNotNull($timer);
         $this->assertEquals(1, $timer->index);
     }
-
 
     public function testItPreservesV1WorkflowWithSignals()
     {
@@ -310,7 +309,6 @@ class MigrationTest extends TestCase
         $this->assertEquals('approve', $signals[0]->method);
         $this->assertEquals('payment_received', $signals[1]->method);
     }
-
 
     public function testItPreservesV1WorkflowWithException()
     {

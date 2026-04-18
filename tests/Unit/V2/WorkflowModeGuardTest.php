@@ -15,9 +15,10 @@ final class WorkflowModeGuardTest extends TestCase
     public function testSilentModeSkipsScanEntirely(): void
     {
         config()->set('workflows.v2.guardrails.boot', 'silent');
-        config()->set('workflows.v2.types.workflows', [
-            'test-unsafe' => TestUnsafeDeterminismWorkflow::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.workflows', [
+                'test-unsafe' => TestUnsafeDeterminismWorkflow::class,
+            ]);
 
         Log::shouldReceive('warning')->never();
 
@@ -27,9 +28,10 @@ final class WorkflowModeGuardTest extends TestCase
     public function testWarnModeLogsWarningsForUnsafeWorkflows(): void
     {
         config()->set('workflows.v2.guardrails.boot', 'warn');
-        config()->set('workflows.v2.types.workflows', [
-            'test-unsafe' => TestUnsafeDeterminismWorkflow::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.workflows', [
+                'test-unsafe' => TestUnsafeDeterminismWorkflow::class,
+            ]);
 
         Log::shouldReceive('warning')
             ->atLeast()
@@ -43,9 +45,10 @@ final class WorkflowModeGuardTest extends TestCase
     public function testWarnModeDoesNotLogForCleanWorkflows(): void
     {
         config()->set('workflows.v2.guardrails.boot', 'warn');
-        config()->set('workflows.v2.types.workflows', [
-            'test-greeting-workflow' => TestGreetingWorkflow::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.workflows', [
+                'test-greeting-workflow' => TestGreetingWorkflow::class,
+            ]);
 
         Log::shouldReceive('warning')->never();
 
@@ -55,9 +58,10 @@ final class WorkflowModeGuardTest extends TestCase
     public function testThrowModeThrowsForUnsafeWorkflows(): void
     {
         config()->set('workflows.v2.guardrails.boot', 'throw');
-        config()->set('workflows.v2.types.workflows', [
-            'test-unsafe' => TestUnsafeDeterminismWorkflow::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.workflows', [
+                'test-unsafe' => TestUnsafeDeterminismWorkflow::class,
+            ]);
 
         $this->expectException(\LogicException::class);
         $this->expectExceptionMessage('Workflow determinism guardrail failed');
@@ -68,9 +72,10 @@ final class WorkflowModeGuardTest extends TestCase
     public function testThrowModePassesForCleanWorkflows(): void
     {
         config()->set('workflows.v2.guardrails.boot', 'throw');
-        config()->set('workflows.v2.types.workflows', [
-            'test-greeting-workflow' => TestGreetingWorkflow::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.workflows', [
+                'test-greeting-workflow' => TestGreetingWorkflow::class,
+            ]);
 
         WorkflowModeGuard::check();
 
@@ -80,7 +85,8 @@ final class WorkflowModeGuardTest extends TestCase
     public function testEmptyTypeMapDoesNothing(): void
     {
         config()->set('workflows.v2.guardrails.boot', 'throw');
-        config()->set('workflows.v2.types.workflows', []);
+        config()
+            ->set('workflows.v2.types.workflows', []);
 
         WorkflowModeGuard::check();
 
@@ -90,7 +96,8 @@ final class WorkflowModeGuardTest extends TestCase
     public function testNullTypeMapDoesNothing(): void
     {
         config()->set('workflows.v2.guardrails.boot', 'throw');
-        config()->set('workflows.v2.types.workflows', null);
+        config()
+            ->set('workflows.v2.types.workflows', null);
 
         WorkflowModeGuard::check();
 

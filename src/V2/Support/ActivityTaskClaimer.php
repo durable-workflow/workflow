@@ -14,7 +14,6 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -136,14 +135,16 @@ final class ActivityTaskClaimer
                 ? $retryPolicy['start_to_close_timeout']
                 : null;
             $closeDeadlineAt = $startToCloseTimeout !== null
-                ? $now->copy()->addSeconds($startToCloseTimeout)
+                ? $now->copy()
+                    ->addSeconds($startToCloseTimeout)
                 : null;
 
             $heartbeatTimeout = is_int($retryPolicy['heartbeat_timeout'] ?? null)
                 ? $retryPolicy['heartbeat_timeout']
                 : null;
             $heartbeatDeadlineAt = $heartbeatTimeout !== null
-                ? $now->copy()->addSeconds($heartbeatTimeout)
+                ? $now->copy()
+                    ->addSeconds($heartbeatTimeout)
                 : null;
 
             $execution->forceFill([

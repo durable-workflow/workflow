@@ -37,12 +37,15 @@ final class V2ActivityTimeoutTest extends TestCase
         // Create the workflow infrastructure directly to control activity options.
         [$run, $execution] = $this->createPendingActivity(
             instanceId: 'act-timeout-sts-store-1',
-            scheduleDeadlineAt: $startedAt->copy()->addSeconds(30),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->addSeconds(30),
         );
 
         $this->assertNotNull($execution->schedule_deadline_at);
         $this->assertEquals(
-            $startedAt->copy()->addSeconds(30)->toIso8601String(),
+            $startedAt->copy()
+                ->addSeconds(30)
+                ->toIso8601String(),
             $execution->schedule_deadline_at->toIso8601String(),
         );
 
@@ -56,7 +59,8 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask] = $this->createPendingActivity(
             instanceId: 'act-timeout-sts-enforce-1',
-            scheduleDeadlineAt: $startedAt->copy()->addSeconds(30),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->addSeconds(30),
         );
 
         // Activity is pending — not yet claimed.
@@ -132,7 +136,9 @@ final class V2ActivityTimeoutTest extends TestCase
         $this->assertSame(ActivityStatus::Running, $execution->status);
         $this->assertNotNull($execution->close_deadline_at);
         $this->assertEquals(
-            $startedAt->copy()->addSeconds(60)->toIso8601String(),
+            $startedAt->copy()
+                ->addSeconds(60)
+                ->toIso8601String(),
             $execution->close_deadline_at->toIso8601String(),
         );
 
@@ -146,7 +152,8 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
             instanceId: 'act-timeout-stc-enforce-1',
-            closeDeadlineAt: $startedAt->copy()->addSeconds(60),
+            closeDeadlineAt: $startedAt->copy()
+                ->addSeconds(60),
         );
 
         $this->assertSame(ActivityStatus::Running, $execution->status);
@@ -194,7 +201,8 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
             instanceId: 'act-timeout-retry-1',
-            closeDeadlineAt: $startedAt->copy()->addSeconds(30),
+            closeDeadlineAt: $startedAt->copy()
+                ->addSeconds(30),
             maxAttempts: 3,
         );
 
@@ -238,19 +246,22 @@ final class V2ActivityTimeoutTest extends TestCase
         // Create a pending activity with expired schedule deadline.
         [$run1, $execution1] = $this->createPendingActivity(
             instanceId: 'act-timeout-find-1',
-            scheduleDeadlineAt: $startedAt->copy()->subSeconds(10),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->subSeconds(10),
         );
 
         // Create a running activity with expired close deadline.
         [$run2, $execution2] = $this->createRunningActivity(
             instanceId: 'act-timeout-find-2',
-            closeDeadlineAt: $startedAt->copy()->subSeconds(10),
+            closeDeadlineAt: $startedAt->copy()
+                ->subSeconds(10),
         );
 
         // Create a pending activity with future deadline (should NOT be found).
         [$run3, $execution3] = $this->createPendingActivity(
             instanceId: 'act-timeout-find-3',
-            scheduleDeadlineAt: $startedAt->copy()->addSeconds(300),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->addSeconds(300),
         );
 
         $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds();
@@ -269,7 +280,8 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask] = $this->createPendingActivity(
             instanceId: 'act-timeout-watchdog-1',
-            scheduleDeadlineAt: $startedAt->copy()->subSeconds(10),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->subSeconds(10),
         );
 
         $report = TaskWatchdog::runPass();
@@ -290,7 +302,8 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask] = $this->createPendingActivity(
             instanceId: 'act-timeout-snapshots-1',
-            scheduleDeadlineAt: $startedAt->copy()->addSeconds(30),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->addSeconds(30),
         );
 
         Carbon::setTestNow($startedAt->copy()->addSeconds(60));
@@ -302,10 +315,11 @@ final class V2ActivityTimeoutTest extends TestCase
 
         $this->assertNotEmpty($snapshots);
 
-        $timeoutSnapshot = collect($snapshots)->first(
-            static fn (array $s): bool => ($s['failure_category'] ?? null) === 'timeout'
-                && ($s['source_kind'] ?? null) === 'activity_execution',
-        );
+        $timeoutSnapshot = collect($snapshots)
+            ->first(
+                static fn (array $s): bool => ($s['failure_category'] ?? null) === 'timeout'
+                    && ($s['source_kind'] ?? null) === 'activity_execution',
+            );
 
         $this->assertNotNull($timeoutSnapshot);
         $this->assertSame($execution->id, $timeoutSnapshot['source_id'] ?? null);
@@ -320,7 +334,8 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution] = $this->createPendingActivity(
             instanceId: 'act-timeout-no-enforce-1',
-            scheduleDeadlineAt: $startedAt->copy()->addSeconds(300),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->addSeconds(300),
         );
 
         $result = ActivityTimeoutEnforcer::enforce($execution->id);
@@ -340,10 +355,14 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution] = $this->createPendingActivity(
             instanceId: 'act-timeout-terminal-1',
-            scheduleDeadlineAt: $startedAt->copy()->subSeconds(10),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->subSeconds(10),
         );
 
-        $run->forceFill(['status' => RunStatus::Completed, 'closed_at' => now()])->save();
+        $run->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_at' => now(),
+        ])->save();
 
         $result = ActivityTimeoutEnforcer::enforce($execution->id);
         $this->assertFalse($result['enforced']);
@@ -360,13 +379,15 @@ final class V2ActivityTimeoutTest extends TestCase
         // Create a running activity with schedule-to-close deadline.
         [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
             instanceId: 'act-timeout-s2c-enforce-1',
-            closeDeadlineAt: $startedAt->copy()->addSeconds(120),
+            closeDeadlineAt: $startedAt->copy()
+                ->addSeconds(120),
             maxAttempts: 3,
         );
 
         // Set the schedule-to-close deadline on the execution.
         $execution->forceFill([
-            'schedule_to_close_deadline_at' => $startedAt->copy()->addSeconds(60),
+            'schedule_to_close_deadline_at' => $startedAt->copy()
+                ->addSeconds(60),
         ])->save();
 
         // Advance past the schedule-to-close deadline but before close deadline.
@@ -406,12 +427,14 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
             instanceId: 'act-timeout-s2c-no-retry-1',
-            closeDeadlineAt: $startedAt->copy()->addSeconds(300),
+            closeDeadlineAt: $startedAt->copy()
+                ->addSeconds(300),
             maxAttempts: 10,
         );
 
         $execution->forceFill([
-            'schedule_to_close_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'schedule_to_close_deadline_at' => $startedAt->copy()
+                ->addSeconds(30),
         ])->save();
 
         Carbon::setTestNow($startedAt->copy()->addSeconds(60));
@@ -448,12 +471,11 @@ final class V2ActivityTimeoutTest extends TestCase
         $startedAt = Carbon::parse('2026-01-15 10:00:00');
         Carbon::setTestNow($startedAt);
 
-        [$run, $execution, $activityTask] = $this->createPendingActivity(
-            instanceId: 'act-timeout-s2c-pending-1',
-        );
+        [$run, $execution, $activityTask] = $this->createPendingActivity(instanceId: 'act-timeout-s2c-pending-1');
 
         $execution->forceFill([
-            'schedule_to_close_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'schedule_to_close_deadline_at' => $startedAt->copy()
+                ->addSeconds(30),
         ])->save();
 
         Carbon::setTestNow($startedAt->copy()->addSeconds(60));
@@ -484,12 +506,14 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
             instanceId: 'act-timeout-hb-enforce-1',
-            closeDeadlineAt: $startedAt->copy()->addSeconds(300),
+            closeDeadlineAt: $startedAt->copy()
+                ->addSeconds(300),
         );
 
         // Set heartbeat deadline.
         $execution->forceFill([
-            'heartbeat_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'heartbeat_deadline_at' => $startedAt->copy()
+                ->addSeconds(30),
             'last_heartbeat_at' => $startedAt,
         ])->save();
 
@@ -529,12 +553,14 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
             instanceId: 'act-timeout-hb-retry-1',
-            closeDeadlineAt: $startedAt->copy()->addSeconds(300),
+            closeDeadlineAt: $startedAt->copy()
+                ->addSeconds(300),
             maxAttempts: 3,
         );
 
         $execution->forceFill([
-            'heartbeat_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'heartbeat_deadline_at' => $startedAt->copy()
+                ->addSeconds(30),
         ])->save();
 
         Carbon::setTestNow($startedAt->copy()->addSeconds(60));
@@ -587,7 +613,9 @@ final class V2ActivityTimeoutTest extends TestCase
         $this->assertSame(ActivityStatus::Running, $execution->status);
         $this->assertNotNull($execution->heartbeat_deadline_at);
         $this->assertEquals(
-            $startedAt->copy()->addSeconds(15)->toIso8601String(),
+            $startedAt->copy()
+                ->addSeconds(15)
+                ->toIso8601String(),
             $execution->heartbeat_deadline_at->toIso8601String(),
         );
 
@@ -600,27 +628,24 @@ final class V2ActivityTimeoutTest extends TestCase
         Carbon::setTestNow($startedAt);
 
         // Running activity with expired heartbeat deadline.
-        [$run1, $execution1] = $this->createRunningActivity(
-            instanceId: 'act-timeout-find-hb-1',
-        );
+        [$run1, $execution1] = $this->createRunningActivity(instanceId: 'act-timeout-find-hb-1');
         $execution1->forceFill([
-            'heartbeat_deadline_at' => $startedAt->copy()->subSeconds(10),
+            'heartbeat_deadline_at' => $startedAt->copy()
+                ->subSeconds(10),
         ])->save();
 
         // Pending activity with expired schedule-to-close deadline.
-        [$run2, $execution2] = $this->createPendingActivity(
-            instanceId: 'act-timeout-find-s2c-1',
-        );
+        [$run2, $execution2] = $this->createPendingActivity(instanceId: 'act-timeout-find-s2c-1');
         $execution2->forceFill([
-            'schedule_to_close_deadline_at' => $startedAt->copy()->subSeconds(10),
+            'schedule_to_close_deadline_at' => $startedAt->copy()
+                ->subSeconds(10),
         ])->save();
 
         // Running activity with future heartbeat deadline (should NOT be found).
-        [$run3, $execution3] = $this->createRunningActivity(
-            instanceId: 'act-timeout-find-hb-future-1',
-        );
+        [$run3, $execution3] = $this->createRunningActivity(instanceId: 'act-timeout-find-hb-future-1');
         $execution3->forceFill([
-            'heartbeat_deadline_at' => $startedAt->copy()->addSeconds(300),
+            'heartbeat_deadline_at' => $startedAt->copy()
+                ->addSeconds(300),
         ])->save();
 
         $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds();
@@ -641,7 +666,8 @@ final class V2ActivityTimeoutTest extends TestCase
 
         [$run, $execution, $activityTask] = $this->createPendingActivity(
             instanceId: 'act-timeout-sts-retry-reset-1',
-            scheduleDeadlineAt: $startedAt->copy()->addSeconds($scheduleToStartTimeout),
+            scheduleDeadlineAt: $startedAt->copy()
+                ->addSeconds($scheduleToStartTimeout),
             retryPolicy: [
                 'snapshot_version' => 1,
                 'max_attempts' => 3,
@@ -666,8 +692,11 @@ final class V2ActivityTimeoutTest extends TestCase
         $this->assertNotNull($execution->schedule_deadline_at);
 
         // The retry task has a 5-second backoff, so available_at = now + 5s.
-        $retryAvailableAt = now()->copy()->addSeconds(5);
-        $expectedDeadline = $retryAvailableAt->copy()->addSeconds($scheduleToStartTimeout);
+        $retryAvailableAt = now()
+            ->copy()
+            ->addSeconds(5);
+        $expectedDeadline = $retryAvailableAt->copy()
+            ->addSeconds($scheduleToStartTimeout);
 
         $this->assertEquals(
             $expectedDeadline->toIso8601String(),
@@ -685,13 +714,15 @@ final class V2ActivityTimeoutTest extends TestCase
         // Activity has a schedule_deadline_at set manually but no schedule_to_start_timeout in policy.
         [$run, $execution, $activityTask, $attempt] = $this->createRunningActivity(
             instanceId: 'act-timeout-stc-retry-clear-1',
-            closeDeadlineAt: $startedAt->copy()->addSeconds(30),
+            closeDeadlineAt: $startedAt->copy()
+                ->addSeconds(30),
             maxAttempts: 3,
         );
 
         // Set an old schedule_deadline_at that would have been set at scheduling time.
         $execution->forceFill([
-            'schedule_deadline_at' => $startedAt->copy()->addSeconds(10),
+            'schedule_deadline_at' => $startedAt->copy()
+                ->addSeconds(10),
         ])->save();
 
         // Advance past the start-to-close deadline.
@@ -742,7 +773,9 @@ final class V2ActivityTimeoutTest extends TestCase
             'last_progress_at' => $now,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
@@ -818,7 +851,9 @@ final class V2ActivityTimeoutTest extends TestCase
             'last_progress_at' => $now,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         $attemptId = (string) \Illuminate\Support\Str::ulid();
 
@@ -855,7 +890,8 @@ final class V2ActivityTimeoutTest extends TestCase
             'connection' => null,
             'queue' => null,
             'leased_at' => $now,
-            'lease_expires_at' => $now->copy()->addMinutes(5),
+            'lease_expires_at' => $now->copy()
+                ->addMinutes(5),
         ]);
 
         $attempt = ActivityAttempt::query()->create([
@@ -867,7 +903,8 @@ final class V2ActivityTimeoutTest extends TestCase
             'status' => ActivityAttemptStatus::Running->value,
             'lease_owner' => $activityTask->id,
             'started_at' => $now,
-            'lease_expires_at' => $now->copy()->addMinutes(5),
+            'lease_expires_at' => $now->copy()
+                ->addMinutes(5),
         ]);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [

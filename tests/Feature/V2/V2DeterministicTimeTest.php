@@ -26,9 +26,12 @@ final class V2DeterministicTimeTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
         Queue::fake();
     }
 

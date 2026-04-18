@@ -112,7 +112,8 @@ final class HistoryBudgetTest extends TestCase
     public function testRunAtSizeThresholdRecommendsContinueAsNew(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 0);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 1);
 
         $run = $this->createRunWithEvents(1);
 
@@ -124,7 +125,8 @@ final class HistoryBudgetTest extends TestCase
     public function testDisabledThresholdsNeverRecommendContinueAsNew(): void
     {
         config()->set('workflows.v2.history_budget.continue_as_new_event_threshold', 0);
-        config()->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
+        config()
+            ->set('workflows.v2.history_budget.continue_as_new_size_bytes_threshold', 0);
 
         $run = $this->createRunWithEvents(100);
 

@@ -11,36 +11,6 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class HistoryPayloadCompressionTest extends TestCase
 {
-    private function makePayload(int $eventCount): array
-    {
-        $events = [];
-
-        for ($i = 1; $i <= $eventCount; $i++) {
-            $events[] = [
-                'id' => "evt-{$i}",
-                'sequence' => $i,
-                'event_type' => 'WorkflowStarted',
-                'payload' => ['key' => str_repeat('x', 100)],
-                'workflow_task_id' => null,
-                'workflow_command_id' => null,
-                'recorded_at' => '2026-04-12T00:00:00.000000Z',
-            ];
-        }
-
-        return [
-            'task_id' => 'task-1',
-            'workflow_run_id' => 'run-1',
-            'workflow_instance_id' => 'inst-1',
-            'workflow_type' => 'TestWorkflow',
-            'workflow_class' => null,
-            'payload_codec' => 'json',
-            'arguments' => null,
-            'run_status' => 'Running',
-            'last_history_sequence' => $eventCount,
-            'history_events' => $events,
-        ];
-    }
-
     public function testCompressReturnsUnchangedWhenNoEncoding(): void
     {
         $payload = $this->makePayload(100);
@@ -152,7 +122,9 @@ final class HistoryPayloadCompressionTest extends TestCase
 
     public function testIsCompressedDetectsCompressedPayload(): void
     {
-        $this->assertFalse(HistoryPayloadCompression::isCompressed(['history_events' => []]));
+        $this->assertFalse(HistoryPayloadCompression::isCompressed([
+            'history_events' => [],
+        ]));
         $this->assertTrue(HistoryPayloadCompression::isCompressed([
             'history_events' => [],
             'history_events_compressed' => 'data',
@@ -178,7 +150,7 @@ final class HistoryPayloadCompressionTest extends TestCase
         $originalSize = strlen(json_encode($payload['history_events']));
 
         $compressed = HistoryPayloadCompression::compress($payload, 'gzip');
-        $compressedSize = strlen(base64_decode($compressed['history_events_compressed']));
+        $compressedSize = strlen(base64_decode($compressed['history_events_compressed'], true));
 
         $this->assertLessThan($originalSize, $compressedSize);
     }
@@ -193,5 +165,37 @@ final class HistoryPayloadCompressionTest extends TestCase
         $this->assertSame($payload['workflow_run_id'], $compressed['workflow_run_id']);
         $this->assertSame($payload['run_status'], $compressed['run_status']);
         $this->assertSame($payload['last_history_sequence'], $compressed['last_history_sequence']);
+    }
+
+    private function makePayload(int $eventCount): array
+    {
+        $events = [];
+
+        for ($i = 1; $i <= $eventCount; $i++) {
+            $events[] = [
+                'id' => "evt-{$i}",
+                'sequence' => $i,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [
+                    'key' => str_repeat('x', 100),
+                ],
+                'workflow_task_id' => null,
+                'workflow_command_id' => null,
+                'recorded_at' => '2026-04-12T00:00:00.000000Z',
+            ];
+        }
+
+        return [
+            'task_id' => 'task-1',
+            'workflow_run_id' => 'run-1',
+            'workflow_instance_id' => 'inst-1',
+            'workflow_type' => 'TestWorkflow',
+            'workflow_class' => null,
+            'payload_codec' => 'json',
+            'arguments' => null,
+            'run_status' => 'Running',
+            'last_history_sequence' => $eventCount,
+            'history_events' => $events,
+        ];
     }
 }

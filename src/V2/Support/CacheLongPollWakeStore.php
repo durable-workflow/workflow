@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Workflow\V2\Support;
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
@@ -27,7 +29,8 @@ class CacheLongPollWakeStore implements LongPollWakeStore
     public function __construct(
         private readonly CacheRepository $cache,
         private readonly int $signalTtlSeconds = 60,
-    ) {}
+    ) {
+    }
 
     public function snapshot(array $channels): array
     {
@@ -62,11 +65,7 @@ class CacheLongPollWakeStore implements LongPollWakeStore
         $version = sprintf('%.6F:%s', microtime(true), (string) Str::ulid());
 
         foreach ($channels as $channel) {
-            $this->cache->put(
-                $this->cacheKey($channel),
-                $version,
-                now()->addSeconds($this->signalTtlSeconds),
-            );
+            $this->cache->put($this->cacheKey($channel), $version, now() ->addSeconds($this->signalTtlSeconds));
         }
     }
 
@@ -159,10 +158,7 @@ class CacheLongPollWakeStore implements LongPollWakeStore
             ->select('workflow_tasks.*')
             ->join('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
             ->where('workflow_runs.workflow_instance_id', $workflowId)
-            ->whereIn('workflow_tasks.task_type', [
-                TaskType::Workflow->value,
-                TaskType::Activity->value,
-            ])
+            ->whereIn('workflow_tasks.task_type', [TaskType::Workflow->value, TaskType::Activity->value])
             ->get();
 
         foreach ($tasks as $task) {
@@ -255,7 +251,7 @@ class CacheLongPollWakeStore implements LongPollWakeStore
 
     private function cacheKey(string $channel): string
     {
-        return self::CACHE_PREFIX.sha1($channel);
+        return self::CACHE_PREFIX . sha1($channel);
     }
 
     private function queueChannel(string $plane, ?string $namespace, mixed $connection, mixed $queue): string

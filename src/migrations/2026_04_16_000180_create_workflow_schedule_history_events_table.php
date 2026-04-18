@@ -49,16 +49,27 @@ return new class() extends Migration {
         }
 
         Schema::create(self::TABLE, static function (Blueprint $table): void {
-            $table->string('id', 26)->primary();
-            $table->string('workflow_schedule_id', 26)->index(self::WORKFLOW_SCHEDULE_INDEX);
-            $table->string('schedule_id', 255)->index(self::SCHEDULE_INDEX);
-            $table->string('namespace', 255)->nullable()->index(self::NAMESPACE_INDEX);
+            $table->string('id', 26)
+                ->primary();
+            $table->string('workflow_schedule_id', 26)
+                ->index(self::WORKFLOW_SCHEDULE_INDEX);
+            $table->string('schedule_id', 255)
+                ->index(self::SCHEDULE_INDEX);
+            $table->string('namespace', 255)
+                ->nullable()
+                ->index(self::NAMESPACE_INDEX);
             $table->unsignedInteger('sequence');
             $table->string('event_type');
-            $table->json('payload')->nullable();
-            $table->string('workflow_instance_id', 191)->nullable()->index(self::WORKFLOW_INSTANCE_INDEX);
-            $table->string('workflow_run_id', 26)->nullable()->index(self::WORKFLOW_RUN_INDEX);
-            $table->timestamp('recorded_at', 6)->nullable();
+            $table->json('payload')
+                ->nullable();
+            $table->string('workflow_instance_id', 191)
+                ->nullable()
+                ->index(self::WORKFLOW_INSTANCE_INDEX);
+            $table->string('workflow_run_id', 26)
+                ->nullable()
+                ->index(self::WORKFLOW_RUN_INDEX);
+            $table->timestamp('recorded_at', 6)
+                ->nullable();
             $table->timestamps(6);
 
             $table->unique(['workflow_schedule_id', 'sequence'], self::SCHEDULE_SEQUENCE_UNIQUE);
@@ -136,7 +147,8 @@ return new class() extends Migration {
                 from information_schema.statistics
                 where table_schema = ? and table_name = ?
                 order by index_name, seq_in_index
-                SQL,
+                SQL
+                ,
                 [DB::connection()->getDatabaseName(), self::TABLE]
             ),
             $columns,
@@ -160,7 +172,8 @@ return new class() extends Migration {
                 join pg_attribute a on a.attrelid = t.oid and a.attnum = ord.attnum
                 where t.relname = ?
                 order by i.relname, ord.ordinality
-                SQL,
+                SQL
+                ,
                 [self::TABLE]
             ),
             $columns,
@@ -204,7 +217,8 @@ return new class() extends Migration {
                 join sys.columns c on ic.object_id = c.object_id and ic.column_id = c.column_id
                 where i.object_id = object_id(?)
                 order by i.name, ic.key_ordinal
-                SQL,
+                SQL
+                ,
                 [self::TABLE]
             ),
             $columns,

@@ -20,8 +20,8 @@ final class TestParallelActivityWorkflow extends Workflow
         $this->stage = 'waiting-for-activities';
 
         $results = all([
-            fn () => activity(TestGreetingActivity::class, $firstName),
-            fn () => activity(TestGreetingActivity::class, $secondName),
+            static fn () => activity(TestGreetingActivity::class, $firstName),
+            static fn () => activity(TestGreetingActivity::class, $secondName),
         ]);
 
         $this->stage = 'completed';

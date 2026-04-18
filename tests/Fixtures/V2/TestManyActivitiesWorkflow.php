@@ -17,7 +17,7 @@ final class TestManyActivitiesWorkflow extends Workflow
         $calls = [];
 
         for ($i = 0; $i < $count; $i++) {
-            $calls[] = fn () => activity(TestGreetingActivity::class, "item-{$i}");
+            $calls[] = static fn () => activity(TestGreetingActivity::class, "item-{$i}");
         }
 
         return all($calls);

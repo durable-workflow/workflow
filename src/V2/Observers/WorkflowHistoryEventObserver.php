@@ -18,7 +18,8 @@ class WorkflowHistoryEventObserver
 {
     public function __construct(
         private readonly LongPollWakeStore $wakeStore,
-    ) {}
+    ) {
+    }
 
     public function created(WorkflowHistoryEvent $event): void
     {

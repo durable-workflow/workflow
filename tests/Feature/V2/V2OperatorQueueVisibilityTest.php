@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Database\Schema\Blueprint;
 use Tests\Fixtures\V2\TestStandaloneWorkerRegistration;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -29,28 +29,42 @@ final class V2OperatorQueueVisibilityTest extends TestCase
             Carbon::setTestNow();
         });
 
-        config()->set('workflows.v2.task_repair.redispatch_after_seconds', 7);
+        config()
+            ->set('workflows.v2.task_repair.redispatch_after_seconds', 7);
 
         $run = $this->createRun('queue-visibility-instance', '01JQUEUEVISIBLE00000000001', 'default');
 
         $this->createTask($run, '01JQUEUEVISIBLETASK000001', TaskType::Workflow, TaskStatus::Ready, [
-            'available_at' => now()->subSeconds(45),
-            'created_at' => now()->subSeconds(50),
+            'available_at' => now()
+                ->subSeconds(45),
+            'created_at' => now()
+                ->subSeconds(50),
         ]);
         $this->createTask($run, '01JQUEUEVISIBLETASK000002', TaskType::Activity, TaskStatus::Ready, [
-            'available_at' => now()->subSeconds(20),
-            'created_at' => now()->subSeconds(20),
-            'last_dispatch_attempt_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSeconds(20),
+            'created_at' => now()
+                ->subSeconds(20),
+            'last_dispatch_attempt_at' => now()
+                ->subSecond(),
             'last_dispatch_error' => 'Queue transport unavailable.',
         ]);
-        $expiredWorkflowTask = $this->createTask($run, '01JQUEUEVISIBLETASK000003', TaskType::Workflow, TaskStatus::Leased, [
-            'lease_owner' => 'worker-active',
-            'lease_expires_at' => now()->subMinute(),
-            'attempt_count' => 2,
-        ]);
+        $expiredWorkflowTask = $this->createTask(
+            $run,
+            '01JQUEUEVISIBLETASK000003',
+            TaskType::Workflow,
+            TaskStatus::Leased,
+            [
+                'lease_owner' => 'worker-active',
+                'lease_expires_at' => now()
+                    ->subMinute(),
+                'attempt_count' => 2,
+            ]
+        );
         $activityTask = $this->createTask($run, '01JQUEUEVISIBLETASK000004', TaskType::Activity, TaskStatus::Leased, [
             'lease_owner' => 'worker-active',
-            'lease_expires_at' => now()->addMinute(),
+            'lease_expires_at' => now()
+                ->addMinute(),
         ]);
 
         ActivityAttempt::query()->create([
@@ -60,7 +74,8 @@ final class V2OperatorQueueVisibilityTest extends TestCase
             'workflow_task_id' => $activityTask->id,
             'attempt_number' => 3,
             'status' => ActivityAttemptStatus::Running->value,
-            'started_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         $detail = OperatorQueueVisibility::forQueue('default', 'critical', [
@@ -69,7 +84,8 @@ final class V2OperatorQueueVisibilityTest extends TestCase
                 'runtime' => 'python',
                 'sdk_version' => '0.1.0',
                 'build_id' => 'build-b',
-                'last_heartbeat_at' => now()->subMinutes(5),
+                'last_heartbeat_at' => now()
+                    ->subMinutes(5),
                 'supported_workflow_types' => ['workflow.test'],
                 'supported_activity_types' => ['activity.test'],
                 'max_concurrent_workflow_tasks' => 4,
@@ -169,12 +185,15 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $run = $this->createRun('queue-null-instance', '01JQUEUENULL000000000001', 'default');
 
         $this->createTask($run, '01JQUEUENULLTASK00000001', TaskType::Workflow, TaskStatus::Ready, [
-            'available_at' => now()->subSeconds(90),
-            'created_at' => now()->subSeconds(120),
+            'available_at' => now()
+                ->subSeconds(90),
+            'created_at' => now()
+                ->subSeconds(120),
         ]);
         $nullTask = $this->createTask($run, '01JQUEUENULLTASK00000002', TaskType::Activity, TaskStatus::Ready, [
             'available_at' => null,
-            'created_at' => now()->subSeconds(30),
+            'created_at' => now()
+                ->subSeconds(30),
         ]);
 
         $detail = OperatorQueueVisibility::forQueue('default', 'critical', [], now())->toArray();
@@ -218,7 +237,8 @@ final class V2OperatorQueueVisibilityTest extends TestCase
             'supported_activity_types' => [],
             'max_concurrent_workflow_tasks' => 1,
             'max_concurrent_activity_tasks' => 0,
-            'last_heartbeat_at' => now()->subMinutes(5),
+            'last_heartbeat_at' => now()
+                ->subMinutes(5),
             'status' => 'active',
         ]);
         TestStandaloneWorkerRegistration::query()->create([
@@ -266,7 +286,8 @@ final class V2OperatorQueueVisibilityTest extends TestCase
             WorkerCompatibilityFleet::clear();
         });
         WorkerCompatibilityFleet::clear();
-        config()->set('workflows.v2.compatibility.namespace', 'embedded');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'embedded');
 
         StandaloneWorkerVisibility::recordCompatibility('default', 'worker-a', 'external', 'build-a');
         StandaloneWorkerVisibility::recordCompatibility('other', 'worker-b', 'other-queue', 'build-b');
@@ -298,7 +319,8 @@ final class V2OperatorQueueVisibilityTest extends TestCase
             'workflow_type' => 'workflow.test',
             'namespace' => $namespace,
             'run_count' => 1,
-            'started_at' => now()->subMinutes(5),
+            'started_at' => now()
+                ->subMinutes(5),
         ]);
 
         /** @var WorkflowRun $run */
@@ -310,8 +332,10 @@ final class V2OperatorQueueVisibilityTest extends TestCase
             'workflow_type' => 'workflow.test',
             'namespace' => $namespace,
             'status' => 'waiting',
-            'started_at' => now()->subMinutes(5),
-            'last_progress_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinutes(5),
+            'last_progress_at' => now()
+                ->subMinute(),
         ]);
 
         $instance->forceFill([
@@ -356,16 +380,26 @@ final class V2OperatorQueueVisibilityTest extends TestCase
             $table->id();
             $table->string('worker_id');
             $table->string('namespace');
-            $table->string('task_queue')->nullable();
-            $table->string('runtime')->nullable();
-            $table->string('sdk_version')->nullable();
-            $table->string('build_id')->nullable();
-            $table->json('supported_workflow_types')->nullable();
-            $table->json('supported_activity_types')->nullable();
-            $table->integer('max_concurrent_workflow_tasks')->default(0);
-            $table->integer('max_concurrent_activity_tasks')->default(0);
-            $table->timestamp('last_heartbeat_at')->nullable();
-            $table->string('status')->nullable();
+            $table->string('task_queue')
+                ->nullable();
+            $table->string('runtime')
+                ->nullable();
+            $table->string('sdk_version')
+                ->nullable();
+            $table->string('build_id')
+                ->nullable();
+            $table->json('supported_workflow_types')
+                ->nullable();
+            $table->json('supported_activity_types')
+                ->nullable();
+            $table->integer('max_concurrent_workflow_tasks')
+                ->default(0);
+            $table->integer('max_concurrent_activity_tasks')
+                ->default(0);
+            $table->timestamp('last_heartbeat_at')
+                ->nullable();
+            $table->string('status')
+                ->nullable();
             $table->timestamps();
         });
     }

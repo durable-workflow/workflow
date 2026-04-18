@@ -20,7 +20,8 @@ final class ChildWorkflowNamespaceProjection
 {
     public function __construct(
         private readonly LongPollWakeStore $wakeStore,
-    ) {}
+    ) {
+    }
 
     public function projectLink(WorkflowLink $link): void
     {
@@ -76,7 +77,9 @@ final class ChildWorkflowNamespaceProjection
                 $query->whereNull('namespace')
                     ->orWhere('namespace', '');
             })
-            ->update(['namespace' => $namespace]);
+            ->update([
+                'namespace' => $namespace,
+            ]);
 
         if ($childRunId !== null) {
             /** @var class-string<WorkflowRun> $runModel */
@@ -87,7 +90,9 @@ final class ChildWorkflowNamespaceProjection
                     $query->whereNull('namespace')
                         ->orWhere('namespace', '');
                 })
-                ->update(['namespace' => $namespace]);
+                ->update([
+                    'namespace' => $namespace,
+                ]);
 
             /** @var class-string<WorkflowTask> $taskModel */
             $taskModel = ConfiguredV2Models::resolve('task_model', WorkflowTask::class);
@@ -97,7 +102,9 @@ final class ChildWorkflowNamespaceProjection
                     $query->whereNull('namespace')
                         ->orWhere('namespace', '');
                 })
-                ->update(['namespace' => $namespace]);
+                ->update([
+                    'namespace' => $namespace,
+                ]);
         }
 
         if ($updated > 0) {

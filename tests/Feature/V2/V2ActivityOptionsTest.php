@@ -96,10 +96,7 @@ final class V2ActivityOptionsTest extends TestCase
 
     public function testActivityOptionsTimeoutFields(): void
     {
-        $options = new ActivityOptions(
-            startToCloseTimeout: 120,
-            scheduleToStartTimeout: 30,
-        );
+        $options = new ActivityOptions(startToCloseTimeout: 120, scheduleToStartTimeout: 30);
 
         $this->assertSame(120, $options->startToCloseTimeout);
         $this->assertSame(30, $options->scheduleToStartTimeout);

@@ -7,7 +7,6 @@ namespace Tests\Unit\Serializers;
 use Exception;
 use Tests\TestCase;
 use Workflow\Serializers\Base64;
-use Workflow\Serializers\Json;
 use Workflow\Serializers\Serializer;
 use Workflow\Serializers\Y;
 
@@ -18,11 +17,15 @@ final class CodecIndependentHelpersTest extends TestCase
      */
     public function testSerializableReturnsTrueForScalarsRegardlessOfCodec(string $codec): void
     {
-        config(['workflows.serializer' => $codec]);
+        config([
+            'workflows.serializer' => $codec,
+        ]);
 
         $this->assertTrue(Serializer::serializable('foo'));
         $this->assertTrue(Serializer::serializable(42));
-        $this->assertTrue(Serializer::serializable(['a' => 1]));
+        $this->assertTrue(Serializer::serializable([
+            'a' => 1,
+        ]));
         $this->assertTrue(Serializer::serializable(null));
     }
 
@@ -31,7 +34,9 @@ final class CodecIndependentHelpersTest extends TestCase
      */
     public function testSerializableReturnsFalseForClosureRegardlessOfCodec(string $codec): void
     {
-        config(['workflows.serializer' => $codec]);
+        config([
+            'workflows.serializer' => $codec,
+        ]);
 
         $this->assertFalse(Serializer::serializable(static fn (): string => 'closure'));
     }
@@ -41,9 +46,16 @@ final class CodecIndependentHelpersTest extends TestCase
      */
     public function testSerializeModelsPassesThroughPlainArraysRegardlessOfCodec(string $codec): void
     {
-        config(['workflows.serializer' => $codec]);
+        config([
+            'workflows.serializer' => $codec,
+        ]);
 
-        $input = ['a' => 1, 'b' => ['nested' => true]];
+        $input = [
+            'a' => 1,
+            'b' => [
+                'nested' => true,
+            ],
+        ];
 
         $this->assertSame($input, Serializer::serializeModels($input));
     }
@@ -53,7 +65,9 @@ final class CodecIndependentHelpersTest extends TestCase
      */
     public function testSerializeModelsConvertsThrowableToArrayRegardlessOfCodec(string $codec): void
     {
-        config(['workflows.serializer' => $codec]);
+        config([
+            'workflows.serializer' => $codec,
+        ]);
 
         $throwable = new Exception('boom', 7);
         $data = Serializer::serializeModels($throwable);
@@ -71,9 +85,16 @@ final class CodecIndependentHelpersTest extends TestCase
      */
     public function testUnserializeModelsIsIdentityForPlainArraysRegardlessOfCodec(string $codec): void
     {
-        config(['workflows.serializer' => $codec]);
+        config([
+            'workflows.serializer' => $codec,
+        ]);
 
-        $input = ['a' => 1, 'b' => ['c' => 'x']];
+        $input = [
+            'a' => 1,
+            'b' => [
+                'c' => 'x',
+            ],
+        ];
 
         $this->assertSame($input, Serializer::unserializeModels($input));
     }
@@ -114,7 +135,9 @@ final class CodecIndependentHelpersTest extends TestCase
     public function testLegacyCodecsRoundTripBytesThroughEncodeDecode(): void
     {
         foreach ([Y::class, Base64::class] as $codec) {
-            config(['workflows.serializer' => $codec]);
+            config([
+                'workflows.serializer' => $codec,
+            ]);
 
             $bytes = "\x00\x01binary" . random_bytes(32);
             $roundTripped = Serializer::decode(Serializer::encode($bytes));

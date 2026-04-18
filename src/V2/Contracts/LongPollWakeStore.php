@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Workflow\V2\Contracts;
 
 /**
@@ -58,9 +60,6 @@ interface LongPollWakeStore
      * Signal that work is available on the given channels.
      *
      * Updates each channel's version stamp and stores it with the configured TTL.
-     *
-     * @param  string  ...$channels
-     * @return void
      */
     public function signal(string ...$channels): void;
 
@@ -70,7 +69,6 @@ interface LongPollWakeStore
      * Returns the set of channels a workflow task poller should subscribe to
      * for the given namespace and queue.
      *
-     * @param  string  $namespace
      * @param  string|null  $connection  Database connection name (null = any)
      * @param  string|null  $queue  Task queue name (null = any)
      * @return list<string>
@@ -83,7 +81,6 @@ interface LongPollWakeStore
      * Returns the set of channels an activity task poller should subscribe to
      * for the given namespace and queue.
      *
-     * @param  string  $namespace
      * @param  string|null  $connection  Database connection name (null = any)
      * @param  string|null  $queue  Task queue name (null = any)
      * @return list<string>
@@ -92,9 +89,6 @@ interface LongPollWakeStore
 
     /**
      * Build channel name for a specific workflow run's history waits.
-     *
-     * @param  string  $runId
-     * @return string
      */
     public function historyRunChannel(string $runId): string;
 }

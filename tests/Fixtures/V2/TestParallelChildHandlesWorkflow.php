@@ -16,9 +16,9 @@ final class TestParallelChildHandlesWorkflow extends Workflow
     public function handle(): array
     {
         return all([
-            fn () => child(TestChildHandleChildWorkflow::class),
-            fn () => child(TestChildHandleChildWorkflow::class),
-            fn () => child(TestChildHandleChildWorkflow::class),
+            static fn () => child(TestChildHandleChildWorkflow::class),
+            static fn () => child(TestChildHandleChildWorkflow::class),
+            static fn () => child(TestChildHandleChildWorkflow::class),
         ]);
     }
 

@@ -92,10 +92,8 @@ class ChildCallService
      * @param WorkflowChildCall $childCall The child call record
      * @param string|null $failureReference Optional failure reference
      */
-    public function recordChildFailed(
-        WorkflowChildCall $childCall,
-        ?string $failureReference = null,
-    ): void {
+    public function recordChildFailed(WorkflowChildCall $childCall, ?string $failureReference = null): void
+    {
         $childCall->markFailed($failureReference);
     }
 
@@ -215,55 +213,6 @@ class ChildCallService
     }
 
     /**
-     * Handle abandon policy: mark child as abandoned, let it continue independently.
-     */
-    private function handleAbandon(WorkflowChildCall $childCall, array &$stats): void
-    {
-        $childCall->markAbandoned();
-        $stats['abandoned']++;
-    }
-
-    /**
-     * Handle request_cancel policy: issue cancel command to child.
-     *
-     * Note: This method marks the intent. Actual cancel command dispatch
-     * should be handled by WorkflowExecutor integration.
-     */
-    private function handleRequestCancel(WorkflowChildCall $childCall, array &$stats): void
-    {
-        // Mark that cancel was requested
-        // The actual cancel command will be issued by the executor
-        $childCall->forceFill([
-            'metadata' => array_merge($childCall->metadata ?? [], [
-                'parent_close_cancel_requested' => true,
-                'parent_close_cancel_requested_at' => now()->toIso8601String(),
-            ]),
-        ])->save();
-
-        $stats['cancel_requested']++;
-    }
-
-    /**
-     * Handle terminate policy: issue terminate command to child.
-     *
-     * Note: This method marks the intent. Actual terminate command dispatch
-     * should be handled by WorkflowExecutor integration.
-     */
-    private function handleTerminate(WorkflowChildCall $childCall, array &$stats): void
-    {
-        // Mark that terminate was requested
-        // The actual terminate command will be issued by the executor
-        $childCall->forceFill([
-            'metadata' => array_merge($childCall->metadata ?? [], [
-                'parent_close_terminate_requested' => true,
-                'parent_close_terminate_requested_at' => now()->toIso8601String(),
-            ]),
-        ])->save();
-
-        $stats['terminate_requested']++;
-    }
-
-    /**
      * Transfer child call tracking to a continued run (continue-as-new).
      *
      * Updates parent_workflow_run_id for open children when parent continues as new run.
@@ -271,17 +220,12 @@ class ChildCallService
      * @param WorkflowRun $closingRun The run being closed
      * @param WorkflowRun $continuedRun The new run from continue-as-new
      */
-    public function transferChildCallsToContinuedRun(
-        WorkflowRun $closingRun,
-        WorkflowRun $continuedRun,
-    ): void {
-        DB::transaction(function () use ($closingRun, $continuedRun): void {
+    public function transferChildCallsToContinuedRun(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
+    {
+        DB::transaction(static function () use ($closingRun, $continuedRun): void {
             // Transfer open children to new run
             WorkflowChildCall::where('parent_workflow_run_id', $closingRun->id)
-                ->whereIn('status', [
-                    ChildCallStatus::Scheduled->value,
-                    ChildCallStatus::Started->value,
-                ])
+                ->whereIn('status', [ChildCallStatus::Scheduled->value, ChildCallStatus::Started->value])
                 ->update([
                     'parent_workflow_run_id' => $continuedRun->id,
                     'updated_at' => now(),
@@ -313,5 +257,56 @@ class ChildCallService
     public function hasOpenChildren(WorkflowRun $parentRun): bool
     {
         return $this->countOpenChildren($parentRun) > 0;
+    }
+
+    /**
+     * Handle abandon policy: mark child as abandoned, let it continue independently.
+     */
+    private function handleAbandon(WorkflowChildCall $childCall, array &$stats): void
+    {
+        $childCall->markAbandoned();
+        $stats['abandoned']++;
+    }
+
+    /**
+     * Handle request_cancel policy: issue cancel command to child.
+     *
+     * Note: This method marks the intent. Actual cancel command dispatch
+     * should be handled by WorkflowExecutor integration.
+     */
+    private function handleRequestCancel(WorkflowChildCall $childCall, array &$stats): void
+    {
+        // Mark that cancel was requested
+        // The actual cancel command will be issued by the executor
+        $childCall->forceFill([
+            'metadata' => array_merge($childCall->metadata ?? [], [
+                'parent_close_cancel_requested' => true,
+                'parent_close_cancel_requested_at' => now()
+                    ->toIso8601String(),
+            ]),
+        ])->save();
+
+        $stats['cancel_requested']++;
+    }
+
+    /**
+     * Handle terminate policy: issue terminate command to child.
+     *
+     * Note: This method marks the intent. Actual terminate command dispatch
+     * should be handled by WorkflowExecutor integration.
+     */
+    private function handleTerminate(WorkflowChildCall $childCall, array &$stats): void
+    {
+        // Mark that terminate was requested
+        // The actual terminate command will be issued by the executor
+        $childCall->forceFill([
+            'metadata' => array_merge($childCall->metadata ?? [], [
+                'parent_close_terminate_requested' => true,
+                'parent_close_terminate_requested_at' => now()
+                    ->toIso8601String(),
+            ]),
+        ])->save();
+
+        $stats['terminate_requested']++;
     }
 }

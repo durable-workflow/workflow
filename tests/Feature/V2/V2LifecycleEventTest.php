@@ -7,7 +7,6 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestFailingWorkflow;
-use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\TaskStatus;
@@ -29,7 +28,8 @@ final class V2LifecycleEventTest extends TestCase
     public function testWorkflowStartedEventIsDispatched(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         Event::fake([WorkflowStarted::class]);
@@ -37,7 +37,7 @@ final class V2LifecycleEventTest extends TestCase
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lifecycle-start');
         $workflow->start('Taylor');
 
-        Event::assertDispatched(WorkflowStarted::class, function (WorkflowStarted $event) use ($workflow): bool {
+        Event::assertDispatched(WorkflowStarted::class, static function (WorkflowStarted $event) use ($workflow): bool {
             return $event->instanceId === $workflow->id()
                 && $event->runId === $workflow->runId()
                 && $event->workflowType === 'test-greeting-workflow'
@@ -49,7 +49,8 @@ final class V2LifecycleEventTest extends TestCase
     public function testSuccessfulWorkflowDispatchesFullLifecycle(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         Event::fake([
@@ -71,7 +72,7 @@ final class V2LifecycleEventTest extends TestCase
         Event::assertDispatched(ActivityCompleted::class, 1);
         Event::assertDispatched(WorkflowCompleted::class, 1);
 
-        Event::assertDispatched(ActivityStarted::class, function (ActivityStarted $event) use ($workflow): bool {
+        Event::assertDispatched(ActivityStarted::class, static function (ActivityStarted $event) use ($workflow): bool {
             return $event->instanceId === $workflow->id()
                 && $event->runId === $workflow->runId()
                 && $event->activityClass !== ''
@@ -79,13 +80,17 @@ final class V2LifecycleEventTest extends TestCase
                 && $event->attemptNumber >= 1;
         });
 
-        Event::assertDispatched(ActivityCompleted::class, function (ActivityCompleted $event) use ($workflow): bool {
+        Event::assertDispatched(ActivityCompleted::class, static function (ActivityCompleted $event) use (
+            $workflow
+        ): bool {
             return $event->instanceId === $workflow->id()
                 && $event->runId === $workflow->runId()
                 && $event->activityExecutionId !== '';
         });
 
-        Event::assertDispatched(WorkflowCompleted::class, function (WorkflowCompleted $event) use ($workflow): bool {
+        Event::assertDispatched(WorkflowCompleted::class, static function (WorkflowCompleted $event) use (
+            $workflow
+        ): bool {
             return $event->instanceId === $workflow->id()
                 && $event->runId === $workflow->runId()
                 && $event->workflowType === 'test-greeting-workflow';
@@ -95,7 +100,8 @@ final class V2LifecycleEventTest extends TestCase
     public function testFailedWorkflowDispatchesFailureEvents(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         Event::fake([
@@ -118,27 +124,27 @@ final class V2LifecycleEventTest extends TestCase
         Event::assertDispatched(ActivityFailed::class, 1);
         Event::assertDispatched(WorkflowFailed::class, 1);
 
-        Event::assertDispatched(ActivityFailed::class, function (ActivityFailed $event) use ($workflow): bool {
+        Event::assertDispatched(ActivityFailed::class, static function (ActivityFailed $event) use ($workflow): bool {
             return $event->instanceId === $workflow->id()
                 && $event->runId === $workflow->runId()
                 && $event->exceptionClass === 'RuntimeException'
                 && $event->message === 'boom';
         });
 
-        Event::assertDispatched(WorkflowFailed::class, function (WorkflowFailed $event) use ($workflow): bool {
+        Event::assertDispatched(WorkflowFailed::class, static function (WorkflowFailed $event) use ($workflow): bool {
             return $event->instanceId === $workflow->id()
                 && $event->runId === $workflow->runId();
         });
 
         // FailureRecorded should fire for both the activity failure and the workflow failure.
-        Event::assertDispatched(FailureRecorded::class, function (FailureRecorded $event): bool {
+        Event::assertDispatched(FailureRecorded::class, static function (FailureRecorded $event): bool {
             return $event->sourceKind === 'activity_execution'
                 && $event->failureId !== ''
                 && $event->exceptionClass === 'RuntimeException'
                 && $event->message === 'boom';
         });
 
-        Event::assertDispatched(FailureRecorded::class, function (FailureRecorded $event): bool {
+        Event::assertDispatched(FailureRecorded::class, static function (FailureRecorded $event): bool {
             return $event->sourceKind === 'workflow_run'
                 && $event->failureId !== '';
         });
@@ -147,7 +153,8 @@ final class V2LifecycleEventTest extends TestCase
     public function testNoEventsDispatchedDuringReplay(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lifecycle-no-replay');
@@ -160,10 +167,7 @@ final class V2LifecycleEventTest extends TestCase
         $this->runNextReadyTask();
 
         // Now fake events and run the final workflow task (replay + completion).
-        Event::fake([
-            WorkflowStarted::class,
-            ActivityStarted::class,
-        ]);
+        Event::fake([WorkflowStarted::class, ActivityStarted::class]);
 
         $this->drainReadyTasks();
         $this->assertTrue($workflow->refresh()->completed());

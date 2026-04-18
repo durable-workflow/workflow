@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use LogicException;
+use ReflectionProperty;
 use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
-use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Support\TypeRegistry;
@@ -19,9 +19,8 @@ final class TypeRegistryTest extends TestCase
         parent::setUp();
 
         // Clear any cached type resolutions between tests.
-        (function (): void {
-            self::$cache = [];
-        })->bindTo(null, TypeRegistry::class)();
+        $cache = new ReflectionProperty(TypeRegistry::class, 'cache');
+        $cache->setValue(null, []);
     }
 
     // ---------------------------------------------------------------
@@ -47,9 +46,10 @@ final class TypeRegistryTest extends TestCase
     public function testForReturnsConfiguredKeyOverAttribute(): void
     {
         // Config registration takes precedence when present.
-        config()->set('workflows.v2.types.workflows', [
-            'configured-greeting' => TestGreetingWorkflow::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.workflows', [
+                'configured-greeting' => TestGreetingWorkflow::class,
+            ]);
 
         $this->assertSame('configured-greeting', TypeRegistry::for(TestGreetingWorkflow::class));
     }
@@ -142,7 +142,8 @@ final class TypeRegistryTest extends TestCase
     public function testValidateTypeMapPassesWithEmptyConfig(): void
     {
         config()->set('workflows.v2.types.workflows', []);
-        config()->set('workflows.v2.types.activities', []);
+        config()
+            ->set('workflows.v2.types.activities', []);
 
         TypeRegistry::validateTypeMap();
 
@@ -155,9 +156,10 @@ final class TypeRegistryTest extends TestCase
             'test-greeting-workflow' => TestGreetingWorkflow::class,
             'configured-greeting' => TestConfiguredGreetingWorkflow::class,
         ]);
-        config()->set('workflows.v2.types.activities', [
-            'test-activity' => TestConfiguredGreetingActivity::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.activities', [
+                'test-activity' => TestConfiguredGreetingActivity::class,
+            ]);
 
         TypeRegistry::validateTypeMap();
 
@@ -195,9 +197,10 @@ final class TypeRegistryTest extends TestCase
     public function testValidateTypeMapRejectsConfigKeyThatDisagreesWithTypeAttribute(): void
     {
         // TestGreetingWorkflow has #[Type('test-greeting-workflow')] but config maps it to a different key.
-        config()->set('workflows.v2.types.workflows', [
-            'wrong-key' => TestGreetingWorkflow::class,
-        ]);
+        config()
+            ->set('workflows.v2.types.workflows', [
+                'wrong-key' => TestGreetingWorkflow::class,
+            ]);
 
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('type key conflict');
@@ -249,10 +252,9 @@ final class TypeRegistryTest extends TestCase
     public function testResolveThrowableClassReturnsNullWhenUnresolvable(): void
     {
         config()->set('workflows.v2.types.exceptions', []);
-        config()->set('workflows.v2.types.exception_class_aliases', []);
+        config()
+            ->set('workflows.v2.types.exception_class_aliases', []);
 
-        $this->assertNull(
-            TypeRegistry::resolveThrowableClass('App\\Missing\\Exception', null),
-        );
+        $this->assertNull(TypeRegistry::resolveThrowableClass('App\\Missing\\Exception', null));
     }
 }

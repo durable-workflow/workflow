@@ -102,11 +102,8 @@ final class OperatorQueueVisibility
      * @param iterable<array<string, mixed>> $pollers
      * @return list<array<string, mixed>>
      */
-    private static function pollers(
-        iterable $pollers,
-        CarbonInterface $now,
-        ?int $staleAfterSeconds,
-    ): array {
+    private static function pollers(iterable $pollers, CarbonInterface $now, ?int $staleAfterSeconds): array
+    {
         $normalized = [];
 
         foreach ($pollers as $poller) {
@@ -128,14 +125,12 @@ final class OperatorQueueVisibility
      * @param array<string, mixed> $poller
      * @return array<string, mixed>
      */
-    private static function poller(
-        array $poller,
-        CarbonInterface $now,
-        ?int $staleAfterSeconds,
-    ): array {
+    private static function poller(array $poller, CarbonInterface $now, ?int $staleAfterSeconds): array
+    {
         $lastHeartbeatAt = self::carbon($poller['last_heartbeat_at'] ?? null);
         $heartbeatDeadline = $lastHeartbeatAt !== null && $staleAfterSeconds !== null
-            ? $lastHeartbeatAt->copy()->addSeconds($staleAfterSeconds)
+            ? $lastHeartbeatAt->copy()
+                ->addSeconds($staleAfterSeconds)
             : self::carbon($poller['heartbeat_expires_at'] ?? null);
         $isStale = $heartbeatDeadline !== null
             ? $heartbeatDeadline->lte($now)
@@ -173,9 +168,7 @@ final class OperatorQueueVisibility
     ): array {
         $taskTable = self::taskTable();
         $runTable = self::runTable();
-        $readyCounts = self::groupedTaskCounts(
-            self::readyTaskQuery($namespace, $taskQueue, $now),
-        );
+        $readyCounts = self::groupedTaskCounts(self::readyTaskQuery($namespace, $taskQueue, $now));
         $leasedCounts = self::groupedTaskCounts(
             self::baseTaskQuery($namespace, $taskQueue)
                 ->where($taskTable . '.status', TaskStatus::Leased->value),
@@ -405,10 +398,7 @@ final class OperatorQueueVisibility
         $taskTable = self::taskTable();
 
         return self::namespaceTaskQuery($namespace)
-            ->whereIn($taskTable . '.task_type', [
-                TaskType::Workflow->value,
-                TaskType::Activity->value,
-            ])
+            ->whereIn($taskTable . '.task_type', [TaskType::Workflow->value, TaskType::Activity->value])
             ->where($taskTable . '.queue', $taskQueue);
     }
 
@@ -419,7 +409,7 @@ final class OperatorQueueVisibility
 
         return self::baseTaskQuery($namespace, $taskQueue)
             ->where($taskTable . '.status', TaskStatus::Ready->value)
-            ->where(function ($query) use ($nowTimestamp, $taskTable): void {
+            ->where(static function ($query) use ($nowTimestamp, $taskTable): void {
                 $query->whereNull($taskTable . '.available_at')
                     ->orWhere($taskTable . '.available_at', '<=', $nowTimestamp);
             });
@@ -483,7 +473,7 @@ final class OperatorQueueVisibility
     {
         $model = ConfiguredV2Models::resolve($configKey, $default);
 
-        return (new $model)->getTable();
+        return (new $model())->getTable();
     }
 
     private static function ageLabel(?int $seconds): ?string
@@ -500,12 +490,7 @@ final class OperatorQueueVisibility
             return sprintf('%dm%02ds', intdiv($seconds, 60), $seconds % 60);
         }
 
-        return sprintf(
-            '%dh%02dm%02ds',
-            intdiv($seconds, 3600),
-            intdiv($seconds % 3600, 60),
-            $seconds % 60,
-        );
+        return sprintf('%dh%02dm%02ds', intdiv($seconds, 3600), intdiv($seconds % 3600, 60), $seconds % 60);
     }
 
     /**
@@ -517,10 +502,7 @@ final class OperatorQueueVisibility
             return [];
         }
 
-        return array_values(array_filter(
-            $value,
-            static fn (mixed $item): bool => is_string($item),
-        ));
+        return array_values(array_filter($value, static fn (mixed $item): bool => is_string($item)));
     }
 
     private static function carbon(mixed $value): ?CarbonInterface
@@ -542,6 +524,8 @@ final class OperatorQueueVisibility
 
     private static function databaseTimestamp(CarbonInterface $value): string
     {
-        return $value->copy()->utc()->format('Y-m-d H:i:s.u');
+        return $value->copy()
+            ->utc()
+            ->format('Y-m-d H:i:s.u');
     }
 }

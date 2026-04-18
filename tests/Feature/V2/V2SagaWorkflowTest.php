@@ -17,7 +17,6 @@ use Tests\Fixtures\V2\TestSagaSuccessWorkflow;
 use Tests\Fixtures\V2\TestSagaWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\WorkflowStub;
 
@@ -27,8 +26,10 @@ final class V2SagaWorkflowTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
 
         TestSagaBookingActivity::resetLog();
         TestSagaCancelActivity::resetLog();
@@ -40,7 +41,9 @@ final class V2SagaWorkflowTest extends TestCase
         WorkflowStub::fake();
 
         $bookingSequence = 0;
-        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (
+            &$bookingSequence
+        ): string {
             $bookingSequence++;
 
             return "{$service}-id-{$bookingSequence}";
@@ -51,7 +54,9 @@ final class V2SagaWorkflowTest extends TestCase
         });
 
         $cancelLog = [];
-        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (
+            &$cancelLog
+        ): string {
             $cancelLog[] = "{$service}:{$bookingId}";
 
             return "cancelled-{$bookingId}";
@@ -67,10 +72,7 @@ final class V2SagaWorkflowTest extends TestCase
         $this->assertSame('payment failed', $output['reason']);
 
         // Compensations run in reverse registration order: hotel first, then flight.
-        $this->assertSame([
-            'hotel:hotel-id-2',
-            'flight:flight-id-1',
-        ], $cancelLog);
+        $this->assertSame(['hotel:hotel-id-2', 'flight:flight-id-1'], $cancelLog);
 
         WorkflowStub::assertDispatchedTimes(TestSagaBookingActivity::class, 2);
         WorkflowStub::assertDispatchedTimes(TestSagaCancelActivity::class, 2);
@@ -81,14 +83,18 @@ final class V2SagaWorkflowTest extends TestCase
         WorkflowStub::fake();
 
         $bookingSequence = 0;
-        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (
+            &$bookingSequence
+        ): string {
             $bookingSequence++;
 
             return "{$service}-id-{$bookingSequence}";
         });
 
         $cancelLog = [];
-        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (
+            &$cancelLog
+        ): string {
             $cancelLog[] = "{$service}:{$bookingId}";
 
             return "cancelled-{$bookingId}";
@@ -113,7 +119,9 @@ final class V2SagaWorkflowTest extends TestCase
         WorkflowStub::fake();
 
         $bookingSequence = 0;
-        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (
+            &$bookingSequence
+        ): string {
             $bookingSequence++;
 
             return "{$service}-id-{$bookingSequence}";
@@ -124,7 +132,9 @@ final class V2SagaWorkflowTest extends TestCase
         });
 
         $cancelLog = [];
-        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (
+            &$cancelLog
+        ): string {
             $cancelLog[] = "{$service}:{$bookingId}";
 
             return "cancelled-{$bookingId}";
@@ -150,7 +160,9 @@ final class V2SagaWorkflowTest extends TestCase
         WorkflowStub::fake();
 
         $bookingSequence = 0;
-        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (
+            &$bookingSequence
+        ): string {
             $bookingSequence++;
 
             return "{$service}-id-{$bookingSequence}";
@@ -160,12 +172,17 @@ final class V2SagaWorkflowTest extends TestCase
             throw new RuntimeException('payment failed');
         });
 
-        WorkflowStub::mock(TestSagaFailingCancelActivity::class, static function ($ctx, string $service, string $bookingId): never {
-            throw new RuntimeException("Cancel failed for {$service}");
-        });
+        WorkflowStub::mock(
+            TestSagaFailingCancelActivity::class,
+            static function ($ctx, string $service, string $bookingId): never {
+                throw new RuntimeException("Cancel failed for {$service}");
+            }
+        );
 
         $cancelLog = [];
-        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (
+            &$cancelLog
+        ): string {
             $cancelLog[] = "{$service}:{$bookingId}";
 
             return "cancelled-{$bookingId}";
@@ -189,7 +206,9 @@ final class V2SagaWorkflowTest extends TestCase
         WorkflowStub::fake();
 
         $bookingSequence = 0;
-        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (
+            &$bookingSequence
+        ): string {
             $bookingSequence++;
 
             return "{$service}-id-{$bookingSequence}";
@@ -199,7 +218,10 @@ final class V2SagaWorkflowTest extends TestCase
             throw new RuntimeException('payment failed');
         });
 
-        WorkflowStub::mock(TestSagaCancelActivity::class, static fn ($ctx, string $service, string $bookingId): string => "cancelled-{$bookingId}");
+        WorkflowStub::mock(
+            TestSagaCancelActivity::class,
+            static fn ($ctx, string $service, string $bookingId): string => "cancelled-{$bookingId}"
+        );
 
         $workflow = WorkflowStub::make(TestSagaWorkflow::class, 'saga-history');
         $workflow->start(true);
@@ -224,15 +246,18 @@ final class V2SagaWorkflowTest extends TestCase
         $this->assertContains(HistoryEventType::WorkflowStarted->value, $events);
         $this->assertContains(HistoryEventType::WorkflowCompleted->value, $events);
 
-        $scheduledCount = array_count_values($events)[HistoryEventType::ActivityScheduled->value] ?? 0;
+        $scheduledCount = array_count_values($events)[HistoryEventType::ActivityScheduled
+->value] ?? 0;
         // 2 bookings + 1 failing + 2 cancellations = 5 activity schedules
         $this->assertSame(5, $scheduledCount);
 
-        $completedCount = array_count_values($events)[HistoryEventType::ActivityCompleted->value] ?? 0;
+        $completedCount = array_count_values($events)[HistoryEventType::ActivityCompleted
+->value] ?? 0;
         // 2 bookings + 2 cancellations = 4 completions
         $this->assertSame(4, $completedCount);
 
-        $failedCount = array_count_values($events)[HistoryEventType::ActivityFailed->value] ?? 0;
+        $failedCount = array_count_values($events)[HistoryEventType::ActivityFailed
+->value] ?? 0;
         // 1 failing activity
         $this->assertSame(1, $failedCount);
     }
@@ -242,7 +267,9 @@ final class V2SagaWorkflowTest extends TestCase
         WorkflowStub::fake();
 
         $bookingSequence = 0;
-        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (
+            &$bookingSequence
+        ): string {
             $bookingSequence++;
 
             return "{$service}-id-{$bookingSequence}";
@@ -252,12 +279,17 @@ final class V2SagaWorkflowTest extends TestCase
             throw new RuntimeException('payment failed');
         });
 
-        WorkflowStub::mock(TestSagaFailingCancelActivity::class, static function ($ctx, string $service, string $bookingId): never {
-            throw new RuntimeException("Cancel failed for {$service}");
-        });
+        WorkflowStub::mock(
+            TestSagaFailingCancelActivity::class,
+            static function ($ctx, string $service, string $bookingId): never {
+                throw new RuntimeException("Cancel failed for {$service}");
+            }
+        );
 
         $cancelLog = [];
-        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (
+            &$cancelLog
+        ): string {
             $cancelLog[] = "{$service}:{$bookingId}";
 
             return "cancelled-{$bookingId}";
@@ -285,7 +317,9 @@ final class V2SagaWorkflowTest extends TestCase
         WorkflowStub::fake();
 
         $bookingSequence = 0;
-        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (&$bookingSequence): string {
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (
+            &$bookingSequence
+        ): string {
             $bookingSequence++;
 
             return "{$service}-id-{$bookingSequence}";
@@ -295,12 +329,17 @@ final class V2SagaWorkflowTest extends TestCase
             throw new RuntimeException('payment failed');
         });
 
-        WorkflowStub::mock(TestSagaFailingCancelActivity::class, static function ($ctx, string $service, string $bookingId): never {
-            throw new RuntimeException("Cancel failed for {$service}");
-        });
+        WorkflowStub::mock(
+            TestSagaFailingCancelActivity::class,
+            static function ($ctx, string $service, string $bookingId): never {
+                throw new RuntimeException("Cancel failed for {$service}");
+            }
+        );
 
         $cancelLog = [];
-        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (
+            &$cancelLog
+        ): string {
             $cancelLog[] = "{$service}:{$bookingId}";
 
             return "cancelled-{$bookingId}";
@@ -317,11 +356,16 @@ final class V2SagaWorkflowTest extends TestCase
     {
         WorkflowStub::fake();
 
-        WorkflowStub::mock(TestSagaBookingActivity::class, static fn ($ctx, string $service): string => "{$service}-ok");
+        WorkflowStub::mock(
+            TestSagaBookingActivity::class,
+            static fn ($ctx, string $service): string => "{$service}-ok"
+        );
         WorkflowStub::mock(TestFailingActivity::class, static fn ($ctx): string => 'did-not-fail');
 
         $cancelLog = [];
-        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (&$cancelLog): string {
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (
+            &$cancelLog
+        ): string {
             $cancelLog[] = "{$service}:{$bookingId}";
 
             return "cancelled-{$bookingId}";

@@ -27,9 +27,7 @@ final class UpsertMemoCall implements YieldedCommand
 
         foreach ($entries as $key => $value) {
             if (! is_string($key) || $key === '' || strlen($key) > 64) {
-                throw new LogicException(
-                    'Workflow v2 memo keys must be non-empty strings up to 64 characters.'
-                );
+                throw new LogicException('Workflow v2 memo keys must be non-empty strings up to 64 characters.');
             }
 
             $normalized[$key] = self::normalizeValue($value, sprintf('memo.%s', $key));

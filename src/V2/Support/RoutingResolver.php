@@ -52,8 +52,11 @@ final class RoutingResolver
     /**
      * @param class-string $activity
      */
-    public static function activityConnection(string $activity, WorkflowRun $run, ?ActivityOptions $options = null): ?string
-    {
+    public static function activityConnection(
+        string $activity,
+        WorkflowRun $run,
+        ?ActivityOptions $options = null
+    ): ?string {
         if ($options?->connection !== null) {
             return $options->connection;
         }

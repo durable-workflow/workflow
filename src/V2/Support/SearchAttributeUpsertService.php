@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
-use InvalidArgumentException;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 
@@ -26,8 +25,6 @@ final class SearchAttributeUpsertService
      * @param UpsertSearchAttributesCall $call The upsert command
      * @param int $sequence History sequence when this upsert occurred
      * @param bool $inheritedFromParent Whether these are inherited via continue-as-new
-     *
-     * @throws InvalidArgumentException If validation fails
      */
     public function upsert(
         WorkflowRun $run,
@@ -35,7 +32,7 @@ final class SearchAttributeUpsertService
         int $sequence,
         bool $inheritedFromParent = false,
     ): void {
-        DB::transaction(function () use ($run, $call, $sequence, $inheritedFromParent): void {
+        DB::transaction(static function () use ($run, $call, $sequence, $inheritedFromParent): void {
             foreach ($call->attributes as $key => $value) {
                 if ($value === null) {
                     // Null means delete the attribute
@@ -80,7 +77,7 @@ final class SearchAttributeUpsertService
         WorkflowRun $childRun,
         int $childStartSequence,
     ): void {
-        DB::transaction(function () use ($parentRun, $childRun, $childStartSequence): void {
+        DB::transaction(static function () use ($parentRun, $childRun, $childStartSequence): void {
             $parentAttributes = WorkflowSearchAttribute::where('workflow_run_id', $parentRun->id)
                 ->get();
 

@@ -506,7 +506,9 @@ final class VisibilityFiltersTest extends TestCase
         $this->createSearchAttributeSummary('01JVISSEARCHATTR0NULL00001', 'search-attr-null', null);
 
         $ids = VisibilityFilters::apply(WorkflowRunSummary::query(), [
-            'search_attributes' => ['priority' => 'high'],
+            'search_attributes' => [
+                'priority' => 'high',
+            ],
         ])->pluck('id')
             ->all();
 
@@ -534,8 +536,16 @@ final class VisibilityFiltersTest extends TestCase
     public function testMergeCombinesSearchAttributesFromMultipleSources(): void
     {
         $filters = VisibilityFilters::merge(
-            ['search_attributes' => ['priority' => 'high']],
-            ['search_attributes' => ['region' => 'us-east']],
+            [
+                'search_attributes' => [
+                    'priority' => 'high',
+                ],
+            ],
+            [
+                'search_attributes' => [
+                    'region' => 'us-east',
+                ],
+            ],
         );
 
         $this->assertSame([
@@ -632,19 +642,22 @@ final class VisibilityFiltersTest extends TestCase
 
         $withNamespace = VisibilityFilters::apply(WorkflowRunSummary::query(), [
             'namespace' => 'production',
-        ])->pluck('id')->all();
+        ])->pluck('id')
+            ->all();
 
         $this->assertSame(['01JVISMIXEDFLEETMATCH00001'], $withNamespace);
 
         $withLiveness = VisibilityFilters::apply(WorkflowRunSummary::query(), [
             'liveness_state' => 'waiting_for_signal',
-        ])->pluck('id')->all();
+        ])->pluck('id')
+            ->all();
 
         $this->assertSame(['01JVISMIXEDFLEETMATCH00001'], $withLiveness);
 
         $noFilters = WorkflowRunSummary::query()
             ->whereIn('workflow_instance_id', ['mixed-fleet-match', 'mixed-fleet-null-ns'])
-            ->pluck('id')->all();
+            ->pluck('id')
+            ->all();
 
         $this->assertCount(2, $noFilters);
     }

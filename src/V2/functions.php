@@ -87,13 +87,19 @@ if (! function_exists(__NAMESPACE__ . '\\all')) {
 }
 
 if (! function_exists(__NAMESPACE__ . '\\await')) {
-    function await(callable|string $condition, int|string|CarbonInterval|null $timeout = null, ?string $conditionKey = null): mixed
-    {
+    function await(
+        callable|string $condition,
+        int|string|CarbonInterval|null $timeout = null,
+        ?string $conditionKey = null
+    ): mixed {
         if (
             ! is_string($condition)
             && is_string($timeout)
             && $conditionKey === null
-            && preg_match('/(^P(T|\d)|\b\d+\s*(microseconds?|milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|months?|years?)\b)/i', $timeout) !== 1
+            && preg_match(
+                '/(^P(T|\d)|\b\d+\s*(microseconds?|milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|months?|years?)\b)/i',
+                $timeout
+            ) !== 1
         ) {
             $conditionKey = $timeout;
             $timeout = null;

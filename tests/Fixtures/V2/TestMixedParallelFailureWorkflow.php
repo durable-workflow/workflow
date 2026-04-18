@@ -25,8 +25,8 @@ final class TestMixedParallelFailureWorkflow extends Workflow
 
         try {
             all([
-                fn () => activity(TestFailingActivity::class),
-                fn () => child(TestTimerWorkflow::class, $slowChildSeconds),
+                static fn () => activity(TestFailingActivity::class),
+                static fn () => child(TestTimerWorkflow::class, $slowChildSeconds),
             ]);
 
             $this->stage = 'unexpected-success';

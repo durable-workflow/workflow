@@ -483,7 +483,8 @@ final class V2TaskDispatchTest extends TestCase
     public function testPollModeSkipsQueueDispatchAndLeavesTaskReadyForExternalPolling(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'poll');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
         config()
             ->set('workflows.v2.compatibility.supported', ['build-a']);
 
@@ -520,7 +521,8 @@ final class V2TaskDispatchTest extends TestCase
     public function testPollModeSkipsQueueDispatchForActivityTasks(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'poll');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
         config()
             ->set('workflows.v2.compatibility.supported', ['build-a']);
 
@@ -555,7 +557,8 @@ final class V2TaskDispatchTest extends TestCase
     public function testPollModeSkipsQueueDispatchForTimerTasks(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'poll');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
         config()
             ->set('workflows.v2.compatibility.supported', ['build-a']);
 
@@ -572,7 +575,9 @@ final class V2TaskDispatchTest extends TestCase
             'status' => TaskStatus::Ready->value,
             'available_at' => now()
                 ->addMinute(),
-            'payload' => ['timer_id' => 'test-timer'],
+            'payload' => [
+                'timer_id' => 'test-timer',
+            ],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
@@ -590,7 +595,8 @@ final class V2TaskDispatchTest extends TestCase
     public function testQueueModeStillDispatchesToBus(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'queue');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
         config()
             ->set('workflows.v2.compatibility.supported', ['build-a']);
 

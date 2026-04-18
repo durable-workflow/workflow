@@ -23,7 +23,10 @@ final class SignalValueCodecTest extends TestCase
 {
     public function testSignalValueDecodesAvroEncodedPayloadWithRunCodec(): void
     {
-        $value = ['approved' => true, 'source' => 'waterline'];
+        $value = [
+            'approved' => true,
+            'source' => 'waterline',
+        ];
 
         $event = new WorkflowHistoryEvent();
         $event->payload = [
@@ -38,7 +41,9 @@ final class SignalValueCodecTest extends TestCase
 
     public function testSignalValueDecodesJsonEncodedPayloadWithRunCodec(): void
     {
-        $value = ['count' => 3];
+        $value = [
+            'count' => 3,
+        ];
 
         $event = new WorkflowHistoryEvent();
         $event->payload = [
@@ -53,7 +58,9 @@ final class SignalValueCodecTest extends TestCase
 
     public function testSignalValueFallsBackToCodecBlindWhenRunCodecUnavailable(): void
     {
-        $value = ['legacy' => 'payload'];
+        $value = [
+            'legacy' => 'payload',
+        ];
 
         $event = new WorkflowHistoryEvent();
         $event->payload = [
@@ -76,6 +83,11 @@ final class SignalValueCodecTest extends TestCase
         $this->assertNull($this->invokeSignalValue($event, $run));
     }
 
+    protected function getPackageProviders($app)
+    {
+        return [\Workflow\Providers\WorkflowServiceProvider::class];
+    }
+
     private function invokeSignalValue(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed
     {
         $executor = new WorkflowExecutor();
@@ -83,10 +95,5 @@ final class SignalValueCodecTest extends TestCase
         $method->setAccessible(true);
 
         return $method->invoke($executor, $event, $run);
-    }
-
-    protected function getPackageProviders($app)
-    {
-        return [\Workflow\Providers\WorkflowServiceProvider::class];
     }
 }

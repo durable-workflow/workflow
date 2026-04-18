@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
-use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestManySideEffectsWorkflow;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
 use Tests\TestCase;
@@ -18,8 +17,10 @@ final class V2SideEffectWorkflowTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
 
         TestSideEffectWorkflow::resetCounter();
     }
@@ -128,7 +129,8 @@ final class V2SideEffectWorkflowTest extends TestCase
         $this->assertCount(5, $sideEffectEvents);
 
         // Events should have strictly increasing sequence numbers.
-        $sequences = $sideEffectEvents->pluck('sequence')->all();
+        $sequences = $sideEffectEvents->pluck('sequence')
+            ->all();
         for ($i = 1; $i < count($sequences); $i++) {
             $this->assertGreaterThan($sequences[$i - 1], $sequences[$i]);
         }
@@ -154,8 +156,8 @@ final class V2SideEffectWorkflowTest extends TestCase
         $this->assertContains(HistoryEventType::SideEffectRecorded->value, $events);
 
         // The side-effect should appear after WorkflowStarted and before any signal wait.
-        $startedIndex = array_search(HistoryEventType::WorkflowStarted->value, $events);
-        $sideEffectIndex = array_search(HistoryEventType::SideEffectRecorded->value, $events);
+        $startedIndex = array_search(HistoryEventType::WorkflowStarted->value, $events, true);
+        $sideEffectIndex = array_search(HistoryEventType::SideEffectRecorded->value, $events, true);
 
         $this->assertGreaterThan($startedIndex, $sideEffectIndex);
     }

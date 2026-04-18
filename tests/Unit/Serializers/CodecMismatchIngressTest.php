@@ -63,8 +63,16 @@ final class CodecMismatchIngressTest extends TestCase
         // but the second char varies with the encoded JSON length.
         $avroBytes = Avro::serialize(['hello', 123]);
 
-        $this->assertStringStartsWith('A', $avroBytes, 'Avro generic wrapper bytes (prefix 0x00) base64-encode with first char "A".');
-        $this->assertSame("\x00", base64_decode($avroBytes, true)[0] ?? '?', 'Avro generic wrapper should decode to bytes starting with 0x00.');
+        $this->assertStringStartsWith(
+            'A',
+            $avroBytes,
+            'Avro generic wrapper bytes (prefix 0x00) base64-encode with first char "A".'
+        );
+        $this->assertSame(
+            "\x00",
+            base64_decode($avroBytes, true)[0] ?? '?',
+            'Avro generic wrapper should decode to bytes starting with 0x00.'
+        );
 
         try {
             Json::unserialize($avroBytes);
@@ -117,9 +125,15 @@ final class CodecMismatchIngressTest extends TestCase
 
         $schema = Avro::parseSchema('{"type":"record","name":"Order","fields":[{"name":"id","type":"string"}]}');
         Avro::withSchema($schema);
-        $typedBlob = Avro::serialize(['id' => 'X-1']);
+        $typedBlob = Avro::serialize([
+            'id' => 'X-1',
+        ]);
 
-        $this->assertSame("\x01", base64_decode($typedBlob, true)[0] ?? '?', 'Typed Avro should decode to bytes starting with 0x01.');
+        $this->assertSame(
+            "\x01",
+            base64_decode($typedBlob, true)[0] ?? '?',
+            'Typed Avro should decode to bytes starting with 0x01.'
+        );
 
         try {
             Avro::unserialize($typedBlob); // No schema context → wrapped path.

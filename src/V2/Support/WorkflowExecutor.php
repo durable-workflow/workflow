@@ -27,10 +27,9 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
-use Workflow\V2\Enums\StructuralLimitKind;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
-use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Exceptions\WorkflowTimeoutException;
@@ -46,10 +45,6 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Workflow;
-use Workflow\V2\Support\LifecycleEventDispatcher;
-use Workflow\V2\Support\MemoUpsertService;
-use Workflow\V2\Support\SearchAttributeUpsertService;
-use Workflow\V2\Support\UpsertMemosCall;
 use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
@@ -107,7 +102,10 @@ final class WorkflowExecutor
             if ($eventsInTransaction > 0) {
                 try {
                     StructuralLimits::guardHistoryTransactionSize($eventsInTransaction);
-                    $this->logApproachingLimit(StructuralLimits::warnApproachingHistoryTransaction($eventsInTransaction), $run);
+                    $this->logApproachingLimit(
+                        StructuralLimits::warnApproachingHistoryTransaction($eventsInTransaction),
+                        $run
+                    );
                 } catch (StructuralLimitExceededException $limitExceeded) {
                     $this->failRun($run, $task, $limitExceeded, 'workflow_run', $run->id);
 
@@ -207,10 +205,7 @@ final class WorkflowExecutor
                 try {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     if ($execution->status === ActivityStatus::Completed) {
-                        $current = $workflowExecution->send(
-                            $execution->activityResult(),
-                            $execution->closed_at,
-                        );
+                        $current = $workflowExecution->send($execution->activityResult(), $execution->closed_at);
                     } else {
                         $failure = $run->failures
                             ->firstWhere('source_id', $execution->id);
@@ -348,7 +343,14 @@ final class WorkflowExecutor
                         $this->cancelConditionTimeout($run, $task, $timeoutTimer);
                     }
 
-                    $satisfiedEvent = $this->recordConditionWaitSatisfied($run, $task, $sequence, $waitId, $timeoutTimer, $current);
+                    $satisfiedEvent = $this->recordConditionWaitSatisfied(
+                        $run,
+                        $task,
+                        $sequence,
+                        $waitId,
+                        $timeoutTimer,
+                        $current
+                    );
 
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -552,7 +554,9 @@ final class WorkflowExecutor
                     return null;
                 }
 
-                if (($timerFired = $this->timerFiredEvent($run, $sequence)) !== null) {
+                $timerFired = $this->timerFiredEvent($run, $sequence);
+
+                if ($timerFired !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + 1);
                         $current = $workflowExecution->send(true, $timerFired->recorded_at);
@@ -742,7 +746,13 @@ final class WorkflowExecutor
 
                 if ($current->timeoutSeconds !== null) {
                     if ($current->timeoutSeconds === 0) {
-                        $firedTimer = $this->fireImmediateSignalTimeout($run, $task, $sequence, $signalWaitId, $current);
+                        $firedTimer = $this->fireImmediateSignalTimeout(
+                            $run,
+                            $task,
+                            $sequence,
+                            $signalWaitId,
+                            $current
+                        );
 
                         try {
                             $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -1196,7 +1206,9 @@ final class WorkflowExecutor
                 if ($failure !== null) {
                     try {
                         $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                        $failureTime = isset($failure['recorded_at']) && is_int($failure['recorded_at']) && $failure['recorded_at'] !== PHP_INT_MAX
+                        $failureTime = isset($failure['recorded_at']) && is_int(
+                            $failure['recorded_at']
+                        ) && $failure['recorded_at'] !== PHP_INT_MAX
                             ? \Carbon\Carbon::createFromTimestampMs($failure['recorded_at'])
                             : null;
                         $current = $workflowExecution->throw($failure['exception'], $failureTime);
@@ -1294,11 +1306,13 @@ final class WorkflowExecutor
         $options = $activityCall->options;
 
         $scheduleDeadlineAt = $options?->scheduleToStartTimeout !== null
-            ? now()->addSeconds($options->scheduleToStartTimeout)
+            ? now()
+                ->addSeconds($options->scheduleToStartTimeout)
             : null;
 
         $scheduleToCloseDeadlineAt = $options?->scheduleToCloseTimeout !== null
-            ? now()->addSeconds($options->scheduleToCloseTimeout)
+            ? now()
+                ->addSeconds($options->scheduleToCloseTimeout)
             : null;
 
         $serializedArguments = Serializer::serializeWithCodec($run->payload_codec, $activityCall->arguments);
@@ -2525,8 +2539,10 @@ final class WorkflowExecutor
 
         // Cancel all open tasks except the current one.
         $openTasks = $run->tasks
-            ->filter(static fn (WorkflowTask $t): bool => in_array($t->status, [TaskStatus::Ready, TaskStatus::Leased], true)
-                && $t->id !== $task->id);
+            ->filter(
+                static fn (WorkflowTask $t): bool => in_array($t->status, [TaskStatus::Ready, TaskStatus::Leased], true)
+                && $t->id !== $task->id
+            );
 
         foreach ($openTasks as $openTask) {
             $openTask->forceFill([
@@ -2542,7 +2558,12 @@ final class WorkflowExecutor
             ->keyBy(static fn (WorkflowTask $t): string => $t->payload['activity_execution_id']);
 
         $openActivityExecutions = $run->activityExecutions
-            ->filter(static fn (ActivityExecution $e): bool => in_array($e->status, [ActivityStatus::Pending, ActivityStatus::Running], true));
+            ->filter(
+                static fn (ActivityExecution $e): bool => in_array($e->status, [
+                    ActivityStatus::Pending,
+                    ActivityStatus::Running,
+                ], true)
+            );
 
         foreach ($openActivityExecutions as $execution) {
             $execution->forceFill([
@@ -3564,8 +3585,11 @@ final class WorkflowExecutor
         return $event;
     }
 
-    private function signalTimeoutScheduledEvent(WorkflowRun $run, int $sequence, string $signalName): ?WorkflowHistoryEvent
-    {
+    private function signalTimeoutScheduledEvent(
+        WorkflowRun $run,
+        int $sequence,
+        string $signalName
+    ): ?WorkflowHistoryEvent {
         /** @var WorkflowHistoryEvent|null $event */
         $event = $run->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerScheduled

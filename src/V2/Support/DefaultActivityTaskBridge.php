@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
-use Workflow\Serializers\CodecRegistry;
 use RuntimeException;
 use Throwable;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -24,8 +24,14 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class DefaultActivityTaskBridge implements ActivityTaskBridge
 {
-    public function poll(?string $connection, ?string $queue, int $limit = 1, ?string $compatibility = null, ?string $namespace = null, array $activityTypes = []): array
-    {
+    public function poll(
+        ?string $connection,
+        ?string $queue,
+        int $limit = 1,
+        ?string $compatibility = null,
+        ?string $namespace = null,
+        array $activityTypes = []
+    ): array {
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Activity->value)
             ->where('status', TaskStatus::Ready->value)
@@ -33,7 +39,8 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
                 // Use a 1-second ceiling on the availability cutoff so that tasks created
                 // in the same request tick are reliably surfaced across all backends,
                 // including SQLite where timestamp precision can vary.
-                $availabilityCutoff = now()->addSecond();
+                $availabilityCutoff = now()
+                    ->addSecond();
                 $q->whereNull('available_at')
                     ->orWhere('available_at', '<=', $availabilityCutoff);
             })
@@ -191,7 +198,9 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
     public function complete(string $attemptId, mixed $result, ?string $codec = null): array
     {
-        $outcome = $this->dispatchingOutcome(ActivityOutcomeRecorder::recordForAttempt($attemptId, $result, null, $codec));
+        $outcome = $this->dispatchingOutcome(
+            ActivityOutcomeRecorder::recordForAttempt($attemptId, $result, null, $codec)
+        );
 
         return [
             'recorded' => $outcome['recorded'],

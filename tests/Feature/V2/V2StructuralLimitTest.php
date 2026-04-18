@@ -7,7 +7,6 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Log;
 use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
-use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLargeMemoWorkflow;
 use Tests\Fixtures\V2\TestLargePayloadChildWorkflow;
 use Tests\Fixtures\V2\TestLargePayloadWorkflow;
@@ -16,7 +15,6 @@ use Tests\Fixtures\V2\TestManyActivitiesWorkflow;
 use Tests\Fixtures\V2\TestManySideEffectsWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\TestCase;
-use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -40,7 +38,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
         // Set a very low command batch limit to trigger enforcement.
-        config(['workflows.v2.structural_limits.command_batch_size' => 2]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 2,
+        ]);
 
         $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-batch-1');
         $workflow->start(5); // Tries to dispatch 5 parallel activities, exceeding limit of 2.
@@ -84,7 +84,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
         // Set batch limit high enough to allow 3 parallel activities.
-        config(['workflows.v2.structural_limits.command_batch_size' => 10]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 10,
+        ]);
 
         $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-batch-ok-1');
         $workflow->start(3);
@@ -100,8 +102,12 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
         // Disable all limits.
-        config(['workflows.v2.structural_limits.command_batch_size' => 0]);
-        config(['workflows.v2.structural_limits.pending_activity_count' => 0]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 0,
+        ]);
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 0,
+        ]);
 
         $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-disabled-1');
         $workflow->start(5);
@@ -127,7 +133,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
         // Set a very low payload limit (64 bytes) to trigger enforcement.
-        config(['workflows.v2.structural_limits.payload_size_bytes' => 64]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
 
         // Build a payload that exceeds 64 bytes when serialized.
         $largePayload = str_repeat('x', 200);
@@ -165,7 +173,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
-        config(['workflows.v2.structural_limits.payload_size_bytes' => 1048576]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 1048576,
+        ]);
 
         $workflow = WorkflowStub::make(TestLargePayloadWorkflow::class, 'limit-payload-ok-1');
         $workflow->start('short');
@@ -180,7 +190,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
-        config(['workflows.v2.structural_limits.payload_size_bytes' => 64]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
 
         $largePayload = str_repeat('y', 200);
 
@@ -208,7 +220,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
 
         // Set a very low memo limit (32 bytes) to trigger enforcement.
-        config(['workflows.v2.structural_limits.memo_size_bytes' => 32]);
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 32,
+        ]);
 
         $largeEntries = [
             'description' => str_repeat('a', 200),
@@ -246,10 +260,14 @@ final class V2StructuralLimitTest extends TestCase
     {
         WorkflowStub::fake();
 
-        config(['workflows.v2.structural_limits.memo_size_bytes' => 1048576]);
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 1048576,
+        ]);
 
         $workflow = WorkflowStub::make(TestLargeMemoWorkflow::class, 'limit-memo-ok-1');
-        $workflow->start(['status' => 'ok']);
+        $workflow->start([
+            'status' => 'ok',
+        ]);
 
         $workflow->refresh();
 
@@ -261,7 +279,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
 
         // Set a very low search attribute limit (32 bytes) to trigger enforcement.
-        config(['workflows.v2.structural_limits.search_attribute_size_bytes' => 32]);
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => 32,
+        ]);
 
         // Build enough attributes to exceed 32 bytes when JSON-encoded.
         // Each value stays under the 191-char per-value limit.
@@ -302,10 +322,14 @@ final class V2StructuralLimitTest extends TestCase
     {
         WorkflowStub::fake();
 
-        config(['workflows.v2.structural_limits.search_attribute_size_bytes' => 1048576]);
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => 1048576,
+        ]);
 
         $workflow = WorkflowStub::make(TestLargeSearchAttributeWorkflow::class, 'limit-sa-ok-1');
-        $workflow->start(['status' => 'ok']);
+        $workflow->start([
+            'status' => 'ok',
+        ]);
 
         $workflow->refresh();
 
@@ -317,7 +341,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
-        config(['workflows.v2.structural_limits.payload_size_bytes' => 0]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 0,
+        ]);
 
         $workflow = WorkflowStub::make(TestLargePayloadWorkflow::class, 'limit-payload-disabled-1');
         $workflow->start(str_repeat('x', 5000));
@@ -333,7 +359,9 @@ final class V2StructuralLimitTest extends TestCase
 
         // Set a very low history transaction limit to trigger enforcement.
         // Each side effect creates one SideEffectRecorded event.
-        config(['workflows.v2.structural_limits.history_transaction_size' => 3]);
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 3,
+        ]);
 
         $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-1');
         $workflow->start(10); // Tries to record 10 side effects, exceeding limit of 3.
@@ -373,7 +401,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
 
         // Allow enough events for 5 side effects.
-        config(['workflows.v2.structural_limits.history_transaction_size' => 100]);
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 100,
+        ]);
 
         $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-ok-1');
         $workflow->start(5);
@@ -387,14 +417,19 @@ final class V2StructuralLimitTest extends TestCase
     {
         WorkflowStub::fake();
 
-        config(['workflows.v2.structural_limits.history_transaction_size' => 0]);
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+        ]);
 
         $workflow = WorkflowStub::make(TestManySideEffectsWorkflow::class, 'limit-txn-disabled-1');
         $workflow->start(20);
 
         $workflow->refresh();
 
-        $this->assertTrue($workflow->completed(), 'Workflow should have completed with history transaction limit disabled.');
+        $this->assertTrue(
+            $workflow->completed(),
+            'Workflow should have completed with history transaction limit disabled.'
+        );
     }
 
     public function testFailureSnapshotsIncludeStructuralLimitMetadata(): void
@@ -402,7 +437,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
-        config(['workflows.v2.structural_limits.command_batch_size' => 1]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 1,
+        ]);
 
         $workflow = WorkflowStub::make(TestManyActivitiesWorkflow::class, 'limit-snapshot-1');
         $workflow->start(3);
@@ -431,12 +468,16 @@ final class V2StructuralLimitTest extends TestCase
 
         // Limit = 10, threshold = 80% → warning at >= 8 items.
         // Dispatching 9 parallel activities should trigger a warning but succeed.
-        config(['workflows.v2.structural_limits.command_batch_size' => 10]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 10,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         Log::shouldReceive('warning')
             ->once()
-            ->withArgs(function (string $message) {
+            ->withArgs(static function (string $message) {
                 return str_contains($message, 'approaching structural limit')
                     && str_contains($message, 'command_batch_size');
             });
@@ -456,12 +497,16 @@ final class V2StructuralLimitTest extends TestCase
 
         // Limit = 1000, threshold = 80% → warning at >= 800.
         // Only dispatching 3 activities — well below threshold.
-        config(['workflows.v2.structural_limits.command_batch_size' => 1000]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 80]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 1000,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
 
         Log::shouldReceive('warning')
             ->never()
-            ->withArgs(function (string $message) {
+            ->withArgs(static function (string $message) {
                 return str_contains($message, 'approaching structural limit');
             });
         Log::makePartial();
@@ -479,12 +524,16 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
-        config(['workflows.v2.structural_limits.command_batch_size' => 5]);
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 0]);
+        config([
+            'workflows.v2.structural_limits.command_batch_size' => 5,
+        ]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 0,
+        ]);
 
         Log::shouldReceive('warning')
             ->never()
-            ->withArgs(function (string $message) {
+            ->withArgs(static function (string $message) {
                 return str_contains($message, 'approaching structural limit');
             });
         Log::makePartial();
@@ -499,7 +548,9 @@ final class V2StructuralLimitTest extends TestCase
 
     public function testSnapshotIncludesWarningThreshold(): void
     {
-        config(['workflows.v2.structural_limits.warning_threshold_percent' => 90]);
+        config([
+            'workflows.v2.structural_limits.warning_threshold_percent' => 90,
+        ]);
 
         $snapshot = StructuralLimits::snapshot();
 
@@ -515,7 +566,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
-        config(['workflows.v2.structural_limits.pending_signal_count' => 2]);
+        config([
+            'workflows.v2.structural_limits.pending_signal_count' => 2,
+        ]);
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-1');
         $workflow->start();
@@ -553,7 +606,14 @@ final class V2StructuralLimitTest extends TestCase
 
         // Run should still be active (rejection doesn't fail the run).
         $run->refresh();
-        $this->assertFalse(in_array($run->status, [RunStatus::Failed, RunStatus::Completed, RunStatus::Cancelled, RunStatus::Terminated], true));
+        $this->assertFalse(
+            in_array($run->status, [
+                RunStatus::Failed,
+                RunStatus::Completed,
+                RunStatus::Cancelled,
+                RunStatus::Terminated,
+            ], true)
+        );
     }
 
     public function testPendingSignalLimitAllowsWhenUnderLimit(): void
@@ -561,7 +621,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
-        config(['workflows.v2.structural_limits.pending_signal_count' => 100]);
+        config([
+            'workflows.v2.structural_limits.pending_signal_count' => 100,
+        ]);
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-ok-1');
         $workflow->start();
@@ -576,7 +638,9 @@ final class V2StructuralLimitTest extends TestCase
         WorkflowStub::fake();
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
 
-        config(['workflows.v2.structural_limits.pending_signal_count' => 0]);
+        config([
+            'workflows.v2.structural_limits.pending_signal_count' => 0,
+        ]);
 
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-signal-disabled-1');
         $workflow->start();
@@ -619,7 +683,9 @@ final class V2StructuralLimitTest extends TestCase
     {
         WorkflowStub::fake();
 
-        config(['workflows.v2.structural_limits.pending_update_count' => 2]);
+        config([
+            'workflows.v2.structural_limits.pending_update_count' => 2,
+        ]);
 
         $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-1');
         $workflow->start();
@@ -659,7 +725,9 @@ final class V2StructuralLimitTest extends TestCase
     {
         WorkflowStub::fake();
 
-        config(['workflows.v2.structural_limits.pending_update_count' => 100]);
+        config([
+            'workflows.v2.structural_limits.pending_update_count' => 100,
+        ]);
 
         $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-ok-1');
         $workflow->start();
@@ -673,7 +741,9 @@ final class V2StructuralLimitTest extends TestCase
     {
         WorkflowStub::fake();
 
-        config(['workflows.v2.structural_limits.pending_update_count' => 0]);
+        config([
+            'workflows.v2.structural_limits.pending_update_count' => 0,
+        ]);
 
         $workflow = WorkflowStub::make(TestAwaitWithTimeoutWorkflow::class, 'limit-update-disabled-1');
         $workflow->start();

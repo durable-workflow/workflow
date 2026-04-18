@@ -61,10 +61,16 @@ final class V2SearchAttributeTest extends TestCase
         $this->assertSame(2, $upsertEvents->count());
 
         $firstUpsert = $upsertEvents->first();
-        $this->assertSame(['customer' => 'Taylor', 'status' => 'processing'], $firstUpsert->payload['attributes']);
+        $this->assertSame([
+            'customer' => 'Taylor',
+            'status' => 'processing',
+        ], $firstUpsert->payload['attributes']);
 
         $secondUpsert = $upsertEvents->last();
-        $this->assertSame(['result' => 'success', 'status' => 'completed'], $secondUpsert->payload['attributes']);
+        $this->assertSame([
+            'result' => 'success',
+            'status' => 'completed',
+        ], $secondUpsert->payload['attributes']);
         $this->assertSame([
             'customer' => 'Taylor',
             'result' => 'success',

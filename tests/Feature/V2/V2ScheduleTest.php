@@ -13,9 +13,9 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
-use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ScheduleDescription;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\WorkflowStub;
@@ -26,8 +26,10 @@ final class V2ScheduleTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
     }
 
     public function testCreateSchedule(): void
@@ -229,7 +231,10 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '* * * * *',
         );
 
-        $schedule->forceFill(['next_fire_at' => now()->subMinute()])->save();
+        $schedule->forceFill([
+            'next_fire_at' => now()
+                ->subMinute(),
+        ])->save();
 
         $results = ScheduleManager::tick();
 
@@ -265,10 +270,15 @@ final class V2ScheduleTest extends TestCase
         $this->assertNotNull($firstInstanceId);
 
         $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
-        $run->forceFill(['status' => 'running'])->save();
+        $run->forceFill([
+            'status' => 'running',
+        ])->save();
 
         $schedule->refresh();
-        $schedule->forceFill(['next_fire_at' => now()->subMinute()])->save();
+        $schedule->forceFill([
+            'next_fire_at' => now()
+                ->subMinute(),
+        ])->save();
 
         $secondInstanceId = ScheduleManager::trigger($schedule);
         $this->assertNull($secondInstanceId, 'Skip policy should prevent overlapping runs.');
@@ -392,14 +402,28 @@ final class V2ScheduleTest extends TestCase
             scheduleId: 'metadata-test',
             workflowClass: TestScheduledWorkflow::class,
             cronExpression: '0 * * * *',
-            labels: ['env' => 'production', 'team' => 'billing'],
-            memo: ['origin' => 'scheduled'],
-            searchAttributes: ['tenant_id' => '42'],
+            labels: [
+                'env' => 'production',
+                'team' => 'billing',
+            ],
+            memo: [
+                'origin' => 'scheduled',
+            ],
+            searchAttributes: [
+                'tenant_id' => '42',
+            ],
         );
 
-        $this->assertSame(['env' => 'production', 'team' => 'billing'], $schedule->visibility_labels);
-        $this->assertSame(['origin' => 'scheduled'], $schedule->memo);
-        $this->assertSame(['tenant_id' => '42'], $schedule->search_attributes);
+        $this->assertSame([
+            'env' => 'production',
+            'team' => 'billing',
+        ], $schedule->visibility_labels);
+        $this->assertSame([
+            'origin' => 'scheduled',
+        ], $schedule->memo);
+        $this->assertSame([
+            'tenant_id' => '42',
+        ], $schedule->search_attributes);
     }
 
     public function testUpdateDeletedScheduleThrows(): void
@@ -551,7 +575,9 @@ final class V2ScheduleTest extends TestCase
             'namespace' => $schedule->namespace,
             'sequence' => 2,
             'event_type' => HistoryEventType::SchedulePaused->value,
-            'payload' => ['reason' => 'pre-claimed by racing writer'],
+            'payload' => [
+                'reason' => 'pre-claimed by racing writer',
+            ],
             'recorded_at' => now(),
         ]);
 
@@ -571,7 +597,8 @@ final class V2ScheduleTest extends TestCase
                 HistoryEventType::SchedulePaused->value,
                 HistoryEventType::SchedulePaused->value,
             ],
-            $events->map(static fn (WorkflowScheduleHistoryEvent $event): string => $event->event_type->value)->all(),
+            $events->map(static fn (WorkflowScheduleHistoryEvent $event): string => $event->event_type->value)
+                ->all(),
         );
         $this->assertSame('pre-claimed by racing writer', $events[1]->payload['reason']);
         $this->assertSame('operator hold', $events[2]->payload['reason']);
@@ -595,7 +622,9 @@ final class V2ScheduleTest extends TestCase
                 'namespace' => $schedule->namespace,
                 'sequence' => $claimed,
                 'event_type' => HistoryEventType::SchedulePaused->value,
-                'payload' => ['reason' => 'pileup ' . $claimed],
+                'payload' => [
+                    'reason' => 'pileup ' . $claimed,
+                ],
                 'recorded_at' => now(),
             ]);
         }
@@ -640,7 +669,10 @@ final class V2ScheduleTest extends TestCase
 
         $raced = false;
 
-        WorkflowScheduleHistoryEvent::creating(function (WorkflowScheduleHistoryEvent $event) use (&$raced, $schedule): void {
+        WorkflowScheduleHistoryEvent::creating(static function (WorkflowScheduleHistoryEvent $event) use (
+            &$raced,
+            $schedule
+        ): void {
             // Only race the very first attempt inside record(). The retry
             // re-reads max(sequence) and should land on the next slot, which
             // this hook no longer interferes with.
@@ -660,7 +692,9 @@ final class V2ScheduleTest extends TestCase
                 'namespace' => $schedule->namespace,
                 'sequence' => 2,
                 'event_type' => HistoryEventType::SchedulePaused->value,
-                'payload' => ['reason' => 'raced the pending writer'],
+                'payload' => [
+                    'reason' => 'raced the pending writer',
+                ],
                 'recorded_at' => now(),
             ]);
         });
@@ -682,15 +716,9 @@ final class V2ScheduleTest extends TestCase
         // retry, preserving monotonic ordering without a duplicate-key fatal.
         $this->assertSame([1, 2, 3], $events->pluck('sequence')->all());
 
-        $this->assertSame(
-            HistoryEventType::ScheduleCreated->value,
-            $events[0]->event_type->value,
-        );
+        $this->assertSame(HistoryEventType::ScheduleCreated->value, $events[0]->event_type->value);
         $this->assertSame('raced the pending writer', $events[1]->payload['reason']);
-        $this->assertSame(
-            HistoryEventType::SchedulePaused->value,
-            $events[2]->event_type->value,
-        );
+        $this->assertSame(HistoryEventType::SchedulePaused->value, $events[2]->event_type->value);
         $this->assertSame('after retry', $events[2]->payload['reason']);
     }
 
@@ -946,7 +974,9 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame(1, (int) $schedule->fires_count);
 
         $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
-        $run->forceFill(['status' => 'running'])->save();
+        $run->forceFill([
+            'status' => 'running',
+        ])->save();
 
         $secondInstanceId = ScheduleManager::trigger($schedule);
         $this->assertNull($secondInstanceId, 'BufferOne should not start a second run while one is active.');
@@ -971,10 +1001,10 @@ final class V2ScheduleTest extends TestCase
         ScheduleManager::trigger($schedule);
         $schedule->refresh();
 
-        $run = WorkflowRun::query()->find(
-            WorkflowStub::load($schedule->latest_workflow_instance_id)->runId()
-        );
-        $run->forceFill(['status' => 'running'])->save();
+        $run = WorkflowRun::query()->find(WorkflowStub::load($schedule->latest_workflow_instance_id)->runId());
+        $run->forceFill([
+            'status' => 'running',
+        ])->save();
 
         ScheduleManager::trigger($schedule);
         $schedule->refresh();
@@ -1001,17 +1031,24 @@ final class V2ScheduleTest extends TestCase
         $schedule->refresh();
 
         $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
-        $run->forceFill(['status' => 'running'])->save();
+        $run->forceFill([
+            'status' => 'running',
+        ])->save();
 
         ScheduleManager::trigger($schedule);
         $schedule->refresh();
         $this->assertTrue($schedule->hasBufferedActions());
 
-        $run->forceFill(['status' => 'completed'])->save();
+        $run->forceFill([
+            'status' => 'completed',
+        ])->save();
 
         $results = ScheduleManager::tick();
 
-        $drainedResults = array_filter($results, static fn (array $r) => $r['schedule_id'] === 'buffer-drain-test' && $r['instance_id'] !== null);
+        $drainedResults = array_filter(
+            $results,
+            static fn (array $r) => $r['schedule_id'] === 'buffer-drain-test' && $r['instance_id'] !== null
+        );
         $this->assertCount(1, $drainedResults, 'Tick should drain the buffered action after the run completes.');
 
         $schedule->refresh();
@@ -1204,7 +1241,9 @@ final class V2ScheduleTest extends TestCase
         $this->assertNotNull($firstInstanceId);
 
         $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
-        $run->forceFill(['status' => 'running'])->save();
+        $run->forceFill([
+            'status' => 'running',
+        ])->save();
 
         $schedule->refresh();
 
@@ -1236,18 +1275,25 @@ final class V2ScheduleTest extends TestCase
         $schedule->refresh();
 
         $run = WorkflowRun::query()->find(WorkflowStub::load($firstInstanceId)->runId());
-        $run->forceFill(['status' => 'running'])->save();
+        $run->forceFill([
+            'status' => 'running',
+        ])->save();
 
         ScheduleManager::trigger($schedule);
         ScheduleManager::trigger($schedule);
         $schedule->refresh();
         $this->assertCount(2, $schedule->buffered_actions);
 
-        $run->forceFill(['status' => 'completed'])->save();
+        $run->forceFill([
+            'status' => 'completed',
+        ])->save();
 
         $results = ScheduleManager::tick();
 
-        $drained = array_filter($results, static fn (array $r) => $r['schedule_id'] === 'buffer-all-drain-test' && $r['instance_id'] !== null);
+        $drained = array_filter(
+            $results,
+            static fn (array $r) => $r['schedule_id'] === 'buffer-all-drain-test' && $r['instance_id'] !== null
+        );
         $this->assertCount(1, $drained, 'Tick should drain one buffered action at a time.');
 
         $schedule->refresh();
@@ -1272,7 +1318,11 @@ final class V2ScheduleTest extends TestCase
         $results = ScheduleManager::backfill($schedule, $from, $to);
 
         $triggeredResults = array_filter($results, static fn (array $r) => $r['instance_id'] !== null);
-        $this->assertCount(3, $triggeredResults, 'Backfill with BufferOne should start all occurrences (buffer treated as AllowAll).');
+        $this->assertCount(
+            3,
+            $triggeredResults,
+            'Backfill with BufferOne should start all occurrences (buffer treated as AllowAll).'
+        );
 
         $schedule->refresh();
         $this->assertSame(3, (int) $schedule->fires_count);
@@ -1295,7 +1345,11 @@ final class V2ScheduleTest extends TestCase
         $results = ScheduleManager::backfill($schedule, $from, $to);
 
         $triggeredResults = array_filter($results, static fn (array $r) => $r['instance_id'] !== null);
-        $this->assertCount(3, $triggeredResults, 'Backfill with BufferAll should start all occurrences (buffer treated as AllowAll).');
+        $this->assertCount(
+            3,
+            $triggeredResults,
+            'Backfill with BufferAll should start all occurrences (buffer treated as AllowAll).'
+        );
 
         $schedule->refresh();
         $this->assertSame(3, (int) $schedule->fires_count);
@@ -1308,7 +1362,9 @@ final class V2ScheduleTest extends TestCase
         $schedule = ScheduleManager::createFromSpec(
             scheduleId: 'interval-30m',
             spec: [
-                'intervals' => [['every' => 'PT30M']],
+                'intervals' => [[
+                    'every' => 'PT30M',
+                ]],
             ],
             action: [
                 'workflow_type' => 'test-scheduled-workflow',
@@ -1323,7 +1379,9 @@ final class V2ScheduleTest extends TestCase
         $this->assertNotNull($schedule->next_fire_at);
 
         $spec = $schedule->spec;
-        $this->assertSame([['every' => 'PT30M']], $spec['intervals']);
+        $this->assertSame([[
+            'every' => 'PT30M',
+        ]], $spec['intervals']);
     }
 
     public function testCreateFromSpecWithIntervalAndOffset(): void
@@ -1331,7 +1389,10 @@ final class V2ScheduleTest extends TestCase
         $schedule = ScheduleManager::createFromSpec(
             scheduleId: 'interval-offset',
             spec: [
-                'intervals' => [['every' => 'PT1H', 'offset' => 'PT5M']],
+                'intervals' => [[
+                    'every' => 'PT1H',
+                    'offset' => 'PT5M',
+                ]],
             ],
             action: [
                 'workflow_type' => 'test-scheduled-workflow',
@@ -1349,10 +1410,9 @@ final class V2ScheduleTest extends TestCase
     {
         $after = new \DateTimeImmutable('2026-04-14 10:00:00', new \DateTimeZone('UTC'));
 
-        $next = WorkflowSchedule::nextIntervalOccurrence(
-            ['every' => 'PT30M'],
-            $after,
-        );
+        $next = WorkflowSchedule::nextIntervalOccurrence([
+            'every' => 'PT30M',
+        ], $after,);
 
         $this->assertNotNull($next);
         $this->assertGreaterThan($after, $next);
@@ -1364,10 +1424,10 @@ final class V2ScheduleTest extends TestCase
     {
         $after = new \DateTimeImmutable('2026-04-14 10:02:00', new \DateTimeZone('UTC'));
 
-        $next = WorkflowSchedule::nextIntervalOccurrence(
-            ['every' => 'PT1H', 'offset' => 'PT5M'],
-            $after,
-        );
+        $next = WorkflowSchedule::nextIntervalOccurrence([
+            'every' => 'PT1H',
+            'offset' => 'PT5M',
+        ], $after,);
 
         $this->assertNotNull($next);
         $minuteOfHour = (int) date('i', $next->getTimestamp());
@@ -1378,8 +1438,12 @@ final class V2ScheduleTest extends TestCase
     {
         $after = new \DateTimeImmutable('2026-04-14 10:00:00', new \DateTimeZone('UTC'));
 
-        $this->assertNull(WorkflowSchedule::nextIntervalOccurrence(['every' => ''], $after));
-        $this->assertNull(WorkflowSchedule::nextIntervalOccurrence(['every' => 'INVALID'], $after));
+        $this->assertNull(WorkflowSchedule::nextIntervalOccurrence([
+            'every' => '',
+        ], $after));
+        $this->assertNull(WorkflowSchedule::nextIntervalOccurrence([
+            'every' => 'INVALID',
+        ], $after));
         $this->assertNull(WorkflowSchedule::nextIntervalOccurrence([], $after));
     }
 
@@ -1398,7 +1462,9 @@ final class V2ScheduleTest extends TestCase
         $schedule = ScheduleManager::createFromSpec(
             scheduleId: 'interval-tick-test',
             spec: [
-                'intervals' => [['every' => 'PT10M']],
+                'intervals' => [[
+                    'every' => 'PT10M',
+                ]],
             ],
             action: [
                 'workflow_type' => 'test-scheduled-workflow',
@@ -1407,7 +1473,10 @@ final class V2ScheduleTest extends TestCase
             ],
         );
 
-        $schedule->forceFill(['next_fire_at' => now()->subMinute()])->save();
+        $schedule->forceFill([
+            'next_fire_at' => now()
+                ->subMinute(),
+        ])->save();
 
         $results = ScheduleManager::tick();
         $triggered = array_filter($results, static fn (array $r) => $r['instance_id'] !== null);
@@ -1426,7 +1495,9 @@ final class V2ScheduleTest extends TestCase
             scheduleId: 'mixed-spec',
             spec: [
                 'cron_expressions' => ['0 12 * * *'],
-                'intervals' => [['every' => 'PT6H']],
+                'intervals' => [[
+                    'every' => 'PT6H',
+                ]],
                 'timezone' => 'America/Chicago',
             ],
             action: [
@@ -1450,7 +1521,10 @@ final class V2ScheduleTest extends TestCase
 
         ScheduleManager::createFromSpec(
             scheduleId: 'empty-spec',
-            spec: ['cron_expressions' => [], 'intervals' => []],
+            spec: [
+                'cron_expressions' => [],
+                'intervals' => [],
+            ],
             action: [
                 'workflow_type' => 'test-scheduled-workflow',
                 'workflow_class' => TestScheduledWorkflow::class,
@@ -1463,7 +1537,9 @@ final class V2ScheduleTest extends TestCase
     {
         $schedule = ScheduleManager::createFromSpec(
             scheduleId: 'ns-schedule',
-            spec: ['cron_expressions' => ['*/5 * * * *']],
+            spec: [
+                'cron_expressions' => ['*/5 * * * *'],
+            ],
             action: [
                 'workflow_type' => 'test-scheduled-workflow',
                 'workflow_class' => TestScheduledWorkflow::class,
@@ -1506,15 +1582,16 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '0 * * * *',
         );
 
-        $updated = ScheduleManager::update(
-            $schedule,
-            spec: [
-                'intervals' => [['every' => 'PT15M']],
-            ],
-        );
+        $updated = ScheduleManager::update($schedule, spec: [
+            'intervals' => [[
+                'every' => 'PT15M',
+            ]],
+        ],);
 
         $spec = $updated->spec;
-        $this->assertSame([['every' => 'PT15M']], $spec['intervals']);
+        $this->assertSame([[
+            'every' => 'PT15M',
+        ]], $spec['intervals']);
         $this->assertArrayNotHasKey('cron_expressions', $spec);
     }
 
@@ -1524,21 +1601,39 @@ final class V2ScheduleTest extends TestCase
             scheduleId: 'update-memo-test',
             workflowClass: TestScheduledWorkflow::class,
             cronExpression: '0 * * * *',
-            memo: ['origin' => 'initial'],
-            searchAttributes: ['tenant_id' => '1'],
+            memo: [
+                'origin' => 'initial',
+            ],
+            searchAttributes: [
+                'tenant_id' => '1',
+            ],
         );
 
-        $this->assertSame(['origin' => 'initial'], $schedule->memo);
-        $this->assertSame(['tenant_id' => '1'], $schedule->search_attributes);
+        $this->assertSame([
+            'origin' => 'initial',
+        ], $schedule->memo);
+        $this->assertSame([
+            'tenant_id' => '1',
+        ], $schedule->search_attributes);
 
         $updated = ScheduleManager::update(
             $schedule,
-            memo: ['origin' => 'updated', 'version' => 2],
-            searchAttributes: ['tenant_id' => '2'],
+            memo: [
+                'origin' => 'updated',
+                'version' => 2,
+            ],
+            searchAttributes: [
+                'tenant_id' => '2',
+            ],
         );
 
-        $this->assertSame(['origin' => 'updated', 'version' => 2], $updated->memo);
-        $this->assertSame(['tenant_id' => '2'], $updated->search_attributes);
+        $this->assertSame([
+            'origin' => 'updated',
+            'version' => 2,
+        ], $updated->memo);
+        $this->assertSame([
+            'tenant_id' => '2',
+        ], $updated->search_attributes);
     }
 
     public function testUpdateScheduleClearsOptionalFieldsWithEmptyArrays(): void
@@ -1547,8 +1642,12 @@ final class V2ScheduleTest extends TestCase
             scheduleId: 'clear-fields-test',
             workflowClass: TestScheduledWorkflow::class,
             cronExpression: '0 * * * *',
-            memo: ['key' => 'value'],
-            searchAttributes: ['tenant' => '1'],
+            memo: [
+                'key' => 'value',
+            ],
+            searchAttributes: [
+                'tenant' => '1',
+            ],
         );
 
         $updated = ScheduleManager::update($schedule, memo: [], searchAttributes: []);
@@ -1566,8 +1665,12 @@ final class V2ScheduleTest extends TestCase
             jitterSeconds: 60,
             maxRuns: 10,
             notes: 'Test detail.',
-            memo: ['env' => 'test'],
-            searchAttributes: ['tier' => 'free'],
+            memo: [
+                'env' => 'test',
+            ],
+            searchAttributes: [
+                'tier' => 'free',
+            ],
             namespace: 'platform',
         );
 
@@ -1579,8 +1682,12 @@ final class V2ScheduleTest extends TestCase
         $this->assertArrayHasKey('overlap_policy', $detail);
         $this->assertArrayHasKey('state', $detail);
         $this->assertArrayHasKey('info', $detail);
-        $this->assertSame(['env' => 'test'], $detail['memo']);
-        $this->assertSame(['tier' => 'free'], $detail['search_attributes']);
+        $this->assertSame([
+            'env' => 'test',
+        ], $detail['memo']);
+        $this->assertSame([
+            'tier' => 'free',
+        ], $detail['search_attributes']);
     }
 
     public function testScheduleToListItemShape(): void
@@ -1685,10 +1792,7 @@ final class V2ScheduleTest extends TestCase
         );
         ScheduleManager::pause($schedule);
 
-        ScheduleManager::resume(
-            $schedule->fresh(),
-            CommandContext::waterline($this->newWaterlineRequest()),
-        );
+        ScheduleManager::resume($schedule->fresh(), CommandContext::waterline($this->newWaterlineRequest()));
 
         $event = WorkflowScheduleHistoryEvent::query()
             ->where('workflow_schedule_id', $schedule->id)
@@ -1706,10 +1810,7 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '0 * * * *',
         );
 
-        ScheduleManager::delete(
-            $schedule,
-            CommandContext::waterline($this->newWaterlineRequest()),
-        );
+        ScheduleManager::delete($schedule, CommandContext::waterline($this->newWaterlineRequest()));
 
         $event = WorkflowScheduleHistoryEvent::query()
             ->where('workflow_schedule_id', $schedule->id)

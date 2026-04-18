@@ -28,6 +28,13 @@ use Throwable;
 final class Avro implements SerializerInterface
 {
     /**
+     * Stable wire-protocol prefix bytes documented for SDK / export consumers.
+     */
+    public const PREFIX_GENERIC_WRAPPER = "\x00";
+
+    public const PREFIX_TYPED_SCHEMA = "\x01";
+
+    /**
      * Generic wrapper schema for arbitrary payloads.
      *
      * Used when no typed schema is available. Stores the payload as a
@@ -37,11 +44,12 @@ final class Avro implements SerializerInterface
      */
     private const WRAPPER_SCHEMA = '{"type":"record","name":"Payload","namespace":"durable_workflow","fields":[{"name":"json","type":"string"},{"name":"version","type":"int","default":1}]}';
 
+    private static ?AvroSchema $wrapperSchema = null;
+
     /**
-     * Stable wire-protocol prefix bytes documented for SDK / export consumers.
+     * @var AvroSchema|null Typed schema set by the caller for the current encode/decode.
      */
-    public const PREFIX_GENERIC_WRAPPER = "\x00";
-    public const PREFIX_TYPED_SCHEMA = "\x01";
+    private static ?AvroSchema $contextSchema = null;
 
     /**
      * The generic-wrapper schema as canonical JSON.
@@ -54,11 +62,6 @@ final class Avro implements SerializerInterface
     {
         return self::WRAPPER_SCHEMA;
     }
-
-    private static ?AvroSchema $wrapperSchema = null;
-
-    /** @var AvroSchema|null Typed schema set by the caller for the current encode/decode. */
-    private static ?AvroSchema $contextSchema = null;
 
     /**
      * Set a typed Avro schema for the next serialize/unserialize call.
@@ -77,7 +80,7 @@ final class Avro implements SerializerInterface
      */
     public static function parseSchema(string $json): AvroSchema
     {
-        return self::suppressDeprecations(fn () => AvroSchema::parse($json));
+        return self::suppressDeprecations(static fn () => AvroSchema::parse($json));
     }
 
     public static function encode(string $data): string
@@ -124,7 +127,7 @@ final class Avro implements SerializerInterface
      */
     private static function encodeWithSchema(mixed $data, AvroSchema $schema): string
     {
-        return self::suppressDeprecations(function () use ($data, $schema): string {
+        return self::suppressDeprecations(static function () use ($data, $schema): string {
             $io = new AvroStringIO();
             $writer = new AvroIODatumWriter($schema);
             $encoder = new AvroIOBinaryEncoder($io);
@@ -142,7 +145,7 @@ final class Avro implements SerializerInterface
      */
     private static function decodeWithSchema(string $data, AvroSchema $schema): mixed
     {
-        return self::suppressDeprecations(function () use ($data, $schema): mixed {
+        return self::suppressDeprecations(static function () use ($data, $schema): mixed {
             $bytes = base64_decode($data, true);
             if ($bytes === false) {
                 self::failWithIngressDiagnosis($data);
@@ -193,7 +196,7 @@ final class Avro implements SerializerInterface
      */
     private static function encodeWrapped(mixed $data): string
     {
-        return self::suppressDeprecations(function () use ($data): string {
+        return self::suppressDeprecations(static function () use ($data): string {
             $schema = self::wrapperSchema();
             $io = new AvroStringIO();
             $writer = new AvroIODatumWriter($schema);
@@ -202,7 +205,10 @@ final class Avro implements SerializerInterface
             // Prefix: 0x00 = generic wrapper mode
             $io->write("\x00");
             $writer->write([
-                'json' => json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION),
+                'json' => json_encode(
+                    $data,
+                    JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION
+                ),
                 'version' => 1,
             ], $encoder);
 
@@ -215,7 +221,7 @@ final class Avro implements SerializerInterface
      */
     private static function decodeWrapped(string $data): mixed
     {
-        return self::suppressDeprecations(function () use ($data): mixed {
+        return self::suppressDeprecations(static function () use ($data): mixed {
             $bytes = base64_decode($data, true);
             if ($bytes === false) {
                 self::failWithIngressDiagnosis($data);
@@ -310,9 +316,7 @@ final class Avro implements SerializerInterface
     private static function wrapperSchema(): AvroSchema
     {
         if (self::$wrapperSchema === null) {
-            self::$wrapperSchema = self::suppressDeprecations(
-                fn () => AvroSchema::parse(self::WRAPPER_SCHEMA)
-            );
+            self::$wrapperSchema = self::suppressDeprecations(static fn () => AvroSchema::parse(self::WRAPPER_SCHEMA));
         }
 
         return self::$wrapperSchema;
@@ -333,7 +337,7 @@ final class Avro implements SerializerInterface
      */
     private static function suppressDeprecations(callable $fn): mixed
     {
-        set_error_handler(fn () => true, E_DEPRECATED);
+        set_error_handler(static fn () => true, E_DEPRECATED);
         try {
             return $fn();
         } finally {

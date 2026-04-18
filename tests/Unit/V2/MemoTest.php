@@ -35,8 +35,7 @@ class MemoTest extends TestCase
         $this->service = new MemoUpsertService();
     }
 
-    /** @test */
-    public function it_stores_string_values(): void
+    public function testItStoresStringValues(): void
     {
         $run = $this->createRun();
 
@@ -56,8 +55,7 @@ class MemoTest extends TestCase
         $this->assertFalse($memo->inherited_from_parent);
     }
 
-    /** @test */
-    public function it_stores_array_values(): void
+    public function testItStoresArrayValues(): void
     {
         $run = $this->createRun();
 
@@ -65,7 +63,10 @@ class MemoTest extends TestCase
             'metadata' => [
                 'user' => 'alice',
                 'tags' => ['urgent', 'customer-facing'],
-                'config' => ['retries' => 3, 'timeout' => 30],
+                'config' => [
+                    'retries' => 3,
+                    'timeout' => 30,
+                ],
             ],
         ]);
 
@@ -79,12 +80,14 @@ class MemoTest extends TestCase
         $this->assertEquals([
             'user' => 'alice',
             'tags' => ['urgent', 'customer-facing'],
-            'config' => ['retries' => 3, 'timeout' => 30],
+            'config' => [
+                'retries' => 3,
+                'timeout' => 30,
+            ],
         ], $memo->getValue());
     }
 
-    /** @test */
-    public function it_stores_nested_json_structures(): void
+    public function testItStoresNestedJsonStructures(): void
     {
         $run = $this->createRun();
 
@@ -92,9 +95,21 @@ class MemoTest extends TestCase
             'workflow' => [
                 'name' => 'OrderProcessing',
                 'steps' => [
-                    ['id' => 1, 'name' => 'validate', 'status' => 'completed'],
-                    ['id' => 2, 'name' => 'charge', 'status' => 'in_progress'],
-                    ['id' => 3, 'name' => 'fulfill', 'status' => 'pending'],
+                    [
+                        'id' => 1,
+                        'name' => 'validate',
+                        'status' => 'completed',
+                    ],
+                    [
+                        'id' => 2,
+                        'name' => 'charge',
+                        'status' => 'in_progress',
+                    ],
+                    [
+                        'id' => 3,
+                        'name' => 'fulfill',
+                        'status' => 'pending',
+                    ],
                 ],
                 'metadata' => [
                     'customer_id' => 'cust_123',
@@ -103,7 +118,9 @@ class MemoTest extends TestCase
             ],
         ];
 
-        $call = new UpsertMemosCall(['order_context' => $complexValue]);
+        $call = new UpsertMemosCall([
+            'order_context' => $complexValue,
+        ]);
 
         $this->service->upsert($run, $call, 1);
 
@@ -111,13 +128,14 @@ class MemoTest extends TestCase
         $this->assertEquals($complexValue, $memo->getValue());
     }
 
-    /** @test */
-    public function it_upserts_existing_memo(): void
+    public function testItUpsertsExistingMemo(): void
     {
         $run = $this->createRun();
 
         // First upsert
-        $call1 = new UpsertMemosCall(['status_text' => 'Processing started']);
+        $call1 = new UpsertMemosCall([
+            'status_text' => 'Processing started',
+        ]);
         $this->service->upsert($run, $call1, 1);
 
         $memo = WorkflowMemo::where('workflow_run_id', $run->id)
@@ -128,7 +146,9 @@ class MemoTest extends TestCase
         $this->assertEquals(1, $memo->upserted_at_sequence);
 
         // Second upsert (update)
-        $call2 = new UpsertMemosCall(['status_text' => 'Processing completed']);
+        $call2 = new UpsertMemosCall([
+            'status_text' => 'Processing completed',
+        ]);
         $this->service->upsert($run, $call2, 5);
 
         $memo->refresh();
@@ -140,26 +160,30 @@ class MemoTest extends TestCase
         $this->assertEquals(1, WorkflowMemo::where('workflow_run_id', $run->id)->count());
     }
 
-    /** @test */
-    public function it_deletes_memo_when_null_value(): void
+    public function testItDeletesMemoWhenNullValue(): void
     {
         $run = $this->createRun();
 
         // Create memo
-        $call1 = new UpsertMemosCall(['temp_data' => ['some' => 'data']]);
+        $call1 = new UpsertMemosCall([
+            'temp_data' => [
+                'some' => 'data',
+            ],
+        ]);
         $this->service->upsert($run, $call1, 1);
 
         $this->assertEquals(1, WorkflowMemo::where('workflow_run_id', $run->id)->count());
 
         // Delete by setting to null
-        $call2 = new UpsertMemosCall(['temp_data' => null]);
+        $call2 = new UpsertMemosCall([
+            'temp_data' => null,
+        ]);
         $this->service->upsert($run, $call2, 2);
 
         $this->assertEquals(0, WorkflowMemo::where('workflow_run_id', $run->id)->count());
     }
 
-    /** @test */
-    public function it_enforces_max_memos_per_run_limit(): void
+    public function testItEnforcesMaxMemosPerRunLimit(): void
     {
         $run = $this->createRun();
 
@@ -181,12 +205,13 @@ class MemoTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('exceeds maximum');
 
-        $call2 = new UpsertMemosCall(['one_too_many' => 'fail']);
+        $call2 = new UpsertMemosCall([
+            'one_too_many' => 'fail',
+        ]);
         $this->service->upsert($run, $call2, 2);
     }
 
-    /** @test */
-    public function it_enforces_per_memo_size_limit(): void
+    public function testItEnforcesPerMemoSizeLimit(): void
     {
         $run = $this->createRun();
 
@@ -196,12 +221,13 @@ class MemoTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('exceeds maximum size');
 
-        $call = new UpsertMemosCall(['large_memo' => $largeArray]);
+        $call = new UpsertMemosCall([
+            'large_memo' => $largeArray,
+        ]);
         $this->service->upsert($run, $call, 1);
     }
 
-    /** @test */
-    public function it_enforces_total_size_limit(): void
+    public function testItEnforcesTotalSizeLimit(): void
     {
         $run = $this->createRun();
 
@@ -219,16 +245,21 @@ class MemoTest extends TestCase
         $this->service->upsert($run, $call, 1);
     }
 
-    /** @test */
-    public function it_inherits_memos_via_continue_as_new(): void
+    public function testItInheritsMemosViaContinueAsNew(): void
     {
         $parentRun = $this->createRun();
         $childRun = $this->createRun();
 
         // Set up parent memos
         $call = new UpsertMemosCall([
-            'user_context' => ['user_id' => 'user_123', 'tenant' => 'acme'],
-            'workflow_config' => ['max_retries' => 5, 'timeout' => 3600],
+            'user_context' => [
+                'user_id' => 'user_123',
+                'tenant' => 'acme',
+            ],
+            'workflow_config' => [
+                'max_retries' => 5,
+                'timeout' => 3600,
+            ],
             'trace_id' => 'trace_abc123',
         ]);
         $this->service->upsert($parentRun, $call, 10);
@@ -244,14 +275,20 @@ class MemoTest extends TestCase
         $this->assertCount(3, $childMemos);
 
         $this->assertEquals(
-            ['user_id' => 'user_123', 'tenant' => 'acme'],
+            [
+                'user_id' => 'user_123',
+                'tenant' => 'acme',
+            ],
             $childMemos['user_context']->getValue(),
         );
         $this->assertTrue($childMemos['user_context']->inherited_from_parent);
         $this->assertEquals(1, $childMemos['user_context']->upserted_at_sequence);
 
         $this->assertEquals(
-            ['max_retries' => 5, 'timeout' => 3600],
+            [
+                'max_retries' => 5,
+                'timeout' => 3600,
+            ],
             $childMemos['workflow_config']->getValue(),
         );
         $this->assertTrue($childMemos['workflow_config']->inherited_from_parent);
@@ -260,21 +297,27 @@ class MemoTest extends TestCase
         $this->assertTrue($childMemos['trace_id']->inherited_from_parent);
     }
 
-    /** @test */
-    public function it_can_override_inherited_memos(): void
+    public function testItCanOverrideInheritedMemos(): void
     {
         $parentRun = $this->createRun();
         $childRun = $this->createRun();
 
         // Parent memos
-        $call1 = new UpsertMemosCall(['status' => 'parent_status', 'config' => ['key' => 'parent_value']]);
+        $call1 = new UpsertMemosCall([
+            'status' => 'parent_status',
+            'config' => [
+                'key' => 'parent_value',
+            ],
+        ]);
         $this->service->upsert($parentRun, $call1, 5);
 
         // Inherit to child
         $this->service->inheritFromParent($parentRun, $childRun, 1);
 
         // Child overrides
-        $call2 = new UpsertMemosCall(['status' => 'child_status']);
+        $call2 = new UpsertMemosCall([
+            'status' => 'child_status',
+        ]);
         $this->service->upsert($childRun, $call2, 10);
 
         $statusMemo = WorkflowMemo::where('workflow_run_id', $childRun->id)
@@ -293,14 +336,15 @@ class MemoTest extends TestCase
         $this->assertTrue($configMemo->inherited_from_parent);
     }
 
-    /** @test */
-    public function it_retrieves_memos_as_key_value_array(): void
+    public function testItRetrievesMemosAsKeyValueArray(): void
     {
         $run = $this->createRun();
 
         $call = new UpsertMemosCall([
             'string_memo' => 'test value',
-            'array_memo' => ['key' => 'value'],
+            'array_memo' => [
+                'key' => 'value',
+            ],
             'number_memo' => 42,
         ]);
 
@@ -311,18 +355,21 @@ class MemoTest extends TestCase
         $this->assertIsArray($memos);
         $this->assertCount(3, $memos);
         $this->assertEquals('test value', $memos['string_memo']);
-        $this->assertEquals(['key' => 'value'], $memos['array_memo']);
+        $this->assertEquals([
+            'key' => 'value',
+        ], $memos['array_memo']);
         $this->assertEquals(42, $memos['number_memo']);
     }
 
-    /** @test */
-    public function it_retrieves_memos_with_metadata(): void
+    public function testItRetrievesMemosWithMetadata(): void
     {
         $run = $this->createRun();
 
         $call = new UpsertMemosCall([
             'memo1' => 'value1',
-            'memo2' => ['nested' => 'data'],
+            'memo2' => [
+                'nested' => 'data',
+            ],
         ]);
 
         $this->service->upsert($run, $call, 5);
@@ -336,15 +383,16 @@ class MemoTest extends TestCase
                 'sequence' => 5,
             ],
             'memo2' => [
-                'value' => ['nested' => 'data'],
+                'value' => [
+                    'nested' => 'data',
+                ],
                 'inherited' => false,
                 'sequence' => 5,
             ],
         ], $memosWithMeta);
     }
 
-    /** @test */
-    public function memos_are_not_filterable_unlike_search_attributes(): void
+    public function testMemosAreNotFilterableUnlikeSearchAttributes(): void
     {
         // This test documents the contract: memos have NO value indexes
         // They should NOT be used for filtering in visibility queries
@@ -352,8 +400,12 @@ class MemoTest extends TestCase
         $run1 = $this->createRun();
         $run2 = $this->createRun();
 
-        $this->service->upsert($run1, new UpsertMemosCall(['customer' => 'acme']), 1);
-        $this->service->upsert($run2, new UpsertMemosCall(['customer' => 'globex']), 1);
+        $this->service->upsert($run1, new UpsertMemosCall([
+            'customer' => 'acme',
+        ]), 1);
+        $this->service->upsert($run2, new UpsertMemosCall([
+            'customer' => 'globex',
+        ]), 1);
 
         // Verify memos exist
         $this->assertEquals(2, WorkflowMemo::count());

@@ -27,8 +27,6 @@ final class WorkflowCommandNormalizer
     /**
      * @param  list<array<string, mixed>>  $commands
      * @return list<array<string, mixed>>
-     *
-     * @throws ValidationException when any command is malformed
      */
     public static function normalize(array $commands): array
     {
@@ -58,9 +56,7 @@ final class WorkflowCommandNormalizer
 
             if ($type === 'fail_workflow') {
                 if (! is_string($command['message'] ?? null) || trim((string) $command['message']) === '') {
-                    $errors["commands.{$index}.message"] = [
-                        'Fail workflow commands require a non-empty message.',
-                    ];
+                    $errors["commands.{$index}.message"] = ['Fail workflow commands require a non-empty message.'];
 
                     continue;
                 }
@@ -130,7 +126,11 @@ final class WorkflowCommandNormalizer
 
                 $parentClosePolicy = self::optionalCommandString($command, 'parent_close_policy', $index, $errors);
 
-                if ($parentClosePolicy !== null && ! in_array($parentClosePolicy, ['abandon', 'request_cancel', 'terminate'], true)) {
+                if ($parentClosePolicy !== null && ! in_array(
+                    $parentClosePolicy,
+                    ['abandon', 'request_cancel', 'terminate'],
+                    true
+                )) {
                     $errors["commands.{$index}.parent_close_policy"] = [
                         'The parent_close_policy must be one of: abandon, request_cancel, terminate.',
                     ];
@@ -164,9 +164,7 @@ final class WorkflowCommandNormalizer
 
             if ($type === 'record_side_effect') {
                 if (! is_string($command['result'] ?? null)) {
-                    $errors["commands.{$index}.result"] = [
-                        'Record side effect commands require a string result.',
-                    ];
+                    $errors["commands.{$index}.result"] = ['Record side effect commands require a string result.'];
 
                     continue;
                 }

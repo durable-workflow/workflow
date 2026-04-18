@@ -13,45 +13,71 @@ return new class() extends Migration {
             $table->id();
 
             // Message ownership
-            $table->string('workflow_instance_id', 191)->index();
-            $table->string('workflow_run_id', 26)->index();
+            $table->string('workflow_instance_id', 191)
+                ->index();
+            $table->string('workflow_run_id', 26)
+                ->index();
 
             // Message directionality (inbound, outbound)
-            $table->string('direction', 16)->index();
+            $table->string('direction', 16)
+                ->index();
 
             // Message channel (signal, update, workflow_message, external, child_signal, etc.)
-            $table->string('channel', 64)->index();
+            $table->string('channel', 64)
+                ->index();
 
             // Stream grouping and sequencing
-            $table->string('stream_key', 191)->index();
-            $table->unsignedBigInteger('sequence')->index();
+            $table->string('stream_key', 191)
+                ->index();
+            $table->unsignedBigInteger('sequence')
+                ->index();
 
             // Message routing
-            $table->string('source_workflow_instance_id', 191)->nullable()->index();
-            $table->string('source_workflow_run_id', 26)->nullable();
-            $table->string('target_workflow_instance_id', 191)->nullable()->index();
-            $table->string('target_workflow_run_id', 26)->nullable();
+            $table->string('source_workflow_instance_id', 191)
+                ->nullable()
+                ->index();
+            $table->string('source_workflow_run_id', 26)
+                ->nullable();
+            $table->string('target_workflow_instance_id', 191)
+                ->nullable()
+                ->index();
+            $table->string('target_workflow_run_id', 26)
+                ->nullable();
 
             // Correlation and idempotency
-            $table->string('correlation_id', 191)->nullable()->index();
-            $table->string('idempotency_key', 191)->nullable()->index();
+            $table->string('correlation_id', 191)
+                ->nullable()
+                ->index();
+            $table->string('idempotency_key', 191)
+                ->nullable()
+                ->index();
 
             // Payload reference (pointer to payload storage)
-            $table->string('payload_reference', 191)->nullable();
+            $table->string('payload_reference', 191)
+                ->nullable();
 
             // Consume state (pending, consumed, failed, expired)
-            $table->string('consume_state', 16)->default('pending')->index();
-            $table->timestamp('consumed_at', 6)->nullable();
-            $table->unsignedInteger('consumed_by_sequence')->nullable();
+            $table->string('consume_state', 16)
+                ->default('pending')
+                ->index();
+            $table->timestamp('consumed_at', 6)
+                ->nullable();
+            $table->unsignedInteger('consumed_by_sequence')
+                ->nullable();
 
             // Expiry and delivery metadata
-            $table->timestamp('expires_at', 6)->nullable();
-            $table->unsignedInteger('delivery_attempt_count')->default(0);
-            $table->timestamp('last_delivery_attempt_at', 6)->nullable();
-            $table->text('last_delivery_error')->nullable();
+            $table->timestamp('expires_at', 6)
+                ->nullable();
+            $table->unsignedInteger('delivery_attempt_count')
+                ->default(0);
+            $table->timestamp('last_delivery_attempt_at', 6)
+                ->nullable();
+            $table->text('last_delivery_error')
+                ->nullable();
 
             // Extensibility
-            $table->json('metadata')->nullable();
+            $table->json('metadata')
+                ->nullable();
 
             $table->timestamps(6);
 

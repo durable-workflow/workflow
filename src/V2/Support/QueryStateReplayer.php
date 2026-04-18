@@ -126,10 +126,7 @@ final class QueryStateReplayer
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 if ($execution->status === ActivityStatus::Completed) {
-                    $current = $workflowExecution->send(
-                        $execution->activityResult(),
-                        $execution->closed_at,
-                    );
+                    $current = $workflowExecution->send($execution->activityResult(), $execution->closed_at);
                 } else {
                     $current = $workflowExecution->throw(
                         $this->activityException(null, $execution, $run),
@@ -167,7 +164,9 @@ final class QueryStateReplayer
             if ($current instanceof TimerCall) {
                 WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::TIMER);
 
-                if (($timerFired = $this->timerFiredEvent($run, $sequence)) !== null) {
+                $timerFired = $this->timerFiredEvent($run, $sequence);
+
+                if ($timerFired !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     $current = $workflowExecution->send(true, $timerFired->recorded_at);
 
@@ -233,12 +232,7 @@ final class QueryStateReplayer
                 WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::VERSION_MARKER);
 
                 $versionEvent = $this->versionMarkerEvent($run, $sequence);
-                $resolution = VersionResolver::resolve(
-                    $run,
-                    $versionEvent,
-                    $current,
-                    $sequence,
-                );
+                $resolution = VersionResolver::resolve($run, $versionEvent, $current, $sequence);
 
                 $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
                 $current = $workflowExecution->send($resolution->version, $versionEvent?->recorded_at);
@@ -287,10 +281,11 @@ final class QueryStateReplayer
                     continue;
                 }
 
-                if (
-                    $current->timeoutSeconds !== null
-                    && ($signalTimeoutFired = $this->signalTimeoutFiredEvent($run, $sequence, $current->name)) !== null
-                ) {
+                $signalTimeoutFired = $current->timeoutSeconds !== null
+                    ? $this->signalTimeoutFiredEvent($run, $sequence, $current->name)
+                    : null;
+
+                if ($signalTimeoutFired !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     $current = $workflowExecution->send(null, $signalTimeoutFired->recorded_at);
 
@@ -556,7 +551,9 @@ final class QueryStateReplayer
 
                 if ($failure !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + $groupSize);
-                    $failureTime = isset($failure['recorded_at']) && is_int($failure['recorded_at']) && $failure['recorded_at'] !== PHP_INT_MAX
+                    $failureTime = isset($failure['recorded_at']) && is_int(
+                        $failure['recorded_at']
+                    ) && $failure['recorded_at'] !== PHP_INT_MAX
                         ? \Carbon\Carbon::createFromTimestampMs($failure['recorded_at'])
                         : null;
                     $current = $workflowExecution->throw($failure['exception'], $failureTime);

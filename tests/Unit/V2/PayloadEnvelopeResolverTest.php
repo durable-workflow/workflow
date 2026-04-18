@@ -19,10 +19,7 @@ final class PayloadEnvelopeResolverTest extends TestCase
 
     public function testResolveToArrayReturnsPositionalArrayUnchanged(): void
     {
-        $this->assertSame(
-            ['alpha', 'beta'],
-            PayloadEnvelopeResolver::resolveToArray(['alpha', 'beta']),
-        );
+        $this->assertSame(['alpha', 'beta'], PayloadEnvelopeResolver::resolveToArray(['alpha', 'beta']));
     }
 
     public function testResolveToArrayDecodesJsonEnvelope(): void
@@ -32,10 +29,7 @@ final class PayloadEnvelopeResolverTest extends TestCase
             'blob' => Serializer::serializeWithCodec('json', ['a', 'b', 42]),
         ];
 
-        $this->assertSame(
-            ['a', 'b', 42],
-            PayloadEnvelopeResolver::resolveToArray($envelope),
-        );
+        $this->assertSame(['a', 'b', 42], PayloadEnvelopeResolver::resolveToArray($envelope));
     }
 
     public function testResolveToArrayDecodesLegacyYEnvelope(): void
@@ -45,10 +39,7 @@ final class PayloadEnvelopeResolverTest extends TestCase
             'blob' => Serializer::serializeWithCodec('workflow-serializer-y', ['a', 'b']),
         ];
 
-        $this->assertSame(
-            ['a', 'b'],
-            PayloadEnvelopeResolver::resolveToArray($envelope),
-        );
+        $this->assertSame(['a', 'b'], PayloadEnvelopeResolver::resolveToArray($envelope));
     }
 
     public function testResolveToArrayDecodesAvroEnvelopeWhenInstalled(): void
@@ -62,10 +53,7 @@ final class PayloadEnvelopeResolverTest extends TestCase
             'blob' => Serializer::serializeWithCodec('avro', ['hello', 123]),
         ];
 
-        $this->assertSame(
-            ['hello', 123],
-            PayloadEnvelopeResolver::resolveToArray($envelope),
-        );
+        $this->assertSame(['hello', 123], PayloadEnvelopeResolver::resolveToArray($envelope));
     }
 
     public function testResolveToArrayRejectsUnknownCodec(): void

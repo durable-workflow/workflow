@@ -11,7 +11,8 @@ class WorkflowRunLineageEntryObserver
 {
     public function __construct(
         private readonly ChildWorkflowNamespaceProjection $projection,
-    ) {}
+    ) {
+    }
 
     public function created(WorkflowRunLineageEntry $entry): void
     {

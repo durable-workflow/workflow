@@ -59,7 +59,11 @@ final class ParentClosePolicyEnforcer
                 continue;
             }
 
-            if (is_string($childRun->status) && in_array($childRun->status, ['completed', 'failed', 'cancelled', 'terminated'], true)) {
+            if (is_string($childRun->status) && in_array(
+                $childRun->status,
+                ['completed', 'failed', 'cancelled', 'terminated'],
+                true
+            )) {
                 continue;
             }
 

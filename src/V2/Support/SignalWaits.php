@@ -133,7 +133,9 @@ final class SignalWaits
                     : 'timeout_cancelled';
                 $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
                 $waits[$waitId]['timeout_fired_at'] = $event->event_type === HistoryEventType::TimerFired
-                    ? self::timestamp($event->payload['fired_at'] ?? null) ?? ($event->recorded_at ?? $event->created_at)
+                    ? self::timestamp(
+                        $event->payload['fired_at'] ?? null
+                    ) ?? ($event->recorded_at ?? $event->created_at)
                     : $waits[$waitId]['timeout_fired_at'];
 
                 continue;

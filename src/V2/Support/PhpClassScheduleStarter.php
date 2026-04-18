@@ -36,12 +36,10 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
 
         $suffix = $occurrenceTime !== null
             ? sprintf('backfill:%s', $occurrenceTime->getTimestamp())
-            : (string) now()->getTimestampMs();
+            : (string) now()
+                ->getTimestampMs();
 
-        $stub = WorkflowStub::make(
-            $workflowClass,
-            sprintf('schedule:%s:%s', $schedule->schedule_id, $suffix),
-        );
+        $stub = WorkflowStub::make($workflowClass, sprintf('schedule:%s:%s', $schedule->schedule_id, $suffix));
 
         $startOptions = new StartOptions(
             labels: is_array($schedule->visibility_labels) ? $schedule->visibility_labels : [],
@@ -62,9 +60,6 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
 
         $result = $stub->start(...$arguments);
 
-        return new ScheduleStartResult(
-            instanceId: $result->instanceId(),
-            runId: $result->runId(),
-        );
+        return new ScheduleStartResult(instanceId: $result->instanceId(), runId: $result->runId());
     }
 }

@@ -3710,6 +3710,62 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
     }
 
+    public function testRunDetailViewReturnsTypedPayloadsNotPhpSerializedStrings(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-typed-contract');
+        $workflow->start();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
+
+        $workflow->signal('name-provided', 'Taylor');
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
+        $detail = RunDetailView::forRun($run);
+
+        // Workflow arguments must be a typed array, not a PHP-serialized string.
+        $this->assertIsArray($detail['arguments']);
+        $this->assertSame([], $detail['arguments']);
+
+        // Workflow output must be typed, not a PHP-serialized string.
+        $this->assertNotNull($detail['output']);
+        $this->assertFalse(
+            self::looksPhpSerialized($detail['output']),
+            'Workflow output looks like a PHP-serialized string.',
+        );
+
+        // Activity results must be typed, not PHP-serialized strings.
+        foreach ($detail['activities'] as $activity) {
+            $this->assertIsArray($activity['arguments']);
+            $this->assertFalse(
+                self::looksPhpSerialized($activity['arguments']),
+                'Activity arguments look like a PHP-serialized string.',
+            );
+            $this->assertFalse(
+                self::looksPhpSerialized($activity['result']),
+                'Activity result looks like a PHP-serialized string.',
+            );
+        }
+
+        // Command payloads must be typed, not PHP-serialized strings.
+        foreach ($detail['commands'] as $command) {
+            $this->assertFalse(
+                self::looksPhpSerialized($command['payload']),
+                'Command payload looks like a PHP-serialized string.',
+            );
+        }
+
+        // Signal arguments must be typed, not PHP-serialized strings.
+        foreach ($detail['signals'] as $signal) {
+            $this->assertFalse(
+                self::looksPhpSerialized($signal['arguments']),
+                'Signal arguments look like a PHP-serialized string.',
+            );
+        }
+    }
+
     private function runReadyWorkflowTask(string $runId): void
     {
         /** @var WorkflowTask $task */
@@ -3784,62 +3840,6 @@ final class V2RunDetailViewTest extends TestCase
         };
 
         $this->app->call([$job, 'handle']);
-    }
-
-    public function testRunDetailViewReturnsTypedPayloadsNotPhpSerializedStrings(): void
-    {
-        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-typed-contract');
-        $workflow->start();
-
-        $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
-
-        $workflow->signal('name-provided', 'Taylor');
-
-        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
-
-        /** @var WorkflowRun $run */
-        $run = WorkflowRun::query()->with('summary')->findOrFail($workflow->runId());
-        $detail = RunDetailView::forRun($run);
-
-        // Workflow arguments must be a typed array, not a PHP-serialized string.
-        $this->assertIsArray($detail['arguments']);
-        $this->assertSame([], $detail['arguments']);
-
-        // Workflow output must be typed, not a PHP-serialized string.
-        $this->assertNotNull($detail['output']);
-        $this->assertFalse(
-            self::looksPhpSerialized($detail['output']),
-            'Workflow output looks like a PHP-serialized string.',
-        );
-
-        // Activity results must be typed, not PHP-serialized strings.
-        foreach ($detail['activities'] as $activity) {
-            $this->assertIsArray($activity['arguments']);
-            $this->assertFalse(
-                self::looksPhpSerialized($activity['arguments']),
-                'Activity arguments look like a PHP-serialized string.',
-            );
-            $this->assertFalse(
-                self::looksPhpSerialized($activity['result']),
-                'Activity result looks like a PHP-serialized string.',
-            );
-        }
-
-        // Command payloads must be typed, not PHP-serialized strings.
-        foreach ($detail['commands'] as $command) {
-            $this->assertFalse(
-                self::looksPhpSerialized($command['payload']),
-                'Command payload looks like a PHP-serialized string.',
-            );
-        }
-
-        // Signal arguments must be typed, not PHP-serialized strings.
-        foreach ($detail['signals'] as $signal) {
-            $this->assertFalse(
-                self::looksPhpSerialized($signal['arguments']),
-                'Signal arguments look like a PHP-serialized string.',
-            );
-        }
     }
 
     private static function looksPhpSerialized(mixed $value): bool

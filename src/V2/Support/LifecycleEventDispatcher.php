@@ -42,7 +42,8 @@ final class LifecycleEventDispatcher
     public static function workflowStarted(WorkflowRun $run): void
     {
         $instanceId = (string) $run->instance?->id;
-        $committedAt = now()->toIso8601String();
+        $committedAt = now()
+            ->toIso8601String();
 
         WorkflowStarted::dispatch(
             $instanceId,
@@ -52,12 +53,7 @@ final class LifecycleEventDispatcher
             $committedAt,
         );
 
-        LegacyWorkflowStarted::dispatch(
-            $instanceId,
-            (string) $run->workflow_class,
-            '[]',
-            $committedAt,
-        );
+        LegacyWorkflowStarted::dispatch($instanceId, (string) $run->workflow_class, '[]', $committedAt);
 
         self::dispatchStateChanged($run, null, new WorkflowRunningStatus($run));
     }
@@ -65,7 +61,8 @@ final class LifecycleEventDispatcher
     public static function workflowCompleted(WorkflowRun $run): void
     {
         $instanceId = (string) $run->instance?->id;
-        $committedAt = now()->toIso8601String();
+        $committedAt = now()
+            ->toIso8601String();
 
         WorkflowCompleted::dispatch(
             $instanceId,
@@ -75,11 +72,7 @@ final class LifecycleEventDispatcher
             $committedAt,
         );
 
-        LegacyWorkflowCompleted::dispatch(
-            $instanceId,
-            '',
-            $committedAt,
-        );
+        LegacyWorkflowCompleted::dispatch($instanceId, '', $committedAt);
 
         self::dispatchStateChanged($run, new WorkflowRunningStatus($run), new WorkflowCompletedStatus($run));
     }
@@ -87,7 +80,8 @@ final class LifecycleEventDispatcher
     public static function workflowFailed(WorkflowRun $run, string $exceptionClass, string $message): void
     {
         $instanceId = (string) $run->instance?->id;
-        $committedAt = now()->toIso8601String();
+        $committedAt = now()
+            ->toIso8601String();
 
         WorkflowFailed::dispatch(
             $instanceId,
@@ -99,11 +93,7 @@ final class LifecycleEventDispatcher
             $committedAt,
         );
 
-        LegacyWorkflowFailed::dispatch(
-            $instanceId,
-            $exceptionClass . ': ' . $message,
-            $committedAt,
-        );
+        LegacyWorkflowFailed::dispatch($instanceId, $exceptionClass . ': ' . $message, $committedAt);
 
         self::dispatchStateChanged($run, new WorkflowRunningStatus($run), new WorkflowFailedStatus($run));
     }
@@ -117,7 +107,8 @@ final class LifecycleEventDispatcher
         int $attemptNumber,
     ): void {
         $instanceId = (string) $run->instance?->id;
-        $committedAt = now()->toIso8601String();
+        $committedAt = now()
+            ->toIso8601String();
 
         ActivityStarted::dispatch(
             $instanceId,
@@ -149,7 +140,8 @@ final class LifecycleEventDispatcher
         int $attemptNumber,
     ): void {
         $instanceId = (string) $run->instance?->id;
-        $committedAt = now()->toIso8601String();
+        $committedAt = now()
+            ->toIso8601String();
 
         ActivityCompleted::dispatch(
             $instanceId,
@@ -183,7 +175,8 @@ final class LifecycleEventDispatcher
         string $message,
     ): void {
         $instanceId = (string) $run->instance?->id;
-        $committedAt = now()->toIso8601String();
+        $committedAt = now()
+            ->toIso8601String();
 
         ActivityFailed::dispatch(
             $instanceId,
@@ -224,7 +217,8 @@ final class LifecycleEventDispatcher
             $sourceId,
             $exceptionClass,
             $message,
-            now()->toIso8601String(),
+            now()
+                ->toIso8601String(),
         );
     }
 
@@ -240,11 +234,6 @@ final class LifecycleEventDispatcher
         ?\Workflow\States\WorkflowStatus $initialState,
         \Workflow\States\WorkflowStatus $finalState,
     ): void {
-        event(new StateChanged(
-            $initialState,
-            $finalState,
-            $run,
-            'status',
-        ));
+        event(new StateChanged($initialState, $finalState, $run, 'status'));
     }
 }

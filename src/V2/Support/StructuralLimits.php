@@ -43,15 +43,25 @@ final class StructuralLimits
     // per-environment through config.
 
     public const DEFAULT_PENDING_ACTIVITY_COUNT = 2000;
+
     public const DEFAULT_PENDING_CHILD_COUNT = 1000;
+
     public const DEFAULT_PENDING_TIMER_COUNT = 2000;
+
     public const DEFAULT_PENDING_SIGNAL_COUNT = 5000;
+
     public const DEFAULT_PENDING_UPDATE_COUNT = 500;
+
     public const DEFAULT_COMMAND_BATCH_SIZE = 1000;
+
     public const DEFAULT_PAYLOAD_SIZE_BYTES = 2097152;       // 2 MiB
+
     public const DEFAULT_MEMO_SIZE_BYTES = 262144;           // 256 KiB
+
     public const DEFAULT_SEARCH_ATTRIBUTE_SIZE_BYTES = 40960; // 40 KiB
+
     public const DEFAULT_HISTORY_TRANSACTION_SIZE = 5000;
+
     public const DEFAULT_WARNING_THRESHOLD_PERCENT = 80;
 
     // ── Config readers ──────────────────────────────────────────────
@@ -113,9 +123,6 @@ final class StructuralLimits
 
     // ── Enforcement helpers ─────────────────────────────────────────
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardPendingActivities(WorkflowRun $run): void
     {
         $limit = self::pendingActivityLimit();
@@ -126,10 +133,7 @@ final class StructuralLimits
 
         $count = ActivityExecution::query()
             ->where('workflow_run_id', $run->id)
-            ->whereIn('status', [
-                ActivityStatus::Pending->value,
-                ActivityStatus::Running->value,
-            ])
+            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
             ->count();
 
         if ($count >= $limit) {
@@ -137,9 +141,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardPendingChildren(WorkflowRun $run): void
     {
         $limit = self::pendingChildLimit();
@@ -151,7 +152,7 @@ final class StructuralLimits
         $count = WorkflowLink::query()
             ->where('parent_workflow_run_id', $run->id)
             ->where('link_type', 'child_workflow')
-            ->whereHas('childRun', function ($query) {
+            ->whereHas('childRun', static function ($query) {
                 $query->whereNotIn('status', [
                     RunStatus::Completed->value,
                     RunStatus::Failed->value,
@@ -166,9 +167,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardPendingTimers(WorkflowRun $run): void
     {
         $limit = self::pendingTimerLimit();
@@ -187,9 +185,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardPendingSignals(WorkflowRun $run): void
     {
         $limit = self::pendingSignalLimit();
@@ -208,9 +203,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardPendingUpdates(WorkflowRun $run): void
     {
         $limit = self::pendingUpdateLimit();
@@ -229,9 +221,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardPayloadSize(string $serialized): void
     {
         $limit = self::payloadSizeLimit();
@@ -247,9 +236,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardMemoSize(string $serialized): void
     {
         $limit = self::memoSizeLimit();
@@ -265,9 +251,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardSearchAttributeSize(string $serialized): void
     {
         $limit = self::searchAttributeSizeLimit();
@@ -283,9 +266,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardCommandBatchSize(int $batchSize): void
     {
         $limit = self::commandBatchSizeLimit();
@@ -299,9 +279,6 @@ final class StructuralLimits
         }
     }
 
-    /**
-     * @throws StructuralLimitExceededException
-     */
     public static function guardHistoryTransactionSize(int $eventCount): void
     {
         $limit = self::historyTransactionSizeLimit();
@@ -362,10 +339,7 @@ final class StructuralLimits
     {
         $count = ActivityExecution::query()
             ->where('workflow_run_id', $run->id)
-            ->whereIn('status', [
-                ActivityStatus::Pending->value,
-                ActivityStatus::Running->value,
-            ])
+            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
             ->count();
 
         return self::checkApproaching(StructuralLimitKind::PendingActivityCount, $count);
@@ -379,7 +353,7 @@ final class StructuralLimits
         $count = WorkflowLink::query()
             ->where('parent_workflow_run_id', $run->id)
             ->where('link_type', 'child_workflow')
-            ->whereHas('childRun', function ($query) {
+            ->whereHas('childRun', static function ($query) {
                 $query->whereNotIn('status', [
                     RunStatus::Completed->value,
                     RunStatus::Failed->value,

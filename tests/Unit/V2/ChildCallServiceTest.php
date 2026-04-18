@@ -38,8 +38,7 @@ class ChildCallServiceTest extends TestCase
         $this->service = new ChildCallService();
     }
 
-    /** @test */
-    public function it_schedules_child_call(): void
+    public function testItSchedulesChildCall(): void
     {
         $parentRun = $this->createRun();
         $call = new ChildWorkflowCall('TestChildWorkflow', ['arg1', 'arg2']);
@@ -59,8 +58,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertNull($childCall->resolved_child_instance_id);
     }
 
-    /** @test */
-    public function it_schedules_child_with_parent_close_policy(): void
+    public function testItSchedulesChildWithParentClosePolicy(): void
     {
         $parentRun = $this->createRun();
         $options = new ChildWorkflowOptions(parentClosePolicy: ParentClosePolicy::RequestCancel);
@@ -71,14 +69,10 @@ class ChildCallServiceTest extends TestCase
         $this->assertEquals(ParentClosePolicy::RequestCancel, $childCall->parent_close_policy);
     }
 
-    /** @test */
-    public function it_schedules_child_with_routing_overrides(): void
+    public function testItSchedulesChildWithRoutingOverrides(): void
     {
         $parentRun = $this->createRun();
-        $options = new ChildWorkflowOptions(
-            connection: 'redis',
-            queue: 'high-priority',
-        );
+        $options = new ChildWorkflowOptions(connection: 'redis', queue: 'high-priority');
         $call = new ChildWorkflowCall('TestChildWorkflow', [], $options);
 
         $childCall = $this->service->scheduleChild($parentRun, $call, 10);
@@ -87,8 +81,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertEquals('high-priority', $childCall->queue);
     }
 
-    /** @test */
-    public function it_inherits_routing_from_parent_when_not_overridden(): void
+    public function testItInheritsRoutingFromParentWhenNotOverridden(): void
     {
         $parentRun = $this->createRun();
         $parentRun->connection = 'database';
@@ -103,8 +96,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertEquals('default-queue', $childCall->queue);
     }
 
-    /** @test */
-    public function it_resolves_child_references_after_start(): void
+    public function testItResolvesChildReferencesAfterStart(): void
     {
         $parentRun = $this->createRun();
         $call = new ChildWorkflowCall('TestChildWorkflow', []);
@@ -127,8 +119,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertTrue($childCall->isResolved());
     }
 
-    /** @test */
-    public function it_records_child_completion(): void
+    public function testItRecordsChildCompletion(): void
     {
         $parentRun = $this->createRun();
         $call = new ChildWorkflowCall('TestChildWorkflow', []);
@@ -146,8 +137,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertFalse($childCall->isOpen());
     }
 
-    /** @test */
-    public function it_records_child_failure(): void
+    public function testItRecordsChildFailure(): void
     {
         $parentRun = $this->createRun();
         $call = new ChildWorkflowCall('TestChildWorkflow', []);
@@ -164,8 +154,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertTrue($childCall->isTerminal());
     }
 
-    /** @test */
-    public function it_records_child_cancellation(): void
+    public function testItRecordsChildCancellation(): void
     {
         $parentRun = $this->createRun();
         $call = new ChildWorkflowCall('TestChildWorkflow', []);
@@ -180,8 +169,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertTrue($childCall->isTerminal());
     }
 
-    /** @test */
-    public function it_records_child_termination(): void
+    public function testItRecordsChildTermination(): void
     {
         $parentRun = $this->createRun();
         $call = new ChildWorkflowCall('TestChildWorkflow', []);
@@ -196,8 +184,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertTrue($childCall->isTerminal());
     }
 
-    /** @test */
-    public function it_records_child_abandonment(): void
+    public function testItRecordsChildAbandonment(): void
     {
         $parentRun = $this->createRun();
         $call = new ChildWorkflowCall('TestChildWorkflow', []);
@@ -212,30 +199,17 @@ class ChildCallServiceTest extends TestCase
         $this->assertTrue($childCall->isTerminal());
     }
 
-    /** @test */
-    public function it_gets_open_children(): void
+    public function testItGetsOpenChildren(): void
     {
         $parentRun = $this->createRun();
 
         // Create mix of children
-        $scheduled = $this->service->scheduleChild(
-            $parentRun,
-            new ChildWorkflowCall('Child1', []),
-            10,
-        );
+        $scheduled = $this->service->scheduleChild($parentRun, new ChildWorkflowCall('Child1', []), 10);
 
-        $started = $this->service->scheduleChild(
-            $parentRun,
-            new ChildWorkflowCall('Child2', []),
-            11,
-        );
+        $started = $this->service->scheduleChild($parentRun, new ChildWorkflowCall('Child2', []), 11);
         $this->service->resolveChildReferences($started, 'inst-2', 'run-2');
 
-        $completed = $this->service->scheduleChild(
-            $parentRun,
-            new ChildWorkflowCall('Child3', []),
-            12,
-        );
+        $completed = $this->service->scheduleChild($parentRun, new ChildWorkflowCall('Child3', []), 12);
         $this->service->resolveChildReferences($completed, 'inst-3', 'run-3');
         $this->service->recordChildCompleted($completed);
 
@@ -243,14 +217,15 @@ class ChildCallServiceTest extends TestCase
         $openChildren = $this->service->getOpenChildren($parentRun);
 
         $this->assertCount(2, $openChildren);
-        $statuses = $openChildren->pluck('status')->map(fn ($s) => $s->value)->toArray();
+        $statuses = $openChildren->pluck('status')
+            ->map(static fn ($s) => $s->value)
+            ->toArray();
         $this->assertContains('scheduled', $statuses);
         $this->assertContains('started', $statuses);
         $this->assertNotContains('completed', $statuses);
     }
 
-    /** @test */
-    public function it_counts_open_children(): void
+    public function testItCountsOpenChildren(): void
     {
         $parentRun = $this->createRun();
 
@@ -273,8 +248,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertEquals(2, $this->service->countOpenChildren($parentRun));
     }
 
-    /** @test */
-    public function it_gets_all_children(): void
+    public function testItGetsAllChildren(): void
     {
         $parentRun = $this->createRun();
 
@@ -285,8 +259,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertCount(2, $allChildren);
     }
 
-    /** @test */
-    public function it_gets_child_by_sequence(): void
+    public function testItGetsChildBySequence(): void
     {
         $parentRun = $this->createRun();
 
@@ -302,18 +275,13 @@ class ChildCallServiceTest extends TestCase
         $this->assertNull($childAt999);
     }
 
-    /** @test */
-    public function it_enforces_abandon_parent_close_policy(): void
+    public function testItEnforcesAbandonParentClosePolicy(): void
     {
         $parentRun = $this->createRun();
 
         // Create child with abandon policy
         $options = new ChildWorkflowOptions(parentClosePolicy: ParentClosePolicy::Abandon);
-        $childCall = $this->service->scheduleChild(
-            $parentRun,
-            new ChildWorkflowCall('Child1', [], $options),
-            10,
-        );
+        $childCall = $this->service->scheduleChild($parentRun, new ChildWorkflowCall('Child1', [], $options), 10);
         $this->service->resolveChildReferences($childCall, 'inst-1', 'run-1');
 
         // Enforce policy
@@ -327,17 +295,12 @@ class ChildCallServiceTest extends TestCase
         $this->assertEquals(ChildCallStatus::Abandoned, $childCall->status);
     }
 
-    /** @test */
-    public function it_enforces_request_cancel_parent_close_policy(): void
+    public function testItEnforcesRequestCancelParentClosePolicy(): void
     {
         $parentRun = $this->createRun();
 
         $options = new ChildWorkflowOptions(parentClosePolicy: ParentClosePolicy::RequestCancel);
-        $childCall = $this->service->scheduleChild(
-            $parentRun,
-            new ChildWorkflowCall('Child1', [], $options),
-            10,
-        );
+        $childCall = $this->service->scheduleChild($parentRun, new ChildWorkflowCall('Child1', [], $options), 10);
         $this->service->resolveChildReferences($childCall, 'inst-1', 'run-1');
 
         $stats = $this->service->enforceParentClosePolicy($parentRun);
@@ -353,17 +316,12 @@ class ChildCallServiceTest extends TestCase
         $this->assertTrue($childCall->metadata['parent_close_cancel_requested'] ?? false);
     }
 
-    /** @test */
-    public function it_enforces_terminate_parent_close_policy(): void
+    public function testItEnforcesTerminateParentClosePolicy(): void
     {
         $parentRun = $this->createRun();
 
         $options = new ChildWorkflowOptions(parentClosePolicy: ParentClosePolicy::Terminate);
-        $childCall = $this->service->scheduleChild(
-            $parentRun,
-            new ChildWorkflowCall('Child1', [], $options),
-            10,
-        );
+        $childCall = $this->service->scheduleChild($parentRun, new ChildWorkflowCall('Child1', [], $options), 10);
         $this->service->resolveChildReferences($childCall, 'inst-1', 'run-1');
 
         $stats = $this->service->enforceParentClosePolicy($parentRun);
@@ -377,8 +335,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertTrue($childCall->metadata['parent_close_terminate_requested'] ?? false);
     }
 
-    /** @test */
-    public function it_enforces_mixed_parent_close_policies(): void
+    public function testItEnforcesMixedParentClosePolicies(): void
     {
         $parentRun = $this->createRun();
 
@@ -413,8 +370,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertEquals(1, $stats['terminate_requested']);
     }
 
-    /** @test */
-    public function it_only_enforces_policy_on_open_children(): void
+    public function testItOnlyEnforcesPolicyOnOpenChildren(): void
     {
         $parentRun = $this->createRun();
 
@@ -441,8 +397,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertEquals(1, $stats['abandoned']);
     }
 
-    /** @test */
-    public function it_transfers_child_calls_on_continue_as_new(): void
+    public function testItTransfersChildCallsOnContinueAsNew(): void
     {
         $parentInstance = $this->createInstance();
         $closingRun = $this->createRunForInstance($parentInstance);
@@ -465,7 +420,7 @@ class ChildCallServiceTest extends TestCase
         // Open children should be transferred
         $continuedChildren = WorkflowChildCall::where('parent_workflow_run_id', $continuedRun->id)->get();
         $this->assertCount(2, $continuedChildren);
-        $this->assertTrue($continuedChildren->every(fn ($c) => $c->status->isOpen()));
+        $this->assertTrue($continuedChildren->every(static fn ($c) => $c->status->isOpen()));
 
         // Completed child remains with closing run
         $closingChildren = WorkflowChildCall::where('parent_workflow_run_id', $closingRun->id)->get();
@@ -473,8 +428,7 @@ class ChildCallServiceTest extends TestCase
         $this->assertEquals(ChildCallStatus::Completed, $closingChildren->first()->status);
     }
 
-    /** @test */
-    public function it_gets_children_by_instance_id_for_lineage_tracking(): void
+    public function testItGetsChildrenByInstanceIdForLineageTracking(): void
     {
         $parentRun1 = $this->createRun();
         $parentRun2 = $this->createRun();
@@ -492,7 +446,9 @@ class ChildCallServiceTest extends TestCase
         $childrenOfInstance = $this->service->getChildrenByInstanceId($childInstanceId);
 
         $this->assertCount(2, $childrenOfInstance);
-        $this->assertTrue($childrenOfInstance->every(fn ($c) => $c->resolved_child_instance_id === $childInstanceId));
+        $this->assertTrue(
+            $childrenOfInstance->every(static fn ($c) => $c->resolved_child_instance_id === $childInstanceId)
+        );
     }
 
     private function createInstance(): WorkflowInstance

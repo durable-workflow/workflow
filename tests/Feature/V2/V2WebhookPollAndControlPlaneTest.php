@@ -35,9 +35,7 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
 
         Queue::fake();
 
-        Webhooks::routes([
-            TestGreetingWorkflow::class,
-        ]);
+        Webhooks::routes([TestGreetingWorkflow::class]);
     }
 
     // ── Workflow task poll ────────────────────────────────────────────
@@ -58,7 +56,8 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -83,7 +82,8 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -105,7 +105,8 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
                 'workflow_run_id' => $run->id,
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
-                'available_at' => now()->subSecond(),
+                'available_at' => now()
+                    ->subSecond(),
                 'payload' => [],
                 'connection' => 'redis',
                 'queue' => 'default',
@@ -126,7 +127,8 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -169,7 +171,8 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -267,8 +270,12 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'instance_id' => 'cp-vis-1',
             'arguments' => Serializer::serialize(['Taylor']),
             'business_key' => 'order-123',
-            'labels' => ['tenant' => 'acme'],
-            'memo' => ['source' => 'test'],
+            'labels' => [
+                'tenant' => 'acme',
+            ],
+            'memo' => [
+                'source' => 'test',
+            ],
         ]);
 
         $response->assertStatus(202);
@@ -299,8 +306,10 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'run_count' => 1,
-            'reserved_at' => now()->subMinute(),
-            'started_at' => now()->subMinute(),
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
 
         /** @var WorkflowRun $run */
@@ -314,11 +323,15 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
-            'started_at' => now()->subMinute(),
-            'last_progress_at' => now()->subSeconds(30),
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         return $run;
     }
@@ -349,8 +362,11 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
-            'payload' => ['activity_execution_id' => $execution->id],
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
             'connection' => 'redis',
             'queue' => 'default',
         ]);

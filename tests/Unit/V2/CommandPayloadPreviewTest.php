@@ -20,10 +20,16 @@ final class CommandPayloadPreviewTest extends TestCase
 
     public function testPreviewWithCodecDecodesJsonBlob(): void
     {
-        $blob = Serializer::serializeWithCodec('json', ['name' => 'Taylor', 'n' => 7]);
+        $blob = Serializer::serializeWithCodec('json', [
+            'name' => 'Taylor',
+            'n' => 7,
+        ]);
 
         $this->assertSame(
-            ['name' => 'Taylor', 'n' => 7],
+            [
+                'name' => 'Taylor',
+                'n' => 7,
+            ],
             CommandPayloadPreview::previewWithCodec($blob, 'json'),
         );
     }
@@ -34,13 +40,14 @@ final class CommandPayloadPreviewTest extends TestCase
             $this->markTestSkipped('apache/avro package is not installed in this environment.');
         }
 
-        $payload = ['name' => 'Taylor', 'count' => 3, 'tags' => ['priority', 'vip']];
+        $payload = [
+            'name' => 'Taylor',
+            'count' => 3,
+            'tags' => ['priority', 'vip'],
+        ];
         $blob = Serializer::serializeWithCodec('avro', $payload);
 
-        $this->assertSame(
-            $payload,
-            CommandPayloadPreview::previewWithCodec($blob, 'avro'),
-        );
+        $this->assertSame($payload, CommandPayloadPreview::previewWithCodec($blob, 'avro'));
     }
 
     public function testPreviewWithCodecFallsBackToRawBlobOnCodecMismatch(): void
@@ -55,10 +62,7 @@ final class CommandPayloadPreviewTest extends TestCase
         // this display helper.
         $jsonBlob = Serializer::serializeWithCodec('json', ['hello']);
 
-        $this->assertSame(
-            $jsonBlob,
-            CommandPayloadPreview::previewWithCodec($jsonBlob, 'avro'),
-        );
+        $this->assertSame($jsonBlob, CommandPayloadPreview::previewWithCodec($jsonBlob, 'avro'));
     }
 
     public function testPreviewWithCodecAcceptsLegacyCodecFqcnAliases(): void
@@ -73,12 +77,13 @@ final class CommandPayloadPreviewTest extends TestCase
 
     public function testPreviewWithCodecFallsThroughToLegacySniffWhenCodecNull(): void
     {
-        $jsonBlob = Serializer::serializeWithCodec('json', ['legacy' => true]);
+        $jsonBlob = Serializer::serializeWithCodec('json', [
+            'legacy' => true,
+        ]);
 
-        $this->assertSame(
-            ['legacy' => true],
-            CommandPayloadPreview::previewWithCodec($jsonBlob, null),
-        );
+        $this->assertSame([
+            'legacy' => true,
+        ], CommandPayloadPreview::previewWithCodec($jsonBlob, null),);
     }
 
     public function testPreviewWithCodecReturnsNullForEmptyOrNonStringInput(): void

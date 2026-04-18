@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\Tests\LoadTest;
 
-use Illuminate\Cache\ArrayStore;
-use Illuminate\Cache\DatabaseStore;
 use Illuminate\Cache\FileStore;
 use Illuminate\Cache\MemcachedStore;
 use Illuminate\Cache\RedisStore;
@@ -14,9 +12,7 @@ use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Str;
 use Tests\TestCase;
-use Workflow\V2\Contracts\LongPollWakeStore;
 use Workflow\V2\Support\CacheLongPollWakeStore;
 
 /**
@@ -35,16 +31,14 @@ class LongPollCoordinationLoadTest extends TestCase
     use RefreshDatabase;
 
     private const CONCURRENCY_LOW = 10;
+
     private const CONCURRENCY_MEDIUM = 50;
+
     private const CONCURRENCY_HIGH = 100;
 
     private const ITERATIONS = 100;
 
-    /**
-     * @test
-     * @group load
-     */
-    public function it_measures_redis_backend_wake_latency(): void
+    public function testItMeasuresRedisBackendWakeLatency(): void
     {
         $this->markTestSkippedIfRedisUnavailable();
 
@@ -55,11 +49,7 @@ class LongPollCoordinationLoadTest extends TestCase
         $this->dumpResults('Redis', $results);
     }
 
-    /**
-     * @test
-     * @group load
-     */
-    public function it_measures_database_cache_wake_latency(): void
+    public function testItMeasuresDatabaseCacheWakeLatency(): void
     {
         $cache = $this->makeDatabaseCache();
         $results = $this->measureWakeLatency($cache, 'Database', self::CONCURRENCY_MEDIUM, self::ITERATIONS);
@@ -68,11 +58,7 @@ class LongPollCoordinationLoadTest extends TestCase
         $this->dumpResults('Database Cache', $results);
     }
 
-    /**
-     * @test
-     * @group load
-     */
-    public function it_measures_memcached_backend_wake_latency(): void
+    public function testItMeasuresMemcachedBackendWakeLatency(): void
     {
         $this->markTestSkippedIfMemcachedUnavailable();
 
@@ -83,11 +69,7 @@ class LongPollCoordinationLoadTest extends TestCase
         $this->dumpResults('Memcached', $results);
     }
 
-    /**
-     * @test
-     * @group load
-     */
-    public function it_measures_file_cache_baseline_wake_latency(): void
+    public function testItMeasuresFileCacheBaselineWakeLatency(): void
     {
         $cache = $this->makeFileCache();
         $results = $this->measureWakeLatency($cache, 'File', self::CONCURRENCY_LOW, 50);
@@ -96,11 +78,7 @@ class LongPollCoordinationLoadTest extends TestCase
         $this->dumpResults('File Cache (Baseline)', $results);
     }
 
-    /**
-     * @test
-     * @group load
-     */
-    public function it_measures_redis_throughput_under_high_concurrency(): void
+    public function testItMeasuresRedisThroughputUnderHighConcurrency(): void
     {
         $this->markTestSkippedIfRedisUnavailable();
 
@@ -111,11 +89,7 @@ class LongPollCoordinationLoadTest extends TestCase
         $this->dumpResults('Redis (High Concurrency)', $results);
     }
 
-    /**
-     * @test
-     * @group load
-     */
-    public function it_measures_database_cache_throughput_under_high_concurrency(): void
+    public function testItMeasuresDatabaseCacheThroughputUnderHighConcurrency(): void
     {
         $cache = $this->makeDatabaseCache();
         $results = $this->measureThroughput($cache, 'Database', self::CONCURRENCY_HIGH, 500);
@@ -326,7 +300,7 @@ class LongPollCoordinationLoadTest extends TestCase
 
     private function makeMemcachedCache(): CacheRepository
     {
-        $memcached = new \Memcached;
+        $memcached = new \Memcached();
         $memcached->addServer('localhost', 11211);
 
         return new LaravelCacheRepository(new MemcachedStore($memcached, 'load-test:'));
@@ -334,7 +308,7 @@ class LongPollCoordinationLoadTest extends TestCase
 
     private function makeFileCache(): CacheRepository
     {
-        $files = new Filesystem;
+        $files = new Filesystem();
         $path = storage_path('framework/cache/load-test');
         $files->ensureDirectoryExists($path);
 
@@ -344,7 +318,9 @@ class LongPollCoordinationLoadTest extends TestCase
     private function markTestSkippedIfRedisUnavailable(): void
     {
         try {
-            $this->app->make('redis')->connection()->ping();
+            $this->app->make('redis')
+                ->connection()
+                ->ping();
         } catch (\Throwable $e) {
             $this->markTestSkipped('Redis not available: ' . $e->getMessage());
         }
@@ -353,7 +329,7 @@ class LongPollCoordinationLoadTest extends TestCase
     private function markTestSkippedIfMemcachedUnavailable(): void
     {
         try {
-            $memcached = new \Memcached;
+            $memcached = new \Memcached();
             $memcached->addServer('localhost', 11211);
             $memcached->set('test', 'value', 1);
         } catch (\Throwable $e) {

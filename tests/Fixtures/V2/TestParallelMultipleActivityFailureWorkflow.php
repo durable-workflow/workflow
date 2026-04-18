@@ -24,8 +24,8 @@ final class TestParallelMultipleActivityFailureWorkflow extends Workflow
 
         try {
             all([
-                fn () => activity(TestNamedFailingActivity::class, 'first failure'),
-                fn () => activity(TestNamedFailingActivity::class, 'second failure'),
+                static fn () => activity(TestNamedFailingActivity::class, 'first failure'),
+                static fn () => activity(TestNamedFailingActivity::class, 'second failure'),
             ]);
 
             $this->stage = 'unexpected-success';

@@ -21,8 +21,8 @@ final class TestMixedParallelWorkflow extends Workflow
         $this->stage = 'waiting-for-mixed-group';
 
         $results = all([
-            fn () => activity(TestGreetingActivity::class, $name),
-            fn () => child(TestTimerWorkflow::class, $seconds),
+            static fn () => activity(TestGreetingActivity::class, $name),
+            static fn () => child(TestTimerWorkflow::class, $seconds),
         ]);
 
         $this->stage = 'completed';

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\Tests\Unit\V2;
 
-use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use InvalidArgumentException;
 use Orchestra\Testbench\TestCase;
@@ -36,8 +35,7 @@ class SearchAttributeTest extends TestCase
         $this->service = new SearchAttributeUpsertService();
     }
 
-    /** @test */
-    public function it_infers_and_stores_string_type(): void
+    public function testItInfersAndStoresStringType(): void
     {
         $run = $this->createRun();
 
@@ -57,8 +55,7 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals('A long description string', $attr->getValue());
     }
 
-    /** @test */
-    public function it_infers_and_stores_keyword_type_for_short_strings(): void
+    public function testItInfersAndStoresKeywordTypeForShortStrings(): void
     {
         $run = $this->createRun();
 
@@ -80,8 +77,7 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals('completed', $attrs['status']->value_keyword);
     }
 
-    /** @test */
-    public function it_infers_and_stores_int_type(): void
+    public function testItInfersAndStoresIntType(): void
     {
         $run = $this->createRun();
 
@@ -103,8 +99,7 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals(0, $attrs['retry_count']->value_int);
     }
 
-    /** @test */
-    public function it_infers_and_stores_float_type(): void
+    public function testItInfersAndStoresFloatType(): void
     {
         $run = $this->createRun();
 
@@ -126,8 +121,7 @@ class SearchAttributeTest extends TestCase
         $this->assertEqualsWithDelta(3.14159, $attrs['score']->value_float, 0.00001);
     }
 
-    /** @test */
-    public function it_infers_and_stores_bool_type(): void
+    public function testItInfersAndStoresBoolType(): void
     {
         $run = $this->createRun();
 
@@ -149,13 +143,14 @@ class SearchAttributeTest extends TestCase
         $this->assertFalse($attrs['is_test']->value_bool);
     }
 
-    /** @test */
-    public function it_upserts_existing_attribute(): void
+    public function testItUpsertsExistingAttribute(): void
     {
         $run = $this->createRun();
 
         // First upsert
-        $call1 = new UpsertSearchAttributesCall(['status' => 'pending']);
+        $call1 = new UpsertSearchAttributesCall([
+            'status' => 'pending',
+        ]);
         $this->service->upsert($run, $call1, 1);
 
         $attr = WorkflowSearchAttribute::where('workflow_run_id', $run->id)
@@ -166,7 +161,9 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals(1, $attr->upserted_at_sequence);
 
         // Second upsert (update)
-        $call2 = new UpsertSearchAttributesCall(['status' => 'running']);
+        $call2 = new UpsertSearchAttributesCall([
+            'status' => 'running',
+        ]);
         $this->service->upsert($run, $call2, 5);
 
         $attr->refresh();
@@ -178,26 +175,28 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals(1, WorkflowSearchAttribute::where('workflow_run_id', $run->id)->count());
     }
 
-    /** @test */
-    public function it_deletes_attribute_when_null_value(): void
+    public function testItDeletesAttributeWhenNullValue(): void
     {
         $run = $this->createRun();
 
         // Create attribute
-        $call1 = new UpsertSearchAttributesCall(['temp_flag' => true]);
+        $call1 = new UpsertSearchAttributesCall([
+            'temp_flag' => true,
+        ]);
         $this->service->upsert($run, $call1, 1);
 
         $this->assertEquals(1, WorkflowSearchAttribute::where('workflow_run_id', $run->id)->count());
 
         // Delete by setting to null
-        $call2 = new UpsertSearchAttributesCall(['temp_flag' => null]);
+        $call2 = new UpsertSearchAttributesCall([
+            'temp_flag' => null,
+        ]);
         $this->service->upsert($run, $call2, 2);
 
         $this->assertEquals(0, WorkflowSearchAttribute::where('workflow_run_id', $run->id)->count());
     }
 
-    /** @test */
-    public function it_enforces_max_attributes_per_run_limit(): void
+    public function testItEnforcesMaxAttributesPerRunLimit(): void
     {
         $run = $this->createRun();
 
@@ -219,12 +218,13 @@ class SearchAttributeTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('exceeds maximum');
 
-        $call2 = new UpsertSearchAttributesCall(['one_too_many' => 'fail']);
+        $call2 = new UpsertSearchAttributesCall([
+            'one_too_many' => 'fail',
+        ]);
         $this->service->upsert($run, $call2, 2);
     }
 
-    /** @test */
-    public function it_enforces_string_length_limit(): void
+    public function testItEnforcesStringLengthLimit(): void
     {
         $run = $this->createRun();
 
@@ -242,8 +242,7 @@ class SearchAttributeTest extends TestCase
         $attr->setTypedValue($longString, WorkflowSearchAttribute::TYPE_STRING);
     }
 
-    /** @test */
-    public function it_enforces_keyword_length_limit(): void
+    public function testItEnforcesKeywordLengthLimit(): void
     {
         $run = $this->createRun();
 
@@ -261,8 +260,7 @@ class SearchAttributeTest extends TestCase
         $attr->setTypedValue($longKeyword, WorkflowSearchAttribute::TYPE_KEYWORD);
     }
 
-    /** @test */
-    public function it_inherits_attributes_via_continue_as_new(): void
+    public function testItInheritsAttributesViaContinueAsNew(): void
     {
         $parentRun = $this->createRun();
         $childRun = $this->createRun();
@@ -296,21 +294,24 @@ class SearchAttributeTest extends TestCase
         $this->assertTrue($childAttrs['priority']->inherited_from_parent);
     }
 
-    /** @test */
-    public function it_can_override_inherited_attributes(): void
+    public function testItCanOverrideInheritedAttributes(): void
     {
         $parentRun = $this->createRun();
         $childRun = $this->createRun();
 
         // Parent attributes
-        $call1 = new UpsertSearchAttributesCall(['status' => 'running']);
+        $call1 = new UpsertSearchAttributesCall([
+            'status' => 'running',
+        ]);
         $this->service->upsert($parentRun, $call1, 5);
 
         // Inherit to child
         $this->service->inheritFromParent($parentRun, $childRun, 1);
 
         // Child overrides
-        $call2 = new UpsertSearchAttributesCall(['status' => 'completed']);
+        $call2 = new UpsertSearchAttributesCall([
+            'status' => 'completed',
+        ]);
         $this->service->upsert($childRun, $call2, 10);
 
         $attr = WorkflowSearchAttribute::where('workflow_run_id', $childRun->id)
@@ -322,8 +323,7 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals(10, $attr->upserted_at_sequence);
     }
 
-    /** @test */
-    public function it_retrieves_attributes_as_key_value_array(): void
+    public function testItRetrievesAttributesAsKeyValueArray(): void
     {
         $run = $this->createRun();
 
@@ -346,8 +346,7 @@ class SearchAttributeTest extends TestCase
         $this->assertEqualsWithDelta(98.6, $attributes['temperature'], 0.001);
     }
 
-    /** @test */
-    public function it_retrieves_typed_attributes_with_metadata(): void
+    public function testItRetrievesTypedAttributesWithMetadata(): void
     {
         $run = $this->createRun();
 
@@ -374,17 +373,22 @@ class SearchAttributeTest extends TestCase
         ], $typed);
     }
 
-    /** @test */
-    public function it_supports_efficient_keyword_filtering(): void
+    public function testItSupportsEfficientKeywordFiltering(): void
     {
         // Create multiple runs with different customer_ids
         $run1 = $this->createRun();
         $run2 = $this->createRun();
         $run3 = $this->createRun();
 
-        $this->service->upsert($run1, new UpsertSearchAttributesCall(['customer_id' => 'cust_a']), 1);
-        $this->service->upsert($run2, new UpsertSearchAttributesCall(['customer_id' => 'cust_b']), 1);
-        $this->service->upsert($run3, new UpsertSearchAttributesCall(['customer_id' => 'cust_a']), 1);
+        $this->service->upsert($run1, new UpsertSearchAttributesCall([
+            'customer_id' => 'cust_a',
+        ]), 1);
+        $this->service->upsert($run2, new UpsertSearchAttributesCall([
+            'customer_id' => 'cust_b',
+        ]), 1);
+        $this->service->upsert($run3, new UpsertSearchAttributesCall([
+            'customer_id' => 'cust_a',
+        ]), 1);
 
         // Query by keyword value (should use index)
         $matching = WorkflowSearchAttribute::where('key', 'customer_id')
@@ -398,16 +402,21 @@ class SearchAttributeTest extends TestCase
         $this->assertNotContains($run2->id, $matching);
     }
 
-    /** @test */
-    public function it_supports_efficient_int_range_queries(): void
+    public function testItSupportsEfficientIntRangeQueries(): void
     {
         $run1 = $this->createRun();
         $run2 = $this->createRun();
         $run3 = $this->createRun();
 
-        $this->service->upsert($run1, new UpsertSearchAttributesCall(['priority' => 1]), 1);
-        $this->service->upsert($run2, new UpsertSearchAttributesCall(['priority' => 5]), 1);
-        $this->service->upsert($run3, new UpsertSearchAttributesCall(['priority' => 10]), 1);
+        $this->service->upsert($run1, new UpsertSearchAttributesCall([
+            'priority' => 1,
+        ]), 1);
+        $this->service->upsert($run2, new UpsertSearchAttributesCall([
+            'priority' => 5,
+        ]), 1);
+        $this->service->upsert($run3, new UpsertSearchAttributesCall([
+            'priority' => 10,
+        ]), 1);
 
         // Query range (should use index)
         $highPriority = WorkflowSearchAttribute::where('key', 'priority')

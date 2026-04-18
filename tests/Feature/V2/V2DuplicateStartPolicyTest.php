@@ -14,10 +14,8 @@ use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 
@@ -27,8 +25,10 @@ final class V2DuplicateStartPolicyTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
     }
 
     public function testRejectDuplicateThrowsOnSecondStart(): void

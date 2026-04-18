@@ -171,10 +171,7 @@ class WorkflowChildCall extends Model
     public static function getOpenChildren(WorkflowRun $parentRun): \Illuminate\Database\Eloquent\Collection
     {
         return static::where('parent_workflow_run_id', $parentRun->id)
-            ->whereIn('status', [
-                ChildCallStatus::Scheduled->value,
-                ChildCallStatus::Started->value,
-            ])
+            ->whereIn('status', [ChildCallStatus::Scheduled->value, ChildCallStatus::Started->value])
             ->orderBy('sequence', 'asc')
             ->get();
     }
@@ -215,10 +212,7 @@ class WorkflowChildCall extends Model
     public static function countOpenChildren(WorkflowRun $parentRun): int
     {
         return static::where('parent_workflow_run_id', $parentRun->id)
-            ->whereIn('status', [
-                ChildCallStatus::Scheduled->value,
-                ChildCallStatus::Started->value,
-            ])
+            ->whereIn('status', [ChildCallStatus::Scheduled->value, ChildCallStatus::Started->value])
             ->count();
     }
 }

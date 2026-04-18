@@ -24,7 +24,7 @@ class MemoUpsertService
         int $sequence,
         bool $inheritedFromParent = false,
     ): void {
-        DB::transaction(function () use ($run, $call, $sequence, $inheritedFromParent): void {
+        DB::transaction(static function () use ($run, $call, $sequence, $inheritedFromParent): void {
             foreach ($call->memos as $key => $value) {
                 if ($value === null) {
                     // Null value means delete
@@ -71,7 +71,7 @@ class MemoUpsertService
     ): void {
         $parentMemos = WorkflowMemo::where('workflow_run_id', $parentRun->id)->get();
 
-        DB::transaction(function () use ($parentMemos, $childRun, $childStartSequence): void {
+        DB::transaction(static function () use ($parentMemos, $childRun, $childStartSequence): void {
             foreach ($parentMemos as $parentMemo) {
                 $childMemo = new WorkflowMemo([
                     'workflow_run_id' => $childRun->id,
@@ -104,7 +104,9 @@ class MemoUpsertService
     {
         return WorkflowMemo::where('workflow_run_id', $run->id)
             ->get()
-            ->mapWithKeys(fn (WorkflowMemo $memo): array => [$memo->key => $memo->getValue()])
+            ->mapWithKeys(static fn (WorkflowMemo $memo): array => [
+                $memo->key => $memo->getValue(),
+            ])
             ->toArray();
     }
 
@@ -119,7 +121,7 @@ class MemoUpsertService
     {
         return WorkflowMemo::where('workflow_run_id', $run->id)
             ->get()
-            ->mapWithKeys(fn (WorkflowMemo $memo): array => [
+            ->mapWithKeys(static fn (WorkflowMemo $memo): array => [
                 $memo->key => [
                     'value' => $memo->getValue(),
                     'inherited' => $memo->inherited_from_parent,

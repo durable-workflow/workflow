@@ -11,7 +11,8 @@ class WorkflowLinkObserver
 {
     public function __construct(
         private readonly ChildWorkflowNamespaceProjection $projection,
-    ) {}
+    ) {
+    }
 
     public function created(WorkflowLink $link): void
     {

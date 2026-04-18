@@ -31,7 +31,7 @@ final class WorkflowFiberContextTimeTest extends TestCase
         $event = CarbonImmutable::parse('2026-03-14T15:09:26Z');
         $observed = null;
 
-        $fiber = new Fiber(function () use (&$observed): void {
+        $fiber = new Fiber(static function () use (&$observed): void {
             WorkflowFiberContext::enter();
 
             try {
@@ -62,7 +62,7 @@ final class WorkflowFiberContextTimeTest extends TestCase
         $event = CarbonImmutable::parse('2026-03-14T15:09:26Z');
         $afterLeave = null;
 
-        $fiber = new Fiber(function () use (&$afterLeave): void {
+        $fiber = new Fiber(static function () use (&$afterLeave): void {
             WorkflowFiberContext::enter();
             WorkflowFiberContext::leave();
             $afterLeave = WorkflowFiberContext::getTime();

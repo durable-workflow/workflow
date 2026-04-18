@@ -143,22 +143,27 @@ class WorkflowFacadeTest extends TestCase
     {
         // Outside a fiber, suspend returns the call instance; upsertMemo is
         // typed void, so we can only assert it does not error.
-        Workflow::upsertMemo(['stage' => 'validated']);
+        Workflow::upsertMemo([
+            'stage' => 'validated',
+        ]);
         $this->assertTrue(true);
 
         // And that a raw call construction matches the suspend-returned type.
-        $this->assertInstanceOf(UpsertMemoCall::class, new UpsertMemoCall(['a' => 1]));
+        $this->assertInstanceOf(UpsertMemoCall::class, new UpsertMemoCall([
+            'a' => 1,
+        ]));
     }
 
     public function testUpsertSearchAttributesSuspendsWithTheRightCall(): void
     {
-        Workflow::upsertSearchAttributes(['region' => 'us']);
+        Workflow::upsertSearchAttributes([
+            'region' => 'us',
+        ]);
         $this->assertTrue(true);
 
-        $this->assertInstanceOf(
-            UpsertSearchAttributesCall::class,
-            new UpsertSearchAttributesCall(['a' => 1]),
-        );
+        $this->assertInstanceOf(UpsertSearchAttributesCall::class, new UpsertSearchAttributesCall([
+            'a' => 1,
+        ]),);
     }
 
     public function testEveryFacadeMethodIsStatic(): void
@@ -195,10 +200,7 @@ class WorkflowFacadeTest extends TestCase
                 $reflection->isStatic(),
                 "Workflow::{$method}() must be static to be usable from workflow code without a call site.",
             );
-            $this->assertTrue(
-                $reflection->isPublic(),
-                "Workflow::{$method}() must be public.",
-            );
+            $this->assertTrue($reflection->isPublic(), "Workflow::{$method}() must be public.");
         }
     }
 }

@@ -223,11 +223,7 @@ final class V2WorkflowTimeoutTest extends TestCase
 
         // Run deadline is reset for each new run and must never move earlier.
         $this->assertTrue($lastRun->run_deadline_at->gte($firstRun->run_deadline_at));
-        $this->assertEqualsWithDelta(
-            3600,
-            $lastRun->run_deadline_at->diffInSeconds($lastRun->started_at),
-            1,
-        );
+        $this->assertEqualsWithDelta(3600, $lastRun->run_deadline_at->diffInSeconds($lastRun->started_at), 1);
     }
 
     public function testControlPlaneDescribeIncludesTimeoutFields(): void
@@ -291,7 +287,8 @@ final class V2WorkflowTimeoutTest extends TestCase
             'started_at' => $startedAt,
         ]);
 
-        $runDeadlineAt = $startedAt->copy()->addSeconds(60);
+        $runDeadlineAt = $startedAt->copy()
+            ->addSeconds(60);
 
         $run = WorkflowRun::query()->create([
             'workflow_instance_id' => $instance->id,
@@ -308,7 +305,9 @@ final class V2WorkflowTimeoutTest extends TestCase
             'last_progress_at' => $startedAt,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
@@ -317,7 +316,8 @@ final class V2WorkflowTimeoutTest extends TestCase
             'available_at' => $startedAt,
             'payload' => [],
             'leased_at' => $startedAt,
-            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+            'lease_expires_at' => $startedAt->copy()
+                ->addMinutes(5),
         ]);
 
         // Advance past run deadline.
@@ -348,7 +348,10 @@ final class V2WorkflowTimeoutTest extends TestCase
 
         $this->assertSame('run_timeout', $timedOutEvent->payload['timeout_kind']);
         $this->assertSame('timeout', $timedOutEvent->payload['failure_category']);
-        $this->assertSame(\Workflow\V2\Exceptions\WorkflowTimeoutException::class, $timedOutEvent->payload['exception_class']);
+        $this->assertSame(
+            \Workflow\V2\Exceptions\WorkflowTimeoutException::class,
+            $timedOutEvent->payload['exception_class']
+        );
 
         Carbon::setTestNow();
     }
@@ -368,7 +371,8 @@ final class V2WorkflowTimeoutTest extends TestCase
             'started_at' => $startedAt,
         ]);
 
-        $executionDeadlineAt = $startedAt->copy()->addSeconds(300);
+        $executionDeadlineAt = $startedAt->copy()
+            ->addSeconds(300);
 
         $run = WorkflowRun::query()->create([
             'workflow_instance_id' => $instance->id,
@@ -384,7 +388,9 @@ final class V2WorkflowTimeoutTest extends TestCase
             'last_progress_at' => $startedAt,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
@@ -393,7 +399,8 @@ final class V2WorkflowTimeoutTest extends TestCase
             'available_at' => $startedAt,
             'payload' => [],
             'leased_at' => $startedAt,
-            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+            'lease_expires_at' => $startedAt->copy()
+                ->addMinutes(5),
         ]);
 
         // Advance past execution deadline.
@@ -445,12 +452,15 @@ final class V2WorkflowTimeoutTest extends TestCase
             'connection' => null,
             'queue' => null,
             'run_timeout_seconds' => 30,
-            'run_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'run_deadline_at' => $startedAt->copy()
+                ->addSeconds(30),
             'started_at' => $startedAt,
             'last_progress_at' => $startedAt,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         // Create an open activity execution.
         $activityExecution = \Workflow\V2\Models\ActivityExecution::query()->create([
@@ -469,9 +479,12 @@ final class V2WorkflowTimeoutTest extends TestCase
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Leased->value,
             'available_at' => $startedAt,
-            'payload' => ['activity_execution_id' => $activityExecution->id],
+            'payload' => [
+                'activity_execution_id' => $activityExecution->id,
+            ],
             'leased_at' => $startedAt,
-            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+            'lease_expires_at' => $startedAt->copy()
+                ->addMinutes(5),
         ]);
 
         // Create an open timer.
@@ -479,7 +492,8 @@ final class V2WorkflowTimeoutTest extends TestCase
             'workflow_run_id' => $run->id,
             'sequence' => 2,
             'status' => \Workflow\V2\Enums\TimerStatus::Pending->value,
-            'fire_at' => $startedAt->copy()->addMinutes(10),
+            'fire_at' => $startedAt->copy()
+                ->addMinutes(10),
             'delay_seconds' => 600,
         ]);
 
@@ -491,7 +505,8 @@ final class V2WorkflowTimeoutTest extends TestCase
             'available_at' => $startedAt,
             'payload' => [],
             'leased_at' => $startedAt,
-            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+            'lease_expires_at' => $startedAt->copy()
+                ->addMinutes(5),
         ]);
 
         // Advance past deadline.
@@ -550,12 +565,15 @@ final class V2WorkflowTimeoutTest extends TestCase
             'connection' => null,
             'queue' => null,
             'run_timeout_seconds' => 30,
-            'run_deadline_at' => $startedAt->copy()->addSeconds(30),
+            'run_deadline_at' => $startedAt->copy()
+                ->addSeconds(30),
             'started_at' => $startedAt,
             'last_progress_at' => $startedAt,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
@@ -564,7 +582,8 @@ final class V2WorkflowTimeoutTest extends TestCase
             'available_at' => $startedAt,
             'payload' => [],
             'leased_at' => $startedAt,
-            'lease_expires_at' => $startedAt->copy()->addMinutes(5),
+            'lease_expires_at' => $startedAt->copy()
+                ->addMinutes(5),
         ]);
 
         Carbon::setTestNow($startedAt->copy()->addSeconds(60));
@@ -594,10 +613,7 @@ final class V2WorkflowTimeoutTest extends TestCase
         WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
 
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'timeout-no-enforce-1');
-        $workflow->start(
-            'Taylor',
-            StartOptions::rejectDuplicate()->withRunTimeout(3600),
-        );
+        $workflow->start('Taylor', StartOptions::rejectDuplicate()->withRunTimeout(3600));
 
         $this->assertTrue($workflow->refresh()->completed());
 

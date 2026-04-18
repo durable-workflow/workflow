@@ -23,7 +23,8 @@ return new class() extends Migration {
 
             // Metadata
             $table->unsignedInteger('upserted_at_sequence');
-            $table->boolean('inherited_from_parent')->default(false);
+            $table->boolean('inherited_from_parent')
+                ->default(false);
 
             $table->timestamps(6);
 

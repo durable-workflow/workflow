@@ -40,7 +40,8 @@ final class V2ActivityExceptionCodecTest extends TestCase
         // Package default differs from the run's pinned codec: this is the
         // exact mismatch that the old codec-blind Serializer::serialize()
         // would silently mis-encode.
-        config()->set('workflows.serializer', 'avro');
+        config()
+            ->set('workflows.serializer', 'avro');
 
         [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
             pinnedCodec: 'json',
@@ -114,7 +115,8 @@ final class V2ActivityExceptionCodecTest extends TestCase
     {
         // Mirror case: Avro-pinned run under a JSON package default still
         // has to write Avro bytes, not JSON.
-        config()->set('workflows.serializer', 'json');
+        config()
+            ->set('workflows.serializer', 'json');
 
         [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
             pinnedCodec: 'avro',
@@ -198,7 +200,9 @@ final class V2ActivityExceptionCodecTest extends TestCase
             instanceId: 'td090-failure-details-json',
         );
 
-        $detailsBlob = Serializer::serializeWithCodec('json', ['retry_after' => 30]);
+        $detailsBlob = Serializer::serializeWithCodec('json', [
+            'retry_after' => 30,
+        ]);
 
         $outcome = ActivityOutcomeRecorder::record(
             taskId: $task->id,
@@ -285,7 +289,9 @@ final class V2ActivityExceptionCodecTest extends TestCase
             'last_progress_at' => $now,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         $attemptId = (string) Str::ulid();
 
@@ -321,7 +327,8 @@ final class V2ActivityExceptionCodecTest extends TestCase
             'connection' => null,
             'queue' => null,
             'leased_at' => $now,
-            'lease_expires_at' => $now->copy()->addMinutes(5),
+            'lease_expires_at' => $now->copy()
+                ->addMinutes(5),
             'attempt_count' => 1,
         ]);
 
@@ -334,7 +341,8 @@ final class V2ActivityExceptionCodecTest extends TestCase
             'status' => ActivityAttemptStatus::Running->value,
             'lease_owner' => $task->id,
             'started_at' => $now,
-            'lease_expires_at' => $now->copy()->addMinutes(5),
+            'lease_expires_at' => $now->copy()
+                ->addMinutes(5),
         ]);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [

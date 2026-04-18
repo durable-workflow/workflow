@@ -73,8 +73,14 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::activityTaskVerbs(), $summary['activity_task_verbs']);
         $this->assertSame(WorkerProtocolVersion::nonTerminalCommandTypes(), $summary['non_terminal_command_types']);
         $this->assertSame(WorkerProtocolVersion::terminalCommandTypes(), $summary['terminal_command_types']);
-        $this->assertSame(WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE, $summary['history_pagination']['default_page_size']);
-        $this->assertSame(WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE, $summary['history_pagination']['max_page_size']);
+        $this->assertSame(
+            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+            $summary['history_pagination']['default_page_size']
+        );
+        $this->assertSame(
+            WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+            $summary['history_pagination']['max_page_size']
+        );
     }
 
     public function testDefaultHistoryPageSizeIsReasonable(): void

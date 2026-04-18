@@ -7,9 +7,9 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 
 final class OperatorDashboardSummary
 {
@@ -47,7 +47,8 @@ final class OperatorDashboardSummary
     public static function fleetTrendsSeries(?CarbonInterface $now = null): array
     {
         $now ??= now();
-        $weekAgo = $now->copy()->subWeek();
+        $weekAgo = $now->copy()
+            ->subWeek();
 
         // Fetch terminal-run rows in the last 7 days and bucket them hourly in PHP
         // to avoid DB-specific date formatting (DATE_FORMAT is MySQL-only).
@@ -68,13 +69,17 @@ final class OperatorDashboardSummary
 
         $hourCounts = [];
         foreach ($rows as $row) {
-            $hourKey = $row->closed_at->copy()->startOfHour()->format('Y-m-d H:00:00');
+            $hourKey = $row->closed_at->copy()
+                ->startOfHour()
+                ->format('Y-m-d H:00:00');
             $hourCounts[$hourKey][$row->status_bucket] = ($hourCounts[$hourKey][$row->status_bucket] ?? 0) + 1;
         }
 
         // Generate all hours in the range
-        $current = $weekAgo->copy()->startOfHour();
-        $end = $now->copy()->startOfHour();
+        $current = $weekAgo->copy()
+            ->startOfHour();
+        $end = $now->copy()
+            ->startOfHour();
 
         while ($current->lte($end)) {
             $hourKey = $current->format('Y-m-d H:00:00');
@@ -95,9 +100,12 @@ final class OperatorDashboardSummary
      */
     private static function fleetOverview(CarbonInterface $now): array
     {
-        $hourAgo = $now->copy()->subHour();
-        $dayAgo = $now->copy()->subDay();
-        $weekAgo = $now->copy()->subWeek();
+        $hourAgo = $now->copy()
+            ->subHour();
+        $dayAgo = $now->copy()
+            ->subDay();
+        $weekAgo = $now->copy()
+            ->subWeek();
 
         // Current counts by status bucket
         $currentCounts = self::summaryModel()::query()
@@ -163,7 +171,8 @@ final class OperatorDashboardSummary
      */
     private static function workflowTypeHealth(CarbonInterface $now): array
     {
-        $weekAgo = $now->copy()->subWeek();
+        $weekAgo = $now->copy()
+            ->subWeek();
 
         // Get top 10 workflow types by volume in the last week
         $types = self::summaryModel()::query()
@@ -241,7 +250,8 @@ final class OperatorDashboardSummary
         $alerts = [];
 
         // 1. Stuck workers (no heartbeat in last 5 minutes)
-        $staleHeartbeatThreshold = $now->copy()->subMinutes(5);
+        $staleHeartbeatThreshold = $now->copy()
+            ->subMinutes(5);
         $stuckWorkers = WorkerCompatibilityHeartbeat::query()
             ->where('recorded_at', '<', $staleHeartbeatThreshold)
             ->where('recorded_at', '>', $now->copy()->subHour()) // Still recently active
@@ -258,7 +268,8 @@ final class OperatorDashboardSummary
         }
 
         // 2. Long-running workflows (running > 1 hour without wait)
-        $longRunningThreshold = $now->copy()->subHour();
+        $longRunningThreshold = $now->copy()
+            ->subHour();
         $longRunners = self::summaryModel()::query()
             ->where('status_bucket', 'running')
             ->where('started_at', '<', $longRunningThreshold)
@@ -276,7 +287,8 @@ final class OperatorDashboardSummary
         }
 
         // 3. Retry storms (workflows with 10+ exceptions in last hour)
-        $hourAgo = $now->copy()->subHour();
+        $hourAgo = $now->copy()
+            ->subHour();
         $retryStorms = self::summaryModel()::query()
             ->where('status_bucket', 'running')
             ->where('updated_at', '>=', $hourAgo)
@@ -311,7 +323,12 @@ final class OperatorDashboardSummary
                 $alerts[] = [
                     'type' => 'high_failure_rate',
                     'severity' => 'error',
-                    'message' => sprintf('%.0f%% failure rate in last hour (%d/%d)', $failureRate, $recentFailed, $recentTotal),
+                    'message' => sprintf(
+                        '%.0f%% failure rate in last hour (%d/%d)',
+                        $failureRate,
+                        $recentFailed,
+                        $recentTotal
+                    ),
                     'count' => $recentFailed,
                     'action' => 'Review failed workflows for common patterns',
                 ];
@@ -319,7 +336,8 @@ final class OperatorDashboardSummary
         }
 
         // 5. Workflows waiting too long (wait > 30 minutes)
-        $longWaitThreshold = $now->copy()->subMinutes(30);
+        $longWaitThreshold = $now->copy()
+            ->subMinutes(30);
         $longWaits = self::summaryModel()::query()
             ->where('status_bucket', 'running')
             ->whereNotNull('wait_started_at')
@@ -339,7 +357,8 @@ final class OperatorDashboardSummary
         return [
             'alerts' => $alerts,
             'total_alerts' => count($alerts),
-            'has_critical' => collect($alerts)->contains('severity', 'error'),
+            'has_critical' => collect($alerts)
+                ->contains('severity', 'error'),
         ];
     }
 

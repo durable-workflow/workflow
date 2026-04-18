@@ -98,10 +98,7 @@ final class V2MessageCursorContinueAsNewTest extends TestCase
         $this->assertCount(1, $cursorEvents);
         $this->assertSame(0, $cursorEvents[0]->payload['previous_position']);
         $this->assertSame((int) $command->message_sequence, $cursorEvents[0]->payload['new_position']);
-        $this->assertSame(
-            sprintf('instance:%s', $instance->id),
-            $cursorEvents[0]->payload['stream_key'],
-        );
+        $this->assertSame(sprintf('instance:%s', $instance->id), $cursorEvents[0]->payload['stream_key']);
     }
 
     public function testMultipleSignalsBeforeContinueAsNewTransferCursorCorrectly(): void

@@ -613,7 +613,6 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('cancelled', $result['run_status']);
     }
 
-
     public function testStatusReturnsLeasedTaskMetadata(): void
     {
         $run = $this->createWaitingRun();
@@ -623,13 +622,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
             'attempt_count' => 2,
         ]);
 
@@ -656,13 +657,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->subMinute(),
+            'lease_expires_at' => now()
+                ->subMinute(),
         ]);
 
         $result = $this->bridge->status($task->id);
@@ -682,7 +685,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -717,7 +721,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
@@ -731,20 +736,24 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testStatusReturnsRunStatusFromRun(): void
     {
         $run = $this->createWaitingRun();
-        $run->forceFill(['status' => RunStatus::Cancelled->value])->save();
+        $run->forceFill([
+            'status' => RunStatus::Cancelled->value,
+        ])->save();
 
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
         ]);
 
         $result = $this->bridge->status($task->id);
@@ -762,13 +771,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
-            'available_at' => now()->subSecond(),
+            'available_at' => now()
+                ->subSecond(),
             'payload' => [],
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
             'lease_owner' => 'worker-1',
-            'lease_expires_at' => now()->addMinutes(5),
+            'lease_expires_at' => now()
+                ->addMinutes(5),
             'attempt_count' => 0,
         ]);
 
@@ -777,7 +788,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNull($result['attempt_count']);
     }
 
-        public function testClaimStatusRejectsActivityTask(): void
+    public function testClaimStatusRejectsActivityTask(): void
     {
         $run = $this->createWaitingRun();
 
@@ -1079,7 +1090,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
-        $serialized = Serializer::serialize(['seed' => 123]);
+        $serialized = Serializer::serialize([
+            'seed' => 123,
+        ]);
 
         $result = $this->bridge->complete($task->id, [
             [
@@ -1408,7 +1421,6 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
     }
 
-
     public function testCompleteStartsChildWorkflowWithParentClosePolicy(): void
     {
         $run = $this->createWaitingRun();
@@ -1477,7 +1489,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('abandon', $scheduledEvent->payload['parent_close_policy']);
     }
 
-        public function testCompleteContinuesAsNew(): void
+    public function testCompleteContinuesAsNew(): void
     {
         $run = $this->createWaitingRun();
 
@@ -1709,7 +1721,10 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $run = $this->createWaitingRun();
 
         $result = $this->bridge->complete('nonexistent-task', [
-            ['type' => 'complete_workflow', 'result' => null],
+            [
+                'type' => 'complete_workflow',
+                'result' => null,
+            ],
         ]);
 
         $this->assertFalse($result['completed']);

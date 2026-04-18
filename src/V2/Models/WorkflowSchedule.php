@@ -29,6 +29,15 @@ class WorkflowSchedule extends Model
 {
     use HasUlids;
 
+    public const OVERLAP_POLICIES = [
+        'skip',
+        'buffer_one',
+        'buffer_all',
+        'cancel_other',
+        'terminate_other',
+        'allow_all',
+    ];
+
     public $incrementing = false;
 
     protected $table = 'workflow_schedules';
@@ -60,15 +69,6 @@ class WorkflowSchedule extends Model
         'fires_count' => 'integer',
         'failures_count' => 'integer',
         'skipped_trigger_count' => 'integer',
-    ];
-
-    public const OVERLAP_POLICIES = [
-        'skip',
-        'buffer_one',
-        'buffer_all',
-        'cancel_other',
-        'terminate_other',
-        'allow_all',
     ];
 
     public function latestInstance(): BelongsTo
@@ -252,14 +252,15 @@ class WorkflowSchedule extends Model
      * Uses dragonmantank/cron-expression when available, otherwise falls back
      * to a minute-resolution scanner for standard 5-field cron expressions.
      */
-    public static function nextCronOccurrence(string $expression, DateTimeInterface $after, string $timezone = 'UTC'): ?DateTimeInterface
-    {
+    public static function nextCronOccurrence(
+        string $expression,
+        DateTimeInterface $after,
+        string $timezone = 'UTC'
+    ): ?DateTimeInterface {
         if (class_exists(\Cron\CronExpression::class)) {
             $cron = new \Cron\CronExpression($expression);
 
-            return Carbon::instance(
-                $cron->getNextRunDate($after, 0, false, $timezone)
-            );
+            return Carbon::instance($cron->getNextRunDate($after, 0, false, $timezone));
         }
 
         $tz = new DateTimeZone($timezone);
@@ -287,55 +288,6 @@ class WorkflowSchedule extends Model
         }
 
         return null;
-    }
-
-    private static function cronFieldMatches(string $field, int $value, int $min, int $max): bool
-    {
-        if ($field === '*') {
-            return true;
-        }
-
-        foreach (explode(',', $field) as $part) {
-            if (str_contains($part, '/')) {
-                [$range, $step] = explode('/', $part, 2);
-                $step = (int) $step;
-                if ($step < 1) {
-                    continue;
-                }
-
-                if ($range === '*') {
-                    $rangeStart = $min;
-                    $rangeEnd = $max;
-                } elseif (str_contains($range, '-')) {
-                    [$rangeStart, $rangeEnd] = array_map('intval', explode('-', $range, 2));
-                } else {
-                    continue;
-                }
-
-                for ($i = $rangeStart; $i <= $rangeEnd; $i += $step) {
-                    if ($i === $value) {
-                        return true;
-                    }
-                }
-
-                continue;
-            }
-
-            if (str_contains($part, '-')) {
-                [$start, $end] = array_map('intval', explode('-', $part, 2));
-                if ($value >= $start && $value <= $end) {
-                    return true;
-                }
-
-                continue;
-            }
-
-            if ((int) $part === $value) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
@@ -366,7 +318,10 @@ class WorkflowSchedule extends Model
     public function bufferAction(): void
     {
         $buffer = $this->buffered_actions ?? [];
-        $buffer[] = ['buffered_at' => now()->toIso8601String()];
+        $buffer[] = [
+            'buffered_at' => now()
+                ->toIso8601String(),
+        ];
         $this->buffered_actions = array_values($buffer);
     }
 
@@ -410,7 +365,8 @@ class WorkflowSchedule extends Model
             'workflow_id' => $workflowId,
             'run_id' => $runId,
             'outcome' => $outcome,
-            'fired_at' => now()->toIso8601String(),
+            'fired_at' => now()
+                ->toIso8601String(),
         ];
 
         if (count($actions) > 10) {
@@ -429,7 +385,8 @@ class WorkflowSchedule extends Model
         $actions[] = [
             'outcome' => 'failed',
             'reason' => $reason,
-            'fired_at' => now()->toIso8601String(),
+            'fired_at' => now()
+                ->toIso8601String(),
         ];
 
         if (count($actions) > 10) {
@@ -491,5 +448,54 @@ class WorkflowSchedule extends Model
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
         ];
+    }
+
+    private static function cronFieldMatches(string $field, int $value, int $min, int $max): bool
+    {
+        if ($field === '*') {
+            return true;
+        }
+
+        foreach (explode(',', $field) as $part) {
+            if (str_contains($part, '/')) {
+                [$range, $step] = explode('/', $part, 2);
+                $step = (int) $step;
+                if ($step < 1) {
+                    continue;
+                }
+
+                if ($range === '*') {
+                    $rangeStart = $min;
+                    $rangeEnd = $max;
+                } elseif (str_contains($range, '-')) {
+                    [$rangeStart, $rangeEnd] = array_map('intval', explode('-', $range, 2));
+                } else {
+                    continue;
+                }
+
+                for ($i = $rangeStart; $i <= $rangeEnd; $i += $step) {
+                    if ($i === $value) {
+                        return true;
+                    }
+                }
+
+                continue;
+            }
+
+            if (str_contains($part, '-')) {
+                [$start, $end] = array_map('intval', explode('-', $part, 2));
+                if ($value >= $start && $value <= $end) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if ((int) $part === $value) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

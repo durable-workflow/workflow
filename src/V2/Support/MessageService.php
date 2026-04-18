@@ -44,7 +44,7 @@ class MessageService
         $channel = is_string($channel) ? $channel : $channel->value;
         $streamKey = $streamKey ?? "instance:{$targetInstanceId}";
 
-        return DB::transaction(function () use (
+        return DB::transaction(static function () use (
             $sourceRun,
             $channel,
             $targetInstanceId,
@@ -135,14 +135,9 @@ class MessageService
      * @param WorkflowRun $run The consuming workflow run
      * @param WorkflowMessage $message The message to consume
      * @param int $consumedBySequence The history sequence that consumed this message
-     *
-     * @throws InvalidArgumentException if message is not consumable
      */
-    public function consumeMessage(
-        WorkflowRun $run,
-        WorkflowMessage $message,
-        int $consumedBySequence,
-    ): void {
+    public function consumeMessage(WorkflowRun $run, WorkflowMessage $message, int $consumedBySequence): void
+    {
         if (! $message->isConsumable()) {
             throw new InvalidArgumentException(sprintf(
                 'Message %d is not consumable (state: %s)',
@@ -159,17 +154,12 @@ class MessageService
             ));
         }
 
-        DB::transaction(function () use ($run, $message, $consumedBySequence): void {
+        DB::transaction(static function () use ($run, $message, $consumedBySequence): void {
             // Mark message as consumed
             $message->markConsumed($consumedBySequence);
 
             // Advance cursor to this message's sequence
-            MessageStreamCursor::advanceCursor(
-                $run,
-                $message->sequence,
-                null,
-                $message->stream_key,
-            );
+            MessageStreamCursor::advanceCursor($run, $message->sequence, null, $message->stream_key);
         });
     }
 
@@ -180,11 +170,8 @@ class MessageService
      * @param array<WorkflowMessage> $messages Messages to consume
      * @param int $consumedBySequence The history sequence that consumed these messages
      */
-    public function consumeMessageBatch(
-        WorkflowRun $run,
-        array $messages,
-        int $consumedBySequence,
-    ): void {
+    public function consumeMessageBatch(WorkflowRun $run, array $messages, int $consumedBySequence): void
+    {
         if (empty($messages)) {
             return;
         }
@@ -192,7 +179,13 @@ class MessageService
         $maxSequence = 0;
         $streamKey = null;
 
-        DB::transaction(function () use ($run, $messages, $consumedBySequence, &$maxSequence, &$streamKey): void {
+        DB::transaction(static function () use (
+            $run,
+            $messages,
+            $consumedBySequence,
+            &$maxSequence,
+            &$streamKey
+        ): void {
             foreach ($messages as $message) {
                 if (! $message instanceof WorkflowMessage) {
                     throw new InvalidArgumentException('All items must be WorkflowMessage instances');
@@ -224,12 +217,7 @@ class MessageService
 
             // Advance cursor to highest consumed sequence
             if ($maxSequence > 0 && $streamKey !== null) {
-                MessageStreamCursor::advanceCursor(
-                    $run,
-                    $maxSequence,
-                    null,
-                    $streamKey,
-                );
+                MessageStreamCursor::advanceCursor($run, $maxSequence, null, $streamKey);
             }
         });
     }
@@ -242,10 +230,8 @@ class MessageService
      *
      * @return int Unconsumed message count
      */
-    public function getUnconsumedCount(
-        WorkflowRun $run,
-        ?string $streamKey = null,
-    ): int {
+    public function getUnconsumedCount(WorkflowRun $run, ?string $streamKey = null): int
+    {
         $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
         $afterSequence = MessageStreamCursor::positionForRun($run);
 
@@ -260,10 +246,8 @@ class MessageService
      *
      * @return bool True if unconsumed messages exist
      */
-    public function hasUnconsumedMessages(
-        WorkflowRun $run,
-        ?string $streamKey = null,
-    ): bool {
+    public function hasUnconsumedMessages(WorkflowRun $run, ?string $streamKey = null): bool
+    {
         $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
         $afterSequence = MessageStreamCursor::positionForRun($run);
 
@@ -278,11 +262,9 @@ class MessageService
      * @param WorkflowRun $closingRun The run being closed
      * @param WorkflowRun $continuedRun The new run from continue-as-new
      */
-    public function transferMessagesToContinuedRun(
-        WorkflowRun $closingRun,
-        WorkflowRun $continuedRun,
-    ): void {
-        DB::transaction(function () use ($closingRun, $continuedRun): void {
+    public function transferMessagesToContinuedRun(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
+    {
+        DB::transaction(static function () use ($closingRun, $continuedRun): void {
             // Transfer pending inbound messages to new run
             WorkflowMessage::where('workflow_run_id', $closingRun->id)
                 ->where('direction', MessageDirection::Inbound)

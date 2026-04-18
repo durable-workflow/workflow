@@ -7,8 +7,8 @@ namespace Tests\Fixtures\V2;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
-use function Workflow\V2\signal;
 use function Workflow\V2\continueAsNew;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Signal('name-provided', [

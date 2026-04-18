@@ -18,18 +18,24 @@ final class TestSagaParallelFailingCompensationWorkflow extends Workflow
 
         try {
             $flightId = activity(TestSagaBookingActivity::class, 'flight');
-            $this->addCompensation(fn () => activity(TestSagaFailingCancelActivity::class, 'flight', $flightId));
+            $this->addCompensation(static fn () => activity(TestSagaFailingCancelActivity::class, 'flight', $flightId));
 
             $hotelId = activity(TestSagaBookingActivity::class, 'hotel');
-            $this->addCompensation(fn () => activity(TestSagaCancelActivity::class, 'hotel', $hotelId));
+            $this->addCompensation(static fn () => activity(TestSagaCancelActivity::class, 'hotel', $hotelId));
 
             activity(TestFailingActivity::class);
 
-            return ['flight' => $flightId, 'hotel' => $hotelId];
+            return [
+                'flight' => $flightId,
+                'hotel' => $hotelId,
+            ];
         } catch (Throwable $e) {
             $this->compensate();
 
-            return ['compensated' => true, 'reason' => $e->getMessage()];
+            return [
+                'compensated' => true,
+                'reason' => $e->getMessage(),
+            ];
         }
     }
 }

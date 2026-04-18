@@ -15,8 +15,8 @@ final class TestParallelDeterministicTimeWorkflow extends Workflow
         $timeAtStart = Workflow::now();
 
         $results = all([
-            fn () => activity(TestGreetingActivity::class, $firstName),
-            fn () => activity(TestGreetingActivity::class, $secondName),
+            static fn () => activity(TestGreetingActivity::class, $firstName),
+            static fn () => activity(TestGreetingActivity::class, $secondName),
         ]);
 
         $timeAfterParallel = Workflow::now();

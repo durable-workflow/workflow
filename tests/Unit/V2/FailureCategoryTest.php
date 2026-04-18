@@ -38,10 +38,7 @@ final class FailureCategoryTest extends TestCase
             'structural_limit',
         ];
 
-        $actual = array_map(
-            static fn (FailureCategory $case): string => $case->value,
-            FailureCategory::cases(),
-        );
+        $actual = array_map(static fn (FailureCategory $case): string => $case->value, FailureCategory::cases());
 
         foreach ($expected as $value) {
             $this->assertContains($value, $actual, "Missing canonical category: {$value}");
@@ -517,7 +514,10 @@ final class FailureCategoryTest extends TestCase
 
     public function testCustomNonRetryableExceptionIsDetected(): void
     {
-        $throwable = new class('Custom non-retryable') extends RuntimeException implements NonRetryableExceptionContract {};
+        $throwable = new class(
+            'Custom non-retryable'
+        ) extends RuntimeException implements NonRetryableExceptionContract {
+        };
 
         $this->assertTrue(FailureFactory::isNonRetryable($throwable));
     }

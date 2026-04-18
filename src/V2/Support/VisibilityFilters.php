@@ -13,6 +13,8 @@ final class VisibilityFilters
 {
     public const VERSION = 5;
 
+    public const MINIMUM_SUPPORTED_VERSION = 1;
+
     private const FIELD_LABELS = [
         'instance_id' => 'Instance ID',
         'run_id' => 'Run ID',
@@ -70,8 +72,6 @@ final class VisibilityFilters
 
     private const LABEL_KEY_PATTERN = '/^[A-Za-z0-9_.:-]{1,64}$/';
 
-    public const MINIMUM_SUPPORTED_VERSION = 1;
-
     private const DEPRECATED_VERSIONS = [1, 2];
 
     private const RESERVED_VIEW_ID_PREFIX = 'system:';
@@ -118,9 +118,9 @@ final class VisibilityFilters
             'deprecated_versions' => self::DEPRECATED_VERSIONS,
             'reserved_view_id_prefix' => self::RESERVED_VIEW_ID_PREFIX,
             'upgrade_policy' => 'Saved views written against any supported version remain readable. '
-                .'Updating a saved view rewrites it onto the current version. '
-                .'Deprecated versions are still loadable but should be migrated to the current version. '
-                .'Versions below the minimum supported version are rejected.',
+                . 'Updating a saved view rewrites it onto the current version. '
+                . 'Deprecated versions are still loadable but should be migrated to the current version. '
+                . 'Versions below the minimum supported version are rejected.',
         ];
     }
 
@@ -339,7 +339,10 @@ final class VisibilityFilters
             }
 
             if (isset($normalized['search_attributes']) && is_array($normalized['search_attributes'])) {
-                $merged['search_attributes'] = [...($merged['search_attributes'] ?? []), ...$normalized['search_attributes']];
+                $merged['search_attributes'] = [
+                    ...($merged['search_attributes'] ?? []),
+                    ...$normalized['search_attributes'],
+                ];
             }
         }
 
@@ -396,7 +399,7 @@ final class VisibilityFilters
         // Phase 1 typed search attributes: use indexed typed table for filtering
         // This leverages per-type indexes for efficient Waterline visibility queries
         foreach ($normalized['search_attributes'] ?? [] as $key => $value) {
-            $query->whereHas('searchAttributes', function ($q) use ($key, $value) {
+            $query->whereHas('searchAttributes', static function ($q) use ($key, $value) {
                 $q->where('key', $key);
 
                 // Route to appropriate typed column based on value type

@@ -20,8 +20,8 @@ final class TestParallelChildWorkflow extends Workflow
         $this->stage = 'waiting-for-children';
 
         $children = all([
-            fn () => child(TestTimerWorkflow::class, $firstSeconds),
-            fn () => child(TestTimerWorkflow::class, $secondSeconds),
+            static fn () => child(TestTimerWorkflow::class, $firstSeconds),
+            static fn () => child(TestTimerWorkflow::class, $secondSeconds),
         ]);
 
         $this->stage = 'completed';

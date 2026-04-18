@@ -7,8 +7,8 @@ namespace Tests\Fixtures\V2;
 use RuntimeException;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
-use function Workflow\V2\signal;
 use function Workflow\V2\child;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 
 #[Signal('resume')]

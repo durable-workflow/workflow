@@ -33,7 +33,6 @@ use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestReplayedDomainException;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
-use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;

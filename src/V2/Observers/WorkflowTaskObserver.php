@@ -18,7 +18,8 @@ class WorkflowTaskObserver
 {
     public function __construct(
         private readonly LongPollWakeStore $wakeStore,
-    ) {}
+    ) {
+    }
 
     public function created(WorkflowTask $task): void
     {

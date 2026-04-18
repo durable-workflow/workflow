@@ -114,15 +114,7 @@ final class WorkerProtocolVersion
      */
     public static function activityTaskVerbs(): array
     {
-        return [
-            'poll',
-            'claim',
-            'claimStatus',
-            'complete',
-            'fail',
-            'status',
-            'heartbeat',
-        ];
+        return ['poll', 'claim', 'claimStatus', 'complete', 'fail', 'status', 'heartbeat'];
     }
 
     /**
@@ -152,11 +144,7 @@ final class WorkerProtocolVersion
      */
     public static function terminalCommandTypes(): array
     {
-        return [
-            'complete_workflow',
-            'fail_workflow',
-            'continue_as_new',
-        ];
+        return ['complete_workflow', 'fail_workflow', 'continue_as_new'];
     }
 
     /**

@@ -13,19 +13,34 @@ final class WorkflowCommandNormalizerTest extends TestCase
     public function testCompleteWorkflowAcceptsRawStringResult(): void
     {
         $out = WorkflowCommandNormalizer::normalize([
-            ['type' => 'complete_workflow', 'result' => '"ok"'],
+            [
+                'type' => 'complete_workflow',
+                'result' => '"ok"',
+            ],
         ]);
 
-        $this->assertSame([['type' => 'complete_workflow', 'result' => '"ok"']], $out);
+        $this->assertSame([[
+            'type' => 'complete_workflow',
+            'result' => '"ok"',
+        ]], $out);
     }
 
     public function testCompleteWorkflowUnwrapsEnvelope(): void
     {
         $out = WorkflowCommandNormalizer::normalize([
-            ['type' => 'complete_workflow', 'result' => ['codec' => 'json', 'blob' => '"ok"']],
+            [
+                'type' => 'complete_workflow',
+                'result' => [
+                    'codec' => 'json',
+                    'blob' => '"ok"',
+                ],
+            ],
         ]);
 
-        $this->assertSame([['type' => 'complete_workflow', 'result' => '"ok"']], $out);
+        $this->assertSame([[
+            'type' => 'complete_workflow',
+            'result' => '"ok"',
+        ]], $out);
     }
 
     public function testFailWorkflowRequiresNonEmptyMessage(): void
@@ -33,7 +48,10 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $this->expectException(ValidationException::class);
 
         WorkflowCommandNormalizer::normalize([
-            ['type' => 'fail_workflow', 'message' => '   '],
+            [
+                'type' => 'fail_workflow',
+                'message' => '   ',
+            ],
         ]);
     }
 
@@ -61,7 +79,10 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $this->expectException(ValidationException::class);
 
         WorkflowCommandNormalizer::normalize([
-            ['type' => 'schedule_activity', 'activity_type' => ''],
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => '',
+            ],
         ]);
     }
 
@@ -71,7 +92,10 @@ final class WorkflowCommandNormalizerTest extends TestCase
             [
                 'type' => 'schedule_activity',
                 'activity_type' => '  SendEmail ',
-                'arguments' => ['codec' => 'json', 'blob' => '["hi"]'],
+                'arguments' => [
+                    'codec' => 'json',
+                    'blob' => '["hi"]',
+                ],
                 'connection' => ' redis ',
                 'queue' => 'default',
             ],
@@ -91,17 +115,26 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $this->expectException(ValidationException::class);
 
         WorkflowCommandNormalizer::normalize([
-            ['type' => 'start_timer', 'delay_seconds' => -1],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => -1,
+            ],
         ]);
     }
 
     public function testStartTimerPassesThrough(): void
     {
         $out = WorkflowCommandNormalizer::normalize([
-            ['type' => 'start_timer', 'delay_seconds' => 30],
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 30,
+            ],
         ]);
 
-        $this->assertSame([['type' => 'start_timer', 'delay_seconds' => 30]], $out);
+        $this->assertSame([[
+            'type' => 'start_timer',
+            'delay_seconds' => 30,
+        ]], $out);
     }
 
     public function testStartChildWorkflowValidatesParentClosePolicy(): void
@@ -137,10 +170,16 @@ final class WorkflowCommandNormalizerTest extends TestCase
     public function testContinueAsNewPassesThroughOptionalWorkflowType(): void
     {
         $out = WorkflowCommandNormalizer::normalize([
-            ['type' => 'continue_as_new', 'workflow_type' => 'NextWorkflow'],
+            [
+                'type' => 'continue_as_new',
+                'workflow_type' => 'NextWorkflow',
+            ],
         ]);
 
-        $this->assertSame([['type' => 'continue_as_new', 'workflow_type' => 'NextWorkflow']], $out);
+        $this->assertSame([[
+            'type' => 'continue_as_new',
+            'workflow_type' => 'NextWorkflow',
+        ]], $out);
     }
 
     public function testRecordSideEffectRequiresStringResult(): void
@@ -148,7 +187,10 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $this->expectException(ValidationException::class);
 
         WorkflowCommandNormalizer::normalize([
-            ['type' => 'record_side_effect', 'result' => 42],
+            [
+                'type' => 'record_side_effect',
+                'result' => 42,
+            ],
         ]);
     }
 
@@ -193,7 +235,10 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $this->expectException(ValidationException::class);
 
         WorkflowCommandNormalizer::normalize([
-            ['type' => 'upsert_search_attributes', 'attributes' => []],
+            [
+                'type' => 'upsert_search_attributes',
+                'attributes' => [],
+            ],
         ]);
     }
 
@@ -202,7 +247,9 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $this->expectException(ValidationException::class);
 
         WorkflowCommandNormalizer::normalize([
-            ['type' => 'do_a_barrel_roll'],
+            [
+                'type' => 'do_a_barrel_roll',
+            ],
         ]);
     }
 
@@ -211,7 +258,9 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $this->expectException(ValidationException::class);
 
         WorkflowCommandNormalizer::normalize([
-            ['payload' => 'nope'],
+            [
+                'payload' => 'nope',
+            ],
         ]);
     }
 }

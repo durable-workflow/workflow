@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
-use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestMultipleTimerWorkflow;
 use Tests\Fixtures\V2\TestPendingTimerSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -26,8 +25,10 @@ final class V2TimerWorkflowTest extends TestCase
     {
         parent::setUp();
 
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
     }
 
     public function testTimerSchedulingCreatesRowAndHistoryEvents(): void
@@ -74,7 +75,8 @@ final class V2TimerWorkflowTest extends TestCase
         ]);
 
         // Advance time past the timer and drain.
-        $this->travel(121)->seconds();
+        $this->travel(121)
+            ->seconds();
         WorkflowStub::runReadyTasks();
 
         $this->assertTrue($workflow->refresh()->completed());
@@ -223,7 +225,8 @@ final class V2TimerWorkflowTest extends TestCase
         $this->assertSame(30, $firstTimer->delay_seconds);
 
         // Advance past first timer and drain.
-        $this->travel(31)->seconds();
+        $this->travel(31)
+            ->seconds();
         WorkflowStub::runReadyTasks();
 
         // Second timer should now be pending. Workflow still waiting.
@@ -243,7 +246,8 @@ final class V2TimerWorkflowTest extends TestCase
         $this->assertSame(60, $secondTimer->delay_seconds);
 
         // Advance past second timer and drain.
-        $this->travel(61)->seconds();
+        $this->travel(61)
+            ->seconds();
         WorkflowStub::runReadyTasks();
 
         $this->assertTrue($workflow->refresh()->completed());
@@ -256,21 +260,13 @@ final class V2TimerWorkflowTest extends TestCase
         // History should show ordered timer events.
         $timerEvents = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
-            ->whereIn('event_type', [
-                HistoryEventType::TimerScheduled->value,
-                HistoryEventType::TimerFired->value,
-            ])
+            ->whereIn('event_type', [HistoryEventType::TimerScheduled->value, HistoryEventType::TimerFired->value])
             ->orderBy('sequence')
             ->pluck('event_type')
             ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
             ->all();
 
-        $this->assertSame([
-            'TimerScheduled',
-            'TimerFired',
-            'TimerScheduled',
-            'TimerFired',
-        ], $timerEvents);
+        $this->assertSame(['TimerScheduled', 'TimerFired', 'TimerScheduled', 'TimerFired'], $timerEvents);
     }
 
     public function testTimerRunDetailViewShowsTimerWaitsAndStatus(): void
@@ -322,7 +318,8 @@ final class V2TimerWorkflowTest extends TestCase
         $this->assertSame(['started'], $workflow->currentEvents());
 
         // Timer fires after time travel.
-        $this->travel(31)->seconds();
+        $this->travel(31)
+            ->seconds();
         WorkflowStub::runReadyTasks();
 
         $this->assertSame('waiting', $workflow->refresh()->status());
@@ -359,8 +356,12 @@ final class V2TimerWorkflowTest extends TestCase
         $this->assertContains('WorkflowCompleted', $eventTypes);
 
         // Timer events should come before signal event in history.
-        $timerFiredIndex = array_search('TimerFired', $eventTypes);
-        $signalReceivedIndex = array_search('SignalReceived', $eventTypes);
-        $this->assertLessThan($signalReceivedIndex, $timerFiredIndex, 'TimerFired should precede SignalReceived in history.');
+        $timerFiredIndex = array_search('TimerFired', $eventTypes, true);
+        $signalReceivedIndex = array_search('SignalReceived', $eventTypes, true);
+        $this->assertLessThan(
+            $signalReceivedIndex,
+            $timerFiredIndex,
+            'TimerFired should precede SignalReceived in history.'
+        );
     }
 }

@@ -11,8 +11,7 @@ final class WorkflowsConfigTest extends TestCase
     public function testConfigIsLoaded(): void
     {
         $previousSerializer = getenv('WORKFLOW_SERIALIZER') === false ? null : getenv('WORKFLOW_SERIALIZER');
-        putenv('WORKFLOW_SERIALIZER');
-        unset($_ENV['WORKFLOW_SERIALIZER'], $_SERVER['WORKFLOW_SERIALIZER']);
+        $this->clearWorkflowSerializerEnvironment();
 
         try {
             $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
@@ -43,8 +42,7 @@ final class WorkflowsConfigTest extends TestCase
             }
         } finally {
             if ($previousSerializer === null) {
-                putenv('WORKFLOW_SERIALIZER');
-                unset($_ENV['WORKFLOW_SERIALIZER'], $_SERVER['WORKFLOW_SERIALIZER']);
+                $this->clearWorkflowSerializerEnvironment();
             } else {
                 putenv(sprintf('WORKFLOW_SERIALIZER=%s', $previousSerializer));
                 $_ENV['WORKFLOW_SERIALIZER'] = $previousSerializer;
@@ -72,8 +70,7 @@ final class WorkflowsConfigTest extends TestCase
             $this->assertSame('json', $config['serializer']);
         } finally {
             if ($previous === null) {
-                putenv('WORKFLOW_SERIALIZER');
-                unset($_ENV['WORKFLOW_SERIALIZER'], $_SERVER['WORKFLOW_SERIALIZER']);
+                $this->clearWorkflowSerializerEnvironment();
             } else {
                 putenv(sprintf('WORKFLOW_SERIALIZER=%s', $previous));
                 $_ENV['WORKFLOW_SERIALIZER'] = $previous;
@@ -134,5 +131,17 @@ final class WorkflowsConfigTest extends TestCase
                 }
             }
         }
+    }
+
+    private function clearWorkflowSerializerEnvironment(): void
+    {
+        putenv('WORKFLOW_SERIALIZER');
+
+        $_ENV = array_diff_key($_ENV, [
+            'WORKFLOW_SERIALIZER' => true,
+        ]);
+        $_SERVER = array_diff_key($_SERVER, [
+            'WORKFLOW_SERIALIZER' => true,
+        ]);
     }
 }

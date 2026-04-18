@@ -51,7 +51,9 @@ abstract class Workflow
 
     private bool $commandDispatchEnabled = true;
 
-    /** @var list<callable> */
+    /**
+     * @var list<callable>
+     */
     private array $compensations = [];
 
     private bool $parallelCompensation = false;

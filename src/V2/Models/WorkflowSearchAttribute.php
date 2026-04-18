@@ -48,21 +48,6 @@ use Workflow\V2\Support\ConfiguredV2Models;
  */
 class WorkflowSearchAttribute extends Model
 {
-    protected $table = 'workflow_search_attributes';
-
-    protected $guarded = [];
-
-    protected $dateFormat = 'Y-m-d H:i:s.u';
-
-    protected $casts = [
-        'value_int' => 'integer',
-        'value_float' => 'float',
-        'value_bool' => 'boolean',
-        'value_datetime' => 'datetime',
-        'upserted_at_sequence' => 'integer',
-        'inherited_from_parent' => 'boolean',
-    ];
-
     // Size limits from v2 plan
     public const MAX_ATTRIBUTES_PER_RUN = 100;
 
@@ -94,12 +79,24 @@ class WorkflowSearchAttribute extends Model
         self::TYPE_DATETIME,
     ];
 
+    protected $table = 'workflow_search_attributes';
+
+    protected $guarded = [];
+
+    protected $dateFormat = 'Y-m-d H:i:s.u';
+
+    protected $casts = [
+        'value_int' => 'integer',
+        'value_float' => 'float',
+        'value_bool' => 'boolean',
+        'value_datetime' => 'datetime',
+        'upserted_at_sequence' => 'integer',
+        'inherited_from_parent' => 'boolean',
+    ];
+
     public function run(): BelongsTo
     {
-        return $this->belongsTo(
-            ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
-            'workflow_run_id',
-        );
+        return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
     }
 
     public function instance(): BelongsTo
@@ -131,8 +128,6 @@ class WorkflowSearchAttribute extends Model
      *
      * @param mixed $value Raw value to store
      * @param string $type Target type (string, keyword, int, float, bool, datetime)
-     *
-     * @throws InvalidArgumentException If value cannot be coerced to type or exceeds limits
      */
     public function setTypedValue(mixed $value, string $type): void
     {
@@ -203,9 +198,63 @@ class WorkflowSearchAttribute extends Model
             return self::TYPE_KEYWORD;
         }
 
-        throw new InvalidArgumentException(
-            'Cannot infer search attribute type from value: '.gettype($value),
-        );
+        throw new InvalidArgumentException('Cannot infer search attribute type from value: ' . gettype($value));
+    }
+
+    /**
+     * Validate total size across all attributes for a run.
+     *
+     * @param string $runId Workflow run ID
+     */
+    public static function validateTotalSize(string $runId): void
+    {
+        $attributes = static::where('workflow_run_id', $runId)->get();
+
+        $totalBytes = $attributes->sum(static function (self $attr): int {
+            $value = $attr->getValue();
+
+            if ($value === null) {
+                return 0;
+            }
+
+            if (is_string($value)) {
+                return mb_strlen($value, '8bit');
+            }
+
+            // Estimate size for other types
+            return match ($attr->type) {
+                self::TYPE_INT, self::TYPE_FLOAT => 8,
+                self::TYPE_BOOL => 1,
+                self::TYPE_DATETIME => 8,
+                default => 0,
+            };
+        });
+
+        if ($totalBytes > self::MAX_TOTAL_SIZE_BYTES) {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Total search attributes size exceeds maximum (%d > %d bytes)',
+                    $totalBytes,
+                    self::MAX_TOTAL_SIZE_BYTES,
+                ),
+            );
+        }
+    }
+
+    /**
+     * Validate count limit for a run.
+     *
+     * @param string $runId Workflow run ID
+     */
+    public static function validateCount(string $runId): void
+    {
+        $count = static::where('workflow_run_id', $runId)->count();
+
+        if ($count > self::MAX_ATTRIBUTES_PER_RUN) {
+            throw new InvalidArgumentException(
+                sprintf('Search attributes count exceeds maximum (%d > %d)', $count, self::MAX_ATTRIBUTES_PER_RUN),
+            );
+        }
     }
 
     private function setStringValue(mixed $value): void
@@ -245,9 +294,7 @@ class WorkflowSearchAttribute extends Model
     private function setIntValue(mixed $value): void
     {
         if (! is_numeric($value)) {
-            throw new InvalidArgumentException(
-                "Cannot coerce value to int: {$value}",
-            );
+            throw new InvalidArgumentException("Cannot coerce value to int: {$value}");
         }
 
         $this->value_int = (int) $value;
@@ -256,9 +303,7 @@ class WorkflowSearchAttribute extends Model
     private function setFloatValue(mixed $value): void
     {
         if (! is_numeric($value)) {
-            throw new InvalidArgumentException(
-                "Cannot coerce value to float: {$value}",
-            );
+            throw new InvalidArgumentException("Cannot coerce value to float: {$value}");
         }
 
         $this->value_float = (float) $value;
@@ -293,9 +338,7 @@ class WorkflowSearchAttribute extends Model
             }
         }
 
-        throw new InvalidArgumentException(
-            "Cannot coerce value to bool: {$value}",
-        );
+        throw new InvalidArgumentException("Cannot coerce value to bool: {$value}");
     }
 
     private function setDatetimeValue(mixed $value): void
@@ -318,16 +361,11 @@ class WorkflowSearchAttribute extends Model
 
                 return;
             } catch (\Exception $e) {
-                throw new InvalidArgumentException(
-                    "Cannot parse datetime value: {$value}",
-                    previous: $e,
-                );
+                throw new InvalidArgumentException("Cannot parse datetime value: {$value}", previous: $e);
             }
         }
 
-        throw new InvalidArgumentException(
-            'Cannot coerce value to datetime: '.gettype($value),
-        );
+        throw new InvalidArgumentException('Cannot coerce value to datetime: ' . gettype($value));
     }
 
     private function coerceToString(mixed $value): string
@@ -348,72 +386,6 @@ class WorkflowSearchAttribute extends Model
             return (string) $value;
         }
 
-        throw new InvalidArgumentException(
-            'Cannot coerce value to string: '.gettype($value),
-        );
-    }
-
-    /**
-     * Validate total size across all attributes for a run.
-     *
-     * @param string $runId Workflow run ID
-     *
-     * @throws InvalidArgumentException If total size exceeds limit
-     */
-    public static function validateTotalSize(string $runId): void
-    {
-        $attributes = static::where('workflow_run_id', $runId)->get();
-
-        $totalBytes = $attributes->sum(function (self $attr): int {
-            $value = $attr->getValue();
-
-            if ($value === null) {
-                return 0;
-            }
-
-            if (is_string($value)) {
-                return mb_strlen($value, '8bit');
-            }
-
-            // Estimate size for other types
-            return match ($attr->type) {
-                self::TYPE_INT, self::TYPE_FLOAT => 8,
-                self::TYPE_BOOL => 1,
-                self::TYPE_DATETIME => 8,
-                default => 0,
-            };
-        });
-
-        if ($totalBytes > self::MAX_TOTAL_SIZE_BYTES) {
-            throw new InvalidArgumentException(
-                sprintf(
-                    'Total search attributes size exceeds maximum (%d > %d bytes)',
-                    $totalBytes,
-                    self::MAX_TOTAL_SIZE_BYTES,
-                ),
-            );
-        }
-    }
-
-    /**
-     * Validate count limit for a run.
-     *
-     * @param string $runId Workflow run ID
-     *
-     * @throws InvalidArgumentException If count exceeds limit
-     */
-    public static function validateCount(string $runId): void
-    {
-        $count = static::where('workflow_run_id', $runId)->count();
-
-        if ($count > self::MAX_ATTRIBUTES_PER_RUN) {
-            throw new InvalidArgumentException(
-                sprintf(
-                    'Search attributes count exceeds maximum (%d > %d)',
-                    $count,
-                    self::MAX_ATTRIBUTES_PER_RUN,
-                ),
-            );
-        }
+        throw new InvalidArgumentException('Cannot coerce value to string: ' . gettype($value));
     }
 }

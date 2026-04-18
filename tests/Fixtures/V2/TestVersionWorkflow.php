@@ -8,8 +8,8 @@ use Workflow\QueryMethod;
 use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
-use function Workflow\V2\signal;
 use function Workflow\V2\getVersion;
+use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
