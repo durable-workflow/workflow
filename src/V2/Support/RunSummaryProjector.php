@@ -274,7 +274,7 @@ final class RunSummaryProjector
         $durationMs = null;
 
         if ($run->started_at !== null && $run->closed_at !== null) {
-            $durationMs = $run->closed_at->diffInMilliseconds($run->started_at);
+            $durationMs = max(0, (int) $run->closed_at->diffInMilliseconds($run->started_at));
         }
 
         $taskProblem = self::taskProblemDetected(
