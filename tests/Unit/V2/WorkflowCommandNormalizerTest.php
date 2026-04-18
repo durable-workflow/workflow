@@ -216,6 +216,51 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]], $out);
     }
 
+    public function testStartChildWorkflowPreservesRetryPolicyAndTimeouts(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'retry_policy' => [
+                    'max_attempts' => 3,
+                    'backoff_seconds' => [2, 8],
+                    'non_retryable_error_types' => ['ValidationError'],
+                ],
+                'execution_timeout_seconds' => 600,
+                'run_timeout_seconds' => 120,
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'Child',
+            'retry_policy' => [
+                'max_attempts' => 3,
+                'backoff_seconds' => [2, 8],
+                'non_retryable_error_types' => ['ValidationError'],
+            ],
+            'execution_timeout_seconds' => 600,
+            'run_timeout_seconds' => 120,
+        ]], $out);
+    }
+
+    public function testStartChildWorkflowRejectsInvalidRetryPolicy(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'retry_policy' => [
+                    'max_attempts' => 0,
+                    'backoff_seconds' => [1, -1],
+                ],
+            ],
+        ]);
+    }
+
     public function testContinueAsNewPassesThroughOptionalWorkflowType(): void
     {
         $out = WorkflowCommandNormalizer::normalize([

@@ -12,6 +12,7 @@ use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
@@ -19,6 +20,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -704,10 +706,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
             }
 
-            $run->forceFill([
-                'last_history_sequence' => $sequence - 1,
-            ])->save();
-
             $terminal = $parsed['terminal'];
 
             if ($terminal !== null) {
@@ -1065,7 +1063,17 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * @param array{type: string, workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null} $command
+     * @param array{
+     *     type: string,
+     *     workflow_type: string,
+     *     arguments?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     parent_close_policy?: string|null,
+     *     retry_policy?: array<string, mixed>,
+     *     execution_timeout_seconds?: int,
+     *     run_timeout_seconds?: int
+     * } $command
      * @param list<string> $createdTaskIds
      */
     private function applyStartChildWorkflow(
@@ -1080,6 +1088,24 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $connection = $command['connection'] ?? $run->connection;
         $queue = $command['queue'] ?? $run->queue;
         $now = now();
+        $executionTimeoutSeconds = is_int($command['execution_timeout_seconds'] ?? null)
+            ? (int) $command['execution_timeout_seconds']
+            : null;
+        $runTimeoutSeconds = is_int($command['run_timeout_seconds'] ?? null)
+            ? (int) $command['run_timeout_seconds']
+            : null;
+        $executionDeadlineAt = $executionTimeoutSeconds !== null
+            ? $now->copy()
+                ->addSeconds($executionTimeoutSeconds)
+            : null;
+        $runDeadlineAt = $runTimeoutSeconds !== null
+            ? $now->copy()
+                ->addSeconds($runTimeoutSeconds)
+            : null;
+        $retryPolicy = ChildWorkflowRetryPolicy::snapshotExternal(
+            is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : null,
+        );
+        $timeoutPolicy = ChildWorkflowRetryPolicy::timeoutSnapshot($executionTimeoutSeconds, $runTimeoutSeconds);
 
         /** @var WorkflowInstance $childInstance */
         $childInstance = WorkflowInstance::query()->create([
@@ -1102,6 +1128,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
             'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'arguments' => $arguments,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
             'connection' => $connection,
             'queue' => $queue,
             'started_at' => $now,
@@ -1116,6 +1145,33 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $childCallId = (string) Str::ulid();
 
         $parentClosePolicy = $command['parent_close_policy'] ?? ParentClosePolicy::Abandon->value;
+
+        WorkflowChildCall::query()->create([
+            'parent_workflow_run_id' => $run->id,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'sequence' => $sequence,
+            'child_workflow_type' => $workflowType,
+            'child_workflow_class' => $workflowType,
+            'parent_close_policy' => $parentClosePolicy,
+            'connection' => $connection,
+            'queue' => $queue,
+            'compatibility' => $childRun->compatibility,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'cancellation_propagation' => false,
+            'status' => ChildCallStatus::Started,
+            'scheduled_at' => $now,
+            'started_at' => $now,
+            'arguments' => $arguments === null ? null : [
+                'payload' => $arguments,
+            ],
+            'metadata' => [
+                'child_call_id' => $childCallId,
+                'attempt_count' => 1,
+            ],
+            'resolved_child_instance_id' => $childInstance->id,
+            'resolved_child_run_id' => $childRun->id,
+        ]);
 
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
@@ -1139,6 +1195,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'child_workflow_class' => $workflowType,
             'child_workflow_type' => $workflowType,
             'parent_close_policy' => $parentClosePolicy,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
         ], $task);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
@@ -1150,6 +1208,12 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'child_workflow_class' => $workflowType,
             'child_workflow_type' => $workflowType,
             'child_run_number' => 1,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
         ], $task);
 
         WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
@@ -1162,6 +1226,12 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'parent_sequence' => $sequence,
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
         ]);
 
         /** @var WorkflowTask $childTask */
@@ -1377,6 +1447,226 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         );
     }
 
+    private function startChildRetryIfAvailable(
+        WorkflowRun $parentRun,
+        int $sequence,
+        WorkflowRun $failedChildRun,
+    ): ?WorkflowTask {
+        if (ChildRunHistory::resolvedStatus(null, $failedChildRun) !== RunStatus::Failed) {
+            return null;
+        }
+
+        $parentRun->loadMissing(
+            ['historyEvents', 'childLinks.childRun.instance.currentRun', 'childLinks.childRun.failures']
+        );
+
+        $parentLink = ChildRunHistory::latestLinkForSequence($parentRun, $sequence);
+
+        if ($parentLink?->child_workflow_run_id !== $failedChildRun->id) {
+            return null;
+        }
+
+        $scheduledEvent = ChildRunHistory::scheduledEventForSequence($parentRun, $sequence);
+        $retryPolicy = is_array($scheduledEvent?->payload['retry_policy'] ?? null)
+            ? $scheduledEvent->payload['retry_policy']
+            : null;
+
+        if ($retryPolicy === null) {
+            /** @var WorkflowChildCall|null $childCall */
+            $childCall = WorkflowChildCall::query()
+                ->where('parent_workflow_run_id', $parentRun->id)
+                ->where('sequence', $sequence)
+                ->first();
+
+            $retryPolicy = is_array($childCall?->retry_policy) ? $childCall->retry_policy : null;
+        }
+
+        if ($retryPolicy === null) {
+            return null;
+        }
+
+        $attemptCount = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $sequence)
+            ->where('link_type', 'child_workflow')
+            ->count();
+
+        if ($attemptCount >= ChildWorkflowRetryPolicy::maxAttempts($retryPolicy)) {
+            return null;
+        }
+
+        if (ChildWorkflowRetryPolicy::isNonRetryableFailure($retryPolicy, $failedChildRun)) {
+            return null;
+        }
+
+        $timeoutPolicy = is_array($scheduledEvent?->payload['timeout_policy'] ?? null)
+            ? $scheduledEvent->payload['timeout_policy']
+            : null;
+        $executionTimeoutSeconds = is_int($timeoutPolicy['execution_timeout_seconds'] ?? null)
+            ? (int) $timeoutPolicy['execution_timeout_seconds']
+            : null;
+        $runTimeoutSeconds = is_int($timeoutPolicy['run_timeout_seconds'] ?? null)
+            ? (int) $timeoutPolicy['run_timeout_seconds']
+            : null;
+
+        $now = now();
+        $backoffSeconds = ChildWorkflowRetryPolicy::backoffSeconds($retryPolicy, $attemptCount);
+        $availableAt = $now->copy()
+            ->addSeconds($backoffSeconds);
+
+        /** @var WorkflowInstance|null $childInstance */
+        $childInstance = WorkflowInstance::query()
+            ->lockForUpdate()
+            ->find($failedChildRun->workflow_instance_id);
+
+        if (! $childInstance instanceof WorkflowInstance) {
+            return null;
+        }
+
+        $nextRunNumber = ((int) WorkflowRun::query()
+            ->where('workflow_instance_id', $failedChildRun->workflow_instance_id)
+            ->max('run_number')) + 1;
+
+        $executionDeadlineAt = $failedChildRun->execution_deadline_at;
+        if ($executionDeadlineAt === null && $executionTimeoutSeconds !== null) {
+            $executionDeadlineAt = $now->copy()
+                ->addSeconds($executionTimeoutSeconds);
+        }
+
+        $runDeadlineAt = $runTimeoutSeconds !== null ? $now->copy()
+            ->addSeconds($runTimeoutSeconds) : null;
+
+        /** @var WorkflowRun $retryRun */
+        $retryRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $failedChildRun->workflow_instance_id,
+            'run_number' => $nextRunNumber,
+            'workflow_class' => $failedChildRun->workflow_class,
+            'workflow_type' => $failedChildRun->workflow_type,
+            'namespace' => $failedChildRun->namespace,
+            'business_key' => $failedChildRun->business_key,
+            'visibility_labels' => $failedChildRun->visibility_labels,
+            'memo' => $failedChildRun->memo,
+            'search_attributes' => $failedChildRun->search_attributes,
+            'status' => RunStatus::Pending->value,
+            'compatibility' => $failedChildRun->compatibility ?? WorkerCompatibility::current(),
+            'payload_codec' => $failedChildRun->payload_codec ?? CodecRegistry::defaultCodec(),
+            'arguments' => $failedChildRun->arguments,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
+            'connection' => $failedChildRun->connection,
+            'queue' => $failedChildRun->queue,
+            'started_at' => $now,
+            'last_progress_at' => $now,
+            'last_history_sequence' => 0,
+        ]);
+
+        $childInstance->forceFill([
+            'current_run_id' => $retryRun->id,
+            'run_count' => max((int) $childInstance->run_count, $nextRunNumber),
+        ])->save();
+
+        $childCallId = ChildRunHistory::childCallIdForSequence($parentRun, $sequence) ?? (string) Str::ulid();
+        $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($parentRun, $sequence);
+        $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+        $parentClosePolicy = $parentLink?->parent_close_policy ?? ParentClosePolicy::Abandon->value;
+
+        /** @var WorkflowLink $retryLink */
+        $retryLink = WorkflowLink::query()->create([
+            'link_type' => 'child_workflow',
+            'sequence' => $sequence,
+            'parent_workflow_instance_id' => $parentRun->workflow_instance_id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'child_workflow_instance_id' => $retryRun->workflow_instance_id,
+            'child_workflow_run_id' => $retryRun->id,
+            'is_primary_parent' => true,
+            'parallel_group_path' => $parallelMetadataPath === [] ? null : $parallelMetadataPath,
+            'parent_close_policy' => $parentClosePolicy,
+        ]);
+
+        WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildRunStarted, array_filter(array_merge([
+            'sequence' => $sequence,
+            'workflow_link_id' => $retryLink->id,
+            'child_call_id' => $childCallId,
+            'child_workflow_instance_id' => $retryRun->workflow_instance_id,
+            'child_workflow_run_id' => $retryRun->id,
+            'child_workflow_class' => $retryRun->workflow_class,
+            'child_workflow_type' => $retryRun->workflow_type,
+            'child_run_number' => $retryRun->run_number,
+            'retry_attempt' => $attemptCount + 1,
+            'retry_of_child_workflow_run_id' => $failedChildRun->id,
+            'retry_backoff_seconds' => $backoffSeconds,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+        ], $parallelMetadata), static fn (mixed $value): bool => $value !== null));
+
+        WorkflowHistoryEvent::record($retryRun, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $retryRun->workflow_class,
+            'workflow_type' => $retryRun->workflow_type,
+            'workflow_instance_id' => $retryRun->workflow_instance_id,
+            'workflow_run_id' => $retryRun->id,
+            'parent_workflow_instance_id' => $parentRun->workflow_instance_id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'parent_sequence' => $sequence,
+            'workflow_link_id' => $retryLink->id,
+            'child_call_id' => $childCallId,
+            'retry_attempt' => $attemptCount + 1,
+            'retry_of_child_workflow_run_id' => $failedChildRun->id,
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+        ]);
+
+        /** @var WorkflowTask $retryTask */
+        $retryTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $retryRun->id,
+            'namespace' => $retryRun->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $availableAt,
+            'payload' => [],
+            'connection' => $retryRun->connection,
+            'queue' => $retryRun->queue,
+            'compatibility' => $retryRun->compatibility,
+        ]);
+
+        /** @var WorkflowChildCall|null $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $sequence)
+            ->first();
+
+        if ($childCall instanceof WorkflowChildCall) {
+            $childCall->forceFill([
+                'resolved_child_instance_id' => $retryRun->workflow_instance_id,
+                'resolved_child_run_id' => $retryRun->id,
+                'status' => ChildCallStatus::Started,
+                'started_at' => $now,
+                'metadata' => array_merge(is_array($childCall->metadata) ? $childCall->metadata : [], [
+                    'child_call_id' => $childCallId,
+                    'attempt_count' => $attemptCount + 1,
+                    'last_retry_of_child_workflow_run_id' => $failedChildRun->id,
+                    'last_retry_backoff_seconds' => $backoffSeconds,
+                ]),
+            ])->save();
+        }
+
+        TaskDispatcher::dispatch($retryTask);
+
+        RunSummaryProjector::project(
+            $retryRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
+
+        return $retryTask;
+    }
+
     /**
      * Dispatch parent resume tasks when a child run closes through the bridge.
      */
@@ -1397,6 +1687,12 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ->find($parentLink->parent_workflow_run_id);
 
             if ($parentRun === null || $parentRun->status->isTerminal()) {
+                continue;
+            }
+
+            $sequence = is_int($parentLink->sequence) ? $parentLink->sequence : null;
+
+            if ($sequence !== null && $this->startChildRetryIfAvailable($parentRun, $sequence, $childRun) !== null) {
                 continue;
             }
 
@@ -1595,14 +1891,42 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * @param array<string, mixed> $command
-     * @return array{type: string, workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}|null
+     * @return array{
+     *     type: string,
+     *     workflow_type: string,
+     *     arguments?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     parent_close_policy?: string|null,
+     *     retry_policy?: array<string, mixed>,
+     *     execution_timeout_seconds?: int,
+     *     run_timeout_seconds?: int
+     * }|null
      */
     private static function normalizeStartChildWorkflowCommand(array $command): ?array
     {
         $workflowType = self::normalizeRequiredString($command['workflow_type'] ?? null);
+        $retryPolicy = self::normalizeActivityRetryPolicy($command['retry_policy'] ?? null);
+        $executionTimeoutSeconds = self::normalizePositiveInt($command['execution_timeout_seconds'] ?? null);
+        $runTimeoutSeconds = self::normalizePositiveInt($command['run_timeout_seconds'] ?? null);
 
         if ($workflowType === null) {
             return null;
+        }
+
+        if (($command['retry_policy'] ?? null) !== null && $retryPolicy === null) {
+            return null;
+        }
+
+        foreach (
+            [
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+            ] as $field => $value
+        ) {
+            if (($command[$field] ?? null) !== null && $value === null) {
+                return null;
+            }
         }
 
         return array_filter([
@@ -1612,6 +1936,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
             'queue' => self::normalizeOptionalString($command['queue'] ?? null),
             'parent_close_policy' => self::normalizeOptionalString($command['parent_close_policy'] ?? null),
+            'retry_policy' => $retryPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
         ], static fn (mixed $value): bool => $value !== null);
     }
 

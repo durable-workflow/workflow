@@ -16,6 +16,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -1454,6 +1455,193 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($scheduledEvent);
         $this->assertSame('terminate', $scheduledEvent->payload['parent_close_policy']);
+    }
+
+    public function testCompleteStartsChildWorkflowSnapshotsRetryPolicyAndTimeouts(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+                'retry_policy' => [
+                    'max_attempts' => 3,
+                    'backoff_seconds' => [2, 8],
+                    'non_retryable_error_types' => ['ValidationError'],
+                ],
+                'execution_timeout_seconds' => 600,
+                'run_timeout_seconds' => 120,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $this->assertSame(120, $childRun->run_timeout_seconds);
+        $this->assertNotNull($childRun->execution_deadline_at);
+        $this->assertNotNull($childRun->run_deadline_at);
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('sequence', 1)
+            ->firstOrFail();
+
+        $this->assertSame([
+            'snapshot_version' => 1,
+            'max_attempts' => 3,
+            'backoff_seconds' => [2, 8],
+            'non_retryable_error_types' => ['ValidationError'],
+        ], $childCall->retry_policy);
+        $this->assertSame([
+            'snapshot_version' => 1,
+            'execution_timeout_seconds' => 600,
+            'run_timeout_seconds' => 120,
+        ], $childCall->timeout_policy);
+        $this->assertSame($childRun->id, $childCall->resolved_child_run_id);
+
+        /** @var WorkflowHistoryEvent $scheduledEvent */
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame($childCall->retry_policy, $scheduledEvent->payload['retry_policy']);
+        $this->assertSame($childCall->timeout_policy, $scheduledEvent->payload['timeout_policy']);
+
+        /** @var WorkflowHistoryEvent $startedEvent */
+        $startedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $childRun->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $this->assertSame($childCall->retry_policy, $startedEvent->payload['retry_policy']);
+        $this->assertSame(600, $startedEvent->payload['execution_timeout_seconds']);
+        $this->assertSame(120, $startedEvent->payload['run_timeout_seconds']);
+    }
+
+    public function testChildWorkflowFailureStartsRetryAttemptBeforeParentResume(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+                'retry_policy' => [
+                    'max_attempts' => 2,
+                    'backoff_seconds' => [0],
+                ],
+                'run_timeout_seconds' => 120,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $initialLink */
+        $initialLink = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        /** @var WorkflowTask $initialChildTask */
+        $initialChildTask = WorkflowTask::query()
+            ->where('workflow_run_id', $initialLink->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->bridge->claimStatus($initialChildTask->id, 'external-child-worker');
+
+        $failed = $this->bridge->complete($initialChildTask->id, [
+            [
+                'type' => 'fail_workflow',
+                'message' => 'retryable child failure',
+                'exception_class' => RuntimeException::class,
+            ],
+        ]);
+
+        $this->assertTrue($failed['completed']);
+        $this->assertSame('failed', $failed['run_status']);
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('created_at')
+            ->get();
+
+        $this->assertCount(2, $links);
+
+        /** @var WorkflowLink $retryLink */
+        $retryLink = $links->last();
+
+        /** @var WorkflowRun $retryRun */
+        $retryRun = WorkflowRun::query()->findOrFail($retryLink->child_workflow_run_id);
+
+        $this->assertSame(2, $retryRun->run_number);
+        $this->assertSame(RunStatus::Pending, $retryRun->status);
+        $this->assertSame(120, $retryRun->run_timeout_seconds);
+
+        /** @var WorkflowTask $retryTask */
+        $retryTask = WorkflowTask::query()
+            ->where('workflow_run_id', $retryRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(TaskStatus::Ready, $retryTask->status);
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('sequence', 1)
+            ->firstOrFail();
+
+        $this->assertSame($retryRun->id, $childCall->resolved_child_run_id);
+        $this->assertSame(2, $childCall->metadata['attempt_count'] ?? null);
+        $this->assertSame(
+            $initialLink->child_workflow_run_id,
+            $childCall->metadata['last_retry_of_child_workflow_run_id'] ?? null
+        );
+
+        $childStarts = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ChildRunStarted->value)
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $childStarts);
+        /** @var WorkflowHistoryEvent $latestChildStart */
+        $latestChildStart = $childStarts->last();
+
+        $this->assertSame(2, $latestChildStart->payload['retry_attempt'] ?? null);
+        $this->assertSame(
+            $initialLink->child_workflow_run_id,
+            $latestChildStart->payload['retry_of_child_workflow_run_id'] ?? null
+        );
+
+        $parentReadyTasks = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count();
+
+        $this->assertSame(0, $parentReadyTasks);
     }
 
     public function testCompleteStartsChildWorkflowDefaultsToAbandonPolicy(): void

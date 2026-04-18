@@ -87,7 +87,7 @@ final class WorkflowCommandNormalizer
                     continue;
                 }
 
-                $retryPolicy = self::optionalActivityRetryPolicy($command, $index, $errors);
+                $retryPolicy = self::optionalRetryPolicy($command, $index, $errors, 'Activity');
 
                 $normalized[] = array_filter([
                     'type' => $type,
@@ -147,6 +147,7 @@ final class WorkflowCommandNormalizer
                 }
 
                 $parentClosePolicy = self::optionalCommandString($command, 'parent_close_policy', $index, $errors);
+                $retryPolicy = self::optionalRetryPolicy($command, $index, $errors, 'Child workflow');
 
                 if ($parentClosePolicy !== null && ! in_array(
                     $parentClosePolicy,
@@ -167,6 +168,19 @@ final class WorkflowCommandNormalizer
                     'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
                     'parent_close_policy' => $parentClosePolicy,
+                    'retry_policy' => $retryPolicy,
+                    'execution_timeout_seconds' => self::optionalPositiveInt(
+                        $command,
+                        'execution_timeout_seconds',
+                        $index,
+                        $errors,
+                    ),
+                    'run_timeout_seconds' => self::optionalPositiveInt(
+                        $command,
+                        'run_timeout_seconds',
+                        $index,
+                        $errors,
+                    ),
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
@@ -343,7 +357,7 @@ final class WorkflowCommandNormalizer
      * @param  array<string, list<string>>  $errors
      * @return array<string, mixed>|null
      */
-    private static function optionalActivityRetryPolicy(array $command, int $index, array &$errors): ?array
+    private static function optionalRetryPolicy(array $command, int $index, array &$errors, string $subject): ?array
     {
         if (! array_key_exists('retry_policy', $command) || $command['retry_policy'] === null) {
             return null;
@@ -363,7 +377,7 @@ final class WorkflowCommandNormalizer
         if (array_key_exists('max_attempts', $raw)) {
             if (! is_int($raw['max_attempts']) || (int) $raw['max_attempts'] < 1) {
                 $errors["commands.{$index}.retry_policy.max_attempts"] = [
-                    'Activity retry policy max_attempts must be a positive integer when provided.',
+                    sprintf('%s retry policy max_attempts must be a positive integer when provided.', $subject),
                 ];
             } else {
                 $policy['max_attempts'] = (int) $raw['max_attempts'];
@@ -373,14 +387,14 @@ final class WorkflowCommandNormalizer
         if (array_key_exists('backoff_seconds', $raw)) {
             if (! is_array($raw['backoff_seconds'])) {
                 $errors["commands.{$index}.retry_policy.backoff_seconds"] = [
-                    'Activity retry policy backoff_seconds must be a list of non-negative integers.',
+                    sprintf('%s retry policy backoff_seconds must be a list of non-negative integers.', $subject),
                 ];
             } else {
                 $backoff = [];
                 foreach (array_values($raw['backoff_seconds']) as $position => $value) {
                     if (! is_int($value) || $value < 0) {
                         $errors["commands.{$index}.retry_policy.backoff_seconds.{$position}"] = [
-                            'Activity retry policy backoff_seconds entries must be non-negative integers.',
+                            sprintf('%s retry policy backoff_seconds entries must be non-negative integers.', $subject),
                         ];
 
                         continue;
@@ -395,14 +409,17 @@ final class WorkflowCommandNormalizer
         if (array_key_exists('non_retryable_error_types', $raw)) {
             if (! is_array($raw['non_retryable_error_types'])) {
                 $errors["commands.{$index}.retry_policy.non_retryable_error_types"] = [
-                    'Activity retry policy non_retryable_error_types must be a list of strings.',
+                    sprintf('%s retry policy non_retryable_error_types must be a list of strings.', $subject),
                 ];
             } else {
                 $types = [];
                 foreach (array_values($raw['non_retryable_error_types']) as $position => $value) {
                     if (! is_string($value) || trim($value) === '') {
                         $errors["commands.{$index}.retry_policy.non_retryable_error_types.{$position}"] = [
-                            'Activity retry policy non_retryable_error_types entries must be non-empty strings.',
+                            sprintf(
+                                '%s retry policy non_retryable_error_types entries must be non-empty strings.',
+                                $subject
+                            ),
                         ];
 
                         continue;

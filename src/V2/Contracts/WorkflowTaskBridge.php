@@ -237,9 +237,22 @@ interface WorkflowTaskBridge
      *   Schedules a durable timer that fires after delay_seconds.
      *
      * - start_child_workflow:
-     *   {type: 'start_child_workflow', workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}
+     *   {
+     *     type: 'start_child_workflow',
+     *     workflow_type: string,
+     *     arguments?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     parent_close_policy?: 'abandon'|'request_cancel'|'terminate',
+     *     retry_policy?: array,
+     *     execution_timeout_seconds?: int,
+     *     run_timeout_seconds?: int
+     *   }
      *   Starts a child workflow instance. workflow_type is a registered type key.
-     *   arguments is a codec-tagged serialized payload.
+     *   arguments is a codec-tagged serialized payload. retry_policy accepts the same
+     *   max_attempts, backoff_seconds, and non_retryable_error_types shape as activities.
+     *   Child workflow retries apply after a child run failure; invalid start commands
+     *   are protocol errors and are not retried as child attempts.
      *
      * - record_side_effect: {type: 'record_side_effect', result: string}
      *   Records a deterministic side-effect result using the workflow payload codec.
