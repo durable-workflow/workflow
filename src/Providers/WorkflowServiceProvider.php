@@ -13,8 +13,6 @@ use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
 use Workflow\Commands\V1ListCommand;
 use Workflow\Commands\V2BackfillCommandContractsCommand;
-use Workflow\Commands\V2BackfillFailureCategoriesCommand;
-use Workflow\Commands\V2BackfillFailureTypesCommand;
 use Workflow\Commands\V2BackfillParallelGroupMetadataCommand;
 use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
@@ -92,8 +90,6 @@ final class WorkflowServiceProvider extends ServiceProvider
             WorkflowMakeCommand::class,
             V1ListCommand::class,
             V2BackfillCommandContractsCommand::class,
-            V2BackfillFailureCategoriesCommand::class,
-            V2BackfillFailureTypesCommand::class,
             V2BackfillParallelGroupMetadataCommand::class,
             V2DoctorCommand::class,
             V2HistoryExportCommand::class,
@@ -151,15 +147,12 @@ final class WorkflowServiceProvider extends ServiceProvider
         $validationMode = config('workflows.v2.long_poll.validation_mode', 'warn');
 
         $cache = $this->app->make(CacheRepository::class);
-        $validator = new LongPollCacheValidator;
+        $validator = new LongPollCacheValidator();
 
         $result = $validator->checkMultiNodeSafety($cache, $multiNode);
 
         if (! $result['safe']) {
-            $message = sprintf(
-                '[Workflow] Cache backend validation failed: %s',
-                $result['message']
-            );
+            $message = sprintf('[Workflow] Cache backend validation failed: %s', $result['message']);
 
             match ($validationMode) {
                 'fail' => throw new \RuntimeException($message),
