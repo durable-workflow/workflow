@@ -16,8 +16,8 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
-use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -1245,7 +1245,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'payload' => WorkflowTaskPayload::forUpdate($update),
         ])->save();
 
-        $resultPayload = Serializer::serializeWithCodec('avro', ['approved' => true]);
+        $resultPayload = Serializer::serializeWithCodec('avro', [
+            'approved' => true,
+        ]);
 
         $result = $this->bridge->complete($task->id, [
             [
@@ -1419,7 +1421,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             [
                 'type' => 'complete_update',
                 'update_id' => $update->id,
-                'result' => Serializer::serializeWithCodec('avro', ['approved' => true]),
+                'result' => Serializer::serializeWithCodec('avro', [
+                    'approved' => true,
+                ]),
             ],
         ]);
 
@@ -1431,9 +1435,12 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertSame('accepted', $update->status->value);
         $this->assertSame(TaskStatus::Leased, $task->status);
-        $this->assertSame(0, WorkflowHistoryEvent::query()
+
+        $historyEventCount = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
-            ->count());
+            ->count();
+
+        $this->assertSame(0, $historyEventCount);
     }
 
     public function testCompleteRejectsMalformedRecordVersionMarkerCommand(): void
@@ -1873,6 +1880,78 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->count();
 
         $this->assertSame(0, $parentReadyTasks);
+    }
+
+    public function testChildWorkflowCompletionCreatesParentResumeTaskWithChildContext(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $link->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->bridge->claimStatus($childTask->id, 'external-child-worker');
+
+        $completed = $this->bridge->complete($childTask->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize([
+                    'child_result' => 'ok',
+                ]),
+            ],
+        ]);
+
+        $this->assertTrue($completed['completed']);
+        $this->assertSame('completed', $completed['run_status']);
+
+        /** @var WorkflowHistoryEvent $childCompleted */
+        $childCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->firstOrFail();
+
+        $this->assertSame(1, $childCompleted->payload['sequence'] ?? null);
+        $this->assertSame($link->id, $childCompleted->payload['child_call_id'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $childCompleted->payload['child_workflow_run_id'] ?? null);
+
+        /** @var WorkflowTask $parentResumeTask */
+        $parentResumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $this->assertSame([
+            'workflow_wait_kind' => 'child',
+            'open_wait_id' => sprintf('child:%s', $link->id),
+            'resume_source_kind' => 'child_workflow_run',
+            'resume_source_id' => $link->child_workflow_run_id,
+            'child_call_id' => $link->id,
+            'child_workflow_run_id' => $link->child_workflow_run_id,
+            'workflow_sequence' => 1,
+            'workflow_event_type' => HistoryEventType::ChildRunCompleted->value,
+        ], $parentResumeTask->payload);
     }
 
     public function testCompleteStartsChildWorkflowDefaultsToAbandonPolicy(): void
