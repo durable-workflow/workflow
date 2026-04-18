@@ -125,7 +125,6 @@ final class WorkflowServiceProviderTest extends TestCase
         $expectedCommands = [
             'make:activity',
             'make:workflow',
-            'workflow:v2:backfill-command-lifecycles',
             'workflow:v2:doctor',
             'workflow:v2:history-export',
             'workflow:v2:repair-pass',

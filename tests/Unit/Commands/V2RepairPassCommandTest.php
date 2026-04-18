@@ -10,6 +10,7 @@ use Illuminate\Support\Str;
 use RuntimeException;
 use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -17,16 +18,13 @@ use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
-use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\CommandContractBackfillSweep;
-use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\TaskWatchdog;
 
 final class V2RepairPassCommandTest extends TestCase
@@ -73,6 +71,12 @@ final class V2RepairPassCommandTest extends TestCase
             'existing_task_failures' => [],
             'missing_run_failures' => [],
             'command_contract_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -135,6 +139,12 @@ final class V2RepairPassCommandTest extends TestCase
             'existing_task_failures' => [],
             'missing_run_failures' => [],
             'command_contract_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -205,6 +215,12 @@ final class V2RepairPassCommandTest extends TestCase
             'existing_task_failures' => [],
             'missing_run_failures' => [],
             'command_contract_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -258,6 +274,12 @@ final class V2RepairPassCommandTest extends TestCase
             'existing_task_failures' => [],
             'missing_run_failures' => [],
             'command_contract_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -307,6 +329,12 @@ final class V2RepairPassCommandTest extends TestCase
             'existing_task_failures' => [],
             'missing_run_failures' => [],
             'command_contract_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -335,7 +363,7 @@ final class V2RepairPassCommandTest extends TestCase
         Queue::fake();
 
         WorkflowRunSummary::query()->create([
-            'id' => '01JREPAIRPASSMISSINGFAIL001',
+            'id' => '01JREPAIRPASSMISSINGFAIL01',
             'workflow_instance_id' => 'repair-pass-missing-failure',
             'run_number' => 1,
             'is_current_run' => true,
@@ -356,18 +384,18 @@ final class V2RepairPassCommandTest extends TestCase
                 ->subMinute(),
         ]);
 
-        $report = TaskWatchdog::runPass(runIds: ['01JREPAIRPASSMISSINGFAIL001']);
+        $report = TaskWatchdog::runPass(runIds: ['01JREPAIRPASSMISSINGFAIL01']);
 
         $this->assertSame([], $report['existing_task_failures']);
         $this->assertCount(1, $report['missing_run_failures']);
-        $this->assertSame('01JREPAIRPASSMISSINGFAIL001', $report['missing_run_failures'][0]['run_id']);
+        $this->assertSame('01JREPAIRPASSMISSINGFAIL01', $report['missing_run_failures'][0]['run_id']);
         $this->assertStringContainsString(
             'No query results for model',
             $report['missing_run_failures'][0]['message'],
         );
 
         $this->artisan('workflow:v2:repair-pass', [
-            '--run-id' => ['01JREPAIRPASSMISSINGFAIL001'],
+            '--run-id' => ['01JREPAIRPASSMISSINGFAIL01'],
             '--json' => true,
         ])->assertFailed();
     }
@@ -400,133 +428,6 @@ final class V2RepairPassCommandTest extends TestCase
         ])->assertFailed();
     }
 
-    public function testItBackfillsLegacySignalLifecyclesBeforeRepairingMissingTasks(): void
-    {
-        Queue::fake();
-
-        [$run, $command] = $this->createLegacySignalRepairRun('repair-pass-legacy-signal');
-
-        $expected = [
-            'connection' => null,
-            'queue' => null,
-            'run_ids' => [],
-            'instance_id' => null,
-            'respect_throttle' => false,
-            'throttled' => false,
-            'selected_existing_task_candidates' => 0,
-            'selected_missing_task_candidates' => 1,
-            'selected_total_candidates' => 1,
-            'repaired_existing_tasks' => 0,
-            'repaired_missing_tasks' => 1,
-            'dispatched_tasks' => 1,
-            'selected_command_contract_candidates' => 0,
-            'backfilled_command_contracts' => 0,
-            'command_contract_backfill_unavailable' => 0,
-            'existing_task_failures' => [],
-            'missing_run_failures' => [],
-            'command_contract_failures' => [],
-        ];
-
-        $this->artisan('workflow:v2:repair-pass', [
-            '--json' => true,
-        ])
-            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
-            ->assertSuccessful();
-
-        /** @var WorkflowSignal $signal */
-        $signal = WorkflowSignal::query()
-            ->where('workflow_command_id', $command->id)
-            ->sole();
-
-        /** @var WorkflowTask $task */
-        $task = WorkflowTask::query()
-            ->where('workflow_run_id', $run->id)
-            ->where('task_type', TaskType::Workflow->value)
-            ->where('status', TaskStatus::Ready->value)
-            ->sole();
-
-        $this->assertSame([
-            'workflow_wait_kind' => 'signal',
-            'open_wait_id' => sprintf('signal-application:%s', $signal->id),
-            'resume_source_kind' => 'workflow_signal',
-            'resume_source_id' => $signal->id,
-            'workflow_signal_id' => $signal->id,
-            'workflow_command_id' => $command->id,
-        ], $task->payload);
-
-        /** @var WorkflowHistoryEvent $received */
-        $received = WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $run->id)
-            ->where('event_type', HistoryEventType::SignalReceived->value)
-            ->sole();
-
-        $this->assertSame($signal->id, $received->payload['signal_id'] ?? null);
-        $this->assertSame('legacy-signal-wait', $received->payload['signal_wait_id'] ?? null);
-    }
-
-    public function testItBackfillsLegacyUpdateLifecyclesBeforeRepairingMissingTasks(): void
-    {
-        Queue::fake();
-
-        [$run, $command] = $this->createLegacyUpdateRepairRun('repair-pass-legacy-update');
-
-        $expected = [
-            'connection' => null,
-            'queue' => null,
-            'run_ids' => [],
-            'instance_id' => null,
-            'respect_throttle' => false,
-            'throttled' => false,
-            'selected_existing_task_candidates' => 0,
-            'selected_missing_task_candidates' => 1,
-            'selected_total_candidates' => 1,
-            'repaired_existing_tasks' => 0,
-            'repaired_missing_tasks' => 1,
-            'dispatched_tasks' => 1,
-            'selected_command_contract_candidates' => 0,
-            'backfilled_command_contracts' => 0,
-            'command_contract_backfill_unavailable' => 0,
-            'existing_task_failures' => [],
-            'missing_run_failures' => [],
-            'command_contract_failures' => [],
-        ];
-
-        $this->artisan('workflow:v2:repair-pass', [
-            '--json' => true,
-        ])
-            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
-            ->assertSuccessful();
-
-        /** @var WorkflowUpdate $update */
-        $update = WorkflowUpdate::query()
-            ->where('workflow_command_id', $command->id)
-            ->sole();
-
-        /** @var WorkflowTask $task */
-        $task = WorkflowTask::query()
-            ->where('workflow_run_id', $run->id)
-            ->where('task_type', TaskType::Workflow->value)
-            ->where('status', TaskStatus::Ready->value)
-            ->sole();
-
-        $this->assertSame([
-            'workflow_wait_kind' => 'update',
-            'open_wait_id' => sprintf('update:%s', $update->id),
-            'resume_source_kind' => 'workflow_update',
-            'resume_source_id' => $update->id,
-            'workflow_update_id' => $update->id,
-            'workflow_command_id' => $command->id,
-        ], $task->payload);
-
-        /** @var WorkflowHistoryEvent $accepted */
-        $accepted = WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $run->id)
-            ->where('event_type', HistoryEventType::UpdateAccepted->value)
-            ->sole();
-
-        $this->assertSame($update->id, $accepted->payload['update_id'] ?? null);
-    }
-
     /**
      * @return array{0: WorkflowRun, 1: WorkflowSignal}
      */
@@ -544,8 +445,8 @@ final class V2RepairPassCommandTest extends TestCase
             'resolved_workflow_run_id' => $run->id,
             'signal_name' => 'name-provided',
             'status' => SignalStatus::Received->value,
-            'payload_codec' => Serializer::class,
-            'arguments' => Serializer::serialize([]),
+            'payload_codec' => CodecRegistry::defaultCodec(),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), []),
             'received_at' => now()
                 ->subMinute(),
         ]);
@@ -577,142 +478,6 @@ final class V2RepairPassCommandTest extends TestCase
         ]);
 
         return [$run, $signal];
-    }
-
-    /**
-     * @return array{0: WorkflowRun, 1: WorkflowCommand}
-     */
-    private function createLegacySignalRepairRun(string $instanceId): array
-    {
-        $run = $this->createWaitingRun($instanceId);
-
-        /** @var WorkflowCommand $command */
-        $command = WorkflowCommand::query()->create([
-            'id' => (string) Str::ulid(),
-            'workflow_instance_id' => $run->workflow_instance_id,
-            'workflow_run_id' => $run->id,
-            'command_sequence' => 2,
-            'command_type' => 'signal',
-            'target_scope' => 'instance',
-            'status' => 'accepted',
-            'outcome' => 'signal_received',
-            'workflow_class' => TestCommandTargetWorkflow::class,
-            'workflow_type' => 'test-command-target-workflow',
-            'payload_codec' => Serializer::class,
-            'payload' => Serializer::serialize([
-                'name' => 'name-provided',
-                'arguments' => ['Taylor'],
-            ]),
-            'accepted_at' => now()
-                ->subMinute(),
-            'created_at' => now()
-                ->subMinute(),
-            'updated_at' => now()
-                ->subMinute(),
-        ]);
-
-        WorkflowHistoryEvent::query()->create([
-            'id' => (string) Str::ulid(),
-            'workflow_run_id' => $run->id,
-            'sequence' => 1,
-            'event_type' => HistoryEventType::SignalWaitOpened->value,
-            'payload' => [
-                'signal_name' => 'name-provided',
-                'sequence' => 1,
-            ],
-            'recorded_at' => now()
-                ->subMinutes(2),
-            'created_at' => now()
-                ->subMinutes(2),
-            'updated_at' => now()
-                ->subMinutes(2),
-        ]);
-
-        WorkflowHistoryEvent::query()->create([
-            'id' => (string) Str::ulid(),
-            'workflow_run_id' => $run->id,
-            'sequence' => 2,
-            'event_type' => HistoryEventType::SignalReceived->value,
-            'payload' => [
-                'workflow_command_id' => $command->id,
-                'workflow_instance_id' => $run->workflow_instance_id,
-                'workflow_run_id' => $run->id,
-                'signal_name' => 'name-provided',
-                'signal_wait_id' => 'legacy-signal-wait',
-            ],
-            'workflow_command_id' => $command->id,
-            'recorded_at' => now()
-                ->subMinute(),
-            'created_at' => now()
-                ->subMinute(),
-            'updated_at' => now()
-                ->subMinute(),
-        ]);
-
-        RunSummaryProjector::project(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-        );
-
-        return [$run, $command];
-    }
-
-    /**
-     * @return array{0: WorkflowRun, 1: WorkflowCommand}
-     */
-    private function createLegacyUpdateRepairRun(string $instanceId): array
-    {
-        $run = $this->createWaitingRun($instanceId);
-
-        /** @var WorkflowCommand $command */
-        $command = WorkflowCommand::query()->create([
-            'id' => (string) Str::ulid(),
-            'workflow_instance_id' => $run->workflow_instance_id,
-            'workflow_run_id' => $run->id,
-            'command_sequence' => 2,
-            'command_type' => 'update',
-            'target_scope' => 'instance',
-            'status' => 'accepted',
-            'workflow_class' => TestCommandTargetWorkflow::class,
-            'workflow_type' => 'test-command-target-workflow',
-            'payload_codec' => Serializer::class,
-            'payload' => Serializer::serialize([
-                'name' => 'mark-approved',
-                'arguments' => [true, 'api'],
-            ]),
-            'accepted_at' => now()
-                ->subMinute(),
-            'created_at' => now()
-                ->subMinute(),
-            'updated_at' => now()
-                ->subMinute(),
-        ]);
-
-        WorkflowHistoryEvent::query()->create([
-            'id' => (string) Str::ulid(),
-            'workflow_run_id' => $run->id,
-            'sequence' => 2,
-            'event_type' => HistoryEventType::UpdateAccepted->value,
-            'payload' => [
-                'workflow_command_id' => $command->id,
-                'workflow_instance_id' => $run->workflow_instance_id,
-                'workflow_run_id' => $run->id,
-                'update_name' => 'mark-approved',
-                'arguments' => Serializer::serialize([true, 'api']),
-            ],
-            'workflow_command_id' => $command->id,
-            'recorded_at' => now()
-                ->subMinute(),
-            'created_at' => now()
-                ->subMinute(),
-            'updated_at' => now()
-                ->subMinute(),
-        ]);
-
-        RunSummaryProjector::project(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-        );
-
-        return [$run, $command];
     }
 
     private function createOverdueWorkflowTask(string $instanceId): WorkflowTask
@@ -757,7 +522,8 @@ final class V2RepairPassCommandTest extends TestCase
             'workflow_class' => TestCommandTargetWorkflow::class,
             'workflow_type' => 'test-command-target-workflow',
             'status' => RunStatus::Waiting->value,
-            'arguments' => Serializer::serialize([]),
+            'payload_codec' => CodecRegistry::defaultCodec(),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), []),
             'connection' => 'redis',
             'queue' => 'default',
             'started_at' => now()

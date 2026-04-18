@@ -5903,6 +5903,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($signalRecord->id, $taskDetail['workflow_signal_id']);
 
         $this->runReadyTaskForRun($runId, TaskType::Workflow);
+        $this->drainReadyTasks();
 
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame([

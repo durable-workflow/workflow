@@ -14,13 +14,11 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
-use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
-use Workflow\V2\Models\WorkflowUpdate;
 
 final class TaskRepair
 {
@@ -31,8 +29,6 @@ final class TaskRepair
         if ($task !== null) {
             return self::recoverExistingTask($task, $run);
         }
-
-        $summary = self::normalizeLifecycleForMissingTaskRepair($run, $summary);
 
         return self::createMissingTask($run, $summary);
     }
@@ -138,105 +134,6 @@ final class TaskRepair
         return $task->task_type === TaskType::Workflow
             && $task->status === TaskStatus::Failed
             && ($task->payload['replay_blocked'] ?? false) === true;
-    }
-
-    private static function normalizeLifecycleForMissingTaskRepair(
-        WorkflowRun $run,
-        WorkflowRunSummary $summary,
-    ): WorkflowRunSummary {
-        if ($summary->liveness_state !== 'repair_needed') {
-            return $summary;
-        }
-
-        $command = self::commandRequiringLifecycleBackfill($summary);
-
-        if (! $command instanceof WorkflowCommand) {
-            return $summary;
-        }
-
-        $plan = CommandLifecycleBackfill::plan($command);
-
-        if ($plan === null || (! $plan['row_missing'] && $plan['history_events_missing'] === 0)) {
-            return $summary;
-        }
-
-        CommandLifecycleBackfill::backfill($command);
-
-        /** @var WorkflowRun|null $projectedRun */
-        $projectedRun = $run->fresh([
-            'instance',
-            'tasks',
-            'activityExecutions',
-            'timers',
-            'failures',
-            'historyEvents',
-        ]);
-
-        if (! $projectedRun instanceof WorkflowRun) {
-            return $summary;
-        }
-
-        return RunSummaryProjector::project($projectedRun);
-    }
-
-    private static function commandRequiringLifecycleBackfill(WorkflowRunSummary $summary): ?WorkflowCommand
-    {
-        $resumeSourceId = self::nonEmptyString($summary->resume_source_id);
-
-        if ($resumeSourceId === null) {
-            return null;
-        }
-
-        return match ($summary->wait_kind) {
-            'signal' => self::signalLifecycleBackfillCommand($resumeSourceId, $summary->resume_source_kind),
-            'update' => self::updateLifecycleBackfillCommand($resumeSourceId, $summary->resume_source_kind),
-            default => null,
-        };
-    }
-
-    private static function signalLifecycleBackfillCommand(
-        string $resumeSourceId,
-        ?string $resumeSourceKind,
-    ): ?WorkflowCommand {
-        if ($resumeSourceKind !== 'workflow_command') {
-            return null;
-        }
-
-        /** @var WorkflowCommand|null $command */
-        $command = WorkflowCommand::query()
-            ->with(['historyEvents', 'signalRecord', 'updateRecord'])
-            ->find($resumeSourceId);
-
-        return $command?->command_type->value === 'signal'
-            ? $command
-            : null;
-    }
-
-    private static function updateLifecycleBackfillCommand(
-        string $resumeSourceId,
-        ?string $resumeSourceKind,
-    ): ?WorkflowCommand {
-        if (! in_array($resumeSourceKind, ['workflow_command', 'workflow_update'], true)) {
-            return null;
-        }
-
-        if ($resumeSourceKind === 'workflow_update') {
-            /** @var WorkflowUpdate|null $update */
-            $update = WorkflowUpdate::query()->find($resumeSourceId);
-
-            if ($update instanceof WorkflowUpdate) {
-                return null;
-            }
-        }
-
-        /** @var WorkflowCommand|null $command */
-        $command = WorkflowCommand::query()
-            ->with(['historyEvents', 'signalRecord', 'updateRecord'])
-            ->find($resumeSourceId);
-
-        return $command?->command_type->value === 'update'
-            ? $command
-            : null;
     }
 
     /**

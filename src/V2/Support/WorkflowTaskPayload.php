@@ -107,7 +107,6 @@ final class WorkflowTaskPayload
             'resume_source_kind' => self::nonEmptyString($summary->resume_source_kind),
             'resume_source_id' => $resumeSourceId,
             'workflow_update_id' => $summary->resume_source_kind === 'workflow_update' ? $resumeSourceId : null,
-            'workflow_command_id' => $summary->resume_source_kind === 'workflow_command' ? $resumeSourceId : null,
         ], static fn (mixed $value): bool => $value !== null);
     }
 
@@ -131,7 +130,6 @@ final class WorkflowTaskPayload
             'resume_source_kind' => self::nonEmptyString($summary->resume_source_kind),
             'resume_source_id' => $resumeSourceId,
             'workflow_signal_id' => $summary->resume_source_kind === 'workflow_signal' ? $resumeSourceId : null,
-            'workflow_command_id' => $summary->resume_source_kind === 'workflow_command' ? $resumeSourceId : null,
         ], static fn (mixed $value): bool => $value !== null);
     }
 
