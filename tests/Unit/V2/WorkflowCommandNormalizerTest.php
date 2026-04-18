@@ -283,7 +283,9 @@ final class WorkflowCommandNormalizerTest extends TestCase
 
     public function testCompleteUpdateUnwrapsEnvelope(): void
     {
-        $blob = Serializer::serializeWithCodec('avro', ['approved' => true]);
+        $blob = Serializer::serializeWithCodec('avro', [
+            'approved' => true,
+        ]);
 
         $out = WorkflowCommandNormalizer::normalize([
             [
