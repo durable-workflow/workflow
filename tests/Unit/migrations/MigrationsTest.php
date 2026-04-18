@@ -9,6 +9,24 @@ use Tests\TestCase;
 
 final class MigrationsTest extends TestCase
 {
+    public function testV2MigrationSetDoesNotShipPreviewBackfillMigrations(): void
+    {
+        $files = glob(dirname(__DIR__, 3) . '/src/migrations/2026_04_*.php') ?: [];
+
+        $this->assertNotEmpty($files);
+
+        $backfillFiles = array_values(array_filter(
+            array_map('basename', $files),
+            static fn (string $file): bool => str_contains($file, 'backfill'),
+        ));
+
+        $this->assertSame(
+            [],
+            $backfillFiles,
+            'Unreleased v2 migrations must not ship preview-era backfill migrations.',
+        );
+    }
+
     public function testDownMethodsDropTables(): void
     {
         $this->assertTrue(Schema::hasTable('workflows'));
