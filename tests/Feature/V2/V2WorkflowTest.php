@@ -3163,6 +3163,7 @@ final class V2WorkflowTest extends TestCase
 
     public function testParallelChildAllWaitsForLastSuccessfulChildBeforeResumingParent(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelChildWorkflow::class, 'parallel-child-all');
@@ -3415,6 +3416,7 @@ final class V2WorkflowTest extends TestCase
 
     public function testParallelActivityAllWaitsForLastSuccessfulActivityBeforeResumingParent(): void
     {
+        config()->set('queue.default', 'redis');
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelActivityWorkflow::class, 'parallel-activity-all');
