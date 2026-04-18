@@ -1242,7 +1242,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($execution);
         $this->assertSame('test-greeting-activity', $execution->activity_type);
-        $this->assertSame(ActivityStatus::Pending->value, $execution->status);
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
         $this->assertSame('activities', $execution->queue);
 
         $activityTask = WorkflowTask::query()
@@ -1251,7 +1251,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->first();
 
         $this->assertNotNull($activityTask);
-        $this->assertSame(TaskStatus::Ready->value, $activityTask->status);
+        $this->assertSame(TaskStatus::Ready, $activityTask->status);
         $this->assertSame('activities', $activityTask->queue);
 
         $scheduledEvent = WorkflowHistoryEvent::query()
@@ -1288,7 +1288,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->first();
 
         $this->assertNotNull($timer);
-        $this->assertSame(TimerStatus::Pending->value, $timer->status);
+        $this->assertSame(TimerStatus::Pending, $timer->status);
         $this->assertSame(300, $timer->delay_seconds);
         $this->assertNotNull($timer->fire_at);
 
@@ -1298,7 +1298,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->first();
 
         $this->assertNotNull($timerTask);
-        $this->assertSame(TaskStatus::Ready->value, $timerTask->status);
+        $this->assertSame(TaskStatus::Ready, $timerTask->status);
 
         $scheduledEvent = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
@@ -1339,7 +1339,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $childRun = WorkflowRun::query()->find($link->child_workflow_run_id);
         $this->assertNotNull($childRun);
-        $this->assertSame(RunStatus::Pending->value, $childRun->status);
+        $this->assertSame(RunStatus::Pending, $childRun->status);
         $this->assertSame('test-greeting-workflow', $childRun->workflow_type);
 
         $childTask = WorkflowTask::query()
@@ -1348,7 +1348,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->first();
 
         $this->assertNotNull($childTask);
-        $this->assertSame(TaskStatus::Ready->value, $childTask->status);
+        $this->assertSame(TaskStatus::Ready, $childTask->status);
 
         $scheduledEvent = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
@@ -1364,6 +1364,48 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->first();
 
         $this->assertNotNull($childStartedEvent);
+    }
+
+    public function testCompleteStartsChildWorkflowWithParentNamespace(): void
+    {
+        $run = $this->createWaitingRun('production');
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->first();
+
+        $this->assertNotNull($link);
+
+        $childRun = WorkflowRun::query()->find($link->child_workflow_run_id);
+        $this->assertNotNull($childRun);
+        $this->assertSame('production', $childRun->namespace);
+
+        $this->assertSame(
+            'production',
+            WorkflowInstance::query()->whereKey($link->child_workflow_instance_id)->value('namespace'),
+        );
+
+        $this->assertSame(
+            'production',
+            WorkflowTask::query()
+                ->where('workflow_run_id', $childRun->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->value('namespace'),
+        );
     }
 
 
@@ -1468,7 +1510,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $continuedRun = WorkflowRun::query()->find($link->child_workflow_run_id);
         $this->assertNotNull($continuedRun);
-        $this->assertSame(RunStatus::Pending->value, $continuedRun->status);
+        $this->assertSame(RunStatus::Pending, $continuedRun->status);
         $this->assertSame($run->run_number + 1, $continuedRun->run_number);
         $this->assertSame($run->workflow_instance_id, $continuedRun->workflow_instance_id);
 
@@ -1478,7 +1520,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->first();
 
         $this->assertNotNull($continuedTask);
-        $this->assertSame(TaskStatus::Ready->value, $continuedTask->status);
+        $this->assertSame(TaskStatus::Ready, $continuedTask->status);
 
         $continuedEvent = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
@@ -1679,6 +1721,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Leased->value,
             'available_at' => now()
@@ -1695,12 +1738,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         return $task;
     }
 
-    private function createWaitingRun(): WorkflowRun
+    private function createWaitingRun(?string $namespace = null): WorkflowRun
     {
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()->create([
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
+            'namespace' => $namespace,
             'run_count' => 1,
             'reserved_at' => now()
                 ->subMinute(),
@@ -1714,6 +1758,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'run_number' => 1,
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
+            'namespace' => $namespace,
             'status' => RunStatus::Waiting->value,
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',

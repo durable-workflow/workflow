@@ -30,8 +30,12 @@ use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Observers\WorkflowHistoryEventObserver;
+use Workflow\V2\Observers\WorkflowLinkObserver;
+use Workflow\V2\Observers\WorkflowRunLineageEntryObserver;
 use Workflow\V2\Observers\WorkflowTaskObserver;
 use Workflow\V2\Support\CacheLongPollWakeStore;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
@@ -120,8 +124,10 @@ final class WorkflowServiceProvider extends ServiceProvider
      */
     private function registerLongPollObservers(): void
     {
-        // Register observers for long-poll wake signals
+        // Register projection and long-poll wake observers.
         // Note: Laravel's observe() is idempotent - calling it multiple times is safe
+        WorkflowLink::observe(WorkflowLinkObserver::class);
+        WorkflowRunLineageEntry::observe(WorkflowRunLineageEntryObserver::class);
         WorkflowTask::observe(WorkflowTaskObserver::class);
         WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
     }

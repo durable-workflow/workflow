@@ -1007,6 +1007,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $childInstance = WorkflowInstance::query()->create([
             'workflow_class' => $workflowType,
             'workflow_type' => $workflowType,
+            'namespace' => $run->namespace,
             'reserved_at' => $now,
             'started_at' => $now,
             'run_count' => 1,
@@ -1018,6 +1019,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'run_number' => 1,
             'workflow_class' => $workflowType,
             'workflow_type' => $workflowType,
+            'namespace' => $run->namespace,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
             'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
@@ -1207,6 +1209,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'run_number' => $run->run_number + 1,
             'workflow_class' => $workflowType,
             'workflow_type' => $workflowType,
+            'namespace' => $run->namespace,
             'business_key' => $run->business_key,
             'visibility_labels' => $run->visibility_labels,
             'memo' => $run->memo,

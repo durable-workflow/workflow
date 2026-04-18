@@ -1506,6 +1506,7 @@ final class WorkflowExecutor
         $childInstance = WorkflowInstance::query()->create([
             'workflow_class' => $childWorkflowCall->workflow,
             'workflow_type' => $workflowType,
+            'namespace' => $run->namespace,
             'reserved_at' => $now,
             'started_at' => $now,
             'run_count' => 1,
@@ -1517,6 +1518,7 @@ final class WorkflowExecutor
             'run_number' => 1,
             'workflow_class' => $childWorkflowCall->workflow,
             'workflow_type' => $workflowType,
+            'namespace' => $run->namespace,
             'business_key' => null,
             'visibility_labels' => null,
             'status' => RunStatus::Pending->value,
@@ -2185,6 +2187,7 @@ final class WorkflowExecutor
             'run_number' => $run->run_number + 1,
             'workflow_class' => $workflowClass,
             'workflow_type' => $run->workflow_type,
+            'namespace' => $run->namespace,
             'business_key' => $run->business_key,
             'visibility_labels' => $run->visibility_labels,
             'memo' => $run->memo,
