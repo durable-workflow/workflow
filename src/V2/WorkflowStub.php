@@ -596,6 +596,11 @@ final class WorkflowStub
         return $this->run?->id;
     }
 
+    public function run(): ?WorkflowRun
+    {
+        return $this->refresh()->run;
+    }
+
     public function payloadCodec(): string
     {
         return $this->run?->payload_codec ?? CodecRegistry::defaultCodec();

@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
+use Tests\Fixtures\V2\TestContinueAsNewActivity;
+use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
-use Tests\Fixtures\V2\TestHistoryBudgetWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\FailureCategory;
@@ -22,7 +23,6 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\FailureSnapshots;
-use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
 
@@ -180,9 +180,9 @@ final class V2WorkflowTimeoutTest extends TestCase
     public function testContinueAsNewCarriesForwardTimeouts(): void
     {
         WorkflowStub::fake();
-        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+        WorkflowStub::mock(TestContinueAsNewActivity::class, 0);
 
-        $workflow = WorkflowStub::make(TestHistoryBudgetWorkflow::class, 'timeout-can-1');
+        $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'timeout-can-1');
 
         config()
             ->set('workflows.v2.history_budget.continue_as_new_event_threshold', 1);
@@ -221,10 +221,12 @@ final class V2WorkflowTimeoutTest extends TestCase
             $lastRun->execution_deadline_at->toIso8601String(),
         );
 
-        // Run deadline should be different (reset for each new run)
-        $this->assertNotEquals(
-            $firstRun->run_deadline_at->toIso8601String(),
-            $lastRun->run_deadline_at->toIso8601String(),
+        // Run deadline is reset for each new run and must never move earlier.
+        $this->assertTrue($lastRun->run_deadline_at->gte($firstRun->run_deadline_at));
+        $this->assertEqualsWithDelta(
+            3600,
+            $lastRun->run_deadline_at->diffInSeconds($lastRun->started_at),
+            1,
         );
     }
 

@@ -896,7 +896,6 @@ final class WorkflowExecutor
 
                 try {
                     StructuralLimits::guardCommandBatchSize($groupSize);
-                    $this->logApproachingLimit(StructuralLimits::warnApproachingCommandBatch($groupSize), $run);
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -1188,6 +1187,10 @@ final class WorkflowExecutor
                         ChildRunHistory::exceptionForChildRun($childRun),
                         $childRun->closed_at?->getTimestampMs() ?? PHP_INT_MAX,
                     );
+                }
+
+                if ($scheduledTasks !== []) {
+                    $this->logApproachingLimit(StructuralLimits::warnApproachingCommandBatch($groupSize), $run);
                 }
 
                 if ($failure !== null) {
