@@ -190,10 +190,7 @@ final class WorkflowServiceProviderTest extends TestCase
             $customIndex = "            \$table->index('workflow_class', 'workflow_instances_workflow_class_index');\n";
             $hook = "            \$table->string('workflow_class');\n";
             $this->assertStringContainsString($hook, $instancesContents);
-            file_put_contents(
-                $instances,
-                str_replace($hook, $hook . $customIndex, $instancesContents),
-            );
+            file_put_contents($instances, str_replace($hook, $hook . $customIndex, $instancesContents));
 
             // 5. Run migrate from the customized published snapshot.
             Schema::dropAllTables();

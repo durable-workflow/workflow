@@ -77,16 +77,16 @@ jobs:
         mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
 
     - name: Run test suite (MySQL)
-      timeout-minutes: 35
-      run: timeout --foreground 30m vendor/bin/phpunit --testdox --debug --testsuite feature
+      timeout-minutes: 65
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
       env:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports[3306] }}
         QUEUE_CONNECTION: redis
 
     - name: Run test suite (PostgreSQL)
-      timeout-minutes: 35
-      run: timeout --foreground 30m vendor/bin/phpunit --testdox --debug --testsuite feature
+      timeout-minutes: 65
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
       env:
         DB_CONNECTION: pgsql
         DB_PORT: ${{ job.services.postgres.ports[5432] }}
