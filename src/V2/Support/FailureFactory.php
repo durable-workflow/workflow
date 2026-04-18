@@ -105,8 +105,8 @@ final class FailureFactory
 
     /**
      * Determine non-retryable status from a recorded exception class string.
-     * Used by the external worker bridge and backfill commands where the
-     * original throwable is not available.
+     * Used by external worker and imported-history paths where the original
+     * throwable is not available.
      */
     public static function isNonRetryableFromStrings(?string $exceptionClass): bool
     {
