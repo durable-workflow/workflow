@@ -50,6 +50,7 @@ final class WaterlineEngineSource
      *     status: string,
      *     severity: string,
      *     message: string,
+     *     readiness_contract: array<string, mixed>,
      *     issues: list<array{
      *         config_key: string|null,
      *         model: string,
@@ -91,6 +92,12 @@ final class WaterlineEngineSource
             'status' => $summary['status'],
             'severity' => $summary['severity'],
             'message' => $summary['message'],
+            'readiness_contract' => ReadinessContract::forEngineSourceStatus(
+                configured: $configured,
+                resolved: $resolved,
+                usesV2: $usesV2,
+                v2OperatorSurfaceAvailable: $inspection['available'],
+            ),
             'issues' => $inspection['issues'],
             'required_tables' => $inspection['required_tables'],
         ];

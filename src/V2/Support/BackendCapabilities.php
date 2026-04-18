@@ -37,6 +37,7 @@ final class BackendCapabilities
 
         return [
             'generated_at' => $now->toJSON(),
+            'readiness_contract' => ReadinessContract::forBackendCapabilities(),
             'supported' => self::hasErrors($issues) === false,
             'database' => $database,
             'queue' => $queue,

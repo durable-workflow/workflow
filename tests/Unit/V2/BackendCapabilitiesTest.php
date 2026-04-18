@@ -35,31 +35,69 @@ final class BackendCapabilitiesTest extends TestCase
 
     public function testSnapshotCapturesConfiguredBackendIdentities(): void
     {
-        config()->set('database.default', 'pgsql');
-        config()
-            ->set('database.connections.pgsql.driver', 'pgsql');
-        config()
-            ->set('queue.default', 'redis');
-        config()
-            ->set('queue.connections.redis.driver', 'redis');
-        config()
-            ->set('cache.default', 'array');
-        config()
-            ->set('cache.stores.array.driver', 'array');
+        $originalDatabaseDefault = config('database.default');
 
+        try {
+            config()->set('database.default', 'pgsql');
+            config()
+                ->set('database.connections.pgsql.driver', 'pgsql');
+            config()
+                ->set('queue.default', 'redis');
+            config()
+                ->set('queue.connections.redis.driver', 'redis');
+            config()
+                ->set('cache.default', 'array');
+            config()
+                ->set('cache.stores.array.driver', 'array');
+
+            $snapshot = BackendCapabilities::snapshot();
+
+            $this->assertSame('pgsql', $snapshot['database']['connection']);
+            $this->assertSame('pgsql', $snapshot['database']['driver']);
+            $this->assertTrue($snapshot['database']['supported']);
+            $this->assertTrue($snapshot['database']['capabilities']['row_locks']);
+            $this->assertSame('redis', $snapshot['queue']['connection']);
+            $this->assertSame('redis', $snapshot['queue']['driver']);
+            $this->assertTrue($snapshot['queue']['supported']);
+            $this->assertSame('array', $snapshot['cache']['store']);
+            $this->assertSame('array', $snapshot['cache']['driver']);
+            $this->assertTrue($snapshot['cache']['supported']);
+            $this->assertTrue($snapshot['cache']['capabilities']['atomic_locks']);
+        } finally {
+            config()->set('database.default', $originalDatabaseDefault);
+        }
+    }
+
+    public function testSnapshotIncludesFrozenReadinessContractMatrix(): void
+    {
         $snapshot = BackendCapabilities::snapshot();
+        $contract = $snapshot['readiness_contract'];
 
-        $this->assertSame('pgsql', $snapshot['database']['connection']);
-        $this->assertSame('pgsql', $snapshot['database']['driver']);
-        $this->assertTrue($snapshot['database']['supported']);
-        $this->assertTrue($snapshot['database']['capabilities']['row_locks']);
-        $this->assertSame('redis', $snapshot['queue']['connection']);
-        $this->assertSame('redis', $snapshot['queue']['driver']);
-        $this->assertTrue($snapshot['queue']['supported']);
-        $this->assertSame('array', $snapshot['cache']['store']);
-        $this->assertSame('array', $snapshot['cache']['driver']);
-        $this->assertTrue($snapshot['cache']['supported']);
-        $this->assertTrue($snapshot['cache']['capabilities']['atomic_locks']);
+        $this->assertSame(1, $contract['version']);
+        $this->assertSame('v2_final_contract', $contract['release_state']);
+        $this->assertSame(
+            'Workflow\V2\Support\BackendCapabilities::snapshot',
+            $contract['surfaces']['dispatch']['authority']
+        );
+        $this->assertSame(
+            'Workflow\V2\Support\TaskBackendCapabilities::recordClaimFailureIfUnsupported',
+            $contract['surfaces']['claim']['authority']
+        );
+        $this->assertContains('mysql', $contract['backend_capabilities']['database']['supported_drivers']);
+        $this->assertContains('pgsql', $contract['backend_capabilities']['database']['supported_drivers']);
+        $this->assertSame(
+            'error',
+            $contract['backend_capabilities']['queue']['queue_mode']['sync_or_missing_queue_severity']
+        );
+        $this->assertSame(
+            'info',
+            $contract['backend_capabilities']['queue']['poll_mode']['sync_or_missing_queue_severity']
+        );
+        $this->assertSame('avro', $contract['backend_capabilities']['codec']['default_for_new_v2_runs']);
+        $this->assertSame(
+            'evaluated_by_backend_capabilities_snapshot',
+            $contract['effective_states']['dispatch']['state']
+        );
     }
 
     public function testSnapshotCanInspectAnExplicitTaskQueueConnection(): void
@@ -138,11 +176,10 @@ final class BackendCapabilitiesTest extends TestCase
 
     public function testSqliteDatabasePublishesConcurrencyNote(): void
     {
-        config()->set('database.default', 'sqlite');
         config()
             ->set('database.connections.sqlite.driver', 'sqlite');
 
-        $snapshot = BackendCapabilities::snapshot();
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'sqlite');
 
         $this->assertSame(
             'limited',
@@ -156,11 +193,10 @@ final class BackendCapabilitiesTest extends TestCase
 
     public function testMysqlDatabaseDoesNotPublishConcurrencyNote(): void
     {
-        config()->set('database.default', 'mysql');
         config()
             ->set('database.connections.mysql.driver', 'mysql');
 
-        $snapshot = BackendCapabilities::snapshot();
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'mysql');
 
         $this->assertArrayNotHasKey('concurrent_write_safety', $snapshot['structural_limits']['backend_adjustments']);
     }

@@ -20,6 +20,18 @@ final class WaterlineEngineSourceTest extends TestCase
         $this->assertSame(WaterlineEngineSource::ENGINE_V2, WaterlineEngineSource::resolve('AUTO'));
         $this->assertSame('v2_auto', WaterlineEngineSource::status()['status']);
         $this->assertTrue(WaterlineEngineSource::status()['uses_v2']);
+
+        $contract = WaterlineEngineSource::status()['readiness_contract'];
+
+        $this->assertSame(1, $contract['version']);
+        $this->assertSame(
+            'v2',
+            $contract['engine_source_modes']['auto']['when_v2_operator_surface_available']['resolved']
+        );
+        $this->assertTrue($contract['engine_source_modes']['auto']['when_v2_operator_surface_available']['uses_v2']);
+        $this->assertSame('v2_operator_surface_available', $contract['effective_states']['boot_install']['state']);
+        $this->assertSame('v2_operator_metrics', $contract['effective_states']['stats']['state']);
+        $this->assertSame('delegates_to_v2_health_check', $contract['effective_states']['health']['state']);
     }
 
     public function testExplicitEngineSelectionOverridesAutoDetection(): void
@@ -44,6 +56,18 @@ final class WaterlineEngineSourceTest extends TestCase
         $this->assertSame('missing_table', $status['issues'][0]['reason']);
         $this->assertSame(MissingWaterlineEngineSourceWorkflowRunSummary::class, $status['issues'][0]['model']);
         $this->assertSame('missing_workflow_run_summaries', $status['issues'][0]['table']);
+        $this->assertSame(
+            'auto_fallback_to_v1',
+            $status['readiness_contract']['effective_states']['boot_install']['state']
+        );
+        $this->assertSame(
+            'legacy_stats_with_engine_source_diagnostics',
+            $status['readiness_contract']['effective_states']['stats']['state']
+        );
+        $this->assertSame(
+            503,
+            $status['readiness_contract']['effective_states']['health']['http_status_when_requested']
+        );
     }
 
     public function testExplicitV2StatusRemainsPinnedButUnavailableWhenRequiredTableIsMissing(): void
@@ -57,6 +81,12 @@ final class WaterlineEngineSourceTest extends TestCase
         $this->assertSame(WaterlineEngineSource::ENGINE_V2, $status['resolved']);
         $this->assertFalse($status['uses_v2']);
         $this->assertFalse($status['v2_operator_surface_available']);
+        $this->assertSame('unavailable_503', $status['readiness_contract']['effective_states']['stats']['state']);
+        $this->assertSame('unavailable_503', $status['readiness_contract']['effective_states']['health']['state']);
+        $this->assertSame(
+            'unavailable_503',
+            $status['readiness_contract']['effective_states']['instance_routes']['state']
+        );
     }
 
     public function testAutoUsesConfiguredSummaryTableWhenItExists(): void
