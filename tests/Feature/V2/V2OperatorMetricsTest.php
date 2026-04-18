@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
-use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
@@ -24,6 +23,7 @@ use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\OperatorMetrics;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -68,6 +68,8 @@ final class V2OperatorMetricsTest extends TestCase
             ->set('cache.default', 'array');
         config()
             ->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('workflows.serializer', 'avro');
         WorkerCompatibilityFleet::clear();
 
         $run = $this->createRunWithSummary(
@@ -741,120 +743,6 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertFalse($scopes->get('sync:default:any')['scan_limited_by_global_policy']);
     }
 
-    public function testSnapshotCountsCommandContractSnapshotsThatStillNeedBackfill(): void
-    {
-        $availableInstance = WorkflowInstance::query()->create([
-            'id' => 'metrics-contract-available',
-            'workflow_class' => TestCommandTargetWorkflow::class,
-            'workflow_type' => 'test-command-target-workflow',
-            'run_count' => 1,
-        ]);
-
-        /** @var WorkflowRun $availableRun */
-        $availableRun = WorkflowRun::query()->create([
-            'id' => '01JMETRICSCONTRACTAVAIL01',
-            'workflow_instance_id' => $availableInstance->id,
-            'run_number' => 1,
-            'workflow_class' => TestCommandTargetWorkflow::class,
-            'workflow_type' => 'test-command-target-workflow',
-            'status' => 'waiting',
-            'started_at' => now()
-                ->subMinute(),
-            'last_progress_at' => now()
-                ->subSecond(),
-        ]);
-
-        $availableInstance->forceFill([
-            'current_run_id' => $availableRun->id,
-        ])->save();
-
-        WorkflowHistoryEvent::record($availableRun, HistoryEventType::WorkflowStarted, [
-            'workflow_class' => TestCommandTargetWorkflow::class,
-            'workflow_type' => 'test-command-target-workflow',
-            'declared_queries' => ['approval-stage', 'approvalMatches'],
-            'declared_query_contracts' => [
-                [
-                    'name' => 'approval-stage',
-                    'parameters' => [],
-                ],
-            ],
-            'declared_signals' => ['approved-by', 'rejected-by'],
-            'declared_signal_contracts' => [
-                [
-                    'name' => 'approved-by',
-                    'parameters' => [
-                        [
-                            'name' => 'actor',
-                            'position' => 0,
-                            'required' => true,
-                            'variadic' => false,
-                            'default_available' => false,
-                            'default' => null,
-                            'type' => 'string',
-                            'allows_null' => false,
-                        ],
-                    ],
-                ],
-            ],
-            'declared_updates' => ['mark-approved'],
-            'declared_update_contracts' => [
-                [
-                    'name' => 'mark-approved',
-                    'parameters' => [
-                        [
-                            'name' => 'approved',
-                            'position' => 0,
-                            'required' => true,
-                            'variadic' => false,
-                            'default_available' => false,
-                            'default' => null,
-                            'type' => 'bool',
-                            'allows_null' => false,
-                        ],
-                    ],
-                ],
-            ],
-        ]);
-
-        $unavailableInstance = WorkflowInstance::query()->create([
-            'id' => 'metrics-contract-unavailable',
-            'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
-            'workflow_type' => 'missing-command-target-workflow',
-            'run_count' => 1,
-        ]);
-
-        /** @var WorkflowRun $unavailableRun */
-        $unavailableRun = WorkflowRun::query()->create([
-            'id' => '01JMETRICSCONTRACTUNAVL01',
-            'workflow_instance_id' => $unavailableInstance->id,
-            'run_number' => 1,
-            'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
-            'workflow_type' => 'missing-command-target-workflow',
-            'status' => 'waiting',
-            'started_at' => now()
-                ->subMinute(),
-            'last_progress_at' => now()
-                ->subSecond(),
-        ]);
-
-        $unavailableInstance->forceFill([
-            'current_run_id' => $unavailableRun->id,
-        ])->save();
-
-        WorkflowHistoryEvent::record($unavailableRun, HistoryEventType::WorkflowStarted, [
-            'workflow_class' => 'Missing\\Workflow\\CommandTargetWorkflow',
-            'workflow_type' => 'missing-command-target-workflow',
-            'declared_signals' => ['approved-by', 'rejected-by'],
-            'declared_updates' => ['mark-approved'],
-        ]);
-
-        $snapshot = OperatorMetrics::snapshot();
-
-        $this->assertSame(2, $snapshot['command_contracts']['backfill_needed_runs']);
-        $this->assertSame(1, $snapshot['command_contracts']['backfill_available_runs']);
-        $this->assertSame(1, $snapshot['command_contracts']['backfill_unavailable_runs']);
-    }
-
     private function createRunWithSummary(
         string $instanceId,
         string $runId,
@@ -915,6 +803,7 @@ final class V2OperatorMetricsTest extends TestCase
             'history_event_count' => $historyEventCount,
             'history_size_bytes' => $historySizeBytes,
             'continue_as_new_recommended' => $continueAsNewRecommended,
+            'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION,
             'created_at' => now()
                 ->subMinutes(10),
             'updated_at' => now(),

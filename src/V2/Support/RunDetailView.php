@@ -42,7 +42,7 @@ final class RunDetailView
         $currentRun = $currentRunResolution['run'];
         $currentSummary = $currentRunResolution['summary'];
         $isCurrentRun = $summary?->is_current_run ?? ($currentRun?->id === $run->id);
-        $commandContract = RunCommandContract::forRun($run, persistBackfill: true);
+        $commandContract = RunCommandContract::forRun($run);
         $tasks = RunTaskView::forRun($run);
         $taskLinks = RunTaskLinkMap::forRun($run, $tasks);
         $cancelBlockedReason = self::actionBlockedReason($run, $isCurrentRun);
@@ -114,7 +114,6 @@ final class RunDetailView
         $currentDefinitionFingerprint = WorkflowDefinitionFingerprint::currentForRun($run);
         $definitionMatchesCurrent = WorkflowDefinitionFingerprint::matchesCurrent($run);
         $determinismDiagnostics = WorkflowDeterminismDiagnostics::forRun($run);
-        $commandContractBackfill = RunCommandContract::historyBackfillState($run);
         $historyBudget = $summary === null
             ? HistoryBudget::forRun($run)
             : [
@@ -184,8 +183,6 @@ final class RunDetailView
             'declared_entry_mode' => $commandContract['entry_mode'],
             'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
             'declared_contract_source' => $commandContract['source'],
-            'declared_contract_backfill_needed' => $commandContractBackfill['needed'],
-            'declared_contract_backfill_available' => $commandContractBackfill['available'],
             'status_bucket' => $summary?->status_bucket,
             'closed_reason' => $summary?->closed_reason ?? $run->closed_reason,
             'closed_at' => $summary?->closed_at ?? $run->closed_at,

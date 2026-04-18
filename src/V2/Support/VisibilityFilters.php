@@ -33,8 +33,6 @@ final class VisibilityFilters
         'repair_blocked_reason' => 'Repair Blocked Reason',
         'repair_attention' => 'Repair Attention',
         'task_problem' => 'Task Problem',
-        'declared_contract_backfill_needed' => 'Command Contract Backfill Needed',
-        'declared_contract_backfill_available' => 'Command Contract Backfill Available',
         'continue_as_new_recommended' => 'Continue As New Recommended',
         'archived' => 'Archived',
         'is_terminal' => 'Terminal',
@@ -63,8 +61,6 @@ final class VisibilityFilters
         'is_current_run',
         'repair_attention',
         'task_problem',
-        'declared_contract_backfill_needed',
-        'declared_contract_backfill_available',
         'continue_as_new_recommended',
         'archived',
         'is_terminal',
@@ -732,10 +728,6 @@ final class VisibilityFilters
                 [
                     'label' => 'Durable History',
                     'value' => RunCommandContract::SOURCE_DURABLE_HISTORY,
-                ],
-                [
-                    'label' => 'Live Definition',
-                    'value' => RunCommandContract::SOURCE_LIVE_DEFINITION,
                 ],
                 [
                     'label' => 'Unavailable',

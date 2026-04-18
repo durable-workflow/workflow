@@ -60,8 +60,6 @@ final class V2EntryMethodTest extends TestCase
         $this->assertSame(TestGreetingWorkflow::class, $detail['declared_entry_declaring_class']);
         $this->assertSame('canonical', $summary->declared_entry_mode);
         $this->assertSame('durable_history', $summary->declared_contract_source);
-        $this->assertFalse($summary->declared_contract_backfill_needed);
-        $this->assertFalse($summary->declared_contract_backfill_available);
     }
 
     public function testExecuteBasedV2WorkflowsRemainLoadableForCompatibility(): void
@@ -83,8 +81,6 @@ final class V2EntryMethodTest extends TestCase
         $this->assertSame(TestExecuteCompatibilityWorkflow::class, $detail['declared_entry_declaring_class']);
         $this->assertSame('compatibility', $summary->declared_entry_mode);
         $this->assertSame('durable_history', $summary->declared_contract_source);
-        $this->assertFalse($summary->declared_contract_backfill_needed);
-        $this->assertFalse($summary->declared_contract_backfill_available);
     }
 
     public function testWebhookStartStillSupportsExecuteBasedCompatibilityWorkflows(): void

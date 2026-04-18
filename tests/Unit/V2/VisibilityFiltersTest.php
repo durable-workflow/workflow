@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\VisibilityFilters;
 
@@ -30,8 +33,6 @@ final class VisibilityFiltersTest extends TestCase
             'repair_blocked_reason' => ' unsupported_history ',
             'repair_attention' => '1',
             'task_problem' => 'yes',
-            'declared_contract_backfill_needed' => 'yes',
-            'declared_contract_backfill_available' => '0',
             'archived' => 'true',
             'is_terminal' => '0',
             'labels' => [
@@ -59,8 +60,6 @@ final class VisibilityFiltersTest extends TestCase
             'is_current_run' => true,
             'repair_attention' => true,
             'task_problem' => true,
-            'declared_contract_backfill_needed' => true,
-            'declared_contract_backfill_available' => false,
             'archived' => true,
             'is_terminal' => false,
             'labels' => [
@@ -126,9 +125,7 @@ final class VisibilityFiltersTest extends TestCase
             ],
             'compatibility' => 'build-a',
             'declared_entry_mode' => 'compatibility',
-            'declared_contract_source' => 'live_definition',
-            'declared_contract_backfill_needed' => true,
-            'declared_contract_backfill_available' => true,
+            'declared_contract_source' => 'durable_history',
             'queue' => 'workflow',
             'connection' => 'redis',
             'status' => 'waiting',
@@ -156,8 +153,6 @@ final class VisibilityFiltersTest extends TestCase
             'compatibility' => 'build-a',
             'declared_entry_mode' => 'canonical',
             'declared_contract_source' => 'durable_history',
-            'declared_contract_backfill_needed' => false,
-            'declared_contract_backfill_available' => false,
             'queue' => 'workflow',
             'connection' => 'redis',
             'status' => 'waiting',
@@ -178,14 +173,12 @@ final class VisibilityFiltersTest extends TestCase
             'workflow_type' => 'billing.invoice-sync',
             'business_key' => 'order-123',
             'declared_entry_mode' => 'compatibility',
-            'declared_contract_source' => 'live_definition',
+            'declared_contract_source' => 'durable_history',
             'wait_kind' => 'signal',
             'liveness_state' => 'waiting_for_signal',
             'repair_blocked_reason' => 'unsupported_history',
             'repair_attention' => true,
             'task_problem' => true,
-            'declared_contract_backfill_needed' => true,
-            'declared_contract_backfill_available' => true,
             'continue_as_new_recommended' => true,
             'archived' => false,
             'is_terminal' => false,
@@ -281,21 +274,6 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame(
             'durable_history',
             $definition['fields']['declared_contract_source']['options'][0]['value'],
-        );
-        $this->assertSame(
-            'Command Contract Backfill Needed',
-            $definition['fields']['declared_contract_backfill_needed']['label'],
-        );
-        $this->assertSame('boolean', $definition['fields']['declared_contract_backfill_needed']['type']);
-        $this->assertSame('boolean_select', $definition['fields']['declared_contract_backfill_needed']['input']);
-        $this->assertSame(
-            'Command Contract Backfill Available',
-            $definition['fields']['declared_contract_backfill_available']['label'],
-        );
-        $this->assertSame('boolean', $definition['fields']['declared_contract_backfill_available']['type']);
-        $this->assertSame(
-            'boolean_select',
-            $definition['fields']['declared_contract_backfill_available']['input'],
         );
         $this->assertSame('Continue As New Recommended', $definition['fields']['continue_as_new_recommended']['label']);
         $this->assertSame('boolean', $definition['fields']['continue_as_new_recommended']['type']);
@@ -509,48 +487,23 @@ final class VisibilityFiltersTest extends TestCase
 
     public function testApplyFiltersRunSummariesBySearchAttributes(): void
     {
-        WorkflowRunSummary::create([
-            'id' => '01JVISSEARCHATTR0MATCH0001',
-            'workflow_instance_id' => 'search-attr-match',
-            'run_number' => 1,
-            'is_current_run' => true,
-            'engine_source' => 'v2',
-            'class' => 'BillingWorkflow',
-            'workflow_type' => 'billing.invoice-sync',
-            'search_attributes' => [
+        $this->createSearchAttributeSummary(
+            '01JVISSEARCHATTR0MATCH0001',
+            'search-attr-match',
+            [
                 'priority' => 'high',
                 'region' => 'us-east',
             ],
-            'status' => 'running',
-            'status_bucket' => 'running',
-        ]);
-        WorkflowRunSummary::create([
-            'id' => '01JVISSEARCHATTR0MISS00001',
-            'workflow_instance_id' => 'search-attr-miss',
-            'run_number' => 1,
-            'is_current_run' => true,
-            'engine_source' => 'v2',
-            'class' => 'BillingWorkflow',
-            'workflow_type' => 'billing.invoice-sync',
-            'search_attributes' => [
+        );
+        $this->createSearchAttributeSummary(
+            '01JVISSEARCHATTR0MISS00001',
+            'search-attr-miss',
+            [
                 'priority' => 'low',
                 'region' => 'us-east',
             ],
-            'status' => 'running',
-            'status_bucket' => 'running',
-        ]);
-        WorkflowRunSummary::create([
-            'id' => '01JVISSEARCHATTR0NULL00001',
-            'workflow_instance_id' => 'search-attr-null',
-            'run_number' => 1,
-            'is_current_run' => true,
-            'engine_source' => 'v2',
-            'class' => 'BillingWorkflow',
-            'workflow_type' => 'billing.invoice-sync',
-            'search_attributes' => null,
-            'status' => 'running',
-            'status_bucket' => 'running',
-        ]);
+        );
+        $this->createSearchAttributeSummary('01JVISSEARCHATTR0NULL00001', 'search-attr-null', null);
 
         $ids = VisibilityFilters::apply(WorkflowRunSummary::query(), [
             'search_attributes' => ['priority' => 'high'],
@@ -694,5 +647,52 @@ final class VisibilityFiltersTest extends TestCase
             ->pluck('id')->all();
 
         $this->assertCount(2, $noFilters);
+    }
+
+    /**
+     * @param array<string, string>|null $searchAttributes
+     */
+    private function createSearchAttributeSummary(string $runId, string $instanceId, ?array $searchAttributes): void
+    {
+        WorkflowInstance::query()->create([
+            'id' => $instanceId,
+            'workflow_class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'run_count' => 1,
+            'current_run_id' => $runId,
+        ]);
+
+        WorkflowRun::query()->create([
+            'id' => $runId,
+            'workflow_instance_id' => $instanceId,
+            'run_number' => 1,
+            'workflow_class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'status' => 'running',
+        ]);
+
+        WorkflowRunSummary::create([
+            'id' => $runId,
+            'workflow_instance_id' => $instanceId,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'BillingWorkflow',
+            'workflow_type' => 'billing.invoice-sync',
+            'search_attributes' => $searchAttributes,
+            'status' => 'running',
+            'status_bucket' => 'running',
+        ]);
+
+        foreach ($searchAttributes ?? [] as $key => $value) {
+            WorkflowSearchAttribute::query()->create([
+                'workflow_run_id' => $runId,
+                'workflow_instance_id' => $instanceId,
+                'key' => $key,
+                'type' => WorkflowSearchAttribute::TYPE_KEYWORD,
+                'value_keyword' => $value,
+                'upserted_at_sequence' => 1,
+            ]);
+        }
     }
 }

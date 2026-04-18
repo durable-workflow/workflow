@@ -8,7 +8,6 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
-use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -353,33 +352,6 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
     }
 
-    public function testNeedsRebuildOptionBackfillsLoadableCommandContractsForOtherwiseAlignedRuns(): void
-    {
-        $run = $this->createLegacyContractRun('projection-command-contract-drift');
-
-        RunSummaryProjector::project($run);
-
-        $this->artisan('workflow:v2:rebuild-projections', [
-            '--needs-rebuild' => true,
-        ])
-            ->expectsOutput('Rebuilt 1 run-summary projection row(s).')
-            ->expectsOutput('Backfilled 1 command-contract history snapshot(s).')
-            ->assertSuccessful();
-
-        /** @var WorkflowHistoryEvent $started */
-        $started = WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $run->id)
-            ->where('event_type', HistoryEventType::WorkflowStarted->value)
-            ->sole();
-
-        $this->assertSame(['approval-stage', 'approvalMatches'], $started->payload['declared_queries'] ?? null);
-        $this->assertSame('approval-stage', $started->payload['declared_query_contracts'][0]['name'] ?? null);
-        $this->assertSame(['approved-by', 'rejected-by'], $started->payload['declared_signals'] ?? null);
-        $this->assertSame('approved-by', $started->payload['declared_signal_contracts'][0]['name'] ?? null);
-        $this->assertSame(['mark-approved'], $started->payload['declared_updates'] ?? null);
-        $this->assertSame('mark-approved', $started->payload['declared_update_contracts'][0]['name'] ?? null);
-    }
-
     public function testNeedsRebuildOptionIncludesRunsMissingLineageProjectionRows(): void
     {
         [, $run] = $this->createWaitingRun('projection-command-lineage-drift');
@@ -720,10 +692,6 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->nullable();
             $table->string('declared_contract_source')
                 ->nullable();
-            $table->boolean('declared_contract_backfill_needed')
-                ->default(false);
-            $table->boolean('declared_contract_backfill_available')
-                ->default(false);
             $table->string('status')
                 ->index();
             $table->string('status_bucket')
@@ -892,51 +860,6 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         return [$instance->refresh(), $run->refresh()];
     }
 
-    private function createLegacyContractRun(string $instanceId): WorkflowRun
-    {
-        /** @var WorkflowInstance $instance */
-        $instance = WorkflowInstance::query()->create([
-            'id' => $instanceId,
-            'workflow_class' => TestCommandTargetWorkflow::class,
-            'workflow_type' => 'test-command-target-workflow',
-            'run_count' => 1,
-            'reserved_at' => now()
-                ->subMinutes(5),
-            'started_at' => now()
-                ->subMinutes(5),
-        ]);
-
-        /** @var WorkflowRun $run */
-        $run = WorkflowRun::query()->create([
-            'id' => (string) Str::ulid(),
-            'workflow_instance_id' => $instance->id,
-            'run_number' => 1,
-            'workflow_class' => TestCommandTargetWorkflow::class,
-            'workflow_type' => 'test-command-target-workflow',
-            'status' => RunStatus::Waiting->value,
-            'started_at' => now()
-                ->subMinutes(5),
-            'last_progress_at' => now()
-                ->subMinutes(4),
-        ]);
-
-        $instance->forceFill([
-            'current_run_id' => $run->id,
-        ])->save();
-
-        WorkflowHistoryEvent::record(
-            $run,
-            HistoryEventType::WorkflowStarted,
-            [
-                'workflow_class' => TestCommandTargetWorkflow::class,
-                'workflow_type' => 'test-command-target-workflow',
-                'declared_signals' => ['approved-by', 'rejected-by'],
-                'declared_updates' => ['mark-approved'],
-            ],
-        );
-
-        return $run->refresh();
-    }
 }
 
 final class ProjectionCommandWorkflowRun extends WorkflowRun

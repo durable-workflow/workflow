@@ -84,8 +84,6 @@ final class RunListItemView
             // Command contract
             'declared_entry_mode' => $summary->declared_entry_mode,
             'declared_contract_source' => $summary->declared_contract_source,
-            'declared_contract_backfill_needed' => (bool) $summary->declared_contract_backfill_needed,
-            'declared_contract_backfill_available' => (bool) $summary->declared_contract_backfill_available,
 
             // History budget
             'exception_count' => (int) $summary->exception_count,
@@ -145,8 +143,6 @@ final class RunListItemView
             'task_problem_badge',
             'declared_entry_mode',
             'declared_contract_source',
-            'declared_contract_backfill_needed',
-            'declared_contract_backfill_available',
             'exception_count',
             'history_event_count',
             'history_size_bytes',

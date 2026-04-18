@@ -43,7 +43,6 @@ final class OperatorMetrics
             'repair' => TaskRepairCandidates::snapshot($now),
             'starts' => self::startMetrics($now),
             'history' => self::historyMetrics(),
-            'command_contracts' => self::commandContractMetrics(),
             'projections' => self::projectionMetrics(),
             'workers' => self::workerMetrics(),
             'backend' => BackendCapabilities::snapshot($now),
@@ -212,14 +211,6 @@ final class OperatorMetrics
             'event_threshold' => HistoryBudget::eventThreshold(),
             'size_bytes_threshold' => HistoryBudget::sizeBytesThreshold(),
         ];
-    }
-
-    /**
-     * @return array<string, int>
-     */
-    private static function commandContractMetrics(): array
-    {
-        return CommandContractSnapshotDrift::metrics();
     }
 
     /**

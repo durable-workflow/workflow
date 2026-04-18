@@ -45,12 +45,6 @@ return new class() extends Migration {
             $table->string('declared_contract_source')
                 ->nullable()
                 ->index('wfrs_decl_contract_source_idx');
-            $table->boolean('declared_contract_backfill_needed')
-                ->default(false)
-                ->index('wfrs_decl_contract_backfill_needed_idx');
-            $table->boolean('declared_contract_backfill_available')
-                ->default(false)
-                ->index('wfrs_decl_contract_backfill_available_idx');
 
             // Business visibility
             $table->string('business_key', 191)

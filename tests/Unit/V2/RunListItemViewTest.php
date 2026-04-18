@@ -215,16 +215,12 @@ final class RunListItemViewTest extends TestCase
         $summary = $this->makeSummary([
             'declared_entry_mode' => 'compatibility',
             'declared_contract_source' => 'durable_history',
-            'declared_contract_backfill_needed' => true,
-            'declared_contract_backfill_available' => true,
         ]);
 
         $item = RunListItemView::fromSummary($summary);
 
         $this->assertSame('compatibility', $item['declared_entry_mode']);
         $this->assertSame('durable_history', $item['declared_contract_source']);
-        $this->assertTrue($item['declared_contract_backfill_needed']);
-        $this->assertTrue($item['declared_contract_backfill_available']);
     }
 
     public function testFromSummaryProjectsHistoryBudgetFields(): void
@@ -318,9 +314,7 @@ final class RunListItemViewTest extends TestCase
             'repair_blocked_reason' => null,
             'task_problem' => false,
             'declared_entry_mode' => 'canonical',
-            'declared_contract_source' => 'live_definition',
-            'declared_contract_backfill_needed' => false,
-            'declared_contract_backfill_available' => false,
+            'declared_contract_source' => 'durable_history',
             'exception_count' => 0,
             'history_event_count' => 0,
             'history_size_bytes' => 0,

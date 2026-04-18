@@ -13,7 +13,6 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
-use Workflow\V2\Support\CommandContractBackfillSweep;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
@@ -54,12 +53,8 @@ final class TaskWatchdog
      *     repaired_existing_tasks: int,
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
-     *     selected_command_contract_candidates: int,
-     *     backfilled_command_contracts: int,
-     *     command_contract_backfill_unavailable: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
-     *     command_contract_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
@@ -181,16 +176,6 @@ final class TaskWatchdog
                 ];
             }
         }
-
-        $commandContractReport = CommandContractBackfillSweep::run(
-            $runIds,
-            $instanceId,
-            TaskRepairPolicy::scanLimit(),
-        );
-        $report['selected_command_contract_candidates'] = $commandContractReport['selected_candidates'];
-        $report['backfilled_command_contracts'] = $commandContractReport['backfilled'];
-        $report['command_contract_backfill_unavailable'] = $commandContractReport['unavailable'];
-        $report['command_contract_failures'] = $commandContractReport['failures'];
 
         return $report;
     }
@@ -317,12 +302,8 @@ final class TaskWatchdog
      *     repaired_existing_tasks: int,
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
-     *     selected_command_contract_candidates: int,
-     *     backfilled_command_contracts: int,
-     *     command_contract_backfill_unavailable: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
-     *     command_contract_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,
      *     deadline_expired_failures: list<array{run_id: string, message: string}>,
@@ -352,12 +333,8 @@ final class TaskWatchdog
             'repaired_existing_tasks' => 0,
             'repaired_missing_tasks' => 0,
             'dispatched_tasks' => 0,
-            'selected_command_contract_candidates' => 0,
-            'backfilled_command_contracts' => 0,
-            'command_contract_backfill_unavailable' => 0,
             'existing_task_failures' => [],
             'missing_run_failures' => [],
-            'command_contract_failures' => [],
             'deadline_expired_candidates' => 0,
             'deadline_expired_tasks_created' => 0,
             'deadline_expired_failures' => [],

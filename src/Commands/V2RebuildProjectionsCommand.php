@@ -15,8 +15,6 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowTimelineEntry;
-use Workflow\V2\Support\CommandContractSnapshotDrift;
-use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\RunSummaryProjectionDrift;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\SelectedRunProjectionDrift;
@@ -28,12 +26,12 @@ class V2RebuildProjectionsCommand extends Command
         {--run-id=* : Rebuild one or more selected workflow run ids}
         {--instance-id= : Rebuild every run for one workflow instance id}
         {--missing : Only rebuild runs that do not have a run-summary row}
-        {--needs-rebuild : Only rebuild runs whose summary, wait, timeline, timer, lineage, or loadable command-contract snapshots need rebuild}
+        {--needs-rebuild : Only rebuild runs whose summary, wait, timeline, timer, or lineage projections need rebuild}
         {--prune-stale : Delete projection rows whose durable workflow run or history row no longer exists}
         {--dry-run : Report the affected rows without changing projection tables}
         {--json : Output the rebuild report as JSON}';
 
-    protected $description = 'Rebuild Workflow v2 projection rows and loadable preview-era command contracts that are safe to derive from durable runtime state';
+    protected $description = 'Rebuild Workflow v2 projection rows from durable runtime state';
 
     public function handle(): int
     {
@@ -52,9 +50,6 @@ class V2RebuildProjectionsCommand extends Command
             'runs_matched' => $matchedRuns,
             'run_summaries_rebuilt' => 0,
             'run_summaries_would_rebuild' => $dryRun ? $matchedRuns : 0,
-            'command_contracts_backfilled' => 0,
-            'command_contracts_would_backfill' => 0,
-            'command_contracts_backfill_unavailable' => 0,
             'run_summaries_pruned' => 0,
             'run_summaries_would_prune' => 0,
             'run_waits_pruned' => 0,
@@ -71,20 +66,6 @@ class V2RebuildProjectionsCommand extends Command
         $runQuery->chunkById(100, static function ($runs) use (&$report, $dryRun): void {
             foreach ($runs as $run) {
                 try {
-                    $state = RunCommandContract::historyBackfillState($run);
-
-                    if ($state['needed']) {
-                        if ($state['available']) {
-                            if ($dryRun) {
-                                $report['command_contracts_would_backfill']++;
-                            } elseif (RunCommandContract::backfillHistory($run)) {
-                                $report['command_contracts_backfilled']++;
-                            }
-                        } else {
-                            $report['command_contracts_backfill_unavailable']++;
-                        }
-                    }
-
                     if ($dryRun) {
                         continue;
                     }
@@ -193,10 +174,8 @@ class V2RebuildProjectionsCommand extends Command
             $selectedRunTimelineIds = SelectedRunProjectionDrift::timelineRunIdsNeedingRebuild($runIds, $instanceId);
             $selectedRunTimerIds = SelectedRunProjectionDrift::timerRunIdsNeedingRebuild($runIds, $instanceId);
             $selectedRunLineageIds = SelectedRunProjectionDrift::lineageRunIdsNeedingRebuild($runIds, $instanceId);
-            $commandContractRunIds = CommandContractSnapshotDrift::runIdsNeedingBackfill($runIds, $instanceId);
 
             $query->where(static function ($query) use (
-                $commandContractRunIds,
                 $selectedRunLineageIds,
                 $selectedRunTimerIds,
                 $selectedRunTimelineIds,
@@ -224,10 +203,6 @@ class V2RebuildProjectionsCommand extends Command
 
                 if ($selectedRunLineageIds !== []) {
                     $query->orWhereIn(sprintf('%s.id', $runTable), $selectedRunLineageIds);
-                }
-
-                if ($commandContractRunIds !== []) {
-                    $query->orWhereIn(sprintf('%s.id', $runTable), $commandContractRunIds);
                 }
             });
         } elseif ($missingOnly) {
@@ -508,9 +483,6 @@ class V2RebuildProjectionsCommand extends Command
      *     runs_matched: int,
      *     run_summaries_rebuilt: int,
      *     run_summaries_would_rebuild: int,
-     *     command_contracts_backfilled: int,
-     *     command_contracts_would_backfill: int,
-     *     command_contracts_backfill_unavailable: int,
      *     run_summaries_pruned: int,
      *     run_summaries_would_prune: int,
      *     run_waits_pruned: int,
@@ -541,13 +513,6 @@ class V2RebuildProjectionsCommand extends Command
                 'Would rebuild %d run-summary projection row(s).',
                 $report['run_summaries_would_rebuild'],
             ));
-
-            if ($report['command_contracts_would_backfill'] > 0) {
-                $this->info(sprintf(
-                    'Would backfill %d command-contract history snapshot(s).',
-                    $report['command_contracts_would_backfill'],
-                ));
-            }
 
             if ($report['run_summaries_would_prune'] > 0) {
                 $this->info(sprintf(
@@ -586,13 +551,6 @@ class V2RebuildProjectionsCommand extends Command
         } else {
             $this->info(sprintf('Rebuilt %d run-summary projection row(s).', $report['run_summaries_rebuilt']));
 
-            if ($report['command_contracts_backfilled'] > 0) {
-                $this->info(sprintf(
-                    'Backfilled %d command-contract history snapshot(s).',
-                    $report['command_contracts_backfilled'],
-                ));
-            }
-
             if ($report['run_summaries_pruned'] > 0) {
                 $this->info(sprintf(
                     'Pruned %d stale run-summary projection row(s).',
@@ -624,13 +582,6 @@ class V2RebuildProjectionsCommand extends Command
                     $report['run_lineage_entries_pruned'],
                 ));
             }
-        }
-
-        if ($report['command_contracts_backfill_unavailable'] > 0) {
-            $this->warn(sprintf(
-                '%d run(s) still need command-contract normalization, but the current build cannot resolve their workflow definitions.',
-                $report['command_contracts_backfill_unavailable'],
-            ));
         }
 
         foreach ($report['failures'] as $failure) {

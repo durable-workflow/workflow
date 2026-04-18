@@ -46,7 +46,6 @@ class V2RepairPassCommand extends Command
 
         return $report['existing_task_failures'] === []
             && $report['missing_run_failures'] === []
-            && $report['command_contract_failures'] === []
             ? self::SUCCESS
             : self::FAILURE;
     }
@@ -65,12 +64,10 @@ class V2RepairPassCommand extends Command
      *     repaired_existing_tasks: int,
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
-     *     selected_command_contract_candidates: int,
-     *     backfilled_command_contracts: int,
-     *     command_contract_backfill_unavailable: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
-     *     command_contract_failures: list<array{run_id: string, message: string}>
+     *     deadline_expired_failures: list<array{run_id: string, message: string}>,
+     *     activity_timeout_failures: list<array{execution_id: string, message: string}>
      * } $report
      */
     private function renderHumanReport(array $report): void
@@ -93,13 +90,6 @@ class V2RepairPassCommand extends Command
             $report['repaired_missing_tasks'],
             $report['dispatched_tasks'],
         ));
-        $this->line(sprintf(
-            'Selected %d command-contract candidate(s), backfilled %d, and left %d unavailable on this build.',
-            $report['selected_command_contract_candidates'],
-            $report['backfilled_command_contracts'],
-            $report['command_contract_backfill_unavailable'],
-        ));
-
         foreach ($report['existing_task_failures'] as $failure) {
             $this->error(sprintf(
                 'Existing task candidate [%s] failed repair: %s',
@@ -116,10 +106,18 @@ class V2RepairPassCommand extends Command
             ));
         }
 
-        foreach ($report['command_contract_failures'] as $failure) {
+        foreach ($report['deadline_expired_failures'] as $failure) {
             $this->error(sprintf(
-                'Command-contract candidate [%s] failed backfill: %s',
+                'Deadline-expired run [%s] failed repair: %s',
                 $failure['run_id'],
+                $failure['message'],
+            ));
+        }
+
+        foreach ($report['activity_timeout_failures'] as $failure) {
+            $this->error(sprintf(
+                'Activity timeout candidate [%s] failed enforcement: %s',
+                $failure['execution_id'],
                 $failure['message'],
             ));
         }

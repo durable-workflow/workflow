@@ -19,7 +19,6 @@ final class HealthCheck
             self::backendCheck($metrics['backend'] ?? []),
             self::runSummaryProjectionCheck($metrics['projections']['run_summaries'] ?? []),
             self::selectedRunProjectionCheck($metrics['projections'] ?? []),
-            self::commandContractCheck($metrics['command_contracts'] ?? []),
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
             self::durableResumePathCheck($metrics['backlog'] ?? [], $metrics['repair'] ?? []),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
@@ -145,34 +144,6 @@ final class HealthCheck
                 'lineage_missing_runs_with_lineage' => self::integer($lineage['missing_runs_with_lineage'] ?? 0),
                 'lineage_stale_projected_runs' => self::integer($lineage['stale_projected_runs'] ?? 0),
                 'lineage_orphaned' => self::integer($lineage['orphaned'] ?? 0),
-            ],
-        );
-    }
-
-    /**
-     * @param array<string, mixed> $commandContracts
-     * @return array<string, mixed>
-     */
-    private static function commandContractCheck(array $commandContracts): array
-    {
-        $needed = self::integer($commandContracts['backfill_needed_runs'] ?? 0);
-        $available = self::integer($commandContracts['backfill_available_runs'] ?? 0);
-        $unavailable = self::integer($commandContracts['backfill_unavailable_runs'] ?? 0);
-
-        return self::check(
-            'command_contract_snapshots',
-            $needed === 0 ? 'ok' : 'warning',
-            $needed === 0
-                ? 'WorkflowStarted history already carries durable query, signal, and update contracts for every run.'
-                : (
-                    $unavailable === 0
-                        ? 'One or more runs still rely on preview-era command-contract fallback; the background repair/watchdog loop will keep draining loadable snapshots, and workflow:v2:repair-pass, workflow:v2:rebuild-projections --needs-rebuild, or workflow:v2:backfill-command-contracts can force cleanup sooner before class moves or long-term support.'
-                        : 'One or more runs still have preview-era command-contract snapshots and some can no longer be normalized on this build.'
-                ),
-            [
-                'backfill_needed_runs' => $needed,
-                'backfill_available_runs' => $available,
-                'backfill_unavailable_runs' => $unavailable,
             ],
         );
     }

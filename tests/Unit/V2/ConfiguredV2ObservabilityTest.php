@@ -144,7 +144,7 @@ final class ConfiguredV2ObservabilityTest extends TestCase
         ]);
 
         $run = WorkflowRun::query()->create([
-            'id' => '01JCONFIGDETAILRUN0000000001',
+            'id' => '01JCONFIGDETAILRUN00000001',
             'workflow_instance_id' => $instance->id,
             'run_number' => 1,
             'workflow_class' => 'Missing\\ConfiguredObservabilityWorkflow',
@@ -451,10 +451,6 @@ final class ConfiguredV2ObservabilityTest extends TestCase
                 ->nullable();
             $table->string('declared_contract_source')
                 ->nullable();
-            $table->boolean('declared_contract_backfill_needed')
-                ->default(false);
-            $table->boolean('declared_contract_backfill_available')
-                ->default(false);
             $table->unsignedInteger('history_event_count')
                 ->default(0);
             $table->unsignedBigInteger('history_size_bytes')

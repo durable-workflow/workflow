@@ -720,8 +720,6 @@ final class WorkflowStub
             throw new LogicException(sprintf('Workflow instance [%s] has not started yet.', $this->instance->id));
         }
 
-        $this->backfillRunCommandContracts($this->run);
-
         $resolvedTarget = $this->resolveQueryTargetForRun($this->run, $method);
 
         if ($resolvedTarget === null) {
@@ -1756,7 +1754,6 @@ final class WorkflowStub
             }
 
             $this->loadLockedRunRelations($run, $instance);
-            $this->backfillRunCommandContracts($run);
 
             if (! RunCommandContract::hasUpdateMethod($run, $updateName)) {
                 [$command, $update] = $this->rejectUpdateCommand(
@@ -2117,7 +2114,6 @@ final class WorkflowStub
             }
 
             $this->loadLockedRunRelations($run, $instance);
-            $this->backfillRunCommandContracts($run);
 
             if (! RunCommandContract::hasSignal($run, $name)) {
                 $command = $this->rejectCommand(
@@ -2281,7 +2277,6 @@ final class WorkflowStub
                 $run = $currentRun;
 
                 $this->loadLockedRunRelations($run, $instance);
-                $this->backfillRunCommandContracts($run);
 
                 if (! RunCommandContract::hasSignal($run, $name)) {
                     $signalCommand = $this->rejectSignalCommandForContext(
@@ -3305,17 +3300,10 @@ final class WorkflowStub
             try {
                 $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
             } catch (LogicException) {
-                return RunCommandContract::namedSignalArgumentsRequireContract($run, $signalName)
-                    ? [
-                        'arguments' => [],
-                        'validation_errors' => [
-                            'arguments' => ['Named arguments require a durable or loadable workflow signal contract.'],
-                        ],
-                    ]
-                    : [
-                        'arguments' => [$arguments],
-                        'validation_errors' => [],
-                    ];
+                return [
+                    'arguments' => [$arguments],
+                    'validation_errors' => [],
+                ];
             }
 
             $contract = WorkflowDefinition::signalContract($workflowClass, $signalName);
@@ -3930,11 +3918,6 @@ final class WorkflowStub
 
         return SignalWaits::openWaitIdForName($run, $name)
             ?? SignalWaits::bufferedWaitIdForCommandId($commandId);
-    }
-
-    private function backfillRunCommandContracts(WorkflowRun $run): void
-    {
-        RunCommandContract::ensureHistoryBackfilled($run);
     }
 
     private function commandTargetScope(): string
