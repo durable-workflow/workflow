@@ -262,11 +262,12 @@ final class BackendCapabilities
     {
         $configured = config('workflows.serializer');
         $issues = [];
+        $default = CodecRegistry::defaultCodec();
 
-        $canonical = null;
+        $configuredCanonical = null;
         if (is_string($configured) && $configured !== '') {
             try {
-                $canonical = CodecRegistry::canonicalize($configured);
+                $configuredCanonical = CodecRegistry::canonicalize($configured);
             } catch (\InvalidArgumentException) {
                 $universalList = implode('", "', CodecRegistry::universal());
                 $issues[] = self::issue(
@@ -275,45 +276,57 @@ final class BackendCapabilities
                     'codec_unknown',
                     sprintf(
                         'The configured workflows.serializer [%s] is not a known payload codec. '
-                        .'v2 does not support custom serializer classes — only the built-in codecs '
-                        .'("%s") and the legacy PHP-only codecs ("workflow-serializer-y", "workflow-serializer-base64") '
-                        .'are resolvable. '
-                        .'To migrate a v1 deployment that used a custom serializer, choose one of: '
-                        .'(a) set workflows.serializer to "avro" for new runs and accept that '
-                        .'old history written under the custom codec becomes unreadable, '
-                        .'(b) keep the custom serializer classes loaded and re-encode old history to a '
-                        .'supported codec before upgrading, '
-                        .'(c) stay on v1 until the old runs drain. '
-                        .'Meanwhile default-codec resolution silently falls back to "avro" so new runs '
-                        .'still encode successfully — but the configured value is never consulted.',
+                        . 'v2 does not support custom serializer classes — only the built-in codecs '
+                        . '("%s") and the legacy PHP-only codecs ("workflow-serializer-y", "workflow-serializer-base64") '
+                        . 'are resolvable. '
+                        . 'To migrate a v1 deployment that used a custom serializer, choose one of: '
+                        . '(a) set workflows.serializer to "avro" for new runs and accept that '
+                        . 'old history written under the custom codec becomes unreadable, '
+                        . '(b) keep the custom serializer classes loaded and re-encode old history to a '
+                        . 'supported codec before upgrading, '
+                        . '(c) stay on v1 until the old runs drain. '
+                        . 'Meanwhile default-codec resolution silently falls back to "avro" so new runs '
+                        . 'still encode successfully — but the configured value is never consulted.',
                         $configured,
                         $universalList,
                     ),
                 );
             }
-        } else {
-            $canonical = CodecRegistry::defaultCodec();
         }
 
         $universal = CodecRegistry::universal();
-        $isUniversal = $canonical !== null && in_array($canonical, $universal, true);
+        $isUniversal = in_array($default, $universal, true);
+        $configuredUniversal = $configuredCanonical !== null && in_array($configuredCanonical, $universal, true);
 
-        if ($canonical !== null && ! $isUniversal) {
+        if ($configuredCanonical === 'json') {
+            $issues[] = self::issue(
+                'codec',
+                'warning',
+                'codec_json_decode_only',
+                'workflows.serializer is set to [json], but final v2 starts new workflows with Avro only. '
+                . 'The JSON codec name is accepted only when decoding explicitly tagged historical/test payloads; '
+                . 'remove the override so the released v2 configuration matches the Avro-only contract.',
+            );
+        }
+
+        if ($configuredCanonical !== null && $configuredCanonical !== 'json' && ! $configuredUniversal) {
             $issues[] = self::issue(
                 'codec',
                 'warning',
                 'codec_legacy_php_only',
                 sprintf(
-                    'workflows.serializer is set to [%s], a PHP-only legacy codec. New v2 workflows written with this codec cannot be decoded by Python, Go, or TypeScript workers. Set workflows.serializer to "avro" for polyglot compatibility; keep the legacy codec only if you still need to read v1 history with it.',
-                    $canonical,
+                    'workflows.serializer is set to [%s], a PHP-only legacy codec. Final v2 starts new workflows with Avro only; keep legacy codec references only for explicit v1 history import/drain reads, and remove the override once v1 runs are drained.',
+                    $configuredCanonical,
                 ),
             );
         }
 
         return [
             'configured' => $configured,
-            'canonical' => $canonical,
+            'configured_canonical' => $configuredCanonical,
+            'canonical' => $default,
             'universal' => $isUniversal,
+            'configured_universal' => $configuredUniversal,
             'supported' => self::hasErrors($issues) === false,
             'issues' => $issues,
         ];

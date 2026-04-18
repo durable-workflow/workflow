@@ -120,30 +120,45 @@ final class BackendCapabilitiesTest extends TestCase
     public function testSqsQueuePublishesMaxDelayConstraint(): void
     {
         config()->set('queue.default', 'sqs');
-        config()->set('queue.connections.sqs.driver', 'sqs');
+        config()
+            ->set('queue.connections.sqs.driver', 'sqs');
 
         $snapshot = BackendCapabilities::snapshot();
 
-        $this->assertSame(900, $snapshot['structural_limits']['backend_adjustments']['max_single_timer_delay_seconds'] ?? null);
+        $this->assertSame(
+            900,
+            $snapshot['structural_limits']['backend_adjustments']['max_single_timer_delay_seconds'] ?? null
+        );
         $this->assertSame(900, $snapshot['structural_limits']['effective']['max_single_timer_delay_seconds'] ?? null);
-        $this->assertContains('queue_max_delay_constraint', array_column($snapshot['structural_limits']['issues'], 'code'));
+        $this->assertContains(
+            'queue_max_delay_constraint',
+            array_column($snapshot['structural_limits']['issues'], 'code')
+        );
     }
 
     public function testSqliteDatabasePublishesConcurrencyNote(): void
     {
         config()->set('database.default', 'sqlite');
-        config()->set('database.connections.sqlite.driver', 'sqlite');
+        config()
+            ->set('database.connections.sqlite.driver', 'sqlite');
 
         $snapshot = BackendCapabilities::snapshot();
 
-        $this->assertSame('limited', $snapshot['structural_limits']['backend_adjustments']['concurrent_write_safety'] ?? null);
-        $this->assertContains('sqlite_concurrency_note', array_column($snapshot['structural_limits']['issues'], 'code'));
+        $this->assertSame(
+            'limited',
+            $snapshot['structural_limits']['backend_adjustments']['concurrent_write_safety'] ?? null
+        );
+        $this->assertContains(
+            'sqlite_concurrency_note',
+            array_column($snapshot['structural_limits']['issues'], 'code')
+        );
     }
 
     public function testMysqlDatabaseDoesNotPublishConcurrencyNote(): void
     {
         config()->set('database.default', 'mysql');
-        config()->set('database.connections.mysql.driver', 'mysql');
+        config()
+            ->set('database.connections.mysql.driver', 'mysql');
 
         $snapshot = BackendCapabilities::snapshot();
 
@@ -157,8 +172,10 @@ final class BackendCapabilitiesTest extends TestCase
     public function testPollModeAllowsSyncQueueDriver(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'poll');
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
 
         $snapshot = BackendCapabilities::snapshot();
 
@@ -176,7 +193,8 @@ final class BackendCapabilitiesTest extends TestCase
     public function testPollModeAllowsMissingQueueConnection(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'poll');
-        config()->set('queue.default', null);
+        config()
+            ->set('queue.default', null);
 
         $snapshot = BackendCapabilities::snapshot();
 
@@ -193,8 +211,10 @@ final class BackendCapabilitiesTest extends TestCase
     public function testQueueModeStillRejectsSyncQueueDriver(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'queue');
-        config()->set('queue.default', 'sync');
-        config()->set('queue.connections.sync.driver', 'sync');
+        config()
+            ->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
 
         $snapshot = BackendCapabilities::snapshot();
 
@@ -208,15 +228,25 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertSame('error', $queueIssue['severity']);
     }
 
-    public function testJsonCodecIsNotUniversalInV2(): void
+    public function testJsonCodecConfigEmitsDecodeOnlyWarningAndAvroRemainsDefault(): void
     {
         config()->set('workflows.serializer', 'json');
 
         $snapshot = BackendCapabilities::snapshot();
 
-        $this->assertSame('json', $snapshot['codec']['canonical']);
-        $this->assertFalse($snapshot['codec']['universal']);
+        $this->assertSame('avro', $snapshot['codec']['canonical']);
+        $this->assertSame('json', $snapshot['codec']['configured_canonical']);
+        $this->assertTrue($snapshot['codec']['universal']);
+        $this->assertFalse($snapshot['codec']['configured_universal']);
         $this->assertTrue($snapshot['codec']['supported']);
+
+        $codecIssue = collect($snapshot['issues'])
+            ->firstWhere('code', 'codec_json_decode_only');
+
+        $this->assertNotNull($codecIssue);
+        $this->assertSame('warning', $codecIssue['severity']);
+        $this->assertSame('codec', $codecIssue['component']);
+        $this->assertStringContainsString('Avro only', $codecIssue['message']);
     }
 
     public function testLegacyPhpCodecEmitsPolyglotCompatibilityWarning(): void
@@ -225,8 +255,10 @@ final class BackendCapabilitiesTest extends TestCase
 
         $snapshot = BackendCapabilities::snapshot();
 
-        $this->assertSame('workflow-serializer-y', $snapshot['codec']['canonical']);
-        $this->assertFalse($snapshot['codec']['universal']);
+        $this->assertSame('avro', $snapshot['codec']['canonical']);
+        $this->assertSame('workflow-serializer-y', $snapshot['codec']['configured_canonical']);
+        $this->assertTrue($snapshot['codec']['universal']);
+        $this->assertFalse($snapshot['codec']['configured_universal']);
 
         $codecIssue = collect($snapshot['issues'])
             ->firstWhere('code', 'codec_legacy_php_only');
@@ -236,10 +268,11 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertSame('codec', $codecIssue['component']);
         $this->assertStringContainsString('workflow-serializer-y', $codecIssue['message']);
 
-        // A polyglot warning must not fail the codec component itself —
-        // the deployment is still functional, just suboptimal for non-PHP
-        // workers. (Other components in the test env may still fail, so we
-        // only assert on the codec's own `supported` flag here.)
+        // A legacy-codec warning must not fail the codec component itself:
+        // final v2 still starts new runs with Avro, and the configured legacy
+        // value remains a diagnostic for v1 drain/import reads. Other
+        // components in the test env may still fail, so assert only on the
+        // codec component's own `supported` flag here.
         $this->assertTrue($snapshot['codec']['supported']);
     }
 
@@ -249,7 +282,8 @@ final class BackendCapabilitiesTest extends TestCase
 
         $snapshot = BackendCapabilities::snapshot();
 
-        $this->assertNull($snapshot['codec']['canonical']);
+        $this->assertSame('avro', $snapshot['codec']['canonical']);
+        $this->assertNull($snapshot['codec']['configured_canonical']);
 
         $codecIssue = collect($snapshot['issues'])
             ->firstWhere('code', 'codec_unknown');

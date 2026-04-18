@@ -128,19 +128,19 @@ return [
         ],
     ],
 
-    // Payload codec name. v2 defaults to "avro" for typed binary payloads
-    // with cross-language type fidelity (int stays int, float stays float).
+    // Payload codec diagnostic input. Final v2 always uses "avro" as the
+    // default codec for new typed binary payloads with cross-language type
+    // fidelity (int stays int, float stays float).
     //
-    // Overridable at deploy time via the WORKFLOW_SERIALIZER env var so
-    // operators can pin a different codec (e.g. "json" during migration)
-    // without rebuilding the image or mounting a config override file.
+    // WORKFLOW_SERIALIZER is still read so `workflow:v2:doctor` can flag stale
+    // v1/custom settings during migration without rebuilding the image or
+    // mounting a config override file, but it cannot change the new-run v2
+    // default away from Avro.
     //
-    // "json" is retained for decoding existing data only. It is not
-    // recommended for new v2 workflows. Legacy PHP-only codecs
-    // ("workflow-serializer-y", "workflow-serializer-base64") remain
-    // supported for reading v1 history but are not recommended for new
-    // workflows. Setting this to a legacy codec will be flagged by
-    // `workflow:v2:doctor`.
+    // Legacy PHP-only codecs ("workflow-serializer-y",
+    // "workflow-serializer-base64") remain supported for reading v1 history.
+    // Setting this to a legacy codec, JSON, or a removed custom serializer will
+    // be flagged by `workflow:v2:doctor`.
     'serializer' => env('WORKFLOW_SERIALIZER', 'avro'),
 
     'prune_age' => '1 month',

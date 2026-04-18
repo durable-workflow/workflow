@@ -15,7 +15,7 @@ use InvalidArgumentException;
  *
  * Canonical names:
  *   - "avro"                    — Apache Avro binary codec (default for new workflows)
- *   - "json"                    — language-neutral JSON (v1 migration reads only, not for new v2 workflows)
+ *   - "json"                    — transitional decode-only JSON tag (not for new v2 workflows)
  *   - "workflow-serializer-y"   — PHP SerializableClosure with byte-escape encoding (legacy)
  *   - "workflow-serializer-base64" — PHP SerializableClosure with base64 encoding (legacy)
  *
@@ -24,7 +24,9 @@ use InvalidArgumentException;
  */
 final class CodecRegistry
 {
-    /** @var array<string, class-string<SerializerInterface>> */
+    /**
+     * @var array<string, class-string<SerializerInterface>>
+     */
     private const CODECS = [
         'json' => Json::class,
         'avro' => Avro::class,
@@ -32,7 +34,9 @@ final class CodecRegistry
         'workflow-serializer-base64' => Base64::class,
     ];
 
-    /** @var array<string, string> legacy FQCN → canonical name */
+    /**
+     * @var array<string, string> legacy FQCN → canonical name
+     */
     private const LEGACY_ALIASES = [
         Json::class => 'json',
         Y::class => 'workflow-serializer-y',
@@ -82,31 +86,22 @@ final class CodecRegistry
     }
 
     /**
-     * The default codec, derived from config('workflows.serializer').
+     * The default codec for new v2 payloads.
      *
-     * Defaults to "avro" for new deployments. Installations that pin
-     * "json" (or a legacy PHP codec) via config keep that codec for new
-     * runs; legacy fully-qualified class names resolve to their canonical
-     * codec names so v1 deployments keep working.
+     * v2 is unreleased, so there is no supported v2-to-v2 codec migration
+     * surface. New v2 payloads always use Avro. Explicit row/envelope codec
+     * tags still resolve through {@see resolve()} for v1 import/drain paths and
+     * existing fixture data, but deployment config cannot change the new-run
+     * v2 default away from Avro.
      */
     public static function defaultCodec(): string
     {
-        $configured = function_exists('config') ? config('workflows.serializer') : null;
-
-        if (is_string($configured) && $configured !== '') {
-            if (isset(self::CODECS[$configured])) {
-                return $configured;
-            }
-            $trimmed = ltrim($configured, '\\');
-            if (isset(self::LEGACY_ALIASES[$trimmed])) {
-                return self::LEGACY_ALIASES[$trimmed];
-            }
-        }
-
         return 'avro';
     }
 
-    /** @return list<string> */
+    /**
+     * @return list<string>
+     */
     public static function names(): array
     {
         return array_keys(self::CODECS);
@@ -148,6 +143,8 @@ final class CodecRegistry
             return [];
         }
 
-        return ['php' => $phpOnly];
+        return [
+            'php' => $phpOnly,
+        ];
     }
 }

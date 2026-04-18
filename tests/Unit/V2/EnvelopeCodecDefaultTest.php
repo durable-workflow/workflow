@@ -9,16 +9,17 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowUpdate;
 
 /**
- * TD-081: Null-codec v2 envelopes must resolve through CodecRegistry::defaultCodec()
- * (which reads `workflows.serializer`), not the removed `workflows.serializer_name`
- * config key. Regression coverage proves rows with a missing payload_codec resolve
- * consistently regardless of which canonical codec the deployment has configured.
+ * Null-codec v2 envelopes must resolve through CodecRegistry::defaultCodec().
+ * Final v2 treats missing payload_codec as Avro-only release data, not as a
+ * development-era hook for changing new-run codecs through config.
  */
 final class EnvelopeCodecDefaultTest extends TestCase
 {
-    public function testWorkflowRunArgumentsEnvelopeFallsBackToConfiguredSerializer(): void
+    public function testWorkflowRunArgumentsEnvelopeFallsBackToAvroWhenJsonIsConfigured(): void
     {
-        config(['workflows.serializer' => 'json']);
+        config([
+            'workflows.serializer' => 'json',
+        ]);
 
         $run = new WorkflowRun();
         $run->payload_codec = null;
@@ -26,39 +27,47 @@ final class EnvelopeCodecDefaultTest extends TestCase
 
         $envelope = $run->argumentsEnvelope();
 
-        $this->assertSame(['codec' => 'json', 'blob' => 'blob-bytes'], $envelope);
+        $this->assertSame([
+            'codec' => 'avro',
+            'blob' => 'blob-bytes',
+        ], $envelope);
     }
 
-    public function testWorkflowRunArgumentsEnvelopeUsesYCodecWhenConfigured(): void
+    public function testWorkflowRunArgumentsEnvelopeFallsBackToAvroWhenYCodecIsConfigured(): void
     {
-        config(['workflows.serializer' => 'workflow-serializer-y']);
+        config([
+            'workflows.serializer' => 'workflow-serializer-y',
+        ]);
+
+        $run = new WorkflowRun();
+        $run->payload_codec = null;
+        $run->arguments = 'blob-bytes';
+        $expected = [
+            'codec' => 'avro',
+            'blob' => 'blob-bytes',
+        ];
+
+        $this->assertSame($expected, $run->argumentsEnvelope());
+    }
+
+    public function testWorkflowRunArgumentsEnvelopeFallsBackToAvroWhenLegacyFqcnIsConfigured(): void
+    {
+        config([
+            'workflows.serializer' => \Workflow\Serializers\Y::class,
+        ]);
 
         $run = new WorkflowRun();
         $run->payload_codec = null;
         $run->arguments = 'blob-bytes';
 
-        $this->assertSame(
-            ['codec' => 'workflow-serializer-y', 'blob' => 'blob-bytes'],
-            $run->argumentsEnvelope(),
-        );
-    }
-
-    public function testWorkflowRunArgumentsEnvelopeResolvesLegacyFqcnToCanonicalName(): void
-    {
-        config(['workflows.serializer' => \Workflow\Serializers\Y::class]);
-
-        $run = new WorkflowRun();
-        $run->payload_codec = null;
-        $run->arguments = 'blob-bytes';
-
-        // Legacy FQCN aliases must map to the canonical codec name so polyglot
-        // consumers see a stable identifier on the wire.
-        $this->assertSame('workflow-serializer-y', $run->argumentsEnvelope()['codec']);
+        $this->assertSame('avro', $run->argumentsEnvelope()['codec']);
     }
 
     public function testWorkflowRunArgumentsEnvelopeFallsBackToAvroWhenConfigIsUnset(): void
     {
-        config(['workflows.serializer' => null]);
+        config([
+            'workflows.serializer' => null,
+        ]);
 
         $run = new WorkflowRun();
         $run->payload_codec = null;
@@ -68,23 +77,28 @@ final class EnvelopeCodecDefaultTest extends TestCase
         $this->assertSame('avro', $run->argumentsEnvelope()['codec']);
     }
 
-    public function testWorkflowRunOutputEnvelopeFallsBackToConfiguredSerializer(): void
+    public function testWorkflowRunOutputEnvelopeFallsBackToAvroWhenJsonIsConfigured(): void
     {
-        config(['workflows.serializer' => 'json']);
+        config([
+            'workflows.serializer' => 'json',
+        ]);
 
         $run = new WorkflowRun();
         $run->payload_codec = null;
         $run->output = 'output-bytes';
+        $expected = [
+            'codec' => 'avro',
+            'blob' => 'output-bytes',
+        ];
 
-        $this->assertSame(
-            ['codec' => 'json', 'blob' => 'output-bytes'],
-            $run->outputEnvelope(),
-        );
+        $this->assertSame($expected, $run->outputEnvelope());
     }
 
     public function testWorkflowRunOutputEnvelopePrefersExplicitPayloadCodec(): void
     {
-        config(['workflows.serializer' => 'json']);
+        config([
+            'workflows.serializer' => 'json',
+        ]);
 
         $run = new WorkflowRun();
         $run->payload_codec = 'avro';
@@ -94,9 +108,11 @@ final class EnvelopeCodecDefaultTest extends TestCase
         $this->assertSame('avro', $run->outputEnvelope()['codec']);
     }
 
-    public function testWorkflowUpdateResultEnvelopeFallsBackToConfiguredSerializer(): void
+    public function testWorkflowUpdateResultEnvelopeFallsBackToAvroWhenJsonIsConfigured(): void
     {
-        config(['workflows.serializer' => 'json']);
+        config([
+            'workflows.serializer' => 'json',
+        ]);
 
         $update = new WorkflowUpdate();
         $update->result = 'result-bytes';
@@ -104,7 +120,10 @@ final class EnvelopeCodecDefaultTest extends TestCase
 
         $envelope = $update->resultEnvelope();
 
-        $this->assertSame(['codec' => 'json', 'blob' => 'result-bytes'], $envelope);
+        $this->assertSame([
+            'codec' => 'avro',
+            'blob' => 'result-bytes',
+        ], $envelope);
     }
 
     protected function getPackageProviders($app)

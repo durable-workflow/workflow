@@ -108,7 +108,7 @@ final class Serializer
     /**
      * Serialize using an explicit codec name.
      *
-     * If $codec is null, falls back to the default codec (config value or "avro").
+     * If $codec is null, falls back to the final v2 default codec (Avro).
      */
     public static function serializeWithCodec(?string $codec, $data): string
     {

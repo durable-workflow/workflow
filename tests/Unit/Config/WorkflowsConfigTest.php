@@ -54,11 +54,11 @@ final class WorkflowsConfigTest extends TestCase
     }
 
     /**
-     * Operators must be able to override the payload codec at deploy time
-     * via the WORKFLOW_SERIALIZER env var without rebuilding the image or
-     * mounting a config override file.
+     * WORKFLOW_SERIALIZER remains visible in config so workflow:v2:doctor can
+     * flag stale v1/custom settings, even though final v2 new-run payloads
+     * always resolve to Avro through CodecRegistry::defaultCodec().
      */
-    public function testSerializerHonoursEnvironmentOverride(): void
+    public function testSerializerEnvironmentValueIsLoadedForDiagnostics(): void
     {
         $previous = getenv('WORKFLOW_SERIALIZER') === false ? null : getenv('WORKFLOW_SERIALIZER');
 

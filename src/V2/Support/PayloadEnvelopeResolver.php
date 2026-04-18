@@ -14,7 +14,7 @@ use Workflow\Serializers\Serializer;
  * The worker protocol carries every payload as `{codec, blob}`. Clients may
  * send `input` in two shapes on the HTTP API:
  *
- *   1. A plain array of arguments  →  encoded with the configured default codec (Avro)
+ *   1. A plain array of arguments  →  encoded with the final v2 default codec (Avro)
  *   2. An explicit envelope object `{codec: "<name>", blob: "<opaque>"}`
  *      →  codec = the declared name, blob = the opaque string as-is
  *
@@ -118,28 +118,40 @@ final class PayloadEnvelopeResolver
     public static function resolveCommandPayloadWithCodec($value, string $field = 'result'): array
     {
         if ($value === null) {
-            return ['payload' => null, 'codec' => null];
+            return [
+                'payload' => null,
+                'codec' => null,
+            ];
         }
 
         if (is_array($value) && self::looksLikeEnvelope($value)) {
             $envelope = self::resolveExplicitEnvelope($value, $field);
 
-            return ['payload' => $envelope['blob'], 'codec' => $envelope['codec']];
+            return [
+                'payload' => $envelope['blob'],
+                'codec' => $envelope['codec'],
+            ];
         }
 
-        return ['payload' => $value, 'codec' => null];
+        return [
+            'payload' => $value,
+            'codec' => null,
+        ];
     }
 
     /**
      * @param  mixed  $input    the `input` field from a validated request (array or null)
      * @return array{codec: string|null, blob: string|null}
      *         codec/blob are null when the client sent no input — callers
-     *         should fall through to the configured default codec.
+     *         should fall through to the final v2 default codec.
      */
     public static function resolve($input, string $field = 'input'): array
     {
         if ($input === null || $input === []) {
-            return ['codec' => null, 'blob' => null];
+            return [
+                'codec' => null,
+                'blob' => null,
+            ];
         }
 
         if (! is_array($input)) {
@@ -213,6 +225,9 @@ final class PayloadEnvelopeResolver
             ]);
         }
 
-        return ['codec' => $canonical, 'blob' => $blob];
+        return [
+            'codec' => $canonical,
+            'blob' => $blob,
+        ];
     }
 }
