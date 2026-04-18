@@ -65,6 +65,46 @@ final class SerializeTest extends TestCase
         }));
     }
 
+    public function testLegacyUnserializeSniffsAvroPayload(): void
+    {
+        config([
+            'workflows.serializer' => 'avro',
+        ]);
+
+        $serialized = Serializer::serialize([
+            'message' => 'hello',
+            'count' => 2,
+        ]);
+
+        config([
+            'workflows.serializer' => Y::class,
+        ]);
+
+        $this->assertSame([
+            'message' => 'hello',
+            'count' => 2,
+        ], Serializer::unserialize($serialized));
+    }
+
+    public function testLegacyYPayloadStillWinsOverAvroDefault(): void
+    {
+        config([
+            'workflows.serializer' => Y::class,
+        ]);
+
+        $serialized = Serializer::serialize([
+            'legacy' => true,
+        ]);
+
+        config([
+            'workflows.serializer' => 'avro',
+        ]);
+
+        $this->assertSame([
+            'legacy' => true,
+        ], Serializer::unserialize($serialized));
+    }
+
     private function testSerializeUnserialize($data, $serializer, $unserializer): void
     {
         config([

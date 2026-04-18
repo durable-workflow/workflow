@@ -191,6 +191,10 @@ final class Serializer
             return Base64::class;
         }
 
+        if (self::looksLikeAvro($blob)) {
+            return Avro::class;
+        }
+
         // JSON blobs always start with "{", "[", a digit, quote, minus, "t"/"f"/"n".
         // PHP-serialized-closure blobs start with "O:".
         if ($blob !== '' && $blob[0] !== 'O' && self::looksLikeJson($blob)) {
@@ -210,6 +214,15 @@ final class Serializer
             return true;
         }
         return in_array($blob, ['true', 'false', 'null'], true);
+    }
+
+    private static function looksLikeAvro(string $blob): bool
+    {
+        $bytes = base64_decode($blob, true);
+
+        return $bytes !== false
+            && $bytes !== ''
+            && in_array($bytes[0], [Avro::PREFIX_GENERIC_WRAPPER, Avro::PREFIX_TYPED_SCHEMA], true);
     }
 }
 
