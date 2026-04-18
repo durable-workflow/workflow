@@ -225,13 +225,16 @@ final class V2WorkflowTest extends TestCase
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
 
+        $childCallId = '01kchildfromolderdefn00001';
+        $childRunId = '01kchildrunolderdefn000001';
+
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, [
             'sequence' => 1,
-            'child_call_id' => 'child-from-older-definition',
+            'child_call_id' => $childCallId,
             'child_workflow_class' => TestTimerWorkflow::class,
             'child_workflow_type' => 'test-timer-workflow',
-            'child_workflow_instance_id' => 'child-from-older-definition',
-            'child_workflow_run_id' => 'child-run-from-older-definition',
+            'child_workflow_instance_id' => $childCallId,
+            'child_workflow_run_id' => $childRunId,
         ]);
 
         $this->runReadyTaskForRun($workflow->runId(), TaskType::Workflow);
