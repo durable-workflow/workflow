@@ -15,12 +15,11 @@ use InvalidArgumentException;
  *
  * Canonical names:
  *   - "avro"                    — Apache Avro binary codec (default for new workflows)
- *   - "json"                    — transitional decode-only JSON tag (not for new v2 workflows)
  *   - "workflow-serializer-y"   — PHP SerializableClosure with byte-escape encoding (legacy)
  *   - "workflow-serializer-base64" — PHP SerializableClosure with base64 encoding (legacy)
  *
- * Legacy fully-qualified class names (e.g. "Workflow\\Serializers\\Y") are
- * accepted as aliases so rows persisted before the codec rename keep working.
+ * Legacy PHP serializer fully-qualified class names (e.g. "Workflow\\Serializers\\Y")
+ * are accepted as aliases so v1 rows persisted before the codec rename keep working.
  */
 final class CodecRegistry
 {
@@ -28,7 +27,6 @@ final class CodecRegistry
      * @var array<string, class-string<SerializerInterface>>
      */
     private const CODECS = [
-        'json' => Json::class,
         'avro' => Avro::class,
         'workflow-serializer-y' => Y::class,
         'workflow-serializer-base64' => Base64::class,
@@ -38,7 +36,6 @@ final class CodecRegistry
      * @var array<string, string> legacy FQCN → canonical name
      */
     private const LEGACY_ALIASES = [
-        Json::class => 'json',
         Y::class => 'workflow-serializer-y',
         Base64::class => 'workflow-serializer-base64',
     ];
@@ -90,9 +87,8 @@ final class CodecRegistry
      *
      * v2 is unreleased, so there is no supported v2-to-v2 codec migration
      * surface. New v2 payloads always use Avro. Explicit row/envelope codec
-     * tags still resolve through {@see resolve()} for v1 import/drain paths and
-     * existing fixture data, but deployment config cannot change the new-run
-     * v2 default away from Avro.
+     * tags still resolve through {@see resolve()} for v1 import/drain paths, but
+     * deployment config cannot change the new-run v2 default away from Avro.
      */
     public static function defaultCodec(): string
     {
@@ -134,9 +130,7 @@ final class CodecRegistry
     {
         $universal = self::universal();
 
-        // Exclude both universal codecs and json (language-neutral, kept for
-        // decode of existing data but not advertised as engine-specific).
-        $excluded = array_merge($universal, ['json']);
+        $excluded = $universal;
         $phpOnly = array_values(array_diff(array_keys(self::CODECS), $excluded));
 
         if ($phpOnly === []) {

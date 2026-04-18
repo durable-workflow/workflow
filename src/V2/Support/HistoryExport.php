@@ -372,7 +372,6 @@ final class HistoryExport
     {
         return match ($codec) {
             'avro' => 'base64-avro-binary',
-            'json' => 'json-text',
             'workflow-serializer-y', 'Workflow\\Serializers\\Y' => 'php-serialized-escaped',
             'workflow-serializer-base64', 'Workflow\\Serializers\\Base64' => 'php-serialized-base64',
             default => 'opaque-string',

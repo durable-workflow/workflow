@@ -1599,10 +1599,10 @@ final class HistoryExportTest extends TestCase
         }
 
         config()
-            ->set('workflows.serializer', 'json');
-        $run = $this->createMinimalCompletedRun('history-export-mixed-codec');
+            ->set('workflows.serializer', 'workflow-serializer-y');
+        $run = $this->createMinimalCompletedRun('history-export-row-local-codec');
         $run->forceFill([
-            'payload_codec' => 'json',
+            'payload_codec' => 'workflow-serializer-y',
         ])->save();
 
         $instance = $run->instance;
@@ -1697,7 +1697,7 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('avro-encoded-update-args', $updateRow['arguments']);
         $this->assertSame('avro-encoded-update-result', $updateRow['result']);
 
-        // The run itself is JSON-coded, but the Avro signal/update rows must
+        // The run itself is PHP-legacy-coded, but the Avro signal/update rows must
         // trigger codec_schemas.avro so an offline consumer has the wrapper
         // schema needed to decode those blobs.
         $this->assertArrayHasKey('avro', $bundle['codec_schemas']);
@@ -1706,10 +1706,10 @@ final class HistoryExportTest extends TestCase
 
     public function testItOmitsAvroSchemasWhenBundleHasNoAvroPayloads(): void
     {
-        config()->set('workflows.serializer', 'json');
-        $run = $this->createMinimalCompletedRun('history-export-json');
+        config()->set('workflows.serializer', 'workflow-serializer-y');
+        $run = $this->createMinimalCompletedRun('history-export-legacy-y');
         $run->forceFill([
-            'payload_codec' => 'json',
+            'payload_codec' => 'workflow-serializer-y',
         ])->save();
 
         $bundle = HistoryExport::forRun($run->refresh(), Carbon::parse('2026-04-09 13:00:00'));

@@ -110,7 +110,6 @@ final class ReadinessContract
                 ],
                 'codec' => [
                     'default_for_new_v2_runs' => 'avro',
-                    'json' => 'decode_only_warning',
                     'legacy_php_codecs' => 'warning_for_v1_drain_or_import_reads',
                     'unknown_codec' => 'error',
                 ],

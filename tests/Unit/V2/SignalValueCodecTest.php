@@ -14,10 +14,9 @@ use Workflow\V2\Support\WorkflowExecutor;
 /**
  * #331 regression: signalValue() must decode the serialized signal payload
  * using the run's pinned payload_codec. Previously it called the codec-blind
- * Serializer::unserialize(), which would silently mis-decode an Avro-encoded
- * signal as JSON (yielding a base64 blob or a RuntimeException) on Avro-pinned
- * runs. The fix is to thread the run through signalValue() and delegate to
- * unserializePayloadWithRun().
+ * Serializer::unserialize(), which cannot decode binary Avro by sniffing and
+ * can misread legacy PHP codec payloads. The fix is to thread the run through
+ * signalValue() and delegate to unserializePayloadWithRun().
  */
 final class SignalValueCodecTest extends TestCase
 {
@@ -39,7 +38,7 @@ final class SignalValueCodecTest extends TestCase
         $this->assertSame($value, $this->invokeSignalValue($event, $run));
     }
 
-    public function testSignalValueDecodesJsonEncodedPayloadWithRunCodec(): void
+    public function testSignalValueDecodesLegacyPhpEncodedPayloadWithRunCodec(): void
     {
         $value = [
             'count' => 3,
@@ -47,11 +46,11 @@ final class SignalValueCodecTest extends TestCase
 
         $event = new WorkflowHistoryEvent();
         $event->payload = [
-            'value' => Serializer::serializeWithCodec('json', $value),
+            'value' => Serializer::serializeWithCodec('workflow-serializer-y', $value),
         ];
 
         $run = new WorkflowRun();
-        $run->payload_codec = 'json';
+        $run->payload_codec = 'workflow-serializer-y';
 
         $this->assertSame($value, $this->invokeSignalValue($event, $run));
     }
@@ -64,11 +63,11 @@ final class SignalValueCodecTest extends TestCase
 
         $event = new WorkflowHistoryEvent();
         $event->payload = [
-            'value' => Serializer::serializeWithCodec('json', $value),
+            'value' => '{"legacy":"payload"}',
         ];
 
-        // Legacy rows written before payload_codec was populated must still
-        // round-trip via the codec-blind sniffer path.
+        // Legacy untagged JSON blobs written before payload_codec was
+        // populated still round-trip through the codec-blind sniffer path.
         $this->assertSame($value, $this->invokeSignalValue($event, null));
     }
 

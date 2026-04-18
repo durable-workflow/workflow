@@ -8,12 +8,10 @@ use JsonException;
 use RuntimeException;
 
 /**
- * Language-neutral JSON codec.
+ * Legacy untagged JSON helper.
  *
- * Produces plain UTF-8 JSON bytes — no PHP SerializableClosure wrapping, no HMAC,
- * no base64. Any SDK in any language can encode/decode these payloads.
- *
- * Registered as codec name "json" in {@see CodecRegistry}.
+ * Final v2 does not register JSON as a named payload codec. This class remains
+ * only for the codec-blind {@see Serializer::unserialize()} legacy sniffer.
  */
 final class Json implements SerializerInterface
 {

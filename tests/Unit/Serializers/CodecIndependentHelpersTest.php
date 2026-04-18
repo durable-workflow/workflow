@@ -127,7 +127,6 @@ final class CodecIndependentHelpersTest extends TestCase
     public static function languageNeutralCodecProvider(): array
     {
         return [
-            'json' => ['json'],
             'avro' => ['avro'],
         ];
     }
@@ -149,7 +148,6 @@ final class CodecIndependentHelpersTest extends TestCase
     public static function codecProvider(): array
     {
         return [
-            'json' => ['json'],
             'avro' => ['avro'],
             'Y' => [Y::class],
             'Base64' => [Base64::class],

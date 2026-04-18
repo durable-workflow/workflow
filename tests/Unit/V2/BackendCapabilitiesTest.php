@@ -264,25 +264,26 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertSame('error', $queueIssue['severity']);
     }
 
-    public function testJsonCodecConfigEmitsDecodeOnlyWarningAndAvroRemainsDefault(): void
+    public function testJsonCodecConfigIsRejectedAsUnknownAndAvroRemainsDefault(): void
     {
         config()->set('workflows.serializer', 'json');
 
         $snapshot = BackendCapabilities::snapshot();
 
         $this->assertSame('avro', $snapshot['codec']['canonical']);
-        $this->assertSame('json', $snapshot['codec']['configured_canonical']);
+        $this->assertNull($snapshot['codec']['configured_canonical']);
         $this->assertTrue($snapshot['codec']['universal']);
         $this->assertFalse($snapshot['codec']['configured_universal']);
-        $this->assertTrue($snapshot['codec']['supported']);
+        $this->assertFalse($snapshot['codec']['supported']);
 
         $codecIssue = collect($snapshot['issues'])
-            ->firstWhere('code', 'codec_json_decode_only');
+            ->firstWhere('code', 'codec_unknown');
 
         $this->assertNotNull($codecIssue);
-        $this->assertSame('warning', $codecIssue['severity']);
+        $this->assertSame('error', $codecIssue['severity']);
         $this->assertSame('codec', $codecIssue['component']);
-        $this->assertStringContainsString('Avro only', $codecIssue['message']);
+        $this->assertStringContainsString('json', $codecIssue['message']);
+        $this->assertStringContainsString('avro', $codecIssue['message']);
     }
 
     public function testLegacyPhpCodecEmitsPolyglotCompatibilityWarning(): void

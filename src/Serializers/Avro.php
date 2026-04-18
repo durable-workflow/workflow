@@ -372,7 +372,7 @@ final class Avro implements SerializerInterface
             throw new CodecDecodeException(
                 'avro',
                 'Payload bytes look like JSON, not base64-encoded Avro.',
-                'The producer appears to have JSON-encoded the payload but tagged it with codec "avro". Either change the codec tag to "json", or re-encode the payload with Workflow\\Serializers\\Avro::serialize() before tagging it "avro".',
+                'The producer appears to have JSON-encoded the payload but tagged it with codec "avro". Final v2 does not register a JSON payload codec; re-encode the payload with Workflow\\Serializers\\Avro::serialize() before tagging it "avro".',
             );
         }
 

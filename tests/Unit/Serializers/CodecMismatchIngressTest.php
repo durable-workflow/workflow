@@ -17,8 +17,7 @@ use Workflow\Serializers\Serializer;
  * https://github.com/zorporation/durable-workflow/issues/362:
  *  - JSON bytes labeled as `avro` produce a typed error naming the codec
  *    and a remediation hint, not a generic RuntimeException.
- *  - Avro bytes labeled as `json` produce a typed error naming the codec
- *    and a remediation hint, not a generic RuntimeException.
+ *  - The legacy untagged JSON helper rejects Avro bytes loudly.
  *  - The exception identifies the declared codec so cross-component
  *    error reporting can surface it without re-parsing the message.
  */
@@ -34,8 +33,8 @@ final class CodecMismatchIngressTest extends TestCase
         } catch (CodecDecodeException $e) {
             $this->assertSame('avro', $e->declaredCodec);
             $this->assertStringContainsString('look like JSON', $e->detail);
-            $this->assertStringContainsString('codec tag', $e->remediation);
-            $this->assertStringContainsString('"json"', $e->remediation);
+            $this->assertStringContainsString('Final v2 does not register a JSON payload codec', $e->remediation);
+            $this->assertStringContainsString('Avro::serialize', $e->remediation);
         }
     }
 
@@ -52,7 +51,7 @@ final class CodecMismatchIngressTest extends TestCase
         }
     }
 
-    public function testAvroBytesUnderJsonCodecAreRejectedLoudlyWithAvroHint(): void
+    public function testLegacyJsonHelperRejectsAvroBytesLoudlyWithAvroHint(): void
     {
         if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
             $this->markTestSkipped('apache/avro package is not installed in this environment.');

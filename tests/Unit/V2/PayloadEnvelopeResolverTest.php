@@ -22,11 +22,15 @@ final class PayloadEnvelopeResolverTest extends TestCase
         $this->assertSame(['alpha', 'beta'], PayloadEnvelopeResolver::resolveToArray(['alpha', 'beta']));
     }
 
-    public function testResolveToArrayDecodesJsonEnvelope(): void
+    public function testResolveToArrayDecodesAvroEnvelope(): void
     {
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
         $envelope = [
-            'codec' => 'json',
-            'blob' => Serializer::serializeWithCodec('json', ['a', 'b', 42]),
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', ['a', 'b', 42]),
         ];
 
         $this->assertSame(['a', 'b', 42], PayloadEnvelopeResolver::resolveToArray($envelope));
@@ -42,18 +46,15 @@ final class PayloadEnvelopeResolverTest extends TestCase
         $this->assertSame(['a', 'b'], PayloadEnvelopeResolver::resolveToArray($envelope));
     }
 
-    public function testResolveToArrayDecodesAvroEnvelopeWhenInstalled(): void
+    public function testResolveToArrayRejectsRemovedJsonCodec(): void
     {
-        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
-            $this->markTestSkipped('apache/avro package is not installed in this environment.');
-        }
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('Unknown payload codec');
 
-        $envelope = [
-            'codec' => 'avro',
-            'blob' => Serializer::serializeWithCodec('avro', ['hello', 123]),
-        ];
-
-        $this->assertSame(['hello', 123], PayloadEnvelopeResolver::resolveToArray($envelope));
+        PayloadEnvelopeResolver::resolveToArray([
+            'codec' => 'json',
+            'blob' => '[]',
+        ]);
     }
 
     public function testResolveToArrayRejectsUnknownCodec(): void
@@ -69,9 +70,13 @@ final class PayloadEnvelopeResolverTest extends TestCase
 
     public function testResolveToArrayRejectsNonArrayBlobPayload(): void
     {
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
         $envelope = [
-            'codec' => 'json',
-            'blob' => '"just a string"',
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', 'just a string'),
         ];
 
         $this->expectException(ValidationException::class);
@@ -83,12 +88,12 @@ final class PayloadEnvelopeResolverTest extends TestCase
     public function testResolveToArrayRejectsCorruptBlob(): void
     {
         $envelope = [
-            'codec' => 'json',
-            'blob' => '{not-valid-json',
+            'codec' => 'avro',
+            'blob' => '{not-valid-avro',
         ];
 
         $this->expectException(ValidationException::class);
-        $this->expectExceptionMessage('could not be decoded with codec "json"');
+        $this->expectExceptionMessage('could not be decoded with codec "avro"');
 
         PayloadEnvelopeResolver::resolveToArray($envelope);
     }

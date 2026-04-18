@@ -18,9 +18,13 @@ final class CommandPayloadPreviewTest extends TestCase
         $this->assertTrue(CommandPayloadPreview::available('{}'));
     }
 
-    public function testPreviewWithCodecDecodesJsonBlob(): void
+    public function testPreviewWithCodecDecodesAvroBlob(): void
     {
-        $blob = Serializer::serializeWithCodec('json', [
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
+        $blob = Serializer::serializeWithCodec('avro', [
             'name' => 'Taylor',
             'n' => 7,
         ]);
@@ -30,7 +34,7 @@ final class CommandPayloadPreviewTest extends TestCase
                 'name' => 'Taylor',
                 'n' => 7,
             ],
-            CommandPayloadPreview::previewWithCodec($blob, 'json'),
+            CommandPayloadPreview::previewWithCodec($blob, 'avro'),
         );
     }
 
@@ -60,7 +64,7 @@ final class CommandPayloadPreviewTest extends TestCase
         // return the raw blob instead of throwing. Strict mixed-codec
         // detection happens at ingress (PayloadEnvelopeResolver), not in
         // this display helper.
-        $jsonBlob = Serializer::serializeWithCodec('json', ['hello']);
+        $jsonBlob = '["hello"]';
 
         $this->assertSame($jsonBlob, CommandPayloadPreview::previewWithCodec($jsonBlob, 'avro'));
     }
@@ -77,9 +81,7 @@ final class CommandPayloadPreviewTest extends TestCase
 
     public function testPreviewWithCodecFallsThroughToLegacySniffWhenCodecNull(): void
     {
-        $jsonBlob = Serializer::serializeWithCodec('json', [
-            'legacy' => true,
-        ]);
+        $jsonBlob = '{"legacy":true}';
 
         $this->assertSame([
             'legacy' => true,
@@ -90,7 +92,7 @@ final class CommandPayloadPreviewTest extends TestCase
     {
         $this->assertNull(CommandPayloadPreview::previewWithCodec(null, 'avro'));
         $this->assertNull(CommandPayloadPreview::previewWithCodec('', 'avro'));
-        $this->assertNull(CommandPayloadPreview::previewWithCodec(['x'], 'json'));
+        $this->assertNull(CommandPayloadPreview::previewWithCodec(['x'], 'avro'));
     }
 
     public function testPreviewWithCodecRendersAvroTypedRecordWhenSchemaContextIsSet(): void

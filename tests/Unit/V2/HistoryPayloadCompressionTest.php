@@ -191,7 +191,7 @@ final class HistoryPayloadCompressionTest extends TestCase
             'workflow_instance_id' => 'inst-1',
             'workflow_type' => 'TestWorkflow',
             'workflow_class' => null,
-            'payload_codec' => 'json',
+            'payload_codec' => 'avro',
             'arguments' => null,
             'run_status' => 'Running',
             'last_history_sequence' => $eventCount,

@@ -30,7 +30,7 @@ use Workflow\V2\Support\FailureSnapshots;
  * TD-089 regression: activity exception rows must be encoded with the
  * run's pinned payload codec, not the package default. Any fallback
  * reader that decodes the blob must use the run codec too, so that
- * Avro-default deployments do not corrupt JSON-pinned runs (and vice
+ * Avro-default deployments do not corrupt legacy-codec pinned runs (and vice
  * versa).
  */
 final class V2ActivityExceptionCodecTest extends TestCase
@@ -44,9 +44,9 @@ final class V2ActivityExceptionCodecTest extends TestCase
             ->set('workflows.serializer', 'avro');
 
         [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
-            pinnedCodec: 'json',
+            pinnedCodec: 'workflow-serializer-y',
             maxAttempts: 2,
-            instanceId: 'td089-retry-json',
+            instanceId: 'td089-retry-legacy-y',
         );
 
         $outcome = ActivityOutcomeRecorder::record(
@@ -70,7 +70,7 @@ final class V2ActivityExceptionCodecTest extends TestCase
 
         $this->assertExceptionBytesDecodeAs(
             bytes: $execution->exception,
-            runCodec: 'json',
+            runCodec: 'workflow-serializer-y',
             otherCodec: 'avro',
             expectedMessage: 'retry boom',
         );
@@ -81,9 +81,9 @@ final class V2ActivityExceptionCodecTest extends TestCase
         config()->set('workflows.serializer', 'avro');
 
         [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
-            pinnedCodec: 'json',
+            pinnedCodec: 'workflow-serializer-y',
             maxAttempts: 1,
-            instanceId: 'td089-final-json',
+            instanceId: 'td089-final-legacy-y',
         );
 
         $outcome = ActivityOutcomeRecorder::record(
@@ -105,18 +105,18 @@ final class V2ActivityExceptionCodecTest extends TestCase
 
         $this->assertExceptionBytesDecodeAs(
             bytes: $execution->exception,
-            runCodec: 'json',
+            runCodec: 'workflow-serializer-y',
             otherCodec: 'avro',
             expectedMessage: 'final boom',
         );
     }
 
-    public function testFinalFailurePathStoresExceptionUnderAvroRunCodecWhenDefaultIsJson(): void
+    public function testFinalFailurePathStoresExceptionUnderAvroRunCodecWhenDefaultIsLegacyPhp(): void
     {
-        // Mirror case: Avro-pinned run under a JSON package default still
-        // has to write Avro bytes, not JSON.
+        // Mirror case: Avro-pinned run under a legacy PHP package default
+        // still has to write Avro bytes, not legacy PHP bytes.
         config()
-            ->set('workflows.serializer', 'json');
+            ->set('workflows.serializer', 'workflow-serializer-y');
 
         [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
             pinnedCodec: 'avro',
@@ -150,10 +150,10 @@ final class V2ActivityExceptionCodecTest extends TestCase
 
     public function testCompletionHistoryStampsWorkerResultCodec(): void
     {
-        config()->set('workflows.serializer', 'json');
+        config()->set('workflows.serializer', 'workflow-serializer-y');
 
         [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
-            pinnedCodec: 'json',
+            pinnedCodec: 'workflow-serializer-y',
             maxAttempts: 1,
             instanceId: 'td090-result-avro',
         );
@@ -195,12 +195,12 @@ final class V2ActivityExceptionCodecTest extends TestCase
         config()->set('workflows.serializer', 'avro');
 
         [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
-            pinnedCodec: 'json',
+            pinnedCodec: 'workflow-serializer-y',
             maxAttempts: 2,
-            instanceId: 'td090-failure-details-json',
+            instanceId: 'td090-failure-details-avro',
         );
 
-        $detailsBlob = Serializer::serializeWithCodec('json', [
+        $detailsBlob = Serializer::serializeWithCodec('avro', [
             'retry_after' => 30,
         ]);
 
@@ -218,16 +218,16 @@ final class V2ActivityExceptionCodecTest extends TestCase
             ]),
             maxAttempts: 2,
             backoffSeconds: 0,
-            codec: 'json',
+            codec: 'avro',
         );
 
         $this->assertTrue($outcome['recorded']);
 
         $execution->refresh();
-        $decodedException = Serializer::unserializeWithCodec('json', (string) $execution->exception);
+        $decodedException = Serializer::unserializeWithCodec('workflow-serializer-y', (string) $execution->exception);
 
         $this->assertSame($detailsBlob, $decodedException['details'] ?? null);
-        $this->assertSame('json', $decodedException['details_payload_codec'] ?? null);
+        $this->assertSame('avro', $decodedException['details_payload_codec'] ?? null);
         $this->assertTrue($decodedException['non_retryable'] ?? false);
 
         /** @var WorkflowHistoryEvent $failed */
@@ -240,7 +240,7 @@ final class V2ActivityExceptionCodecTest extends TestCase
         $this->assertSame('TimeoutException', $failed->payload['exception_type'] ?? null);
         $this->assertTrue($failed->payload['non_retryable'] ?? false);
         $this->assertSame($detailsBlob, $failed->payload['exception']['details'] ?? null);
-        $this->assertSame('json', $failed->payload['exception']['details_payload_codec'] ?? null);
+        $this->assertSame('avro', $failed->payload['exception']['details_payload_codec'] ?? null);
         $this->assertTrue($failed->payload['exception']['non_retryable'] ?? false);
 
         $this->assertFalse(
@@ -255,7 +255,7 @@ final class V2ActivityExceptionCodecTest extends TestCase
         $this->assertIsArray($snapshot);
         $this->assertTrue($snapshot['non_retryable'] ?? false);
         $this->assertSame($detailsBlob, $snapshot['exception_payload']['details'] ?? null);
-        $this->assertSame('json', $snapshot['exception_payload']['details_payload_codec'] ?? null);
+        $this->assertSame('avro', $snapshot['exception_payload']['details_payload_codec'] ?? null);
         $this->assertTrue($snapshot['exception_payload']['non_retryable'] ?? false);
     }
 

@@ -140,7 +140,7 @@ return [
     // Legacy PHP-only codecs ("workflow-serializer-y",
     // "workflow-serializer-base64") remain supported for reading v1 history.
     // Setting this to a legacy codec, JSON, or a removed custom serializer will
-    // be flagged by `workflow:v2:doctor`.
+    // be flagged by `workflow:v2:doctor`; JSON is not a registered v2 codec.
     'serializer' => env('WORKFLOW_SERIALIZER', 'avro'),
 
     'prune_age' => '1 month',

@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 final class WorkflowCommandNormalizerTest extends TestCase
@@ -31,15 +32,17 @@ final class WorkflowCommandNormalizerTest extends TestCase
             [
                 'type' => 'complete_workflow',
                 'result' => [
-                    'codec' => 'json',
-                    'blob' => '"ok"',
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', 'ok'),
                 ],
             ],
         ]);
 
+        $blob = Serializer::serializeWithCodec('avro', 'ok');
+
         $this->assertSame([[
             'type' => 'complete_workflow',
-            'result' => '"ok"',
+            'result' => $blob,
         ]], $out);
     }
 
@@ -93,18 +96,20 @@ final class WorkflowCommandNormalizerTest extends TestCase
                 'type' => 'schedule_activity',
                 'activity_type' => '  SendEmail ',
                 'arguments' => [
-                    'codec' => 'json',
-                    'blob' => '["hi"]',
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', ['hi']),
                 ],
                 'connection' => ' redis ',
                 'queue' => 'default',
             ],
         ]);
 
+        $arguments = Serializer::serializeWithCodec('avro', ['hi']);
+
         $this->assertSame([[
             'type' => 'schedule_activity',
             'activity_type' => 'SendEmail',
-            'arguments' => '["hi"]',
+            'arguments' => $arguments,
             'connection' => 'redis',
             'queue' => 'default',
         ]], $out);

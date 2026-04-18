@@ -299,18 +299,7 @@ final class BackendCapabilities
         $isUniversal = in_array($default, $universal, true);
         $configuredUniversal = $configuredCanonical !== null && in_array($configuredCanonical, $universal, true);
 
-        if ($configuredCanonical === 'json') {
-            $issues[] = self::issue(
-                'codec',
-                'warning',
-                'codec_json_decode_only',
-                'workflows.serializer is set to [json], but final v2 starts new workflows with Avro only. '
-                . 'The JSON codec name is accepted only when decoding explicitly tagged historical/test payloads; '
-                . 'remove the override so the released v2 configuration matches the Avro-only contract.',
-            );
-        }
-
-        if ($configuredCanonical !== null && $configuredCanonical !== 'json' && ! $configuredUniversal) {
+        if ($configuredCanonical !== null && ! $configuredUniversal) {
             $issues[] = self::issue(
                 'codec',
                 'warning',

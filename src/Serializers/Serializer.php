@@ -21,18 +21,18 @@ final class Serializer
      * the codec-specific surface: {@see serialize()} / {@see unserialize()}.
      *
      * - serialize(): uses config('workflows.serializer') (default "avro").
-     * - unserialize(): sniffs the blob ("base64:" prefix → Base64, JSON-like →
-     *   Json, else Y). Avro blobs are not detectable by sniff alone, so
-     *   call sites with codec context should prefer
+     * - unserialize(): sniffs legacy untagged blobs ("base64:" prefix → Base64,
+     *   JSON-like → Json, else Y). Avro blobs are not detectable by sniff alone,
+     *   so call sites with codec context should prefer
      *   {@see self::unserializeWithCodec()}.
      *
      * Codec-independent helpers ({@see serializable()}, {@see serializeModels()},
      * {@see unserializeModels()}) are declared as first-class static methods
      * on this class and short-circuit before __callStatic so they produce the
-     * same result regardless of the configured codec. They originated to
-     * keep the JSON path safe ({@see Json} does not implement those helpers
-     * itself), and silently returning null from them used to drop exception
-     * trace frames and failure-property values during v2 failure normalization.
+     * same result regardless of the configured codec. They keep non-
+     * AbstractSerializer codec implementations safe and avoid silently dropping
+     * exception trace frames and failure-property values during v2 failure
+     * normalization.
      *
      * New code should prefer {@see self::serializeWithCodec()} /
      * {@see self::unserializeWithCodec()} which make the codec choice explicit.
@@ -77,7 +77,7 @@ final class Serializer
      * arrays. Always applied by v1 and v2 failure normalization paths.
      *
      * Codec-independent: returns the same shape regardless of whether the
-     * configured codec is "json", Y, or Base64.
+     * configured codec is Avro, Y, or Base64.
      */
     public static function serializeModels(mixed $data): mixed
     {
@@ -146,9 +146,9 @@ final class Serializer
 
     /**
      * Pre-normalize $data before handing it to a codec that does not itself
-     * apply model/Throwable normalization (for example {@see Json}). Legacy
-     * codecs that extend {@see AbstractSerializer} already call serializeModels
-     * internally and must not be double-normalized here.
+     * apply model/Throwable normalization. Legacy codecs that extend
+     * {@see AbstractSerializer} already call serializeModels internally and
+     * must not be double-normalized here.
      */
     private static function normalizeForCodec(mixed $data): mixed
     {
