@@ -198,6 +198,56 @@ final class WorkflowCommandNormalizer
                 continue;
             }
 
+            if ($type === 'complete_update') {
+                $updateId = self::requiredCommandString($command, 'update_id', $index, $errors);
+
+                if ($updateId === null) {
+                    continue;
+                }
+
+                $normalized[] = [
+                    'type' => $type,
+                    'update_id' => $updateId,
+                    'result' => PayloadEnvelopeResolver::resolveCommandPayload(
+                        $command['result'] ?? null,
+                        "commands.{$index}.result",
+                    ),
+                ];
+
+                continue;
+            }
+
+            if ($type === 'fail_update') {
+                $updateId = self::requiredCommandString($command, 'update_id', $index, $errors);
+
+                if ($updateId === null) {
+                    continue;
+                }
+
+                if (! is_string($command['message'] ?? null) || trim((string) $command['message']) === '') {
+                    $errors["commands.{$index}.message"] = ['Fail update commands require a non-empty message.'];
+
+                    continue;
+                }
+
+                $normalized[] = array_filter([
+                    'type' => $type,
+                    'update_id' => $updateId,
+                    'message' => $command['message'],
+                    'exception_class' => is_string($command['exception_class'] ?? null)
+                        ? $command['exception_class']
+                        : null,
+                    'exception_type' => is_string($command['exception_type'] ?? null)
+                        ? $command['exception_type']
+                        : null,
+                    'non_retryable' => is_bool($command['non_retryable'] ?? null)
+                        ? $command['non_retryable']
+                        : null,
+                ], static fn (mixed $value): bool => $value !== null);
+
+                continue;
+            }
+
             if ($type === 'record_side_effect') {
                 if (! is_string($command['result'] ?? null)) {
                     $errors["commands.{$index}.result"] = ['Record side effect commands require a string result.'];
@@ -308,6 +358,23 @@ final class WorkflowCommandNormalizer
         ];
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     */
+    private static function requiredCommandString(array $command, string $field, int $index, array &$errors): ?string
+    {
+        if (! is_string($command[$field] ?? null) || trim($command[$field]) === '') {
+            $errors["commands.{$index}.{$field}"] = [
+                sprintf('Workflow task command field [%s] must be a non-empty string.', $field),
+            ];
+
+            return null;
+        }
+
+        return trim($command[$field]);
     }
 
     /**

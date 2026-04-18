@@ -49,6 +49,8 @@ final class WorkerProtocolVersionTest extends TestCase
             'schedule_activity',
             'start_timer',
             'start_child_workflow',
+            'complete_update',
+            'fail_update',
             'record_side_effect',
             'record_version_marker',
             'upsert_search_attributes',

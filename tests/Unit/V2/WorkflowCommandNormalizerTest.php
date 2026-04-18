@@ -281,6 +281,76 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]], $out);
     }
 
+    public function testCompleteUpdateUnwrapsEnvelope(): void
+    {
+        $blob = Serializer::serializeWithCodec('avro', ['approved' => true]);
+
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'complete_update',
+                'update_id' => '01UPDATE000000000000000001',
+                'result' => [
+                    'codec' => 'avro',
+                    'blob' => $blob,
+                ],
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'complete_update',
+            'update_id' => '01UPDATE000000000000000001',
+            'result' => $blob,
+        ]], $out);
+    }
+
+    public function testCompleteUpdateRequiresUpdateId(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'complete_update',
+                'result' => '"ok"',
+            ],
+        ]);
+    }
+
+    public function testFailUpdatePreservesOptionalFields(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'fail_update',
+                'update_id' => '01UPDATE000000000000000002',
+                'message' => 'boom',
+                'exception_class' => 'App\\Exceptions\\UpdateBoom',
+                'exception_type' => 'update_boom',
+                'non_retryable' => true,
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'fail_update',
+            'update_id' => '01UPDATE000000000000000002',
+            'message' => 'boom',
+            'exception_class' => 'App\\Exceptions\\UpdateBoom',
+            'exception_type' => 'update_boom',
+            'non_retryable' => true,
+        ]], $out);
+    }
+
+    public function testFailUpdateRequiresMessage(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'fail_update',
+                'update_id' => '01UPDATE000000000000000003',
+                'message' => '',
+            ],
+        ]);
+    }
+
     public function testRecordSideEffectRequiresStringResult(): void
     {
         $this->expectException(ValidationException::class);

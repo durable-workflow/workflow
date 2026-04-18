@@ -13,13 +13,16 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ChildCallStatus;
+use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -28,6 +31,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 
 final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 {
@@ -37,6 +41,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         'schedule_activity',
         'start_timer',
         'start_child_workflow',
+        'complete_update',
+        'fail_update',
         'record_side_effect',
         'record_version_marker',
         'upsert_search_attributes',
@@ -701,6 +707,18 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
             $sequence = ($run->last_history_sequence ?? 0) + 1;
             $createdTaskIds = [];
+            $invalidUpdateCommands = $this->validateUpdateCommands($run, $task, $parsed['non_terminal']);
+
+            if ($invalidUpdateCommands !== null) {
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => $run->id,
+                    'run_status' => $run->status->value,
+                    'created_task_ids' => [],
+                    'reason' => $invalidUpdateCommands,
+                ];
+            }
 
             foreach ($parsed['non_terminal'] as $command) {
                 $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
@@ -880,11 +898,231 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'schedule_activity' => $this->applyScheduleActivity($run, $task, $command, $sequence, $createdTaskIds),
             'start_timer' => $this->applyStartTimer($run, $task, $command, $sequence, $createdTaskIds),
             'start_child_workflow' => $this->applyStartChildWorkflow($run, $task, $command, $sequence, $createdTaskIds),
+            'complete_update' => $this->applyCompleteUpdate($run, $task, $command, $sequence),
+            'fail_update' => $this->applyFailUpdate($run, $task, $command, $sequence),
             'record_side_effect' => $this->applyRecordSideEffect($run, $task, $command, $sequence),
             'record_version_marker' => $this->applyRecordVersionMarker($run, $task, $command, $sequence),
             'upsert_search_attributes' => $this->applyUpsertSearchAttributes($run, $task, $command, $sequence),
             default => $sequence,
         };
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    private function validateUpdateCommands(WorkflowRun $run, WorkflowTask $task, array $commands): ?string
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+        $taskUpdateId = self::nonEmptyString($taskPayload['workflow_update_id'] ?? null);
+        $seen = [];
+
+        foreach ($commands as $command) {
+            if (! in_array($command['type'] ?? null, ['complete_update', 'fail_update'], true)) {
+                continue;
+            }
+
+            $updateId = self::nonEmptyString($command['update_id'] ?? null);
+
+            if ($updateId === null || isset($seen[$updateId])) {
+                return 'invalid_commands';
+            }
+
+            if ($taskUpdateId !== null && $taskUpdateId !== $updateId) {
+                return 'invalid_commands';
+            }
+
+            /** @var WorkflowUpdate|null $update */
+            $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+                ->lockForUpdate()
+                ->whereKey($updateId)
+                ->where('workflow_run_id', $run->id)
+                ->first();
+
+            if (! $update instanceof WorkflowUpdate || $update->status !== UpdateStatus::Accepted) {
+                return 'invalid_commands';
+            }
+
+            $seen[$updateId] = true;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array{type: string, update_id: string, result?: string|null} $command
+     */
+    private function applyCompleteUpdate(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        /** @var WorkflowUpdate $update */
+        $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+            ->lockForUpdate()
+            ->whereKey($command['update_id'])
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        /** @var WorkflowCommand|null $workflowCommand */
+        $workflowCommand = $update->workflow_command_id === null
+            ? null
+            : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->whereKey($update->workflow_command_id)
+                ->first();
+
+        $result = $command['result'] ?? null;
+        $now = now();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
+            'workflow_command_id' => $workflowCommand?->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $update->update_name,
+            'arguments' => $update->arguments,
+            'sequence' => $sequence,
+        ], $task, $workflowCommand);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
+            'workflow_command_id' => $workflowCommand?->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $update->update_name,
+            'sequence' => $sequence,
+            'result' => $result,
+        ], $task, $workflowCommand);
+
+        $update->forceFill([
+            'workflow_sequence' => $sequence,
+            'status' => UpdateStatus::Completed->value,
+            'outcome' => CommandOutcome::UpdateCompleted->value,
+            'result' => $result,
+            'applied_at' => $now,
+            'closed_at' => $now,
+        ])->save();
+
+        if ($workflowCommand instanceof WorkflowCommand) {
+            $workflowCommand->forceFill([
+                'outcome' => CommandOutcome::UpdateCompleted->value,
+                'applied_at' => $now,
+            ])->save();
+
+            if ($workflowCommand->message_sequence !== null) {
+                MessageStreamCursor::advanceCursor($run, (int) $workflowCommand->message_sequence, $task);
+            }
+        }
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     update_id: string,
+     *     message: string,
+     *     exception_class?: string,
+     *     exception_type?: string,
+     *     non_retryable?: bool
+     * } $command
+     */
+    private function applyFailUpdate(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+    ): int {
+        /** @var WorkflowUpdate $update */
+        $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+            ->lockForUpdate()
+            ->whereKey($command['update_id'])
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        /** @var WorkflowCommand|null $workflowCommand */
+        $workflowCommand = $update->workflow_command_id === null
+            ? null
+            : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->whereKey($update->workflow_command_id)
+                ->first();
+
+        $message = self::normalizeRequiredString($command['message'] ?? null) ?? 'External update failed';
+        $exceptionClass = self::normalizeOptionalString($command['exception_class'] ?? null) ?? RuntimeException::class;
+        $exceptionType = self::normalizeOptionalString($command['exception_type'] ?? null);
+        $failureCategory = FailureFactory::classifyFromStrings('update', 'workflow_command', $exceptionClass, $message);
+        $nonRetryable = (bool) ($command['non_retryable'] ?? FailureFactory::isNonRetryableFromStrings(
+            $exceptionClass
+        ));
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()->create([
+            'workflow_run_id' => $run->id,
+            'source_kind' => $workflowCommand instanceof WorkflowCommand ? 'workflow_command' : 'workflow_update',
+            'source_id' => $workflowCommand?->id ?? $update->id,
+            'propagation_kind' => 'update',
+            'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
+            'handled' => false,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'file' => '',
+            'line' => 0,
+            'trace_preview' => '',
+        ]);
+
+        $exceptionPayload = [
+            'class' => $exceptionClass,
+            'type' => $exceptionType,
+            'message' => $message,
+            'code' => 0,
+            'file' => '',
+            'line' => 0,
+            'trace' => [],
+            'properties' => [],
+        ];
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
+            'workflow_command_id' => $workflowCommand?->id,
+            'update_id' => $update->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $update->update_name,
+            'sequence' => $sequence,
+            'failure_id' => $failure->id,
+            'failure_category' => $failureCategory->value,
+            'non_retryable' => $nonRetryable,
+            'exception_type' => $exceptionType,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'code' => 0,
+            'exception' => $exceptionPayload,
+        ], $task, $workflowCommand);
+
+        $now = now();
+
+        $update->forceFill([
+            'workflow_sequence' => $sequence,
+            'status' => UpdateStatus::Failed->value,
+            'outcome' => CommandOutcome::UpdateFailed->value,
+            'failure_id' => $failure->id,
+            'failure_message' => $message,
+            'applied_at' => $now,
+            'closed_at' => $now,
+        ])->save();
+
+        if ($workflowCommand instanceof WorkflowCommand) {
+            $workflowCommand->forceFill([
+                'outcome' => CommandOutcome::UpdateFailed->value,
+                'applied_at' => $now,
+            ])->save();
+
+            if ($workflowCommand->message_sequence !== null) {
+                MessageStreamCursor::advanceCursor($run, (int) $workflowCommand->message_sequence, $task);
+            }
+        }
+
+        return $sequence + 1;
     }
 
     /**
@@ -1787,6 +2025,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'start_timer' => self::normalizeStartTimerCommand($command),
             'start_child_workflow' => self::normalizeStartChildWorkflowCommand($command),
             'continue_as_new' => self::normalizeContinueAsNewCommand($command),
+            'complete_update' => self::normalizeCompleteUpdateCommand($command),
+            'fail_update' => self::normalizeFailUpdateCommand($command),
             'record_side_effect' => self::normalizeRecordSideEffectCommand($command),
             'record_version_marker' => self::normalizeRecordVersionMarkerCommand($command),
             'upsert_search_attributes' => self::normalizeUpsertSearchAttributesCommand($command),
@@ -1969,6 +2209,55 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'arguments' => $arguments,
             'workflow_type' => $workflowType,
             'queue' => $queue,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{type: string, update_id: string, result?: string|null}|null
+     */
+    private static function normalizeCompleteUpdateCommand(array $command): ?array
+    {
+        $updateId = self::normalizeRequiredString($command['update_id'] ?? null);
+
+        if ($updateId === null) {
+            return null;
+        }
+
+        return [
+            'type' => 'complete_update',
+            'update_id' => $updateId,
+            'result' => $command['result'] ?? null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     update_id: string,
+     *     message: string,
+     *     exception_class?: string,
+     *     exception_type?: string,
+     *     non_retryable?: bool
+     * }|null
+     */
+    private static function normalizeFailUpdateCommand(array $command): ?array
+    {
+        $updateId = self::normalizeRequiredString($command['update_id'] ?? null);
+        $message = self::normalizeRequiredString($command['message'] ?? null);
+
+        if ($updateId === null || $message === null) {
+            return null;
+        }
+
+        return array_filter([
+            'type' => 'fail_update',
+            'update_id' => $updateId,
+            'message' => $message,
+            'exception_class' => self::normalizeOptionalString($command['exception_class'] ?? null),
+            'exception_type' => self::normalizeOptionalString($command['exception_type'] ?? null),
+            'non_retryable' => is_bool($command['non_retryable'] ?? null) ? $command['non_retryable'] : null,
         ], static fn (mixed $value): bool => $value !== null);
     }
 
