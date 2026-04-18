@@ -13,7 +13,7 @@ When working from Workspace HQ, run them inside the workflow repo `app` containe
 
 If you need the raw container command for unit tests, use:
 
-- `docker compose -f /home/lab/workspace-hq/repos/workflow/.devcontainer/docker-compose.yml exec app composer unit`
+- `docker compose -f .devcontainer/docker-compose.yml exec app composer unit`
 
 Inside the repo container, the quality cycle is:
 
