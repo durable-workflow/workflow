@@ -429,14 +429,20 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $claim = $this->bridge->claim($task->id, 'worker-1');
         $this->assertNotNull($claim);
 
+        $closedAt = now()
+            ->subSecond();
         $run->forceFill([
             'status' => RunStatus::Cancelled->value,
+            'closed_reason' => 'cancelled',
+            'closed_at' => $closedAt,
         ])->save();
 
         $result = $this->bridge->heartbeat($claim['activity_attempt_id']);
 
         $this->assertFalse($result['can_continue']);
         $this->assertTrue($result['cancel_requested']);
+        $this->assertSame('cancelled', $result['run_closed_reason']);
+        $this->assertSame($closedAt->toJSON(), $result['run_closed_at']);
     }
 
     public function testHeartbeatDetectsTerminatedRun(): void
@@ -446,14 +452,20 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $claim = $this->bridge->claim($task->id, 'worker-1');
         $this->assertNotNull($claim);
 
+        $closedAt = now()
+            ->subSecond();
         $run->forceFill([
             'status' => RunStatus::Terminated->value,
+            'closed_reason' => 'terminated',
+            'closed_at' => $closedAt,
         ])->save();
 
         $result = $this->bridge->heartbeat($claim['activity_attempt_id']);
 
         $this->assertFalse($result['can_continue']);
         $this->assertTrue($result['cancel_requested']);
+        $this->assertSame('terminated', $result['run_closed_reason']);
+        $this->assertSame($closedAt->toJSON(), $result['run_closed_at']);
     }
 
     // -- Helpers --

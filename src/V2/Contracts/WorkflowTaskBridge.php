@@ -202,6 +202,8 @@ interface WorkflowTaskBridge
      *     task_id: string,
      *     lease_expires_at: string|null,
      *     run_status: string|null,
+     *     run_closed_reason: string|null,
+     *     run_closed_at: string|null,
      *     task_status: string|null,
      *     reason: string|null,
      * }
@@ -309,6 +311,8 @@ interface WorkflowTaskBridge
      *     task_id: string,
      *     task_status: string|null,
      *     run_status: string|null,
+     *     run_closed_reason: string|null,
+     *     run_closed_at: string|null,
      *     workflow_run_id: string|null,
      *     workflow_instance_id: string|null,
      *     lease_owner: string|null,

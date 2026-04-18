@@ -593,8 +593,12 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testHeartbeatRejectsTaskOnTerminalRun(): void
     {
         $run = $this->createWaitingRun();
+        $closedAt = now()
+            ->subSecond();
         $run->forceFill([
             'status' => RunStatus::Cancelled->value,
+            'closed_reason' => 'cancelled',
+            'closed_at' => $closedAt,
         ])->save();
 
         /** @var WorkflowTask $task */
@@ -617,6 +621,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertFalse($result['renewed']);
         $this->assertSame('run_closed', $result['reason']);
         $this->assertSame('cancelled', $result['run_status']);
+        $this->assertSame('cancelled', $result['run_closed_reason']);
+        $this->assertSame($closedAt->toJSON(), $result['run_closed_at']);
     }
 
     public function testStatusReturnsLeasedTaskMetadata(): void
@@ -742,8 +748,12 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testStatusReturnsRunStatusFromRun(): void
     {
         $run = $this->createWaitingRun();
+        $closedAt = now()
+            ->subSecond();
         $run->forceFill([
             'status' => RunStatus::Cancelled->value,
+            'closed_reason' => 'cancelled',
+            'closed_at' => $closedAt,
         ])->save();
 
         /** @var WorkflowTask $task */
@@ -765,6 +775,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $result = $this->bridge->status($task->id);
 
         $this->assertSame('cancelled', $result['run_status']);
+        $this->assertSame('cancelled', $result['run_closed_reason']);
+        $this->assertSame($closedAt->toJSON(), $result['run_closed_at']);
         $this->assertSame('leased', $result['task_status']);
     }
 
