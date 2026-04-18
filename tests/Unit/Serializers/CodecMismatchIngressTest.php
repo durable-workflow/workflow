@@ -117,7 +117,7 @@ final class CodecMismatchIngressTest extends TestCase
         }
     }
 
-    public function testTypedAvroDecodedWithoutSchemaIsRejectedLoudly(): void
+    public function testTypedAvroEmbedsWriterSchemaAndDecodesWithoutSchemaContext(): void
     {
         if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
             $this->markTestSkipped('apache/avro package is not installed in this environment.');
@@ -135,14 +135,19 @@ final class CodecMismatchIngressTest extends TestCase
             'Typed Avro should decode to bytes starting with 0x01.'
         );
 
-        try {
-            Avro::unserialize($typedBlob); // No schema context → wrapped path.
-            $this->fail('Expected CodecDecodeException when decoding typed Avro without a schema context');
-        } catch (CodecDecodeException $e) {
-            $this->assertSame('avro', $e->declaredCodec);
-            $this->assertStringContainsString('schema context', $e->detail);
-            $this->assertStringContainsString('Avro::withSchema', $e->remediation);
-        }
+        $metadata = Avro::payloadMetadata($typedBlob);
+
+        $this->assertSame('typed_schema', $metadata['framing']);
+        $this->assertSame('01', $metadata['prefix_hex']);
+        $this->assertNotNull($metadata['writer_schema']);
+        $this->assertStringStartsWith('sha256:', $metadata['writer_schema_fingerprint']);
+        $this->assertNull($metadata['diagnostic']);
+
+        $decoded = Avro::unserialize($typedBlob);
+
+        $this->assertSame([
+            'id' => 'X-1',
+        ], $decoded);
     }
 
     public function testSerializerWrapperPropagatesTypedExceptionForCodecMismatch(): void

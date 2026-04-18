@@ -34,6 +34,8 @@ final class Avro implements SerializerInterface
 
     public const PREFIX_TYPED_SCHEMA = "\x01";
 
+    private const TYPED_SCHEMA_HEADER_BYTES = 4;
+
     /**
      * Generic wrapper schema for arbitrary payloads.
      *
@@ -61,6 +63,77 @@ final class Avro implements SerializerInterface
     public static function wrapperSchemaJson(): string
     {
         return self::WRAPPER_SCHEMA;
+    }
+
+    /**
+     * Describe enough framing metadata for offline history-export consumers to
+     * decode a stored Avro payload without coupling to this PHP serializer.
+     *
+     * @return array{
+     *     encoding: string,
+     *     framing: string|null,
+     *     prefix_hex: string|null,
+     *     writer_schema: string|null,
+     *     writer_schema_fingerprint: string|null,
+     *     diagnostic: string|null
+     * }
+     */
+    public static function payloadMetadata(string $data): array
+    {
+        $metadata = [
+            'encoding' => 'base64-avro-binary',
+            'framing' => null,
+            'prefix_hex' => null,
+            'writer_schema' => null,
+            'writer_schema_fingerprint' => null,
+            'diagnostic' => null,
+        ];
+
+        $bytes = base64_decode($data, true);
+        if ($bytes === false) {
+            $metadata['diagnostic'] = self::looksLikeJson($data)
+                ? 'json_bytes_labeled_avro'
+                : 'invalid_base64';
+
+            return $metadata;
+        }
+
+        if ($bytes === '') {
+            $metadata['diagnostic'] = 'empty_payload';
+
+            return $metadata;
+        }
+
+        $prefix = $bytes[0];
+        $metadata['prefix_hex'] = bin2hex($prefix);
+
+        if ($prefix === self::PREFIX_GENERIC_WRAPPER) {
+            $metadata['framing'] = 'generic_wrapper';
+            $metadata['writer_schema'] = self::WRAPPER_SCHEMA;
+            $metadata['writer_schema_fingerprint'] = self::schemaFingerprint(self::WRAPPER_SCHEMA);
+
+            return $metadata;
+        }
+
+        if ($prefix === self::PREFIX_TYPED_SCHEMA) {
+            $metadata['framing'] = 'typed_schema';
+
+            try {
+                $typed = self::readTypedPayload($bytes);
+                $metadata['writer_schema'] = $typed['writer_schema_json'];
+                $metadata['writer_schema_fingerprint'] = self::schemaFingerprint($typed['writer_schema_json']);
+            } catch (CodecDecodeException) {
+                $metadata['diagnostic'] = 'typed_schema_missing_writer_schema';
+            } catch (Throwable) {
+                $metadata['diagnostic'] = 'typed_schema_invalid_writer_schema';
+            }
+
+            return $metadata;
+        }
+
+        $metadata['diagnostic'] = 'unknown_prefix';
+
+        return $metadata;
     }
 
     /**
@@ -128,12 +201,16 @@ final class Avro implements SerializerInterface
     private static function encodeWithSchema(mixed $data, AvroSchema $schema): string
     {
         return self::suppressDeprecations(static function () use ($data, $schema): string {
+            $schemaJson = self::schemaJson($schema);
             $io = new AvroStringIO();
             $writer = new AvroIODatumWriter($schema);
             $encoder = new AvroIOBinaryEncoder($io);
 
-            // Prefix: 0x01 = typed schema mode
-            $io->write("\x01");
+            // Prefix: 0x01 = typed schema mode. The writer schema follows so
+            // exported payloads are self-describing for offline consumers.
+            $io->write(self::PREFIX_TYPED_SCHEMA);
+            $io->write(pack('N', strlen($schemaJson)));
+            $io->write($schemaJson);
             $writer->write($data, $encoder);
 
             return base64_encode($io->string());
@@ -151,11 +228,8 @@ final class Avro implements SerializerInterface
                 self::failWithIngressDiagnosis($data);
             }
 
-            $io = new AvroStringIO($bytes);
-
-            // Read and verify prefix
-            $prefix = $io->read(1);
-            if ($prefix !== "\x01") {
+            $prefix = $bytes[0] ?? '';
+            if ($prefix !== self::PREFIX_TYPED_SCHEMA) {
                 $schemaName = method_exists($schema, 'fullname') ? $schema->fullname() : null;
                 throw new CodecDecodeException(
                     'avro',
@@ -169,7 +243,9 @@ final class Avro implements SerializerInterface
             }
 
             try {
-                $reader = new AvroIODatumReader($schema);
+                $typed = self::readTypedPayload($bytes, $schema);
+                $reader = new AvroIODatumReader($typed['writer_schema'], $schema);
+                $io = new AvroStringIO($typed['datum_bytes']);
                 $decoder = new AvroIOBinaryDecoder($io);
 
                 return $reader->read($decoder);
@@ -231,14 +307,25 @@ final class Avro implements SerializerInterface
 
             // Read prefix
             $prefix = $io->read(1);
-            if ($prefix === "\x01") {
-                throw new CodecDecodeException(
-                    'avro',
-                    'Typed Avro payload (prefix 0x01) decoded without a schema context.',
-                    'Call Avro::withSchema($writerSchema) before unserialize() so the typed payload can be read with its writer schema.',
-                );
+            if ($prefix === self::PREFIX_TYPED_SCHEMA) {
+                try {
+                    $typed = self::readTypedPayload($bytes);
+                    $reader = new AvroIODatumReader($typed['writer_schema']);
+                    $decoder = new AvroIOBinaryDecoder(new AvroStringIO($typed['datum_bytes']));
+
+                    return $reader->read($decoder);
+                } catch (CodecDecodeException $e) {
+                    throw $e;
+                } catch (Throwable $e) {
+                    throw new CodecDecodeException(
+                        'avro',
+                        'Typed Avro payload decode failed: ' . $e->getMessage(),
+                        'Verify the embedded writer schema matches the bytes. If you need schema evolution, supply the reader schema via Avro::withSchema() before decoding.',
+                        $e,
+                    );
+                }
             }
-            if ($prefix !== "\x00") {
+            if ($prefix !== self::PREFIX_GENERIC_WRAPPER) {
                 throw new CodecDecodeException(
                     'avro',
                     sprintf(
@@ -320,6 +407,66 @@ final class Avro implements SerializerInterface
         }
 
         return self::$wrapperSchema;
+    }
+
+    /**
+     * @return array{writer_schema: AvroSchema, writer_schema_json: string, datum_bytes: string}
+     */
+    private static function readTypedPayload(string $bytes, ?AvroSchema $fallbackWriterSchema = null): array
+    {
+        if (($bytes[0] ?? '') !== self::PREFIX_TYPED_SCHEMA) {
+            throw new CodecDecodeException(
+                'avro',
+                'Expected typed Avro payload (prefix 0x01).',
+                'Re-encode the payload with the typed Avro path, or decode it as a generic Avro wrapper if it starts with 0x00.',
+            );
+        }
+
+        $body = substr($bytes, 1);
+        if (strlen($body) >= self::TYPED_SCHEMA_HEADER_BYTES) {
+            $schemaLength = unpack('N', substr($body, 0, self::TYPED_SCHEMA_HEADER_BYTES))[1];
+            $schemaStart = self::TYPED_SCHEMA_HEADER_BYTES;
+            $datumStart = $schemaStart + $schemaLength;
+
+            if ($schemaLength > 0 && strlen($body) >= $datumStart) {
+                $schemaJson = substr($body, $schemaStart, $schemaLength);
+
+                return [
+                    'writer_schema' => self::parseSchema($schemaJson),
+                    'writer_schema_json' => $schemaJson,
+                    'datum_bytes' => substr($body, $datumStart),
+                ];
+            }
+        }
+
+        if ($fallbackWriterSchema instanceof AvroSchema) {
+            return [
+                'writer_schema' => $fallbackWriterSchema,
+                'writer_schema_json' => self::schemaJson($fallbackWriterSchema),
+                'datum_bytes' => $body,
+            ];
+        }
+
+        throw new CodecDecodeException(
+            'avro',
+            'Typed Avro payload (prefix 0x01) does not include an embedded writer schema.',
+            'Re-encode the payload with the current typed Avro path so the writer schema is embedded, or call Avro::withSchema($writerSchema) before decoding legacy development data.',
+        );
+    }
+
+    private static function schemaJson(AvroSchema $schema): string
+    {
+        $json = json_encode(
+            $schema->toAvro(),
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION,
+        );
+
+        return is_string($json) ? $json : (string) $schema;
+    }
+
+    private static function schemaFingerprint(string $schemaJson): string
+    {
+        return 'sha256:' . hash('sha256', $schemaJson);
     }
 
     private static function consumeContextSchema(): ?AvroSchema

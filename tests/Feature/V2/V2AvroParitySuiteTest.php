@@ -135,6 +135,14 @@ final class V2AvroParitySuiteTest extends TestCase
         $this->assertIsArray($export);
         $this->assertArrayHasKey('payloads', $export);
         $this->assertSame('avro', $export['payloads']['codec'] ?? null, 'Export must tag the run codec as avro');
+        $argumentEntry = collect($export['payload_manifest']['entries'] ?? [])
+            ->firstWhere('path', 'payloads.arguments.data');
+
+        $this->assertIsArray($argumentEntry);
+        $this->assertSame('generic_wrapper', $argumentEntry['avro_framing']);
+        $this->assertSame('00', $argumentEntry['avro_prefix_hex']);
+        $this->assertNotEmpty($argumentEntry['writer_schema']);
+        $this->assertStringStartsWith('sha256:', $argumentEntry['writer_schema_fingerprint']);
     }
 
     public function testSchemaEvolutionDecodesV1PayloadWithV2ReaderSchema(): void

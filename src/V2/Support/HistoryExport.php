@@ -162,9 +162,11 @@ final class HistoryExport
             ],
         ];
 
+        $bundle = self::withRedaction($bundle, $run, $redactor);
         $bundle['codec_schemas'] = self::collectCodecSchemas($bundle);
+        $bundle['payload_manifest'] = self::payloadManifest($bundle);
 
-        return self::withIntegrity(self::withRedaction($bundle, $run, $redactor));
+        return self::withIntegrity($bundle);
     }
 
     /**
@@ -179,7 +181,7 @@ final class HistoryExport
      * For JSON and other self-describing codecs: the map is empty.
      *
      * @param  array<string, mixed>  $bundle
-     * @return array<string, array<string, string>>
+     * @return array<string, mixed>
      */
     private static function collectCodecSchemas(array $bundle): array
     {
@@ -187,13 +189,219 @@ final class HistoryExport
 
         if (self::bundleUsesCodec($bundle, 'avro')) {
             $schemas['avro'] = [
+                'encoding' => 'base64-avro-binary',
                 'wrapper_schema' => Avro::wrapperSchemaJson(),
                 'wrapper_prefix_hex' => '00',
                 'typed_prefix_hex' => '01',
+                'generic_wrapper' => [
+                    'prefix_hex' => '00',
+                    'writer_schema' => Avro::wrapperSchemaJson(),
+                    'writer_schema_fingerprint' => 'sha256:' . hash('sha256', Avro::wrapperSchemaJson()),
+                ],
+                'typed_schema' => [
+                    'prefix_hex' => '01',
+                    'schema_header' => 'uint32_be_length_prefixed_utf8_json',
+                    'writer_schema_location' => 'payload_manifest.entries[*].writer_schema',
+                ],
             ];
         }
 
         return $schemas;
+    }
+
+    /**
+     * @param  array<string, mixed>  $bundle
+     * @return array{version: int, entries: list<array<string, mixed>>}
+     */
+    private static function payloadManifest(array $bundle): array
+    {
+        $entries = [];
+        $redactedPaths = self::redactionPaths($bundle);
+        $runCodec = self::stringValue($bundle['payloads']['codec'] ?? null) ?? CodecRegistry::defaultCodec();
+
+        self::addPayloadManifestEntry(
+            $entries,
+            'payloads.arguments.data',
+            $runCodec,
+            $bundle['payloads']['arguments']['data'] ?? null,
+            (bool) ($bundle['payloads']['arguments']['available'] ?? false),
+            $redactedPaths,
+        );
+        self::addPayloadManifestEntry(
+            $entries,
+            'payloads.output.data',
+            $runCodec,
+            $bundle['payloads']['output']['data'] ?? null,
+            (bool) ($bundle['payloads']['output']['available'] ?? false),
+            $redactedPaths,
+        );
+
+        foreach (self::arrayValue($bundle['commands'] ?? null) as $index => $command) {
+            if (! is_array($command)) {
+                continue;
+            }
+
+            self::addPayloadManifestEntry(
+                $entries,
+                "commands.{$index}.payload",
+                self::stringValue($command['payload_codec'] ?? null),
+                $command['payload'] ?? null,
+                self::payloadAvailable($command['payload'] ?? null),
+                $redactedPaths,
+            );
+        }
+
+        foreach (self::arrayValue($bundle['signals'] ?? null) as $index => $signal) {
+            if (! is_array($signal)) {
+                continue;
+            }
+
+            self::addPayloadManifestEntry(
+                $entries,
+                "signals.{$index}.arguments",
+                self::stringValue($signal['payload_codec'] ?? null),
+                $signal['arguments'] ?? null,
+                self::payloadAvailable($signal['arguments'] ?? null),
+                $redactedPaths,
+            );
+        }
+
+        foreach (self::arrayValue($bundle['updates'] ?? null) as $index => $update) {
+            if (! is_array($update)) {
+                continue;
+            }
+
+            $codec = self::stringValue($update['payload_codec'] ?? null);
+
+            foreach (['arguments', 'result'] as $field) {
+                self::addPayloadManifestEntry(
+                    $entries,
+                    "updates.{$index}.{$field}",
+                    $codec,
+                    $update[$field] ?? null,
+                    self::payloadAvailable($update[$field] ?? null),
+                    $redactedPaths,
+                );
+            }
+        }
+
+        foreach (self::arrayValue($bundle['activities'] ?? null) as $index => $activity) {
+            if (! is_array($activity)) {
+                continue;
+            }
+
+            foreach (['arguments', 'result'] as $field) {
+                self::addPayloadManifestEntry(
+                    $entries,
+                    "activities.{$index}.{$field}",
+                    $runCodec,
+                    $activity[$field] ?? null,
+                    self::payloadAvailable($activity[$field] ?? null),
+                    $redactedPaths,
+                );
+            }
+        }
+
+        return [
+            'version' => 1,
+            'entries' => $entries,
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $entries
+     * @param  list<string>  $redactedPaths
+     */
+    private static function addPayloadManifestEntry(
+        array &$entries,
+        string $path,
+        ?string $codec,
+        mixed $payload,
+        bool $available,
+        array $redactedPaths,
+    ): void {
+        $codec = self::stringValue($codec) ?? CodecRegistry::defaultCodec();
+        $redacted = in_array($path, $redactedPaths, true);
+        $entry = [
+            'path' => $path,
+            'codec' => $codec,
+            'available' => $available,
+            'redacted' => $redacted,
+            'encoding' => self::payloadEncoding($codec),
+            'avro_framing' => null,
+            'avro_prefix_hex' => null,
+            'writer_schema' => null,
+            'writer_schema_fingerprint' => null,
+            'diagnostic' => null,
+        ];
+
+        if ($redacted) {
+            $entry['diagnostic'] = 'payload_redacted';
+            $entries[] = $entry;
+
+            return;
+        }
+
+        if (! $available) {
+            $entry['diagnostic'] = 'payload_unavailable';
+            $entries[] = $entry;
+
+            return;
+        }
+
+        if (! is_string($payload) || $payload === '') {
+            $entry['diagnostic'] = 'payload_missing';
+            $entries[] = $entry;
+
+            return;
+        }
+
+        if ($codec === 'avro') {
+            $metadata = Avro::payloadMetadata($payload);
+            $entry['avro_framing'] = $metadata['framing'];
+            $entry['avro_prefix_hex'] = $metadata['prefix_hex'];
+            $entry['writer_schema'] = $metadata['writer_schema'];
+            $entry['writer_schema_fingerprint'] = $metadata['writer_schema_fingerprint'];
+            $entry['diagnostic'] = $metadata['diagnostic'];
+        }
+
+        $entries[] = $entry;
+    }
+
+    private static function payloadEncoding(string $codec): string
+    {
+        return match ($codec) {
+            'avro' => 'base64-avro-binary',
+            'json' => 'json-text',
+            'workflow-serializer-y', 'Workflow\\Serializers\\Y' => 'php-serialized-escaped',
+            'workflow-serializer-base64', 'Workflow\\Serializers\\Base64' => 'php-serialized-base64',
+            default => 'opaque-string',
+        };
+    }
+
+    private static function payloadAvailable(mixed $payload): bool
+    {
+        return is_string($payload) && $payload !== '';
+    }
+
+    /**
+     * @param  array<string, mixed>  $bundle
+     * @return list<string>
+     */
+    private static function redactionPaths(array $bundle): array
+    {
+        return array_values(array_filter(
+            self::arrayValue($bundle['redaction']['paths'] ?? null),
+            static fn (mixed $path): bool => is_string($path) && $path !== '',
+        ));
+    }
+
+    /**
+     * @return list<mixed>
+     */
+    private static function arrayValue(mixed $value): array
+    {
+        return is_array($value) ? array_values($value) : [];
     }
 
     /**

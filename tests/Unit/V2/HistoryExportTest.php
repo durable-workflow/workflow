@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Tests\TestCase;
+use Workflow\Serializers\Avro;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Enums\ActivityStatus;
@@ -1455,6 +1456,15 @@ final class HistoryExportTest extends TestCase
         $this->assertSame('timeline.0.command.payload', $bundle['timeline'][0]['command']['payload']['path']);
         $this->assertSame('timeline.0.command.context', $bundle['timeline'][0]['command']['context']['path']);
         $this->assertSame('failure_diagnostic', $bundle['failures'][0]['message']['category']);
+        $argumentEntry = collect($bundle['payload_manifest']['entries'])->firstWhere('path', 'payloads.arguments.data');
+        $this->assertIsArray($argumentEntry);
+        $this->assertTrue($argumentEntry['redacted']);
+        $this->assertSame('payload_redacted', $argumentEntry['diagnostic']);
+        $this->assertNull($argumentEntry['writer_schema']);
+        $commandEntry = collect($bundle['payload_manifest']['entries'])->firstWhere('path', 'commands.0.payload');
+        $this->assertIsArray($commandEntry);
+        $this->assertTrue($commandEntry['redacted']);
+        $this->assertSame('payload_redacted', $commandEntry['diagnostic']);
 
         $stubBundle = WorkflowStub::loadRun($run->id)->historyExport(new class() implements HistoryExportRedactor {
             /**
@@ -1486,12 +1496,70 @@ final class HistoryExportTest extends TestCase
 
         $this->assertArrayHasKey('codec_schemas', $bundle);
         $this->assertArrayHasKey('avro', $bundle['codec_schemas']);
+        $this->assertSame('base64-avro-binary', $bundle['codec_schemas']['avro']['encoding']);
         $schema = json_decode($bundle['codec_schemas']['avro']['wrapper_schema'], true);
         $this->assertSame('record', $schema['type']);
         $this->assertSame('Payload', $schema['name']);
         $this->assertSame('durable_workflow', $schema['namespace']);
         $this->assertSame('00', $bundle['codec_schemas']['avro']['wrapper_prefix_hex']);
         $this->assertSame('01', $bundle['codec_schemas']['avro']['typed_prefix_hex']);
+        $this->assertSame('00', $bundle['codec_schemas']['avro']['generic_wrapper']['prefix_hex']);
+        $this->assertSame(
+            'uint32_be_length_prefixed_utf8_json',
+            $bundle['codec_schemas']['avro']['typed_schema']['schema_header']
+        );
+
+        $argumentEntry = collect($bundle['payload_manifest']['entries'])->firstWhere('path', 'payloads.arguments.data');
+        $this->assertIsArray($argumentEntry);
+        $this->assertSame('avro', $argumentEntry['codec']);
+        $this->assertSame('base64-avro-binary', $argumentEntry['encoding']);
+        $this->assertSame('generic_wrapper', $argumentEntry['avro_framing']);
+        $this->assertSame('00', $argumentEntry['avro_prefix_hex']);
+        $this->assertSame($bundle['codec_schemas']['avro']['wrapper_schema'], $argumentEntry['writer_schema']);
+        $this->assertStringStartsWith('sha256:', $argumentEntry['writer_schema_fingerprint']);
+        $this->assertNull($argumentEntry['diagnostic']);
+    }
+
+    public function testItEmbedsTypedAvroWriterSchemaInPayloadManifest(): void
+    {
+        if (! class_exists(\Apache\Avro\Schema\AvroSchema::class)) {
+            $this->markTestSkipped('apache/avro package is not installed in this environment.');
+        }
+
+        config()
+            ->set('workflows.serializer', 'avro');
+        $run = $this->createMinimalCompletedRun('history-export-typed-avro');
+        $schemaJson = '{"type":"record","name":"OrderPayload","namespace":"durable_workflow.test","fields":['
+            . '{"name":"order_id","type":"string"},'
+            . '{"name":"amount","type":"double"}]}';
+
+        Avro::withSchema(Avro::parseSchema($schemaJson));
+        $run->forceFill([
+            'arguments' => Serializer::serializeWithCodec('avro', [
+                'order_id' => 'ORD-42',
+                'amount' => 99.5,
+            ]),
+            'output' => null,
+        ])->save();
+
+        $bundle = HistoryExport::forRun($run->refresh(), Carbon::parse('2026-04-17 15:00:00'));
+        $argumentEntry = collect($bundle['payload_manifest']['entries'])->firstWhere('path', 'payloads.arguments.data');
+        $outputEntry = collect($bundle['payload_manifest']['entries'])->firstWhere('path', 'payloads.output.data');
+
+        $this->assertIsArray($argumentEntry);
+        $this->assertSame('typed_schema', $argumentEntry['avro_framing']);
+        $this->assertSame('01', $argumentEntry['avro_prefix_hex']);
+        $this->assertNull($argumentEntry['diagnostic']);
+        $this->assertStringStartsWith('sha256:', $argumentEntry['writer_schema_fingerprint']);
+
+        $writerSchema = json_decode($argumentEntry['writer_schema'], true);
+        $this->assertSame('OrderPayload', $writerSchema['name']);
+        $this->assertSame('durable_workflow.test', $writerSchema['namespace']);
+        $this->assertSame(['order_id', 'amount'], array_column($writerSchema['fields'], 'name'));
+
+        $this->assertIsArray($outputEntry);
+        $this->assertFalse($outputEntry['available']);
+        $this->assertSame('payload_unavailable', $outputEntry['diagnostic']);
     }
 
     public function testItStampsRowLocalPayloadCodecOnSignalAndUpdateExportRows(): void
