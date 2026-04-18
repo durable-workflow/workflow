@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\Serializers;
 
 use Illuminate\Queue\SerializesAndRestoresModelIdentifiers;
+use Laravel\SerializableClosure\SerializableClosure;
 use Throwable;
 
 final class Serializer
@@ -43,6 +44,10 @@ final class Serializer
             $class = self::legacyUnserializeClass((string) ($arguments[0] ?? ''));
         } else {
             $class = self::defaultCodecClass();
+        }
+
+        if ($name === 'serialize' && $class === Avro::class && self::containsPhpOnlyValue($arguments[0] ?? null)) {
+            $class = Y::class;
         }
 
         if ($name === 'serialize' && ! is_subclass_of($class, AbstractSerializer::class)) {
@@ -153,6 +158,29 @@ final class Serializer
     private static function normalizeForCodec(mixed $data): mixed
     {
         return self::serializeModels($data);
+    }
+
+    private static function containsPhpOnlyValue(mixed $data): bool
+    {
+        if ($data instanceof Throwable) {
+            return false;
+        }
+
+        if ($data instanceof SerializableClosure) {
+            return true;
+        }
+
+        if (is_array($data)) {
+            foreach ($data as $value) {
+                if (self::containsPhpOnlyValue($value)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return is_object($data) || is_resource($data);
     }
 
     /**

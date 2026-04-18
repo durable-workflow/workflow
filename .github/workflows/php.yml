@@ -83,6 +83,7 @@ jobs:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports[3306] }}
         QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
 
     - name: Run test suite (PostgreSQL)
       timeout-minutes: 65
@@ -91,6 +92,7 @@ jobs:
         DB_CONNECTION: pgsql
         DB_PORT: ${{ job.services.postgres.ports[5432] }}
         QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
 
     - name: Upload laravel.log if tests fail
       if: failure()

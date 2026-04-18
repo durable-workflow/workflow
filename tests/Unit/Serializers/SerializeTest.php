@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Serializers;
 
+use Laravel\SerializableClosure\SerializableClosure;
 use Tests\Fixtures\TestEnum;
 use Tests\TestCase;
 use Throwable;
@@ -103,6 +104,22 @@ final class SerializeTest extends TestCase
         $this->assertSame([
             'legacy' => true,
         ], Serializer::unserialize($serialized));
+    }
+
+    public function testLegacySerializeKeepsPhpOnlyValuesOnPhpSerializerWhenAvroIsConfigured(): void
+    {
+        config([
+            'workflows.serializer' => 'avro',
+        ]);
+
+        $serialized = Serializer::serialize([
+            new SerializableClosure(static fn (): string => 'ok'),
+        ]);
+
+        $unserialized = Serializer::unserialize($serialized);
+
+        $this->assertInstanceOf(SerializableClosure::class, $unserialized[0]);
+        $this->assertSame('ok', $unserialized[0]->getClosure()());
     }
 
     private function testSerializeUnserialize($data, $serializer, $unserializer): void
