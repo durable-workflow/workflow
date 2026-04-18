@@ -132,6 +132,12 @@ final class WorkflowServiceProviderTest extends TestCase
                 "Command [{$command}] is not registered in Artisan."
             );
         }
+
+        $this->assertNotContains(
+            'workflow:v2:backfill-parallel-group-metadata',
+            $registeredCommands,
+            'Final v2 must not ship preview-era parallel-group metadata backfill commands.'
+        );
     }
 
     public function testLoopingEventWakesWatchdog(): void
@@ -267,5 +273,4 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertSame(1, $task->repair_count);
         $this->assertNotNull($task->last_dispatched_at);
     }
-
 }
