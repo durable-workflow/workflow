@@ -180,6 +180,17 @@ final class TypeRegistry
         }
     }
 
+    private static function isRegisteredTypeKey(string $key): bool
+    {
+        foreach (["workflows", "activities"] as $section) {
+            $types = config("workflows.v2.types.{$section}");
+            if (is_array($types) && array_key_exists($key, $types)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static function configuredTypeForClass(string $class): ?string
     {
         $configKey = match (true) {
