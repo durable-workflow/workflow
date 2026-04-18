@@ -30,7 +30,8 @@ class WorkflowTaskOwnership
 {
     public function __construct(
         private readonly WorkflowTaskBridge $bridge,
-    ) {}
+    ) {
+    }
 
     /**
      * Guard workflow task ownership and lease validity.
@@ -75,6 +76,15 @@ class WorkflowTaskOwnership
         }
 
         if ($status['task_status'] !== TaskStatus::Leased->value) {
+            if (self::isTerminalRunStatus($status['run_status'] ?? null)) {
+                return [
+                    'valid' => false,
+                    'reason' => 'run_closed',
+                    'task' => $task,
+                    'status' => $status,
+                ];
+            }
+
             return [
                 'valid' => false,
                 'reason' => 'task_not_leased',
@@ -125,5 +135,11 @@ class WorkflowTaskOwnership
             'task' => $task,
             'status' => $status,
         ];
+    }
+
+    private static function isTerminalRunStatus(mixed $status): bool
+    {
+        return is_string($status)
+            && in_array($status, ['completed', 'failed', 'cancelled', 'terminated'], true);
     }
 }
