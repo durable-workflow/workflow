@@ -284,6 +284,36 @@ final class HistoryExportTest extends TestCase
 
         $this->assertSame(HistoryExport::SCHEMA, $bundle['schema']);
         $this->assertSame(HistoryExport::SCHEMA_VERSION, $bundle['schema_version']);
+        foreach ([
+            'schema',
+            'schema_version',
+            'exported_at',
+            'dedupe_key',
+            'history_complete',
+            'workflow',
+            'payloads',
+            'summary',
+            'selected_run',
+            'history_events',
+            'waits',
+            'timeline',
+            'linked_intakes_scope',
+            'linked_intakes',
+            'commands',
+            'signals',
+            'updates',
+            'tasks',
+            'activities',
+            'timers',
+            'failures',
+            'links',
+            'redaction',
+            'codec_schemas',
+            'payload_manifest',
+            'integrity',
+        ] as $field) {
+            $this->assertArrayHasKey($field, $bundle);
+        }
         $this->assertSame('2026-04-09T12:05:00.000000Z', $bundle['exported_at']);
         $this->assertSame($run->id . ':2:2026-04-09T12:00:00.000000Z', $bundle['dedupe_key']);
         $this->assertTrue($bundle['history_complete']);
