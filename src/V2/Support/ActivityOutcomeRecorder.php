@@ -71,19 +71,6 @@ final class ActivityOutcomeRecorder
                 ->lockForUpdate()
                 ->findOrFail($lockedExecution->workflow_run_id);
 
-            // Ignore late activity outcomes once the lease has been reclaimed or a newer
-            // attempt has already been claimed for this execution.
-            if (
-                $task->status !== TaskStatus::Leased
-                || $task->attempt_count !== $attemptCount
-                || $lockedExecution->attempt_count !== $attemptCount
-                || $lockedExecution->current_attempt_id !== $attemptId
-            ) {
-                self::closeAttemptIfStale($run, $attemptId);
-
-                return self::ignored('stale_attempt');
-            }
-
             if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)) {
                 $reason = $run->status === RunStatus::Terminated
                     ? 'run_terminated'
@@ -106,6 +93,19 @@ final class ActivityOutcomeRecorder
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return self::ignored($reason);
+            }
+
+            // Ignore late activity outcomes once the lease has been reclaimed or a newer
+            // attempt has already been claimed for this execution.
+            if (
+                $task->status !== TaskStatus::Leased
+                || $task->attempt_count !== $attemptCount
+                || $lockedExecution->attempt_count !== $attemptCount
+                || $lockedExecution->current_attempt_id !== $attemptId
+            ) {
+                self::closeAttemptIfStale($run, $attemptId);
+
+                return self::ignored('stale_attempt');
             }
 
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
