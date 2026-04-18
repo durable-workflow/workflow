@@ -256,6 +256,7 @@ final class HealthCheckTest extends TestCase
             'workflow_run_id' => '01JHEALTHSELECTMISS001',
             'workflow_instance_id' => 'health-selected-missing-instance',
             'timer_id' => 'health-selected-timer-orphan',
+            'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION - 1,
             'position' => 0,
             'status' => 'pending',
             'source_status' => 'pending',
@@ -305,8 +306,8 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(2, $projection['data']['timer_needs_rebuild']);
         $this->assertSame(1, $projection['data']['timer_missing_runs_with_timers']);
         $this->assertSame(0, $projection['data']['timer_stale_projected_runs']);
-        $this->assertSame(0, $projection['data']['timer_legacy_schema_runs']);
-        $this->assertSame(1, $projection['data']['timer_legacy_schema_rows']);
+        $this->assertSame(0, $projection['data']['timer_schema_version_mismatch_runs']);
+        $this->assertSame(1, $projection['data']['timer_schema_version_mismatch_rows']);
         $this->assertSame(1, $projection['data']['timer_orphaned']);
         $this->assertSame(2, $projection['data']['lineage_needs_rebuild']);
         $this->assertSame(1, $projection['data']['lineage_missing_runs_with_lineage']);

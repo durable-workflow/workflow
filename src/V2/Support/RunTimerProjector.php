@@ -131,7 +131,7 @@ final class RunTimerProjector
      *     has_canonical: bool,
      *     missing: bool,
      *     stale: bool,
-     *     legacy_schema: bool,
+     *     schema_version_mismatch: bool,
      *     reasons: list<string>
      * }
      */
@@ -142,14 +142,14 @@ final class RunTimerProjector
         $hasProjection = $projected->isNotEmpty();
         $hasCanonical = $canonicalTimers !== [];
         $reasons = self::rebuildReasons($projected, $canonicalTimers);
-        $legacySchema = in_array('legacy_schema', $reasons, true);
+        $schemaVersionMismatch = in_array('schema_version_mismatch', $reasons, true);
 
         return [
             'has_projection' => $hasProjection,
             'has_canonical' => $hasCanonical,
             'missing' => $hasCanonical && ! $hasProjection,
             'stale' => $hasProjection && $reasons !== [],
-            'legacy_schema' => $legacySchema,
+            'schema_version_mismatch' => $schemaVersionMismatch,
             'reasons' => $reasons,
         ];
     }
@@ -225,7 +225,7 @@ final class RunTimerProjector
         }
 
         if ($projected->isNotEmpty() && ! self::projectedRowsUseCurrentSchema($projected)) {
-            $reasons[] = 'legacy_schema';
+            $reasons[] = 'schema_version_mismatch';
         }
 
         if ($projected->isNotEmpty() && ! self::projectionMatchesSnapshot($projected, $canonical)) {

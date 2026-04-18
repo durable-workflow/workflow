@@ -129,7 +129,7 @@ final class SelectedRunProjectionDrift
      *     projected_runs_with_timers: int,
      *     missing_runs_with_timers: int,
      *     stale_projected_runs: int,
-     *     legacy_schema_runs: int
+     *     schema_version_mismatch_runs: int
      * }
      */
     public static function timerMetrics(array $runIds = [], ?string $instanceId = null): array
@@ -141,7 +141,7 @@ final class SelectedRunProjectionDrift
             'projected_runs_with_timers' => $analysis['projected_runs_with_canonical'],
             'missing_runs_with_timers' => count($analysis['missing_run_ids']),
             'stale_projected_runs' => count($analysis['stale_run_ids']),
-            'legacy_schema_runs' => count($analysis['legacy_schema_run_ids']),
+            'schema_version_mismatch_runs' => count($analysis['schema_version_mismatch_run_ids']),
         ];
     }
 
@@ -296,7 +296,7 @@ final class SelectedRunProjectionDrift
      *     projected_runs_with_canonical: int,
      *     missing_run_ids: list<string>,
      *     stale_run_ids: list<string>,
-     *     legacy_schema_run_ids: list<string>
+     *     schema_version_mismatch_run_ids: list<string>
      * }
      */
     private static function timerAnalysis(array $runIds, ?string $instanceId): array
@@ -305,13 +305,13 @@ final class SelectedRunProjectionDrift
         $projectedRunsWithCanonical = 0;
         $missingRunIds = [];
         $staleRunIds = [];
-        $legacySchemaRunIds = [];
+        $schemaVersionMismatchRunIds = [];
 
         self::runQuery(['timerEntries', 'timers', 'historyEvents'], $runIds, $instanceId)
             ->chunkById(100, static function ($runs) use (
-                &$legacySchemaRunIds,
                 &$missingRunIds,
                 &$projectedRunsWithCanonical,
+                &$schemaVersionMismatchRunIds,
                 &$runsWithCanonical,
                 &$staleRunIds,
             ): void {
@@ -334,8 +334,8 @@ final class SelectedRunProjectionDrift
                         $staleRunIds[] = $run->id;
                     }
 
-                    if ($status['legacy_schema']) {
-                        $legacySchemaRunIds[] = $run->id;
+                    if ($status['schema_version_mismatch']) {
+                        $schemaVersionMismatchRunIds[] = $run->id;
                     }
                 }
             }, 'id');
@@ -345,7 +345,7 @@ final class SelectedRunProjectionDrift
             'projected_runs_with_canonical' => $projectedRunsWithCanonical,
             'missing_run_ids' => array_values(array_unique($missingRunIds)),
             'stale_run_ids' => array_values(array_unique($staleRunIds)),
-            'legacy_schema_run_ids' => array_values(array_unique($legacySchemaRunIds)),
+            'schema_version_mismatch_run_ids' => array_values(array_unique($schemaVersionMismatchRunIds)),
         ];
     }
 

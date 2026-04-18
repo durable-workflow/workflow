@@ -12,8 +12,6 @@ use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowRunTimerEntry extends Model
 {
-    public const LEGACY_SCHEMA_VERSION = 0;
-
     public const CURRENT_SCHEMA_VERSION = 1;
 
     public $incrementing = false;
@@ -52,7 +50,6 @@ class WorkflowRunTimerEntry extends Model
     public function toTimerPayload(): array
     {
         $payload = is_array($this->payload) ? $this->payload : [];
-        $schemaVersion = $this->schemaVersion();
         $status = self::stringValue($payload['status'] ?? $this->status);
         $sourceStatus = self::stringValue($payload['source_status'] ?? $this->source_status)
             ?? $status;
@@ -75,23 +72,18 @@ class WorkflowRunTimerEntry extends Model
         $payload['condition_definition_fingerprint'] = $this->condition_definition_fingerprint;
         $payload['history_authority'] = $historyAuthority;
         $payload['history_unsupported_reason'] = $historyUnsupportedReason;
-        $payload['row_status'] = self::rowStatus(
-            $payload['row_status'] ?? null,
-            $historyAuthority,
-            $sourceStatus,
-            $schemaVersion,
-        );
+        $payload['row_status'] = self::rowStatus($payload['row_status'] ?? null);
         $payload['diagnostic_only'] = self::diagnosticOnly($historyAuthority);
         $payload['created_at'] = self::timestamp($payload['created_at'] ?? null);
 
         return $payload;
     }
 
-    public function schemaVersion(): int
+    public function schemaVersion(): ?int
     {
         return is_int($this->schema_version)
             ? $this->schema_version
-            : self::LEGACY_SCHEMA_VERSION;
+            : null;
     }
 
     public function usesCurrentSchema(): bool
@@ -117,24 +109,9 @@ class WorkflowRunTimerEntry extends Model
             && $historyAuthority !== 'typed_history';
     }
 
-    private static function rowStatus(
-        mixed $value,
-        ?string $historyAuthority,
-        ?string $sourceStatus,
-        int $schemaVersion,
-    ): ?string {
-        $rowStatus = self::stringValue($value);
-
-        if ($rowStatus !== null || $schemaVersion !== self::LEGACY_SCHEMA_VERSION) {
-            return $rowStatus;
-        }
-
-        return in_array($historyAuthority, [
-            'mutable_open_fallback',
-            'unsupported_terminal_without_history',
-        ], true)
-            ? $sourceStatus
-            : null;
+    private static function rowStatus(mixed $value): ?string
+    {
+        return self::stringValue($value);
     }
 
     private static function stringValue(mixed $value): ?string

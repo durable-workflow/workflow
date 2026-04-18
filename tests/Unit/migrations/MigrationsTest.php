@@ -6,6 +6,7 @@ namespace Tests\Unit\Migrations;
 
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
 
 final class MigrationsTest extends TestCase
 {
@@ -87,5 +88,21 @@ final class MigrationsTest extends TestCase
         $this->assertFalse(Schema::hasTable('workflow_run_timeline_entries'));
         $this->assertFalse(Schema::hasTable('workflow_run_timer_entries'));
         $this->assertFalse(Schema::hasTable('workflow_run_lineage_entries'));
+    }
+
+    public function testTimerProjectionRowsDefaultToCurrentSchemaVersion(): void
+    {
+        /** @var WorkflowRunTimerEntry $entry */
+        $entry = WorkflowRunTimerEntry::query()->create([
+            'id' => 'migration-default-timer-schema',
+            'workflow_run_id' => 'migration-default-run',
+            'workflow_instance_id' => 'migration-default-instance',
+            'timer_id' => 'migration-default-timer',
+            'position' => 0,
+            'status' => 'pending',
+        ]);
+
+        $this->assertSame(WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION, $entry->refresh()->schema_version);
+        $this->assertTrue($entry->usesCurrentSchema());
     }
 }

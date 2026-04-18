@@ -19,7 +19,7 @@ return new class() extends Migration {
                 ->index();
             $table->string('timer_id', 191);
             $table->unsignedSmallInteger('schema_version')
-                ->default(WorkflowRunTimerEntry::LEGACY_SCHEMA_VERSION);
+                ->default(WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION);
             $table->unsignedInteger('position');
             $table->unsignedInteger('sequence')
                 ->nullable()

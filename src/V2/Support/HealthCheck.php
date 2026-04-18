@@ -134,8 +134,12 @@ final class HealthCheck
                 'timer_needs_rebuild' => $timerNeedsRebuild,
                 'timer_missing_runs_with_timers' => self::integer($timers['missing_runs_with_timers'] ?? 0),
                 'timer_stale_projected_runs' => self::integer($timers['stale_projected_runs'] ?? 0),
-                'timer_legacy_schema_runs' => self::integer($timers['legacy_schema_runs'] ?? 0),
-                'timer_legacy_schema_rows' => self::integer($timers['legacy_schema_rows'] ?? 0),
+                'timer_schema_version_mismatch_runs' => self::integer(
+                    $timers['schema_version_mismatch_runs'] ?? 0
+                ),
+                'timer_schema_version_mismatch_rows' => self::integer(
+                    $timers['schema_version_mismatch_rows'] ?? 0
+                ),
                 'timer_orphaned' => self::integer($timers['orphaned'] ?? 0),
                 'lineage_needs_rebuild' => $lineageNeedsRebuild,
                 'lineage_missing_runs_with_lineage' => self::integer($lineage['missing_runs_with_lineage'] ?? 0),

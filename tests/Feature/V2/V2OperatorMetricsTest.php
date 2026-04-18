@@ -277,14 +277,14 @@ final class V2OperatorMetricsTest extends TestCase
     public function testSnapshotCountsSelectedRunProjectionDrift(): void
     {
         $missingWaitRun = $this->createRunWithSummary(
-            instanceId: 'metrics-wait-missing-instance',
+            instanceId: 'metrics-wait-missing-i',
             runId: '01JMETRICSPROJWAITMISS01',
             status: 'waiting',
             statusBucket: 'running',
             livenessState: 'waiting_for_signal',
         );
         $projectedWaitRun = $this->createRunWithSummary(
-            instanceId: 'metrics-wait-projected-instance',
+            instanceId: 'metrics-wait-projected-i',
             runId: '01JMETRICSPROJWAITDONE01',
             status: 'waiting',
             statusBucket: 'running',
@@ -395,6 +395,7 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_run_id' => $projectedWaitRun->id,
             'workflow_instance_id' => $projectedWaitRun->workflow_instance_id,
             'timer_id' => 'projection-timer-projected',
+            'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION - 1,
             'position' => 0,
             'sequence' => 12,
             'status' => 'fired',
@@ -424,6 +425,7 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_run_id' => '01JMETRICSPROJTIMERGONE01',
             'workflow_instance_id' => 'metrics-timer-orphan-instance',
             'timer_id' => 'projection-timer-orphan',
+            'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION - 1,
             'position' => 0,
             'status' => 'pending',
             'source_status' => 'pending',
@@ -513,8 +515,8 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['projections']['run_timer_entries']['projected_runs_with_timers']);
         $this->assertSame(1, $snapshot['projections']['run_timer_entries']['missing_runs_with_timers']);
         $this->assertSame(1, $snapshot['projections']['run_timer_entries']['stale_projected_runs']);
-        $this->assertSame(1, $snapshot['projections']['run_timer_entries']['legacy_schema_runs']);
-        $this->assertSame(2, $snapshot['projections']['run_timer_entries']['legacy_schema_rows']);
+        $this->assertSame(1, $snapshot['projections']['run_timer_entries']['schema_version_mismatch_runs']);
+        $this->assertSame(2, $snapshot['projections']['run_timer_entries']['schema_version_mismatch_rows']);
         $this->assertSame(1, $snapshot['projections']['run_timer_entries']['orphaned']);
         $this->assertSame(3, $snapshot['projections']['run_timer_entries']['needs_rebuild']);
 

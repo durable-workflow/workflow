@@ -421,13 +421,13 @@ final class V2RebuildProjectionsCommandTest extends TestCase
 
     public function testNeedsRebuildOptionIncludesRunsWithStaleSelectedRunProjectionPayloads(): void
     {
-        [, $waitRun] = $this->createWaitingRun('projection-command-stale-wait-selected');
-        [, $timelineRun] = $this->createCompletedRun('projection-command-stale-timeline-selected');
-        [, $lineageRun] = $this->createCompletedRun('projection-command-stale-lineage-selected');
-        [, $timerRun] = $this->createWaitingRun('projection-command-stale-timer-selected');
+        [, $waitRun] = $this->createWaitingRun('proj-stale-wait-sel');
+        [, $timelineRun] = $this->createCompletedRun('proj-stale-timeline-sel');
+        [, $lineageRun] = $this->createCompletedRun('proj-stale-lineage-sel');
+        [, $timerRun] = $this->createWaitingRun('proj-stale-timer-sel');
 
         ActivityExecution::query()->create([
-            'id' => 'projection-command-stale-wait-activity',
+            'id' => 'proj-stale-wait-activity',
             'workflow_run_id' => $waitRun->id,
             'sequence' => 1,
             'activity_class' => 'ProjectionSelectedWaitActivity',
@@ -451,7 +451,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             ],
         );
         WorkflowTimer::query()->create([
-            'id' => 'projection-command-stale-timer',
+            'id' => 'proj-stale-timer',
             'workflow_run_id' => $timerRun->id,
             'sequence' => 1,
             'status' => 'pending',
@@ -483,7 +483,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         WorkflowRunLineageEntry::query()
             ->where('workflow_run_id', $lineageRun->id)
             ->update([
-                'related_workflow_run_id' => 'projection-stale-child-run-wrong',
+                'related_workflow_run_id' => 'projection-stale-child-bad',
             ]);
         $timerEntry = WorkflowRunTimerEntry::query()
             ->where('workflow_run_id', $timerRun->id)
@@ -491,7 +491,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         $timerPayload = $timerEntry->payload;
         unset($timerPayload['row_status']);
         $timerEntry->forceFill([
-            'schema_version' => WorkflowRunTimerEntry::LEGACY_SCHEMA_VERSION,
+            'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION - 1,
             'payload' => $timerPayload,
         ])->save();
 
@@ -507,7 +507,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
         $this->assertDatabaseHas('workflow_run_waits', [
             'workflow_run_id' => $waitRun->id,
-            'wait_id' => 'activity:projection-command-stale-wait-activity',
+            'wait_id' => 'activity:proj-stale-wait-activity',
             'target_type' => 'projection.selected.wait',
         ]);
         $this->assertDatabaseMissing('workflow_run_timeline_entries', [
@@ -521,7 +521,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
         $this->assertDatabaseMissing('workflow_run_lineage_entries', [
             'workflow_run_id' => $lineageRun->id,
-            'related_workflow_run_id' => 'projection-stale-child-run-wrong',
+            'related_workflow_run_id' => 'projection-stale-child-bad',
         ]);
         $this->assertDatabaseHas('workflow_run_lineage_entries', [
             'workflow_run_id' => $lineageRun->id,
@@ -530,7 +530,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
         $this->assertDatabaseHas('workflow_run_timer_entries', [
             'workflow_run_id' => $timerRun->id,
-            'timer_id' => 'projection-command-stale-timer',
+            'timer_id' => 'proj-stale-timer',
             'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION,
         ]);
     }

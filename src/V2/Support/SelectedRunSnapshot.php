@@ -116,7 +116,7 @@ final class SelectedRunSnapshot
      *     has_canonical: bool,
      *     missing: bool,
      *     stale: bool,
-     *     legacy_schema: bool,
+     *     schema_version_mismatch: bool,
      *     reasons: list<string>
      * }
      */

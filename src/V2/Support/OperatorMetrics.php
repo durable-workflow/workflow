@@ -316,9 +316,12 @@ final class OperatorMetrics
             'projected_runs_with_timers' => $drift['projected_runs_with_timers'],
             'missing_runs_with_timers' => $drift['missing_runs_with_timers'],
             'stale_projected_runs' => $drift['stale_projected_runs'],
-            'legacy_schema_runs' => $drift['legacy_schema_runs'],
-            'legacy_schema_rows' => $timerModel::query()
-                ->where('schema_version', WorkflowRunTimerEntry::LEGACY_SCHEMA_VERSION)
+            'schema_version_mismatch_runs' => $drift['schema_version_mismatch_runs'],
+            'schema_version_mismatch_rows' => $timerModel::query()
+                ->where(static function ($query): void {
+                    $query->whereNull('schema_version')
+                        ->orWhere('schema_version', '!=', WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION);
+                })
                 ->count(),
             'orphaned' => $orphaned,
             'needs_rebuild' => $drift['missing_runs_with_timers'] + $drift['stale_projected_runs'] + $orphaned,
