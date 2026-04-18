@@ -110,6 +110,31 @@ class MigrationTest extends TestCase
         $this->assertTrue(Schema::hasIndex('workflow_schedule_history_events', ['event_type', 'recorded_at']));
     }
 
+    public function testRunSummaryMemoRepairMigrationAddsMissingMemoColumn(): void
+    {
+        $path = __DIR__ . '/../../src/migrations/2026_04_16_000158_repair_memo_on_workflow_run_summaries_table.php';
+
+        Schema::create('workflow_run_summaries', static function (Blueprint $table): void {
+            $table->string('id', 26)
+                ->primary();
+            $table->json('visibility_labels')
+                ->nullable();
+            $table->timestamps(6);
+        });
+
+        $this->assertTrue(Schema::hasTable('workflow_run_summaries'));
+        $this->assertFalse(Schema::hasColumn('workflow_run_summaries', 'memo'));
+
+        $migration = include $path;
+        $migration->up();
+
+        $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'memo'));
+
+        $migration->up();
+
+        $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'memo'));
+    }
+
     public function testItPreservesV1WorkflowDataAfterV2Migration()
     {
         // Set up v1 schema and data

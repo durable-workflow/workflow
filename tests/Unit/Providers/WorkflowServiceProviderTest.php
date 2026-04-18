@@ -109,7 +109,42 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_instances'));
         $this->assertTrue(Schema::hasTable('workflow_runs'));
         $this->assertTrue(Schema::hasTable('workflow_run_summaries'));
+        $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'memo'));
         $this->assertTrue(Schema::hasTable('workflow_commands'));
+    }
+
+    public function testPublishedMigrationsCanRunAsInstallSource(): void
+    {
+        $this->deletePublishedWorkflowMigrations();
+
+        try {
+            Artisan::call('vendor:publish', [
+                '--tag' => 'migrations',
+                '--force' => true,
+            ]);
+
+            $migrationFiles = glob(database_path('migrations/*.php')) ?: [];
+            $this->assertNotEmpty($migrationFiles, 'Migrations should be published');
+
+            Schema::dropAllTables();
+
+            $this->artisan('migrate:install')
+                ->run();
+
+            $this->artisan('migrate', [
+                '--path' => database_path('migrations'),
+                '--realpath' => true,
+            ])->run();
+
+            $this->assertTrue(Schema::hasTable('workflow_instances'));
+            $this->assertTrue(Schema::hasTable('workflow_runs'));
+            $this->assertTrue(Schema::hasTable('workflow_run_summaries'));
+            $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'memo'));
+            $this->assertTrue(Schema::hasTable('workflow_schedules'));
+            $this->assertTrue(Schema::hasTable('workflow_schedule_history_events'));
+        } finally {
+            $this->deletePublishedWorkflowMigrations();
+        }
     }
 
     public function testCommandsAreRegistered(): void
@@ -218,8 +253,17 @@ final class WorkflowServiceProviderTest extends TestCase
         Cache::forget('workflow:watchdog:looping');
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
 
-        Schema::dropIfExists('workflows');
-        Schema::dropIfExists('workflow_worker_compatibility_heartbeats');
+        foreach ([
+            'workflow_relationships',
+            'workflow_exceptions',
+            'workflow_timers',
+            'workflow_signals',
+            'workflow_logs',
+            'workflows',
+            'workflow_worker_compatibility_heartbeats',
+        ] as $table) {
+            Schema::dropIfExists($table);
+        }
 
         Event::dispatch(new Looping('redis', 'default'));
 
@@ -290,5 +334,17 @@ final class WorkflowServiceProviderTest extends TestCase
 
         $this->assertSame(1, $task->repair_count);
         $this->assertNotNull($task->last_dispatched_at);
+    }
+
+    private function deletePublishedWorkflowMigrations(): void
+    {
+        $sourceFiles = glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [];
+        $publishedNames = array_fill_keys(array_map('basename', $sourceFiles), true);
+
+        foreach (glob(database_path('migrations/*.php')) ?: [] as $file) {
+            if (isset($publishedNames[basename($file)])) {
+                @unlink($file);
+            }
+        }
     }
 }
