@@ -274,7 +274,7 @@ final class FailureSnapshots
             ? array_values(array_filter($payload['properties'], static fn (mixed $frame): bool => is_array($frame)))
             : [];
 
-        return [
+        $normalized = [
             '__constructor' => self::stringValue($payload['class'] ?? null)
                 ?? $fallbackClass
                 ?? $failure?->exception_class,
@@ -290,6 +290,20 @@ final class FailureSnapshots
             'trace' => $trace,
             'properties' => $properties,
         ];
+
+        if (array_key_exists('details', $payload)) {
+            $normalized['details'] = $payload['details'];
+        }
+
+        if (is_bool($payload['non_retryable'] ?? null)) {
+            $normalized['non_retryable'] = $payload['non_retryable'];
+        }
+
+        if (is_string($payload['details_payload_codec'] ?? null) && $payload['details_payload_codec'] !== '') {
+            $normalized['details_payload_codec'] = $payload['details_payload_codec'];
+        }
+
+        return $normalized;
     }
 
     private static function tracePreviewFromPayload(array $payload): string

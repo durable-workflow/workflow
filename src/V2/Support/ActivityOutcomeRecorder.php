@@ -6,7 +6,6 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
 use Throwable;
-use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -119,7 +118,7 @@ final class ActivityOutcomeRecorder
                         : $lockedExecution->result,
                     'exception' => $throwable === null
                         ? $lockedExecution->exception
-                        : self::serializeWithCodec(FailureFactory::payload($throwable), null, $runCodec),
+                        : self::serializeWithCodec(self::failurePayload($throwable, $codec), null, $runCodec),
                     'closed_at' => $lockedExecution->closed_at ?? now(),
                 ])->save();
 
@@ -178,7 +177,7 @@ final class ActivityOutcomeRecorder
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
             } elseif (self::shouldRetry($throwable, $attemptCount, $maxAttempts)) {
-                $exceptionPayload = FailureFactory::payload($throwable);
+                $exceptionPayload = self::failurePayload($throwable, $codec);
                 $retryAvailableAt = now()
                     ->addSeconds($backoffSeconds);
 
@@ -243,7 +242,7 @@ final class ActivityOutcomeRecorder
 
                 return self::recorded($retryTask);
             } else {
-                $exceptionPayload = FailureFactory::payload($throwable);
+                $exceptionPayload = self::failurePayload($throwable, $codec);
                 $activityFailureCategory = FailureFactory::classify('activity', 'activity_execution', $throwable);
                 $activityNonRetryable = FailureFactory::isNonRetryable($throwable);
 
@@ -439,7 +438,7 @@ final class ActivityOutcomeRecorder
 
     private static function shouldRetry(Throwable $throwable, int $attemptCount, int $maxAttempts): bool
     {
-        return ! $throwable instanceof NonRetryableExceptionContract
+        return ! FailureFactory::isNonRetryable($throwable)
             && $attemptCount < $maxAttempts;
     }
 
@@ -464,6 +463,25 @@ final class ActivityOutcomeRecorder
         }
 
         return Serializer::serialize($value);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function failurePayload(Throwable $throwable, ?string $workerCodec): array
+    {
+        $payload = FailureFactory::payload($throwable);
+
+        if (
+            is_string($workerCodec)
+            && $workerCodec !== ''
+            && array_key_exists('details', $payload)
+            && ! is_string($payload['details_payload_codec'] ?? null)
+        ) {
+            $payload['details_payload_codec'] = $workerCodec;
+        }
+
+        return $payload;
     }
 
     private static function payloadCodec(?string $workerCodec, ?string $runCodec): string

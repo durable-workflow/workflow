@@ -115,9 +115,9 @@ final class ActivityTaskBridge
      * @param Throwable|array<string, mixed>|string $failure
      * @return array{recorded: bool, task_id: string, reason: string|null, next_task_id: string|null}
      */
-    public static function fail(string $attemptId, Throwable|array|string $failure): array
+    public static function fail(string $attemptId, Throwable|array|string $failure, ?string $codec = null): array
     {
-        return self::resolve()->fail($attemptId, $failure);
+        return self::resolve()->fail($attemptId, $failure, $codec);
     }
 
     /**

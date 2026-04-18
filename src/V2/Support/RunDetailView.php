@@ -702,7 +702,7 @@ final class RunDetailView
             )
             : [];
 
-        return [
+        $normalized = [
             '__constructor' => is_string($payload['__constructor'] ?? null)
                 ? $payload['__constructor']
                 : ($failure['exception_class'] ?? null),
@@ -724,5 +724,19 @@ final class RunDetailView
             'trace' => $trace,
             'properties' => $properties,
         ];
+
+        if (array_key_exists('details', $payload)) {
+            $normalized['details'] = $payload['details'];
+        }
+
+        if (is_bool($payload['non_retryable'] ?? null)) {
+            $normalized['non_retryable'] = $payload['non_retryable'];
+        }
+
+        if (is_string($payload['details_payload_codec'] ?? null) && $payload['details_payload_codec'] !== '') {
+            $normalized['details_payload_codec'] = $payload['details_payload_codec'];
+        }
+
+        return $normalized;
     }
 }

@@ -23,6 +23,8 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
+use Workflow\V2\Support\FailureFactory;
+use Workflow\V2\Support\FailureSnapshots;
 
 /**
  * TD-089 regression: activity exception rows must be encoded with the
@@ -184,6 +186,73 @@ final class V2ActivityExceptionCodecTest extends TestCase
                 (string) $completed->payload['result'],
             ),
         );
+    }
+
+    public function testFailureDetailsEnvelopePreservesWorkerCodecInTypedHistory(): void
+    {
+        config()->set('workflows.serializer', 'avro');
+
+        [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
+            pinnedCodec: 'json',
+            maxAttempts: 2,
+            instanceId: 'td090-failure-details-json',
+        );
+
+        $detailsBlob = Serializer::serializeWithCodec('json', ['retry_after' => 30]);
+
+        $outcome = ActivityOutcomeRecorder::record(
+            taskId: $task->id,
+            attemptId: $attempt->id,
+            attemptCount: 1,
+            result: null,
+            throwable: FailureFactory::restore([
+                'class' => RuntimeException::class,
+                'type' => 'TimeoutException',
+                'message' => 'external timeout',
+                'non_retryable' => true,
+                'details' => $detailsBlob,
+            ]),
+            maxAttempts: 2,
+            backoffSeconds: 0,
+            codec: 'json',
+        );
+
+        $this->assertTrue($outcome['recorded']);
+
+        $execution->refresh();
+        $decodedException = Serializer::unserializeWithCodec('json', (string) $execution->exception);
+
+        $this->assertSame($detailsBlob, $decodedException['details'] ?? null);
+        $this->assertSame('json', $decodedException['details_payload_codec'] ?? null);
+        $this->assertTrue($decodedException['non_retryable'] ?? false);
+
+        /** @var WorkflowHistoryEvent $failed */
+        $failed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame(RuntimeException::class, $failed->payload['exception_class'] ?? null);
+        $this->assertSame('TimeoutException', $failed->payload['exception_type'] ?? null);
+        $this->assertTrue($failed->payload['non_retryable'] ?? false);
+        $this->assertSame($detailsBlob, $failed->payload['exception']['details'] ?? null);
+        $this->assertSame('json', $failed->payload['exception']['details_payload_codec'] ?? null);
+        $this->assertTrue($failed->payload['exception']['non_retryable'] ?? false);
+
+        $this->assertFalse(
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
+                ->exists(),
+        );
+
+        $snapshot = FailureSnapshots::forRun($run->fresh(['historyEvents', 'failures']))[0] ?? null;
+
+        $this->assertIsArray($snapshot);
+        $this->assertTrue($snapshot['non_retryable'] ?? false);
+        $this->assertSame($detailsBlob, $snapshot['exception_payload']['details'] ?? null);
+        $this->assertSame('json', $snapshot['exception_payload']['details_payload_codec'] ?? null);
+        $this->assertTrue($snapshot['exception_payload']['non_retryable'] ?? false);
     }
 
     /**

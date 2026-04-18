@@ -96,6 +96,10 @@ final class FailureFactory
      */
     public static function isNonRetryable(?Throwable $throwable): bool
     {
+        if ($throwable instanceof RestoredWorkflowException) {
+            return (bool) ($throwable->failurePayload()['non_retryable'] ?? false);
+        }
+
         return $throwable instanceof NonRetryableExceptionContract;
     }
 
@@ -314,6 +318,10 @@ final class FailureFactory
         $normalized = self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
         $class = $normalized['class'];
 
+        if (array_key_exists('details', $normalized) || is_string($normalized['details_payload_codec'] ?? null)) {
+            return new RestoredWorkflowException($normalized);
+        }
+
         try {
             $resolvedClass = is_string($class)
                 ? TypeRegistry::resolveThrowableClass($class, $normalized['type'])
@@ -527,7 +535,7 @@ final class FailureFactory
             $payload = [];
         }
 
-        return [
+        $normalized = [
             'class' => is_string($payload['class'] ?? null)
                 ? $payload['class']
                 : ($fallbackClass ?? RestoredWorkflowException::class),
@@ -549,6 +557,20 @@ final class FailureFactory
             'trace' => self::traceFrames($payload),
             'properties' => self::propertyFrames($payload),
         ];
+
+        if (array_key_exists('details', $payload)) {
+            $normalized['details'] = $payload['details'];
+        }
+
+        if (is_bool($payload['non_retryable'] ?? null)) {
+            $normalized['non_retryable'] = $payload['non_retryable'];
+        }
+
+        if (is_string($payload['details_payload_codec'] ?? null) && $payload['details_payload_codec'] !== '') {
+            $normalized['details_payload_codec'] = $payload['details_payload_codec'];
+        }
+
+        return $normalized;
     }
 
     /**
