@@ -57,9 +57,208 @@ final class WorkerCompatibilityFleet
         ?string $queue = null,
         ?string $workerId = null,
     ): void {
+        self::recordInNamespace(self::scopeNamespace(), $supported, $connection, $queue, $workerId);
+    }
+
+    /**
+     * @param list<string> $supported
+     */
+    public static function recordForNamespace(
+        string $namespace,
+        array $supported,
+        ?string $connection = null,
+        ?string $queue = null,
+        ?string $workerId = null,
+    ): void {
+        self::recordInNamespace(self::normalizeValue($namespace), $supported, $connection, $queue, $workerId);
+    }
+
+    /**
+     * @return list<array{
+     *     worker_id: string,
+     *     namespace: string|null,
+     *     host: string|null,
+     *     process_id: string|null,
+     *     connection: string|null,
+     *     queue: string|null,
+     *     supported: list<string>,
+     *     supports_required: bool,
+     *     recorded_at: \Illuminate\Support\Carbon|null,
+     *     expires_at: \Illuminate\Support\Carbon|null,
+     *     source: string
+     * }>
+     */
+    public static function detailsForNamespace(
+        string $namespace,
+        ?string $required,
+        ?string $connection = null,
+        ?string $queue = null,
+    ): array {
+        return self::detailsInNamespace(self::normalizeValue($namespace), $required, $connection, $queue);
+    }
+
+    /**
+     * @return array{
+     *     namespace: string,
+     *     active_workers: int,
+     *     active_worker_scopes: int,
+     *     queues: list<string>,
+     *     build_ids: list<string>,
+     *     workers: list<array{
+     *         worker_id: string,
+     *         queues: list<string>,
+     *         build_ids: list<string>,
+     *         recorded_at: string|null,
+     *         expires_at: string|null
+     *     }>
+     * }
+     */
+    public static function summaryForNamespace(string $namespace): array
+    {
+        $namespace = self::normalizeValue($namespace) ?? $namespace;
+        $details = self::detailsForNamespace($namespace, null);
+        $workerSnapshots = [];
+
+        foreach ($details as $snapshot) {
+            $workerId = self::normalizeValue($snapshot['worker_id'] ?? null);
+
+            if ($workerId === null) {
+                continue;
+            }
+
+            $workerSnapshots[$workerId] ??= [
+                'worker_id' => $workerId,
+                'queues' => [],
+                'build_ids' => [],
+                'recorded_at' => null,
+                'expires_at' => null,
+            ];
+            $workerSnapshots[$workerId]['queues'][] = $snapshot['queue'] ?? null;
+            $workerSnapshots[$workerId]['build_ids'] = array_merge(
+                $workerSnapshots[$workerId]['build_ids'],
+                is_array($snapshot['supported'] ?? null) ? $snapshot['supported'] : [],
+            );
+            $workerSnapshots[$workerId]['recorded_at'] = self::latestCarbon(
+                $workerSnapshots[$workerId]['recorded_at'],
+                $snapshot['recorded_at'] ?? null,
+            );
+            $workerSnapshots[$workerId]['expires_at'] = self::latestCarbon(
+                $workerSnapshots[$workerId]['expires_at'],
+                $snapshot['expires_at'] ?? null,
+            );
+        }
+
+        ksort($workerSnapshots);
+
+        $workers = array_map(
+            static fn (array $worker): array => [
+                'worker_id' => $worker['worker_id'],
+                'queues' => self::uniqueStrings($worker['queues']),
+                'build_ids' => self::uniqueStrings($worker['build_ids']),
+                'recorded_at' => $worker['recorded_at']?->toJSON(),
+                'expires_at' => $worker['expires_at']?->toJSON(),
+            ],
+            array_values($workerSnapshots),
+        );
+
+        return [
+            'namespace' => $namespace,
+            'active_workers' => count($workers),
+            'active_worker_scopes' => count($details),
+            'queues' => self::uniqueStrings(array_map(
+                static fn (array $snapshot): mixed => $snapshot['queue'] ?? null,
+                $details,
+            )),
+            'build_ids' => self::uniqueStrings($details === []
+                ? []
+                : array_merge(
+                    ...array_map(
+                        static fn (array $snapshot): array => is_array($snapshot['supported'] ?? null)
+                            ? $snapshot['supported']
+                            : [],
+                        $details,
+                    ),
+                )),
+            'workers' => $workers,
+        ];
+    }
+
+    public static function details(?string $required, ?string $connection = null, ?string $queue = null): array
+    {
+        return self::detailsInNamespace(self::scopeNamespace(), $required, $connection, $queue);
+    }
+
+    public static function scopeNamespace(): ?string
+    {
+        return self::normalizeValue(config('workflows.v2.compatibility.namespace'));
+    }
+
+    public static function clear(): void
+    {
+        WorkerCompatibilityHeartbeat::query()->delete();
+        Cache::forget(self::LEGACY_CACHE_KEY);
+        self::$lastRecorded = [];
+        self::$lastPrunedAt = null;
+        self::forgetSnapshotCache();
+    }
+
+    public static function supports(?string $required, ?string $connection = null, ?string $queue = null): bool
+    {
+        $required = self::normalizeValue($required);
+
+        if ($required === null) {
+            return true;
+        }
+
+        foreach (self::matchingSnapshots(self::scopeNamespace(), $connection, $queue) as $snapshot) {
+            $supported = $snapshot['supported'] ?? [];
+
+            if (! is_array($supported)) {
+                continue;
+            }
+
+            if (in_array('*', $supported, true) || in_array($required, $supported, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static function mismatchReason(?string $required, ?string $connection = null, ?string $queue = null): ?string
+    {
+        $required = self::normalizeValue($required);
+
+        if ($required === null || self::supports($required, $connection, $queue)) {
+            return null;
+        }
+
+        $advertised = self::advertisedMarkers(self::scopeNamespace(), $connection, $queue);
+        $reason = sprintf(
+            'No active worker heartbeat%s advertises compatibility [%s].',
+            self::scopeLabel($connection, $queue),
+            $required,
+        );
+
+        if ($advertised === []) {
+            return $reason;
+        }
+
+        return sprintf('%s Active workers there advertise [%s].', $reason, implode(', ', $advertised));
+    }
+
+    /**
+     * @param list<string> $supported
+     */
+    private static function recordInNamespace(
+        ?string $namespace,
+        array $supported,
+        ?string $connection,
+        ?string $queue,
+        ?string $workerId,
+    ): void {
         $workerId ??= self::workerId();
         $supported = self::normalizeMarkers($supported);
-        $namespace = self::scopeNamespace();
         $connection = self::normalizeValue($connection);
         $queues = self::normalizeQueues($queue);
 
@@ -117,8 +316,27 @@ final class WorkerCompatibilityFleet
         self::forgetSnapshotCache();
     }
 
-    public static function details(?string $required, ?string $connection = null, ?string $queue = null): array
-    {
+    /**
+     * @return list<array{
+     *     worker_id: string,
+     *     namespace: string|null,
+     *     host: string|null,
+     *     process_id: string|null,
+     *     connection: string|null,
+     *     queue: string|null,
+     *     supported: list<string>,
+     *     supports_required: bool,
+     *     recorded_at: \Illuminate\Support\Carbon|null,
+     *     expires_at: \Illuminate\Support\Carbon|null,
+     *     source: string
+     * }>
+     */
+    private static function detailsInNamespace(
+        ?string $namespace,
+        ?string $required,
+        ?string $connection = null,
+        ?string $queue = null,
+    ): array {
         $required = self::normalizeValue($required);
 
         return array_map(
@@ -141,67 +359,8 @@ final class WorkerCompatibilityFleet
                     'source' => $snapshot['source'],
                 ];
             },
-            self::matchingSnapshots($connection, $queue),
+            self::matchingSnapshots($namespace, $connection, $queue),
         );
-    }
-
-    public static function scopeNamespace(): ?string
-    {
-        return self::normalizeValue(config('workflows.v2.compatibility.namespace'));
-    }
-
-    public static function clear(): void
-    {
-        WorkerCompatibilityHeartbeat::query()->delete();
-        Cache::forget(self::LEGACY_CACHE_KEY);
-        self::$lastRecorded = [];
-        self::$lastPrunedAt = null;
-        self::forgetSnapshotCache();
-    }
-
-    public static function supports(?string $required, ?string $connection = null, ?string $queue = null): bool
-    {
-        $required = self::normalizeValue($required);
-
-        if ($required === null) {
-            return true;
-        }
-
-        foreach (self::matchingSnapshots($connection, $queue) as $snapshot) {
-            $supported = $snapshot['supported'] ?? [];
-
-            if (! is_array($supported)) {
-                continue;
-            }
-
-            if (in_array('*', $supported, true) || in_array($required, $supported, true)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    public static function mismatchReason(?string $required, ?string $connection = null, ?string $queue = null): ?string
-    {
-        $required = self::normalizeValue($required);
-
-        if ($required === null || self::supports($required, $connection, $queue)) {
-            return null;
-        }
-
-        $advertised = self::advertisedMarkers($connection, $queue);
-        $reason = sprintf(
-            'No active worker heartbeat%s advertises compatibility [%s].',
-            self::scopeLabel($connection, $queue),
-            $required,
-        );
-
-        if ($advertised === []) {
-            return $reason;
-        }
-
-        return sprintf('%s Active workers there advertise [%s].', $reason, implode(', ', $advertised));
     }
 
     private static function shouldSkipRecord(
@@ -341,9 +500,12 @@ final class WorkerCompatibilityFleet
     /**
      * @return list<array{worker_id: string, namespace: ?string, host: ?string, process_id: ?string, connection: ?string, queue: ?string, supported: list<string>, recorded_at: \Illuminate\Support\Carbon|null, expires_at: \Illuminate\Support\Carbon|null, source: string}>
      */
-    private static function matchingSnapshots(?string $connection = null, ?string $queue = null): array
-    {
-        $requiredNamespace = self::scopeNamespace();
+    private static function matchingSnapshots(
+        ?string $namespace = null,
+        ?string $connection = null,
+        ?string $queue = null,
+    ): array {
+        $requiredNamespace = self::normalizeValue($namespace);
         $requiredConnection = self::normalizeValue($connection);
         $requiredQueue = self::normalizeValue($queue);
 
@@ -386,11 +548,14 @@ final class WorkerCompatibilityFleet
     /**
      * @return list<string>
      */
-    private static function advertisedMarkers(?string $connection = null, ?string $queue = null): array
-    {
+    private static function advertisedMarkers(
+        ?string $namespace = null,
+        ?string $connection = null,
+        ?string $queue = null,
+    ): array {
         $markers = [];
 
-        foreach (self::matchingSnapshots($connection, $queue) as $snapshot) {
+        foreach (self::matchingSnapshots($namespace, $connection, $queue) as $snapshot) {
             foreach (self::normalizeMarkers($snapshot['supported'] ?? []) as $marker) {
                 $markers[] = $marker;
             }
@@ -580,6 +745,35 @@ final class WorkerCompatibilityFleet
         $value = trim($value);
 
         return $value === '' ? null : $value;
+    }
+
+    private static function latestCarbon(?Carbon $current, mixed $candidate): ?Carbon
+    {
+        if (! $candidate instanceof Carbon) {
+            return $current;
+        }
+
+        if ($current === null || $candidate->greaterThan($current)) {
+            return $candidate;
+        }
+
+        return $current;
+    }
+
+    /**
+     * @param array<int, mixed> $values
+     * @return list<string>
+     */
+    private static function uniqueStrings(array $values): array
+    {
+        $strings = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $value): ?string => self::normalizeValue($value), $values),
+            static fn (?string $value): bool => $value !== null,
+        )));
+
+        sort($strings);
+
+        return $strings;
     }
 
     /**
