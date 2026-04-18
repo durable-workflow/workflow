@@ -26,6 +26,7 @@ use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TimerRecovery;
 use Workflow\V2\Support\TimerTransportChunker;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\WorkflowTaskPayload;
 
 final class RunTimerTask implements ShouldQueue
 {
@@ -141,7 +142,7 @@ final class RunTimerTask implements ShouldQueue
                 default => null,
             };
 
-            WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, array_filter([
+            $firedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, array_filter([
                 'timer_id' => $timer->id,
                 'sequence' => $timer->sequence,
                 'delay_seconds' => $timer->delay_seconds,
@@ -167,23 +168,7 @@ final class RunTimerTask implements ShouldQueue
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
-                'payload' => array_filter([
-                    'workflow_wait_kind' => match ($timerKind) {
-                        'condition_timeout' => 'condition',
-                        'signal_timeout' => 'signal',
-                        default => null,
-                    },
-                    'open_wait_id' => $conditionWaitId ?? $signalWaitId,
-                    'resume_source_kind' => $timerKind === null ? null : 'timer',
-                    'resume_source_id' => $timerKind === null ? null : $timer->id,
-                    'timer_id' => $timerKind === null ? null : $timer->id,
-                    'condition_wait_id' => $conditionWaitId,
-                    'condition_key' => $conditionKey,
-                    'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
-                    'signal_wait_id' => $signalWaitId,
-                    'signal_name' => $signalName,
-                    'workflow_sequence' => $timerKind === null ? null : $timer->sequence,
-                ], static fn (mixed $value): bool => $value !== null),
+                'payload' => WorkflowTaskPayload::forTimerResolution($firedEvent),
                 'connection' => $run->connection,
                 'queue' => $run->queue,
                 'compatibility' => $run->compatibility,

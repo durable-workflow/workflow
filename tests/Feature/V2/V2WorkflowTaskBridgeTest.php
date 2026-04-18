@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -15,6 +16,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowCommand;
@@ -1559,6 +1561,49 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($scheduledEvent);
         $this->assertSame($timer->id, $scheduledEvent->payload['timer_id']);
+    }
+
+    public function testTimerTaskCreatesResumeTaskWithTimerContext(): void
+    {
+        Queue::fake();
+
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 0,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->findOrFail($result['created_task_ids'][0]);
+        $timerId = $timerTask->payload['timer_id'] ?? null;
+
+        $this->assertIsString($timerId);
+
+        $this->app->call([new RunTimerTask($timerTask->id), 'handle']);
+
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $this->assertSame('timer', $resumeTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame("timer:{$timerId}", $resumeTask->payload['open_wait_id'] ?? null);
+        $this->assertSame('timer', $resumeTask->payload['resume_source_kind'] ?? null);
+        $this->assertSame($timerId, $resumeTask->payload['resume_source_id'] ?? null);
+        $this->assertSame($timerId, $resumeTask->payload['timer_id'] ?? null);
+        $this->assertSame(1, $resumeTask->payload['workflow_sequence'] ?? null);
+        $this->assertSame(HistoryEventType::TimerFired->value, $resumeTask->payload['workflow_event_type'] ?? null);
     }
 
     public function testCompleteStartsChildWorkflow(): void

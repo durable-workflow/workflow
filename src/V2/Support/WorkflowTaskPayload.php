@@ -98,6 +98,49 @@ final class WorkflowTaskPayload
     /**
      * @return array<string, mixed>
      */
+    public static function forTimerResolution(WorkflowHistoryEvent $event): array
+    {
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $sequence = self::intValue($payload['sequence'] ?? null);
+        $timerId = self::nonEmptyString($payload['timer_id'] ?? null);
+        $timerKind = self::nonEmptyString($payload['timer_kind'] ?? null);
+        $conditionWaitId = self::nonEmptyString($payload['condition_wait_id'] ?? null);
+        $signalWaitId = self::nonEmptyString($payload['signal_wait_id'] ?? null);
+        $workflowWaitKind = match ($timerKind) {
+            'condition_timeout' => 'condition',
+            'signal_timeout' => 'signal',
+            default => 'timer',
+        };
+        $openWaitId = match ($workflowWaitKind) {
+            'condition' => $conditionWaitId,
+            'signal' => $signalWaitId,
+            default => $timerId === null
+                ? ($sequence === null ? null : sprintf('timer:%d', $sequence))
+                : sprintf('timer:%s', $timerId),
+        };
+
+        return array_filter([
+            'workflow_wait_kind' => $workflowWaitKind,
+            'open_wait_id' => $openWaitId,
+            'resume_source_kind' => $timerId === null ? null : 'timer',
+            'resume_source_id' => $timerId,
+            'timer_id' => $timerId,
+            'timer_kind' => $timerKind,
+            'condition_wait_id' => $conditionWaitId,
+            'condition_key' => self::nonEmptyString($payload['condition_key'] ?? null),
+            'condition_definition_fingerprint' => self::nonEmptyString(
+                $payload['condition_definition_fingerprint'] ?? null
+            ),
+            'signal_wait_id' => $signalWaitId,
+            'signal_name' => self::nonEmptyString($payload['signal_name'] ?? null),
+            'workflow_sequence' => $sequence,
+            'workflow_event_type' => $event->event_type?->value,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public static function forMissingWorkflowTask(WorkflowRunSummary $summary): array
     {
         if ($summary->wait_kind === 'update') {
