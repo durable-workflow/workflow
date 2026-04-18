@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Migrations;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
@@ -104,5 +105,35 @@ final class MigrationsTest extends TestCase
 
         $this->assertSame(WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION, $entry->refresh()->schema_version);
         $this->assertTrue($entry->usesCurrentSchema());
+    }
+
+    public function testRunSummaryWorkflowInstanceIdSupportsServerWorkflowIds(): void
+    {
+        $summaryLength = $this->stringColumnLength('workflow_run_summaries', 'workflow_instance_id');
+        $runLength = $this->stringColumnLength('workflow_runs', 'workflow_instance_id');
+
+        $this->assertSame($runLength, $summaryLength);
+        $this->assertGreaterThanOrEqual(128, $summaryLength);
+    }
+
+    private function stringColumnLength(string $table, string $column): int
+    {
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'sqlite') {
+            $this->markTestSkipped('SQLite does not expose string column length metadata.');
+        }
+
+        foreach (Schema::getColumns($table) as $definition) {
+            if (($definition['name'] ?? null) !== $column) {
+                continue;
+            }
+
+            if (preg_match('/\((\d+)\)/', (string) ($definition['type'] ?? ''), $matches) === 1) {
+                return (int) $matches[1];
+            }
+        }
+
+        $this->fail("Unable to determine {$table}.{$column} length for {$driver}.");
     }
 }

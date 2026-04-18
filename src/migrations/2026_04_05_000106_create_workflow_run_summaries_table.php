@@ -15,7 +15,7 @@ return new class() extends Migration {
                 ->primary();
 
             // Instance relationship
-            $table->string('workflow_instance_id', 26)
+            $table->string('workflow_instance_id', 191)
                 ->index();
             $table->unsignedInteger('run_number');
             $table->boolean('is_current_run')
