@@ -144,6 +144,7 @@ final class ActivityOutcomeRecorder
                 (int) $lockedExecution->sequence,
             );
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+            $resolutionEvent = null;
 
             if ($throwable === null) {
                 $serializedResult = self::serializeWithCodec($result, $codec, $runCodec);
@@ -156,7 +157,7 @@ final class ActivityOutcomeRecorder
                     'closed_at' => now(),
                 ])->save();
 
-                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, array_merge([
+                $resolutionEvent = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, array_merge([
                     'activity_execution_id' => $lockedExecution->id,
                     'activity_attempt_id' => $attemptId,
                     'activity_class' => $lockedExecution->activity_class,
@@ -268,7 +269,7 @@ final class ActivityOutcomeRecorder
                     'closed_at' => now(),
                 ])->save();
 
-                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, array_merge([
+                $resolutionEvent = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, array_merge([
                     'activity_execution_id' => $lockedExecution->id,
                     'activity_attempt_id' => $attemptId,
                     'activity_class' => $lockedExecution->activity_class,
@@ -337,7 +338,9 @@ final class ActivityOutcomeRecorder
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
-                'payload' => [],
+                'payload' => $resolutionEvent instanceof WorkflowHistoryEvent
+                    ? WorkflowTaskPayload::forActivityResolution($resolutionEvent)
+                    : [],
                 'connection' => $run->connection,
                 'queue' => $run->queue,
                 'compatibility' => $run->compatibility,

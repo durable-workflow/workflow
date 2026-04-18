@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -206,6 +207,8 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
     public function testCompleteRecordsActivityResult(): void
     {
+        Queue::fake();
+
         [$run, $execution, $task] = $this->createActivityTask();
 
         $claim = $this->bridge->claim($task->id, 'worker-1');
@@ -215,6 +218,24 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
         $this->assertTrue($result['recorded']);
         $this->assertNull($result['reason']);
+
+        $this->assertIsString($result['next_task_id']);
+
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()->findOrFail($result['next_task_id']);
+
+        $this->assertSame('activity', $resumeTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame(sprintf('activity:%s', $execution->id), $resumeTask->payload['open_wait_id'] ?? null);
+        $this->assertSame('activity_execution', $resumeTask->payload['resume_source_kind'] ?? null);
+        $this->assertSame($execution->id, $resumeTask->payload['resume_source_id'] ?? null);
+        $this->assertSame($execution->id, $resumeTask->payload['activity_execution_id'] ?? null);
+        $this->assertSame($claim['activity_attempt_id'], $resumeTask->payload['activity_attempt_id'] ?? null);
+        $this->assertSame('test-greeting-activity', $resumeTask->payload['activity_type'] ?? null);
+        $this->assertSame(1, $resumeTask->payload['workflow_sequence'] ?? null);
+        $this->assertSame(
+            HistoryEventType::ActivityCompleted->value,
+            $resumeTask->payload['workflow_event_type'] ?? null
+        );
     }
 
     public function testCompleteRejectsUnknownAttempt(): void
@@ -226,6 +247,8 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
     public function testFailRecordsActivityFailure(): void
     {
+        Queue::fake();
+
         [$run, $execution, $task] = $this->createActivityTask();
 
         $claim = $this->bridge->claim($task->id, 'worker-1');
@@ -234,10 +257,29 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $result = $this->bridge->fail($claim['activity_attempt_id'], 'Something went wrong');
 
         $this->assertTrue($result['recorded']);
+        $this->assertIsString($result['next_task_id']);
+
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()->findOrFail($result['next_task_id']);
+
+        $this->assertSame('activity', $resumeTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame(sprintf('activity:%s', $execution->id), $resumeTask->payload['open_wait_id'] ?? null);
+        $this->assertSame('activity_execution', $resumeTask->payload['resume_source_kind'] ?? null);
+        $this->assertSame($execution->id, $resumeTask->payload['resume_source_id'] ?? null);
+        $this->assertSame($execution->id, $resumeTask->payload['activity_execution_id'] ?? null);
+        $this->assertSame($claim['activity_attempt_id'], $resumeTask->payload['activity_attempt_id'] ?? null);
+        $this->assertSame('test-greeting-activity', $resumeTask->payload['activity_type'] ?? null);
+        $this->assertSame(1, $resumeTask->payload['workflow_sequence'] ?? null);
+        $this->assertSame(
+            HistoryEventType::ActivityFailed->value,
+            $resumeTask->payload['workflow_event_type'] ?? null
+        );
     }
 
     public function testFailAcceptsArrayPayload(): void
     {
+        Queue::fake();
+
         [$run, $execution, $task] = $this->createActivityTask();
 
         $claim = $this->bridge->claim($task->id, 'worker-1');

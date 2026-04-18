@@ -70,6 +70,34 @@ final class WorkflowTaskPayload
     /**
      * @return array<string, mixed>
      */
+    public static function forActivityResolution(WorkflowHistoryEvent $event): array
+    {
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $sequence = self::intValue($payload['sequence'] ?? null);
+        $activityExecutionId = self::nonEmptyString($payload['activity_execution_id'] ?? null);
+        $activityAttemptId = self::nonEmptyString($payload['activity_attempt_id'] ?? null);
+        $activityType = self::nonEmptyString($payload['activity_type'] ?? null)
+            ?? self::nonEmptyString($payload['activity_class'] ?? null);
+        $openWaitId = $activityExecutionId === null
+            ? ($sequence === null ? null : sprintf('activity:%d', $sequence))
+            : sprintf('activity:%s', $activityExecutionId);
+
+        return array_filter([
+            'workflow_wait_kind' => 'activity',
+            'open_wait_id' => $openWaitId,
+            'resume_source_kind' => 'activity_execution',
+            'resume_source_id' => $activityExecutionId,
+            'activity_execution_id' => $activityExecutionId,
+            'activity_attempt_id' => $activityAttemptId,
+            'activity_type' => $activityType,
+            'workflow_sequence' => $sequence,
+            'workflow_event_type' => $event->event_type?->value,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public static function forMissingWorkflowTask(WorkflowRunSummary $summary): array
     {
         if ($summary->wait_kind === 'update') {
