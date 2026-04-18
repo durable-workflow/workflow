@@ -1656,6 +1656,62 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($run->queue, $execution->queue);
     }
 
+    public function testScheduleActivitySnapshotsExternalRetryPolicyAndTimeouts(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'test-activity',
+                'retry_policy' => [
+                    'max_attempts' => 4,
+                    'backoff_seconds' => [1, 5, 30],
+                    'non_retryable_error_types' => ['ValidationError'],
+                ],
+                'start_to_close_timeout' => 120,
+                'schedule_to_start_timeout' => 10,
+                'schedule_to_close_timeout' => 300,
+                'heartbeat_timeout' => 15,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame([
+            'snapshot_version' => 1,
+            'max_attempts' => 4,
+            'backoff_seconds' => [1, 5, 30],
+            'start_to_close_timeout' => 120,
+            'schedule_to_start_timeout' => 10,
+            'schedule_to_close_timeout' => 300,
+            'heartbeat_timeout' => 15,
+            'non_retryable_error_types' => ['ValidationError'],
+        ], $execution->retry_policy);
+        $this->assertSame(120, $execution->activity_options['start_to_close_timeout']);
+        $this->assertSame(10, $execution->activity_options['schedule_to_start_timeout']);
+        $this->assertSame(300, $execution->activity_options['schedule_to_close_timeout']);
+        $this->assertSame(15, $execution->activity_options['heartbeat_timeout']);
+        $this->assertNotNull($execution->schedule_deadline_at);
+        $this->assertNotNull($execution->schedule_to_close_deadline_at);
+
+        /** @var WorkflowHistoryEvent $scheduled */
+        $scheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame($execution->retry_policy, $scheduled->payload['activity']['retry_policy']);
+    }
+
     public function testCompleteThenActivityPollReturnsSameTickTasks(): void
     {
         $run = $this->createWaitingRun();

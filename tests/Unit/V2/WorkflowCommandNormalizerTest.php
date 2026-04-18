@@ -110,6 +110,55 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]], $out);
     }
 
+    public function testScheduleActivityPreservesRetryPolicyAndTimeouts(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'retry_policy' => [
+                    'max_attempts' => 4,
+                    'backoff_seconds' => [1, 5, 30],
+                    'non_retryable_error_types' => ['ValidationError', 'PaymentDeclined'],
+                ],
+                'start_to_close_timeout' => 120,
+                'schedule_to_start_timeout' => 10,
+                'schedule_to_close_timeout' => 300,
+                'heartbeat_timeout' => 15,
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'schedule_activity',
+            'activity_type' => 'SendEmail',
+            'retry_policy' => [
+                'max_attempts' => 4,
+                'backoff_seconds' => [1, 5, 30],
+                'non_retryable_error_types' => ['ValidationError', 'PaymentDeclined'],
+            ],
+            'start_to_close_timeout' => 120,
+            'schedule_to_start_timeout' => 10,
+            'schedule_to_close_timeout' => 300,
+            'heartbeat_timeout' => 15,
+        ]], $out);
+    }
+
+    public function testScheduleActivityRejectsInvalidRetryPolicy(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'retry_policy' => [
+                    'max_attempts' => 0,
+                    'backoff_seconds' => [1, -1],
+                ],
+            ],
+        ]);
+    }
+
     public function testStartTimerRequiresNonNegativeDelay(): void
     {
         $this->expectException(ValidationException::class);

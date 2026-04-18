@@ -20,6 +20,7 @@ final class ActivityOptions
      * @param list<int>|int|null $backoff Override the activity class backoff() return.
      * @param int|null $scheduleToCloseTimeout Maximum wall-clock seconds from scheduling to completion across all retries.
      * @param int|null $heartbeatTimeout Maximum seconds between heartbeats before the activity is considered unresponsive.
+     * @param list<string> $nonRetryableErrorTypes Error type or class names that should bypass retries.
      */
     public function __construct(
         public readonly ?string $connection = null,
@@ -30,6 +31,7 @@ final class ActivityOptions
         public readonly ?int $scheduleToStartTimeout = null,
         public readonly ?int $scheduleToCloseTimeout = null,
         public readonly ?int $heartbeatTimeout = null,
+        public readonly array $nonRetryableErrorTypes = [],
     ) {
     }
 
@@ -42,7 +44,8 @@ final class ActivityOptions
      *     start_to_close_timeout: int|null,
      *     schedule_to_start_timeout: int|null,
      *     schedule_to_close_timeout: int|null,
-     *     heartbeat_timeout: int|null
+     *     heartbeat_timeout: int|null,
+     *     non_retryable_error_types: list<string>
      * }
      */
     public function toSnapshot(): array
@@ -56,6 +59,7 @@ final class ActivityOptions
             'schedule_to_start_timeout' => $this->scheduleToStartTimeout,
             'schedule_to_close_timeout' => $this->scheduleToCloseTimeout,
             'heartbeat_timeout' => $this->heartbeatTimeout,
+            'non_retryable_error_types' => $this->nonRetryableErrorTypes,
         ];
     }
 
@@ -66,7 +70,7 @@ final class ActivityOptions
 
     public function hasRetryOverrides(): bool
     {
-        return $this->maxAttempts !== null || $this->backoff !== null;
+        return $this->maxAttempts !== null || $this->backoff !== null || $this->nonRetryableErrorTypes !== [];
     }
 
     public function hasTimeoutOverrides(): bool

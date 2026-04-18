@@ -178,7 +178,7 @@ final class ActivityOutcomeRecorder
                 );
 
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
-            } elseif (self::shouldRetry($throwable, $attemptCount, $maxAttempts)) {
+            } elseif (self::shouldRetry($lockedExecution, $throwable, $attemptCount, $maxAttempts)) {
                 $exceptionPayload = self::failurePayload($throwable, $codec);
                 $retryAvailableAt = now()
                     ->addSeconds($backoffSeconds);
@@ -246,7 +246,7 @@ final class ActivityOutcomeRecorder
             } else {
                 $exceptionPayload = self::failurePayload($throwable, $codec);
                 $activityFailureCategory = FailureFactory::classify('activity', 'activity_execution', $throwable);
-                $activityNonRetryable = FailureFactory::isNonRetryable($throwable);
+                $activityNonRetryable = ActivityRetryPolicy::isNonRetryableFailure($lockedExecution, $throwable);
 
                 /** @var WorkflowFailure $failure */
                 $failure = WorkflowFailure::query()->create(array_merge(
@@ -442,9 +442,13 @@ final class ActivityOutcomeRecorder
         self::closeAttempt($attemptId, $status);
     }
 
-    private static function shouldRetry(Throwable $throwable, int $attemptCount, int $maxAttempts): bool
-    {
-        return ! FailureFactory::isNonRetryable($throwable)
+    private static function shouldRetry(
+        ActivityExecution $execution,
+        Throwable $throwable,
+        int $attemptCount,
+        int $maxAttempts
+    ): bool {
+        return ! ActivityRetryPolicy::isNonRetryableFailure($execution, $throwable)
             && $attemptCount < $maxAttempts;
     }
 

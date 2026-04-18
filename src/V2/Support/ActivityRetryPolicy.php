@@ -12,7 +12,16 @@ final class ActivityRetryPolicy
     public const SNAPSHOT_VERSION = 1;
 
     /**
-     * @return array{snapshot_version: int, max_attempts: int|null, backoff_seconds: list<int>, start_to_close_timeout: int|null, schedule_to_start_timeout: int|null, schedule_to_close_timeout: int|null, heartbeat_timeout: int|null}
+     * @return array{
+     *     snapshot_version: int,
+     *     max_attempts: int|null,
+     *     backoff_seconds: list<int>,
+     *     start_to_close_timeout: int|null,
+     *     schedule_to_start_timeout: int|null,
+     *     schedule_to_close_timeout: int|null,
+     *     heartbeat_timeout: int|null,
+     *     non_retryable_error_types: list<string>
+     * }
      */
     public static function snapshot(Activity $activity, ?ActivityOptions $options = null): array
     {
@@ -35,6 +44,57 @@ final class ActivityRetryPolicy
             'schedule_to_start_timeout' => $options?->scheduleToStartTimeout,
             'schedule_to_close_timeout' => $options?->scheduleToCloseTimeout,
             'heartbeat_timeout' => $options?->heartbeatTimeout,
+            'non_retryable_error_types' => self::normalizeErrorTypes($options?->nonRetryableErrorTypes ?? []),
+        ];
+    }
+
+    /**
+     * Snapshot retry and timeout options supplied by an external worker command.
+     *
+     * External workers do not have a PHP activity class to fall back to, so the
+     * default retry budget is one attempt unless the command supplies a policy.
+     *
+     * @param array<string, mixed>|null $retryPolicy
+     * @return array{
+     *     snapshot_version: int,
+     *     max_attempts: int|null,
+     *     backoff_seconds: list<int>,
+     *     start_to_close_timeout: int|null,
+     *     schedule_to_start_timeout: int|null,
+     *     schedule_to_close_timeout: int|null,
+     *     heartbeat_timeout: int|null,
+     *     non_retryable_error_types: list<string>
+     * }|null
+     */
+    public static function snapshotExternal(?array $retryPolicy, ?ActivityOptions $options = null): ?array
+    {
+        $retryPolicy ??= [];
+
+        if ($retryPolicy === [] && $options === null) {
+            return null;
+        }
+
+        $maxAttempts = is_int($retryPolicy['max_attempts'] ?? null)
+            ? max(1, (int) $retryPolicy['max_attempts'])
+            : ($options?->maxAttempts ?? 1);
+
+        $backoff = is_array($retryPolicy['backoff_seconds'] ?? null)
+            ? self::normalizeBackoff($retryPolicy['backoff_seconds'])
+            : ($options?->backoff !== null ? self::normalizeBackoff($options->backoff) : []);
+
+        $nonRetryableErrorTypes = is_array($retryPolicy['non_retryable_error_types'] ?? null)
+            ? self::normalizeErrorTypes($retryPolicy['non_retryable_error_types'])
+            : self::normalizeErrorTypes($options?->nonRetryableErrorTypes ?? []);
+
+        return [
+            'snapshot_version' => self::SNAPSHOT_VERSION,
+            'max_attempts' => $maxAttempts,
+            'backoff_seconds' => $backoff,
+            'start_to_close_timeout' => $options?->startToCloseTimeout,
+            'schedule_to_start_timeout' => $options?->scheduleToStartTimeout,
+            'schedule_to_close_timeout' => $options?->scheduleToCloseTimeout,
+            'heartbeat_timeout' => $options?->heartbeatTimeout,
+            'non_retryable_error_types' => $nonRetryableErrorTypes,
         ];
     }
 
@@ -106,6 +166,37 @@ final class ActivityRetryPolicy
         return $backoff[min($index, count($backoff) - 1)];
     }
 
+    public static function isNonRetryableFailure(ActivityExecution $execution, \Throwable $throwable): bool
+    {
+        if (FailureFactory::isNonRetryable($throwable)) {
+            return true;
+        }
+
+        $policy = self::policy($execution);
+        $nonRetryableErrorTypes = is_array($policy['non_retryable_error_types'] ?? null)
+            ? self::normalizeErrorTypes($policy['non_retryable_error_types'])
+            : [];
+
+        if ($nonRetryableErrorTypes === []) {
+            return false;
+        }
+
+        $payload = FailureFactory::payload($throwable);
+        $candidates = array_filter([
+            is_string($payload['class'] ?? null) ? $payload['class'] : null,
+            is_string($payload['type'] ?? null) ? $payload['type'] : null,
+            $throwable::class,
+        ], static fn (?string $value): bool => $value !== null && $value !== '');
+
+        foreach ($candidates as $candidate) {
+            if (in_array($candidate, $nonRetryableErrorTypes, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -146,5 +237,22 @@ final class ActivityRetryPolicy
                 static fn (mixed $value): bool => is_int($value) || (is_string($value) && is_numeric($value)),
             ),
         ));
+    }
+
+    /**
+     * @param array<int, mixed> $types
+     * @return list<string>
+     */
+    private static function normalizeErrorTypes(array $types): array
+    {
+        return array_values(array_unique(array_filter(
+            array_map(
+                static fn (mixed $value): ?string => is_string($value) && trim($value) !== ''
+                    ? trim($value)
+                    : null,
+                $types,
+            ),
+            static fn (?string $value): bool => $value !== null,
+        )));
     }
 }

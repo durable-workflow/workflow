@@ -216,14 +216,28 @@ interface WorkflowTaskBridge
      *
      * Non-terminal command types (zero or more, processed in order):
      *
-     * - schedule_activity: {type: 'schedule_activity', activity_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}
+     * - schedule_activity:
+     *   {
+     *     type: 'schedule_activity',
+     *     activity_type: string,
+     *     arguments?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     retry_policy?: array,
+     *     start_to_close_timeout?: int,
+     *     schedule_to_start_timeout?: int,
+     *     schedule_to_close_timeout?: int,
+     *     heartbeat_timeout?: int
+     *   }
      *   Schedules an activity task for execution. activity_type is a registered type key.
      *   arguments is a codec-tagged serialized payload. connection and queue override run defaults.
+     *   retry_policy accepts max_attempts, backoff_seconds, and non_retryable_error_types.
      *
      * - start_timer: {type: 'start_timer', delay_seconds: int}
      *   Schedules a durable timer that fires after delay_seconds.
      *
-     * - start_child_workflow: {type: 'start_child_workflow', workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}
+     * - start_child_workflow:
+     *   {type: 'start_child_workflow', workflow_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}
      *   Starts a child workflow instance. workflow_type is a registered type key.
      *   arguments is a codec-tagged serialized payload.
      *

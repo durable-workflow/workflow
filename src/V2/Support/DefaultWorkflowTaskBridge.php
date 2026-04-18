@@ -890,7 +890,57 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * @param array{type: string, activity_type: string, arguments?: string|null, connection?: string|null, queue?: string|null} $command
+     * @param array<string, mixed> $command
+     */
+    private static function activityOptionsFromCommand(array $command): ?ActivityOptions
+    {
+        $retryPolicy = is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : [];
+        $hasOptions = $retryPolicy !== []
+            || array_key_exists('start_to_close_timeout', $command)
+            || array_key_exists('schedule_to_start_timeout', $command)
+            || array_key_exists('schedule_to_close_timeout', $command)
+            || array_key_exists('heartbeat_timeout', $command);
+
+        if (! $hasOptions) {
+            return null;
+        }
+
+        return new ActivityOptions(
+            connection: self::nonEmptyString($command['connection'] ?? null),
+            queue: self::nonEmptyString($command['queue'] ?? null),
+            maxAttempts: is_int($retryPolicy['max_attempts'] ?? null) ? (int) $retryPolicy['max_attempts'] : null,
+            backoff: is_array($retryPolicy['backoff_seconds'] ?? null) ? $retryPolicy['backoff_seconds'] : null,
+            startToCloseTimeout: is_int($command['start_to_close_timeout'] ?? null)
+                ? (int) $command['start_to_close_timeout']
+                : null,
+            scheduleToStartTimeout: is_int($command['schedule_to_start_timeout'] ?? null)
+                ? (int) $command['schedule_to_start_timeout']
+                : null,
+            scheduleToCloseTimeout: is_int($command['schedule_to_close_timeout'] ?? null)
+                ? (int) $command['schedule_to_close_timeout']
+                : null,
+            heartbeatTimeout: is_int($command['heartbeat_timeout'] ?? null)
+                ? (int) $command['heartbeat_timeout']
+                : null,
+            nonRetryableErrorTypes: is_array($retryPolicy['non_retryable_error_types'] ?? null)
+                ? $retryPolicy['non_retryable_error_types']
+                : [],
+        );
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     activity_type: string,
+     *     arguments?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     retry_policy?: array<string, mixed>,
+     *     start_to_close_timeout?: int,
+     *     schedule_to_start_timeout?: int,
+     *     schedule_to_close_timeout?: int,
+     *     heartbeat_timeout?: int
+     * } $command
      * @param list<string> $createdTaskIds
      */
     private function applyScheduleActivity(
@@ -904,6 +954,19 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $arguments = $command['arguments'] ?? null;
         $connection = $command['connection'] ?? $run->connection;
         $queue = $command['queue'] ?? $run->queue;
+        $options = self::activityOptionsFromCommand($command);
+        $scheduleDeadlineAt = $options?->scheduleToStartTimeout !== null
+            ? now()
+                ->addSeconds($options->scheduleToStartTimeout)
+            : null;
+        $scheduleToCloseDeadlineAt = $options?->scheduleToCloseTimeout !== null
+            ? now()
+                ->addSeconds($options->scheduleToCloseTimeout)
+            : null;
+        $retryPolicy = ActivityRetryPolicy::snapshotExternal(
+            is_array($command['retry_policy'] ?? null) ? $command['retry_policy'] : null,
+            $options,
+        );
 
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
@@ -916,6 +979,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'arguments' => $arguments,
             'connection' => $connection,
             'queue' => $queue,
+            'retry_policy' => $retryPolicy,
+            'activity_options' => $options?->toSnapshot(),
+            'schedule_deadline_at' => $scheduleDeadlineAt,
+            'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
         ]);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
@@ -923,6 +990,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'activity_class' => $activityType,
             'activity_type' => $activityType,
             'sequence' => $sequence,
+            'activity' => ActivitySnapshot::fromExecution($execution),
         ], $task);
 
         /** @var WorkflowTask $activityTask */
@@ -1452,14 +1520,47 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * @param array<string, mixed> $command
-     * @return array{type: string, activity_type: string, arguments?: string|null, connection?: string|null, queue?: string|null}|null
+     * @return array{
+     *     type: string,
+     *     activity_type: string,
+     *     arguments?: string|null,
+     *     connection?: string|null,
+     *     queue?: string|null,
+     *     retry_policy?: array<string, mixed>,
+     *     start_to_close_timeout?: int,
+     *     schedule_to_start_timeout?: int,
+     *     schedule_to_close_timeout?: int,
+     *     heartbeat_timeout?: int
+     * }|null
      */
     private static function normalizeScheduleActivityCommand(array $command): ?array
     {
         $activityType = self::normalizeRequiredString($command['activity_type'] ?? null);
+        $retryPolicy = self::normalizeActivityRetryPolicy($command['retry_policy'] ?? null);
+        $startToCloseTimeout = self::normalizePositiveInt($command['start_to_close_timeout'] ?? null);
+        $scheduleToStartTimeout = self::normalizePositiveInt($command['schedule_to_start_timeout'] ?? null);
+        $scheduleToCloseTimeout = self::normalizePositiveInt($command['schedule_to_close_timeout'] ?? null);
+        $heartbeatTimeout = self::normalizePositiveInt($command['heartbeat_timeout'] ?? null);
 
         if ($activityType === null) {
             return null;
+        }
+
+        if (($command['retry_policy'] ?? null) !== null && $retryPolicy === null) {
+            return null;
+        }
+
+        foreach (
+            [
+                'start_to_close_timeout' => $startToCloseTimeout,
+                'schedule_to_start_timeout' => $scheduleToStartTimeout,
+                'schedule_to_close_timeout' => $scheduleToCloseTimeout,
+                'heartbeat_timeout' => $heartbeatTimeout,
+            ] as $field => $value
+        ) {
+            if (($command[$field] ?? null) !== null && $value === null) {
+                return null;
+            }
         }
 
         return array_filter([
@@ -1468,6 +1569,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'arguments' => self::normalizeNullableString($command['arguments'] ?? null),
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
             'queue' => self::normalizeOptionalString($command['queue'] ?? null),
+            'retry_policy' => $retryPolicy,
+            'start_to_close_timeout' => $startToCloseTimeout,
+            'schedule_to_start_timeout' => $scheduleToStartTimeout,
+            'schedule_to_close_timeout' => $scheduleToCloseTimeout,
+            'heartbeat_timeout' => $heartbeatTimeout,
         ], static fn (mixed $value): bool => $value !== null);
     }
 
@@ -1659,6 +1765,79 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return $value;
+    }
+
+    private static function normalizePositiveInt(mixed $value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_int($value) || $value < 1) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeActivityRetryPolicy(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $policy = [];
+
+        if (array_key_exists('max_attempts', $value)) {
+            if (! is_int($value['max_attempts']) || $value['max_attempts'] < 1) {
+                return null;
+            }
+
+            $policy['max_attempts'] = $value['max_attempts'];
+        }
+
+        if (array_key_exists('backoff_seconds', $value)) {
+            if (! is_array($value['backoff_seconds'])) {
+                return null;
+            }
+
+            $backoff = [];
+            foreach (array_values($value['backoff_seconds']) as $seconds) {
+                if (! is_int($seconds) || $seconds < 0) {
+                    return null;
+                }
+
+                $backoff[] = $seconds;
+            }
+
+            $policy['backoff_seconds'] = $backoff;
+        }
+
+        if (array_key_exists('non_retryable_error_types', $value)) {
+            if (! is_array($value['non_retryable_error_types'])) {
+                return null;
+            }
+
+            $types = [];
+            foreach (array_values($value['non_retryable_error_types']) as $type) {
+                if (! is_string($type) || trim($type) === '') {
+                    return null;
+                }
+
+                $types[] = trim($type);
+            }
+
+            $policy['non_retryable_error_types'] = array_values(array_unique($types));
+        }
+
+        return $policy === [] ? null : $policy;
     }
 
     /**
