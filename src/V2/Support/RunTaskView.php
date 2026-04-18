@@ -206,11 +206,18 @@ final class RunTaskView
         $hasUnsupportedWait = self::hasUnsupportedWait($waits);
 
         foreach ($waits as $wait) {
-            if (($wait['status'] ?? null) !== 'open' || ($wait['task_backed'] ?? false) === true) {
+            $kind = self::stringValue($wait['kind'] ?? null);
+            $isSignalTimeoutApplication = $kind === 'signal'
+                && self::stringValue($wait['source_status'] ?? null) === 'timed_out'
+                && self::stringValue($wait['resume_source_kind'] ?? null) === 'timer'
+                && self::stringValue($wait['resume_source_id'] ?? null) !== null;
+
+            if (
+                (($wait['status'] ?? null) !== 'open' && ! $isSignalTimeoutApplication)
+                || ($wait['task_backed'] ?? false) === true
+            ) {
                 continue;
             }
-
-            $kind = self::stringValue($wait['kind'] ?? null);
 
             if (
                 $kind === 'activity'
@@ -265,6 +272,28 @@ final class RunTaskView
                 $rows[] = self::missingTimerTaskRow($run, $timer ?? [
                     'id' => $timerId,
                 ], $wait, true);
+
+                continue;
+            }
+
+            if (
+                $kind === 'signal'
+                && self::stringValue($wait['resume_source_kind'] ?? null) === 'timer'
+                && self::stringValue($wait['resume_source_id'] ?? null) !== null
+            ) {
+                if (self::timestamp($wait['timeout_fired_at'] ?? null) !== null) {
+                    $rows[] = self::missingSignalTimeoutWorkflowTaskRow($run, $wait);
+
+                    continue;
+                }
+
+                $timerId = self::stringValue($wait['resume_source_id'] ?? null);
+
+                /** @var array<string, mixed>|null $timer */
+                $timer = $timerId === null ? null : $timers->get($timerId);
+                $rows[] = self::missingSignalTimeoutTimerTaskRow($run, $timer ?? [
+                    'id' => $timerId,
+                ], $wait);
 
                 continue;
             }
@@ -457,6 +486,43 @@ final class RunTaskView
         return $row;
     }
 
+    private static function missingSignalTimeoutWorkflowTaskRow(WorkflowRun $run, array $wait): array
+    {
+        $signalWaitId = self::stringValue($wait['signal_wait_id'] ?? null)
+            ?? self::stringValue($wait['id'] ?? null)
+            ?? 'signal';
+        $timerId = self::stringValue($wait['resume_source_id'] ?? null);
+        $signalName = self::stringValue($wait['target_name'] ?? null);
+
+        $row = self::missingTaskBase(
+            $run,
+            sprintf('missing:workflow:signal-timeout:%s', $signalWaitId),
+            TaskType::Workflow->value,
+            $run->connection,
+            $run->queue,
+            self::timestamp($wait['timeout_fired_at'] ?? null)
+                ?? self::timestamp($wait['deadline_at'] ?? null)
+                ?? self::timestamp($wait['opened_at'] ?? null),
+        );
+
+        $row['summary'] = sprintf(
+            'Workflow task missing to apply signal%s timeout.',
+            $signalName === null ? '' : sprintf(' %s', $signalName),
+        );
+        $row['timer_id'] = $timerId;
+        $row['timer_sequence'] = self::intValue($wait['sequence'] ?? null);
+        $row['timer_fire_at'] = self::timestamp($wait['deadline_at'] ?? null);
+        $row['signal_wait_id'] = $signalWaitId;
+        $row['signal_name'] = $signalName;
+        $row['workflow_wait_kind'] = 'signal';
+        $row['workflow_open_wait_id'] = $signalWaitId;
+        $row['workflow_resume_source_kind'] = 'timer';
+        $row['workflow_resume_source_id'] = $timerId;
+        $row['workflow_sequence'] = self::intValue($wait['sequence'] ?? null);
+
+        return $row;
+    }
+
     /**
      * @param array<string, mixed> $timer
      * @param array<string, mixed> $wait
@@ -502,6 +568,47 @@ final class RunTaskView
         $row['condition_wait_id'] = $conditionWaitId;
         $row['condition_key'] = $conditionKey;
         $row['condition_definition_fingerprint'] = $conditionDefinitionFingerprint;
+
+        return $row;
+    }
+
+    /**
+     * @param array<string, mixed> $timer
+     * @param array<string, mixed> $wait
+     * @return array<string, mixed>
+     */
+    private static function missingSignalTimeoutTimerTaskRow(WorkflowRun $run, array $timer, array $wait): array
+    {
+        $timerId = self::stringValue($timer['id'] ?? null)
+            ?? self::stringValue($wait['resume_source_id'] ?? null)
+            ?? 'timer';
+        $availableAt = self::timestamp($wait['deadline_at'] ?? null)
+            ?? self::timestamp($timer['fire_at'] ?? null);
+        $signalWaitId = self::stringValue($wait['signal_wait_id'] ?? null)
+            ?? self::stringValue($timer['signal_wait_id'] ?? null)
+            ?? self::stringValue($wait['id'] ?? null);
+        $signalName = self::stringValue($wait['target_name'] ?? null)
+            ?? self::stringValue($timer['signal_name'] ?? null);
+
+        $row = self::missingTaskBase(
+            $run,
+            sprintf('missing:timer:%s', $timerId),
+            TaskType::Timer->value,
+            $run->connection,
+            $run->queue,
+            $availableAt,
+        );
+
+        $row['summary'] = sprintf(
+            'Signal timeout task missing%s.',
+            $signalName === null ? '' : sprintf(' for %s', $signalName),
+        );
+        $row['timer_id'] = $timerId;
+        $row['timer_sequence'] = self::intValue($timer['sequence'] ?? null)
+            ?? self::intValue($wait['sequence'] ?? null);
+        $row['timer_fire_at'] = $availableAt;
+        $row['signal_wait_id'] = $signalWaitId;
+        $row['signal_name'] = $signalName;
 
         return $row;
     }

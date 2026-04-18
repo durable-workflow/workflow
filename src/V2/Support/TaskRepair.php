@@ -376,6 +376,66 @@ final class TaskRepair
             }
         }
 
+        if ($summary->wait_kind === 'signal' && $summary->resume_source_kind === 'timer') {
+            $signalWait = self::openSignalWait($run, $summary);
+            $timerId = self::nonEmptyString($signalWait['timer_id'] ?? null)
+                ?? self::nonEmptyString($summary->resume_source_id);
+            $timer = $timerId === null ? null : TimerRecovery::restore($run, $timerId);
+            $availableAt = self::timestamp($signalWait['deadline_at'] ?? null)
+                ?? $timer?->fire_at
+                ?? now();
+            $timeoutFiredAt = self::timestamp($signalWait['timeout_fired_at'] ?? null)
+                ?? $timer?->fired_at;
+
+            if ($timerId !== null && ($timeoutFiredAt !== null || $timer?->status === TimerStatus::Fired)) {
+                /** @var WorkflowTask $task */
+                $task = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Workflow->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $timeoutFiredAt ?? now(),
+                    'payload' => array_filter([
+                        'workflow_wait_kind' => 'signal',
+                        'open_wait_id' => self::nonEmptyString($signalWait['signal_wait_id'] ?? null)
+                            ?? self::nonEmptyString($summary->open_wait_id),
+                        'resume_source_kind' => 'timer',
+                        'resume_source_id' => $timerId,
+                        'timer_id' => $timerId,
+                        'signal_wait_id' => self::nonEmptyString($signalWait['signal_wait_id'] ?? null),
+                        'signal_name' => self::nonEmptyString($signalWait['signal_name'] ?? null),
+                        'workflow_sequence' => self::intValue($signalWait['sequence'] ?? null),
+                    ], static fn (mixed $value): bool => $value !== null),
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
+                    'repair_count' => 1,
+                ]);
+
+                return $task;
+            }
+
+            if ($timer instanceof WorkflowTimer && $timerId !== null) {
+                /** @var WorkflowTask $task */
+                $task = WorkflowTask::query()->create([
+                    'workflow_run_id' => $run->id,
+                    'task_type' => TaskType::Timer->value,
+                    'status' => TaskStatus::Ready->value,
+                    'available_at' => $availableAt->isFuture() ? $availableAt : now(),
+                    'payload' => array_filter([
+                        'timer_id' => $timerId,
+                        'signal_wait_id' => self::nonEmptyString($signalWait['signal_wait_id'] ?? null),
+                        'signal_name' => self::nonEmptyString($signalWait['signal_name'] ?? null),
+                    ], static fn (mixed $value): bool => $value !== null),
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                    'compatibility' => $run->compatibility,
+                    'repair_count' => 1,
+                ]);
+
+                return $task;
+            }
+        }
+
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
@@ -497,6 +557,40 @@ final class TaskRepair
 
         foreach (ConditionWaits::forRun($run) as $wait) {
             if (($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            if (($wait['timer_id'] ?? null) === $timerId) {
+                return $wait;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function openSignalWait(WorkflowRun $run, WorkflowRunSummary $summary): ?array
+    {
+        foreach (SignalWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open' && ($wait['source_status'] ?? null) !== 'timed_out') {
+                continue;
+            }
+
+            if (($wait['signal_wait_id'] ?? null) === $summary->open_wait_id) {
+                return $wait;
+            }
+        }
+
+        $timerId = self::nonEmptyString($summary->resume_source_id);
+
+        if ($timerId === null) {
+            return null;
+        }
+
+        foreach (SignalWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open' && ($wait['source_status'] ?? null) !== 'timed_out') {
                 continue;
             }
 

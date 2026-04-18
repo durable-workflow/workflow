@@ -252,6 +252,8 @@ final class RunWaitView
             $timeoutSeconds = self::intValue($wait['timeout_seconds'] ?? null);
             $timerId = self::stringValue($wait['timer_id'] ?? null);
             $task = $timerId === null ? null : ($taskByTimerId[$timerId] ?? null);
+            $resumeSourceKind = $timerId !== null ? 'timer' : 'signal';
+            $resumeSourceId = $timerId !== null ? $timerId : $wait['command_id'];
 
             $summary = match ($wait['status']) {
                 'open' => $timeoutSeconds === null
@@ -270,7 +272,11 @@ final class RunWaitView
                     default => 'Signal wait ended when the run failed.',
                 },
                 default => $wait['source_status'] === 'timed_out'
-                    ? sprintf('Signal %s timed out after %s.', $wait['signal_name'], self::durationLabel($timeoutSeconds ?? 0))
+                    ? sprintf(
+                        'Signal %s timed out after %s.',
+                        $wait['signal_name'],
+                        self::durationLabel($timeoutSeconds ?? 0)
+                    )
                     : sprintf('Signal %s received.', $wait['signal_name']),
             };
 
@@ -292,8 +298,8 @@ final class RunWaitView
                 'target_type' => null,
                 'task_backed' => self::isOpenTask($task),
                 'external_only' => $timerId === null,
-                'resume_source_kind' => $wait['source_status'] === 'timed_out' ? 'timer' : 'signal',
-                'resume_source_id' => $wait['source_status'] === 'timed_out' ? $timerId : $wait['command_id'],
+                'resume_source_kind' => $resumeSourceKind,
+                'resume_source_id' => $resumeSourceId,
                 'task_id' => $task?->id,
                 'task_type' => $task?->task_type?->value,
                 'task_status' => $task?->status?->value,

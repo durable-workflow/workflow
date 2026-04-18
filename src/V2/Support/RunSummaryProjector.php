@@ -195,9 +195,17 @@ final class RunSummaryProjector
             $resumeSourceId = $openConditionWait['resume_source_id'];
         } elseif ($openSignalWait !== null) {
             $waitKind = 'signal';
-            $waitReason = ($openSignalWait['timeout_seconds'] ?? null) === null
-                ? sprintf('Waiting for signal %s', $openSignalWait['name'])
-                : sprintf('Waiting for signal %s or timeout', $openSignalWait['name']);
+            $waitReason = match (true) {
+                self::timestamp($openSignalWait['timeout_fired_at'] ?? null) !== null => sprintf(
+                    'Waiting to apply signal %s timeout',
+                    $openSignalWait['name'],
+                ),
+                ($openSignalWait['timeout_seconds'] ?? null) === null => sprintf(
+                    'Waiting for signal %s',
+                    $openSignalWait['name'],
+                ),
+                default => sprintf('Waiting for signal %s or timeout', $openSignalWait['name']),
+            };
             $waitStartedAt = $openSignalWait['opened_at'];
             $waitDeadlineAt = $openSignalWait['deadline_at'];
             $openWaitId = $openSignalWait['id'];
@@ -632,6 +640,43 @@ final class RunSummaryProjector
             return ['waiting_for_condition', 'Waiting for a condition-changing durable input.'];
         }
 
+        if ($openSignalWait !== null && $openSignalWait['timer_id'] !== null) {
+            if (self::timestamp($openSignalWait['timeout_fired_at'] ?? null) !== null) {
+                if ($nextTask !== null) {
+                    return self::taskLiveness($nextTask, $run, 'Signal timeout');
+                }
+
+                return [
+                    'repair_needed',
+                    sprintf('Signal wait %s has a fired timeout without an open workflow task.', $openSignalWait['id']),
+                ];
+            }
+
+            if ($nextTask !== null) {
+                if (
+                    TaskRepairPolicy::leaseExpired($nextTask)
+                    || TaskRepairPolicy::readyTaskNeedsRedispatch($nextTask)
+                    || TaskRepairPolicy::claimFailed($nextTask)
+                ) {
+                    return self::taskLiveness($nextTask, $run, 'Signal timeout');
+                }
+
+                return [
+                    'waiting_for_signal',
+                    sprintf(
+                        'Waiting for signal %s or timeout at %s.',
+                        $openSignalWait['name'],
+                        $openSignalWait['deadline_at']?->toJSON() ?? 'an unknown time',
+                    ),
+                ];
+            }
+
+            return [
+                'repair_needed',
+                sprintf('Signal wait %s is open without an open timeout task.', $openSignalWait['id']),
+            ];
+        }
+
         if ($openTimer !== null) {
             if ($nextTask !== null) {
                 if (
@@ -933,7 +978,9 @@ final class RunSummaryProjector
      *     name: string,
      *     opened_at: \Carbon\CarbonInterface,
      *     deadline_at: \Carbon\CarbonInterface|null,
+     *     timeout_fired_at: \Carbon\CarbonInterface|null,
      *     timeout_seconds: int|null,
+     *     timer_id: string|null,
      *     resume_source_kind: string,
      *     resume_source_id: string|null
      * }|null
@@ -942,7 +989,8 @@ final class RunSummaryProjector
     {
         $openSignals = array_values(array_filter(
             SignalWaits::forRun($run),
-            static fn (array $wait): bool => $wait['status'] === 'open',
+            static fn (array $wait): bool => $wait['status'] === 'open'
+                || $wait['source_status'] === 'timed_out',
         ));
 
         if ($openSignals === []) {
@@ -969,15 +1017,19 @@ final class RunSummaryProjector
 
         /** @var array{id: string, name: string, opened_at: \Carbon\CarbonInterface} $signal */
         $signal = end($openSignals);
+        $timerId = self::nonEmptyString($signal['timer_id'] ?? null);
+        $timeoutFiredAt = self::timestamp($signal['timeout_fired_at'] ?? null);
 
         return [
             'id' => $signal['signal_wait_id'],
             'name' => $signal['signal_name'],
             'opened_at' => $signal['opened_at'],
             'deadline_at' => self::timestamp($signal['deadline_at'] ?? null),
+            'timeout_fired_at' => $timeoutFiredAt,
             'timeout_seconds' => self::intValue($signal['timeout_seconds'] ?? null),
-            'resume_source_kind' => 'signal',
-            'resume_source_id' => null,
+            'timer_id' => $timerId,
+            'resume_source_kind' => $timerId === null ? 'signal' : 'timer',
+            'resume_source_id' => $timerId,
         ];
     }
 
