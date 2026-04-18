@@ -37,6 +37,8 @@ final class WorkflowTaskPayload
             'resume_source_kind' => 'workflow_signal',
             'resume_source_id' => $signal->id,
             'workflow_signal_id' => $signal->id,
+            'signal_name' => $signal->signal_name,
+            'signal_wait_id' => $signal->signal_wait_id,
             'workflow_command_id' => $signal->workflow_command_id,
         ], static fn (mixed $value): bool => $value !== null);
     }

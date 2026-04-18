@@ -4434,6 +4434,8 @@ final class V2WorkflowTest extends TestCase
             'resume_source_kind' => 'workflow_signal',
             'resume_source_id' => $signal->id,
             'workflow_signal_id' => $signal->id,
+            'signal_name' => 'name-provided',
+            'signal_wait_id' => $signal->signal_wait_id,
             'workflow_command_id' => $result->commandId(),
         ], $signalTask->payload);
 
@@ -5591,6 +5593,8 @@ final class V2WorkflowTest extends TestCase
             'resume_source_kind' => 'workflow_signal',
             'resume_source_id' => $signalRecord->id,
             'workflow_signal_id' => $signalRecord->id,
+            'signal_name' => 'name-provided',
+            'signal_wait_id' => $signalRecord->signal_wait_id,
             'workflow_command_id' => $signalRecord->workflow_command_id,
         ], $task->payload);
         $this->assertSame(1, $task->repair_count);
@@ -5680,6 +5684,8 @@ final class V2WorkflowTest extends TestCase
             'resume_source_kind' => 'workflow_signal',
             'resume_source_id' => $signalRecord->id,
             'workflow_signal_id' => $signalRecord->id,
+            'signal_name' => 'name-provided',
+            'signal_wait_id' => $signalRecord->signal_wait_id,
             'workflow_command_id' => $signalRecord->workflow_command_id,
         ], $task->payload);
         $this->assertSame(1, $task->repair_count);
