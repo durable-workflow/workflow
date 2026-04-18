@@ -10,7 +10,6 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
-use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -18,7 +17,6 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
-use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -87,6 +85,10 @@ final class ActivityOutcomeRecorder
             }
 
             if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true)) {
+                $reason = $run->status === RunStatus::Terminated
+                    ? 'run_terminated'
+                    : 'run_cancelled';
+
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Cancelled,
                     'closed_at' => $lockedExecution->closed_at ?? now(),
@@ -95,7 +97,7 @@ final class ActivityOutcomeRecorder
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Cancelled);
 
                 $task->forceFill([
-                    'status' => $task->status === TaskStatus::Cancelled ? TaskStatus::Cancelled : TaskStatus::Completed,
+                    'status' => TaskStatus::Cancelled,
                     'lease_expires_at' => null,
                 ])->save();
 
@@ -103,7 +105,7 @@ final class ActivityOutcomeRecorder
 
                 RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
-                return self::recorded(null);
+                return self::ignored($reason);
             }
 
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
@@ -350,8 +352,12 @@ final class ActivityOutcomeRecorder
     /**
      * @return array{recorded: bool, reason: string|null, next_task: WorkflowTask|null}
      */
-    public static function recordForAttempt(string $attemptId, mixed $result, ?Throwable $throwable, ?string $codec = null): array
-    {
+    public static function recordForAttempt(
+        string $attemptId,
+        mixed $result,
+        ?Throwable $throwable,
+        ?string $codec = null
+    ): array {
         /** @var ActivityAttempt|null $attempt */
         $attempt = ActivityAttempt::query()
             ->with('execution')

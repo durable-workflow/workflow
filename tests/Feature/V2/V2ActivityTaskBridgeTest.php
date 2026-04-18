@@ -9,11 +9,15 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -245,6 +249,77 @@ final class V2ActivityTaskBridgeTest extends TestCase
         ]);
 
         $this->assertTrue($result['recorded']);
+    }
+
+    public function testCompleteAfterCancelledRunClosesAttemptAndReportsIgnoredOutcome(): void
+    {
+        [$run, $execution, $task] = $this->createActivityTask();
+
+        $claim = $this->bridge->claim($task->id, 'worker-1');
+        $this->assertNotNull($claim);
+
+        $run->forceFill([
+            'status' => RunStatus::Cancelled->value,
+        ])->save();
+
+        $result = $this->bridge->complete($claim['activity_attempt_id'], 'too late');
+
+        $this->assertFalse($result['recorded']);
+        $this->assertSame('run_cancelled', $result['reason']);
+        $this->assertNull($result['next_task_id']);
+
+        /** @var ActivityExecution $execution */
+        $execution = $execution->fresh();
+        /** @var WorkflowTask $task */
+        $task = $task->fresh();
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()->findOrFail($claim['activity_attempt_id']);
+
+        $this->assertSame(ActivityStatus::Cancelled, $execution->status);
+        $this->assertSame(ActivityAttemptStatus::Cancelled, $attempt->status);
+        $this->assertSame(TaskStatus::Cancelled, $task->status);
+
+        $this->assertDatabaseHas((new WorkflowHistoryEvent())->getTable(), [
+            'workflow_run_id' => $run->id,
+            'event_type' => HistoryEventType::ActivityCancelled->value,
+        ]);
+    }
+
+    public function testFailAfterTerminatedRunClosesAttemptAndReportsIgnoredOutcome(): void
+    {
+        [$run, $execution, $task] = $this->createActivityTask();
+
+        $claim = $this->bridge->claim($task->id, 'worker-1');
+        $this->assertNotNull($claim);
+
+        $run->forceFill([
+            'status' => RunStatus::Terminated->value,
+        ])->save();
+
+        $result = $this->bridge->fail($claim['activity_attempt_id'], [
+            'message' => 'too late',
+            'type' => 'ExternalError',
+        ]);
+
+        $this->assertFalse($result['recorded']);
+        $this->assertSame('run_terminated', $result['reason']);
+        $this->assertNull($result['next_task_id']);
+
+        /** @var ActivityExecution $execution */
+        $execution = $execution->fresh();
+        /** @var WorkflowTask $task */
+        $task = $task->fresh();
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()->findOrFail($claim['activity_attempt_id']);
+
+        $this->assertSame(ActivityStatus::Cancelled, $execution->status);
+        $this->assertSame(ActivityAttemptStatus::Cancelled, $attempt->status);
+        $this->assertSame(TaskStatus::Cancelled, $task->status);
+
+        $this->assertDatabaseHas((new WorkflowHistoryEvent())->getTable(), [
+            'workflow_run_id' => $run->id,
+            'event_type' => HistoryEventType::ActivityCancelled->value,
+        ]);
     }
 
     public function testStatusReturnsAttemptState(): void
