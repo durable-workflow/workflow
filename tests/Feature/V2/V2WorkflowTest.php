@@ -4656,12 +4656,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testSignalCommandCanAcceptSingleAssociativePayloadViaArraySafeHelper(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalPayloadWorkflow::class, 'signal-payload-instance');
         $workflow->start();
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'signal');
@@ -4673,6 +4677,8 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertTrue($result->accepted());
         $this->assertSame('signal_received', $result->outcome());
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
@@ -4697,12 +4703,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testSignalCommandCanAcceptNamedArgumentsViaDeclaredSignalContract(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-instance');
         $workflow->start();
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'signal');
@@ -4713,6 +4723,8 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertTrue($result->accepted());
         $this->assertSame('signal_received', $result->outcome());
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
@@ -4885,8 +4897,12 @@ final class V2WorkflowTest extends TestCase
 
     public function testSignalCommandRejectsTypeMismatchedArgumentsAgainstDeclaredContract(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'signal-contract-type-mismatch');
         $workflow->start();
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'signal');
