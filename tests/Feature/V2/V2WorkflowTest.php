@@ -1668,6 +1668,13 @@ final class V2WorkflowTest extends TestCase
 
     public function testActivityHeartbeatRenewsCurrentAttemptLease(): void
     {
+        // Block the background TaskWatchdog: this test seeds a leased
+        // ActivityAttempt directly and relies on the heartbeat path to mutate
+        // it. Under CI load the testbench worker poll can run wake() between
+        // setup and heartbeat, reclaim the attempt, and leave the execution's
+        // last_heartbeat_at null — exactly the failure shape seen in #399.
+        Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 60);
+
         $startedAt = Carbon::parse('2026-04-08 12:00:00');
         Carbon::setTestNow($startedAt);
 
@@ -2988,6 +2995,11 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame($link->id, $childCompleted->payload['child_call_id'] ?? null);
         $this->assertSame($link->child_workflow_run_id, $childCompleted->payload['child_workflow_run_id'] ?? null);
+
+        // Block the background TaskWatchdog from racing the test's repair: in
+        // CI the testbench queue workers poll wake() every loop, and they would
+        // otherwise recreate the deleted task before attemptRepair runs.
+        Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 60);
 
         WorkflowTask::query()
             ->where('workflow_run_id', $parentRunId)
