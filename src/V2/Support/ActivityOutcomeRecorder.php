@@ -458,12 +458,14 @@ final class ActivityOutcomeRecorder
     /**
      * Serialize an activity payload, preferring the worker-supplied codec
      * (treats $value as already-serialized bytes), then the parent run's
-     * codec, then falling back to the package default.
+     * codec (with a chooseCodecForData PHP-only fallback), then the package
+     * default.
      *
      * The encoded blob is stamped on the activity row; the workflow side
-     * later decodes it with the run codec (see ActivityExecution::activityResult).
-     * Pinning to the run codec keeps the bytes and the decode codec aligned
-     * even when the package default differs from the run codec.
+     * later decodes it with a codec sniff so a Y-encoded fallback round-
+     * trips even when the run's codec tag says Avro. Keeps parity with
+     * activity-argument scheduling (see WorkflowExecutor::scheduleActivity
+     * and #429).
      */
     private static function serializeWithCodec(mixed $value, ?string $workerCodec, ?string $runCodec): string
     {
@@ -472,7 +474,9 @@ final class ActivityOutcomeRecorder
         }
 
         if (is_string($runCodec) && $runCodec !== '') {
-            return Serializer::serializeWithCodec($runCodec, $value);
+            $chosenCodec = Serializer::chooseCodecForData($runCodec, $value);
+
+            return Serializer::serializeWithCodec($chosenCodec, $value);
         }
 
         return Serializer::serialize($value);

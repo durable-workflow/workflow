@@ -1334,7 +1334,18 @@ final class WorkflowExecutor
                 ->addSeconds($options->scheduleToCloseTimeout)
             : null;
 
-        $serializedArguments = Serializer::serializeWithCodec($run->payload_codec, $activityCall->arguments);
+        // Activity arguments often contain consumer-side PHP objects (messages,
+        // DTOs, value objects) that the v2 default Avro codec can only encode
+        // by round-tripping through JSON — which drops class identity and
+        // hands the activity a plain associative array. Apply the same
+        // chooseCodecForData fallback child workflow scheduling uses so PHP-
+        // only arguments serialize with the legacy Y codec and arrive at the
+        // activity as the typed objects the producer passed in. The blob is
+        // self-describing (Avro's wrapper prefix / PHP-serialize's "O:"/"a:"
+        // shapes are disjoint), so the decode path can sniff without needing
+        // a stored per-execution codec column. See #429.
+        $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $activityCall->arguments);
+        $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $activityCall->arguments);
         StructuralLimits::guardPayloadSize($serializedArguments);
 
         /** @var ActivityExecution $execution */
