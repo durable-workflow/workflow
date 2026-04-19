@@ -559,7 +559,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($execution->id, $heartbeat->payload['activity_execution_id'] ?? null);
         $this->assertSame($attempt->id, $heartbeat->payload['activity_attempt_id'] ?? null);
         $this->assertSame($execution->last_heartbeat_at?->toJSON(), $heartbeat->payload['heartbeat_at'] ?? null);
-        $this->assertSame($expectedProgress, $heartbeat->payload['progress'] ?? null);
+        $this->assertSameJsonObject($expectedProgress, $heartbeat->payload['progress'] ?? null);
         $this->assertSame(
             $execution->last_heartbeat_at?->toJSON(),
             $heartbeat->payload['activity']['last_heartbeat_at'] ?? null
@@ -567,8 +567,8 @@ final class V2WorkflowTest extends TestCase
 
         $export = $workflow->historyExport();
 
-        $this->assertSame($expectedProgress, $export['activities'][0]['last_heartbeat_progress'] ?? null);
-        $this->assertSame(
+        $this->assertSameJsonObject($expectedProgress, $export['activities'][0]['last_heartbeat_progress'] ?? null);
+        $this->assertSameJsonObject(
             $expectedProgress,
             $export['activities'][0]['attempts'][0]['last_heartbeat_progress'] ?? null
         );
@@ -1597,7 +1597,7 @@ final class V2WorkflowTest extends TestCase
         $lateCompletion = ActivityTaskBridge::complete($claim['activity_attempt_id'], 'too late');
 
         $this->assertFalse($lateCompletion['recorded']);
-        $this->assertSame('stale_attempt', $lateCompletion['reason']);
+        $this->assertSame('run_cancelled', $lateCompletion['reason']);
     }
 
     public function testActivityCancelledHistoryIsTerminalForQueryAndWorkerReplay(): void

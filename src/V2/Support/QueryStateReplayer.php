@@ -324,6 +324,19 @@ final class QueryStateReplayer
                     continue;
                 }
 
+                // History is authoritative: if the parent run has already
+                // committed a ChildWorkflowScheduled/ChildRunStarted event for
+                // this sequence but no resolution event yet, the workflow
+                // must stay suspended at the child call even if the child's
+                // DB row was updated to a terminal status (by a racing child
+                // worker, by a cross-run repair, or by a test that manipulates
+                // the child directly). Falling back to child DB state here
+                // would leak non-history state into query replay.
+                if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $sequence)) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
                 $childStatus = $childRun instanceof WorkflowRun
                     ? ChildRunHistory::resolvedStatus(null, $childRun)
                     : null;
@@ -355,11 +368,6 @@ final class QueryStateReplayer
                     ++$sequence;
 
                     continue;
-                }
-
-                if (ChildRunHistory::parentHistoryBlocksResolutionWithoutEvent($run, $sequence)) {
-                    $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    return new ReplayState($workflow, $sequence, $current);
                 }
 
                 if ($childRun instanceof WorkflowRun) {
