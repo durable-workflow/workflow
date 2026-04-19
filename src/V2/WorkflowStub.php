@@ -3333,18 +3333,22 @@ final class WorkflowStub
 
         $contract = RunCommandContract::signalContract($run, $signalName);
 
-        if ($contract === null) {
-            try {
-                $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
-            } catch (LogicException) {
-                return [
-                    'arguments' => [$arguments],
-                    'validation_errors' => [],
-                ];
-            }
-
-            $contract = WorkflowDefinition::signalContract($workflowClass, $signalName);
+        if ($contract !== null) {
+            return $this->normalizeNamedCommandArguments($contract, $arguments);
         }
+
+        try {
+            $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        } catch (LogicException) {
+            return [
+                'arguments' => [],
+                'validation_errors' => [
+                    'arguments' => ['Named arguments require a durable or loadable workflow signal contract.'],
+                ],
+            ];
+        }
+
+        $contract = WorkflowDefinition::signalContract($workflowClass, $signalName);
 
         return $contract === null
             ? [

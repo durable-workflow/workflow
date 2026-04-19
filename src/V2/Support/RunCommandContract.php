@@ -174,22 +174,6 @@ final class RunCommandContract
             return null;
         }
 
-        foreach ([
-            'declared_queries',
-            'declared_query_contracts',
-            'declared_signals',
-            'declared_signal_contracts',
-            'declared_updates',
-            'declared_update_contracts',
-            'declared_entry_method',
-            'declared_entry_mode',
-            'declared_entry_declaring_class',
-        ] as $field) {
-            if (! array_key_exists($field, $event->payload)) {
-                return null;
-            }
-        }
-
         $queries = self::normalizeList($event->payload['declared_queries'] ?? null);
         $queryContracts = self::normalizeCommandContracts($event->payload['declared_query_contracts'] ?? null);
         $signals = self::normalizeList($event->payload['declared_signals'] ?? null);
@@ -200,29 +184,70 @@ final class RunCommandContract
         $entryMode = self::normalizeEntryMode($event->payload['declared_entry_mode'] ?? null);
         $entryDeclaringClass = self::normalizeClassString($event->payload['declared_entry_declaring_class'] ?? null);
 
-        if (
-            $queries === null
-            || $queryContracts === null
-            || $signals === null
-            || $updates === null
-            || $signalContracts === null
-            || $updateContracts === null
-            || $entryMethod === null
-            || $entryMode === null
-            || $entryDeclaringClass === null
-            || self::missingDeclaredContractNames($queries, $queryContracts) !== []
-            || self::missingDeclaredContractNames($updates, $updateContracts) !== []
-        ) {
+        $hasStrictPayload = array_key_exists('declared_queries', $event->payload)
+            && array_key_exists('declared_query_contracts', $event->payload)
+            && array_key_exists('declared_signals', $event->payload)
+            && array_key_exists('declared_signal_contracts', $event->payload)
+            && array_key_exists('declared_updates', $event->payload)
+            && array_key_exists('declared_update_contracts', $event->payload)
+            && array_key_exists('declared_entry_method', $event->payload)
+            && array_key_exists('declared_entry_mode', $event->payload)
+            && array_key_exists('declared_entry_declaring_class', $event->payload);
+
+        $strictContractValid = $hasStrictPayload
+            && $queries !== null
+            && $queryContracts !== null
+            && $signals !== null
+            && $updates !== null
+            && $signalContracts !== null
+            && $updateContracts !== null
+            && $entryMethod !== null
+            && $entryMode !== null
+            && $entryDeclaringClass !== null
+            && self::missingDeclaredContractNames($queries, $queryContracts) === []
+            && self::missingDeclaredContractNames($updates, $updateContracts) === [];
+
+        if ($strictContractValid) {
+            /** @var list<string> $queries */
+            /** @var list<array<string, mixed>> $queryContracts */
+            /** @var list<string> $signals */
+            /** @var list<array<string, mixed>> $signalContracts */
+            /** @var list<string> $updates */
+            /** @var list<array<string, mixed>> $updateContracts */
+
+            return [
+                'queries' => $queries,
+                'query_contracts' => $queryContracts,
+                'signals' => $signals,
+                'signal_contracts' => $signalContracts,
+                'updates' => $updates,
+                'update_contracts' => $updateContracts,
+                'entry_method' => $entryMethod,
+                'entry_mode' => $entryMode,
+                'entry_declaring_class' => $entryDeclaringClass,
+            ];
+        }
+
+        // Legacy-shape fallback: a WorkflowStarted payload persisted before the
+        // declared_*_contracts / declared_entry_* fields were required can
+        // still declare the set of signals/updates/queries by name. Keep
+        // those declared names addressable (so `hasSignal()` is truthful and
+        // callers can reject named arguments with a contract-required error)
+        // while leaving the per-name contract lists empty. When the payload
+        // has none of the declared_* fields at all, we have no contract.
+        $legacyShape = $signals !== null || $updates !== null || $queries !== null;
+
+        if (! $legacyShape) {
             return null;
         }
 
         return [
-            'queries' => $queries,
-            'query_contracts' => $queryContracts,
-            'signals' => $signals,
-            'signal_contracts' => $signalContracts,
-            'updates' => $updates,
-            'update_contracts' => $updateContracts,
+            'queries' => $queries ?? [],
+            'query_contracts' => [],
+            'signals' => $signals ?? [],
+            'signal_contracts' => [],
+            'updates' => $updates ?? [],
+            'update_contracts' => [],
             'entry_method' => $entryMethod,
             'entry_mode' => $entryMode,
             'entry_declaring_class' => $entryDeclaringClass,
