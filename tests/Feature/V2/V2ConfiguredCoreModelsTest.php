@@ -77,16 +77,23 @@ final class V2ConfiguredCoreModelsTest extends TestCase
                 ->primary();
             $table->string('workflow_class');
             $table->string('workflow_type');
+            $table->string('namespace')
+                ->nullable()
+                ->index();
             $table->string('business_key', 191)
                 ->nullable();
             $table->json('visibility_labels')
                 ->nullable();
             $table->json('memo')
                 ->nullable();
+            $table->unsignedInteger('execution_timeout_seconds')
+                ->nullable();
             $table->string('current_run_id', 26)
                 ->nullable()
                 ->index();
             $table->unsignedInteger('run_count')
+                ->default(0);
+            $table->unsignedInteger('last_message_sequence')
                 ->default(0);
             $table->timestamp('reserved_at', 6)
                 ->nullable();
@@ -106,11 +113,16 @@ final class V2ConfiguredCoreModelsTest extends TestCase
             $table->unsignedInteger('run_number');
             $table->string('workflow_class');
             $table->string('workflow_type');
+            $table->string('namespace')
+                ->nullable()
+                ->index();
             $table->string('business_key', 191)
                 ->nullable();
             $table->json('visibility_labels')
                 ->nullable();
             $table->json('memo')
+                ->nullable();
+            $table->json('search_attributes')
                 ->nullable();
             $table->string('status');
             $table->string('closed_reason')
@@ -131,6 +143,14 @@ final class V2ConfiguredCoreModelsTest extends TestCase
                 ->default(0);
             $table->unsignedInteger('last_command_sequence')
                 ->default(0);
+            $table->unsignedInteger('message_cursor_position')
+                ->default(0);
+            $table->unsignedInteger('run_timeout_seconds')
+                ->nullable();
+            $table->timestamp('execution_deadline_at', 6)
+                ->nullable();
+            $table->timestamp('run_deadline_at', 6)
+                ->nullable();
             $table->timestamp('started_at', 6)
                 ->nullable();
             $table->timestamp('closed_at', 6)
@@ -155,6 +175,9 @@ final class V2ConfiguredCoreModelsTest extends TestCase
             $table->string('id', 26)
                 ->primary();
             $table->string('workflow_run_id', 26)
+                ->index();
+            $table->string('namespace')
+                ->nullable()
                 ->index();
             $table->string('task_type');
             $table->string('status');

@@ -127,6 +127,25 @@ final class Serializer
     }
 
     /**
+     * Pick the codec name actually used to serialize a payload. If the
+     * preferred codec is Avro but the value contains PHP-only objects
+     * (SerializableClosure, resources, arbitrary objects Avro cannot encode),
+     * fall back to the legacy `workflow-serializer-y` codec so the payload
+     * round-trips. Callers that store a payload_codec column alongside the
+     * blob must use the codec returned here, not the preferred input.
+     */
+    public static function chooseCodecForData(?string $preferred, mixed $data): string
+    {
+        $preferredCodec = CodecRegistry::resolve($preferred);
+
+        if ($preferredCodec === Avro::class && self::containsPhpOnlyValue($data)) {
+            return 'workflow-serializer-y';
+        }
+
+        return CodecRegistry::canonicalize($preferred);
+    }
+
+    /**
      * Unserialize using an explicit codec name.
      */
     public static function unserializeWithCodec(?string $codec, string $data)

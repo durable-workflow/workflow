@@ -1515,9 +1515,14 @@ final class WorkflowExecutor
         // arguments (next line) match the codec stamped on the child run.
         // Falling back to the package default when the parent has none
         // keeps pre-pinned parents working.
-        $childCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+        $preferredChildCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
             ? $run->payload_codec
             : CodecRegistry::defaultCodec();
+        // When the child arguments carry PHP-only values (e.g. a
+        // SerializableClosure produced by async()), Avro cannot round-trip
+        // them. Pick the actually-used codec so the row's `payload_codec`
+        // matches what the blob was serialized with.
+        $childCodec = Serializer::chooseCodecForData($preferredChildCodec, $metadata->arguments);
         $serializedChildArguments = Serializer::serializeWithCodec($childCodec, $metadata->arguments);
         StructuralLimits::guardPayloadSize($serializedChildArguments);
 
@@ -2499,8 +2504,11 @@ final class WorkflowExecutor
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Accepted->value,
                     'outcome' => CommandOutcome::StartedNew->value,
-                    'payload_codec' => $sourceRun->payload_codec ?? CodecRegistry::defaultCodec(),
-                    'payload' => Serializer::serializeWithCodec($sourceRun->payload_codec, $arguments),
+                    'payload_codec' => $startCommandCodec = Serializer::chooseCodecForData(
+                        $sourceRun->payload_codec ?? CodecRegistry::defaultCodec(),
+                        $arguments,
+                    ),
+                    'payload' => Serializer::serializeWithCodec($startCommandCodec, $arguments),
                     'accepted_at' => $recordedAt,
                     'applied_at' => $recordedAt,
                     'created_at' => $recordedAt,
