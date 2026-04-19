@@ -2717,7 +2717,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame('workflow', $secondRunStart->source);
         $this->assertSame('Workflow', $secondRunStart->callerLabel());
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'parent_instance_id' => 'continue-instance',
             'parent_run_id' => $runs[0]->id,
             'sequence' => 2,
@@ -2726,7 +2726,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame('workflow', $thirdRunStart->source);
         $this->assertSame('Workflow', $thirdRunStart->callerLabel());
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'parent_instance_id' => 'continue-instance',
             'parent_run_id' => $runs[1]->id,
             'sequence' => 2,
@@ -2858,7 +2858,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame('workflow', $childStart->source);
         $this->assertSame('Workflow', $childStart->callerLabel());
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'parent_instance_id' => 'parent-child-instance',
             'parent_run_id' => $parentRunId,
             'sequence' => 1,
@@ -2909,8 +2909,13 @@ final class V2WorkflowTest extends TestCase
             ->where('link_type', 'child_workflow')
             ->sole();
 
+        $childRunId = $link->child_workflow_run_id;
+        $this->waitFor(
+            static fn (): bool => WorkflowRun::query()->findOrFail($childRunId)->status === RunStatus::Waiting
+        );
+
         /** @var WorkflowRun $childRun */
-        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $childRun = WorkflowRun::query()->findOrFail($childRunId);
         $summary = $workflow->summary();
 
         $this->assertSame('waiting', $workflow->status());
@@ -3537,7 +3542,7 @@ final class V2WorkflowTest extends TestCase
             ->sole(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['sequence'] ?? null) === 3);
 
         $this->assertSame('parallel-activities:1:3', $firstActivityScheduled->payload['parallel_group_id'] ?? null);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',
@@ -3548,7 +3553,7 @@ final class V2WorkflowTest extends TestCase
         ], $firstActivityScheduled->payload['parallel_group_path'] ?? null);
 
         $this->assertSame('parallel-activities:2:2', $secondActivityScheduled->payload['parallel_group_id'] ?? null);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',
@@ -3566,7 +3571,7 @@ final class V2WorkflowTest extends TestCase
         ], $secondActivityScheduled->payload['parallel_group_path'] ?? null);
 
         $this->assertSame('parallel-activities:2:2', $thirdActivityScheduled->payload['parallel_group_id'] ?? null);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',

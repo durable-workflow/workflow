@@ -345,11 +345,11 @@ final class V2WorkflowControlPlaneTest extends TestCase
 
         $run = WorkflowRun::query()->find($result['workflow_run_id']);
         $this->assertSame('order-12345', $run->business_key);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'team' => 'payments',
             'env' => 'staging',
         ], $run->visibility_labels);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'description' => 'Test workflow',
         ], $run->memo);
     }
