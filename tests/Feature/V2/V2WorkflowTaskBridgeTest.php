@@ -1922,7 +1922,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'backoff_seconds' => [2, 8],
             'non_retryable_error_types' => ['ValidationError'],
         ], $childCall->retry_policy);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'snapshot_version' => 1,
             'execution_timeout_seconds' => 600,
             'run_timeout_seconds' => 120,
