@@ -398,6 +398,8 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCompletesWithDistinctInstanceAndRunIds(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
         $instanceId = $workflow->id();
 
@@ -415,6 +417,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($instanceId, $result->instanceId());
         $this->assertSame($runId, $result->runId());
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         /** @var ActivityExecution $execution */
@@ -2305,12 +2308,15 @@ final class V2WorkflowTest extends TestCase
 
     public function testAttemptStartReturnsRejectedResultForDuplicateStart(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class);
         $accepted = $workflow->attemptStart();
 
         $this->assertTrue($accepted->accepted());
         $this->assertSame('started_new', $accepted->outcome());
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
 
         $rejected = $workflow->attemptStart();
@@ -2345,6 +2351,8 @@ final class V2WorkflowTest extends TestCase
 
     public function testAttemptStartCanReturnExistingActiveRunWhenRequested(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'order-123');
 
         $accepted = $workflow->attemptStart();
@@ -2352,6 +2360,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertTrue($accepted->accepted());
         $this->assertSame('started_new', $accepted->outcome());
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
 
         $reused = $workflow->attemptStart(StartOptions::returnExistingActive());
@@ -2576,12 +2585,15 @@ final class V2WorkflowTest extends TestCase
 
     public function testRunSummaryProjectsStableSortContract(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'sort-contract');
         $result = $workflow->start('Taylor');
         $runId = $result->runId();
 
         $this->assertNotNull($runId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         /** @var WorkflowRun $run */
@@ -2795,12 +2807,15 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanWaitForChildWorkflowAndCompleteWithChildOutput(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestParentChildWorkflow::class, 'parent-child-instance');
         $started = $workflow->start('Taylor');
         $parentRunId = $started->runId();
 
         $this->assertNotNull($parentRunId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         /** @var WorkflowLink $link */
@@ -3138,12 +3153,15 @@ final class V2WorkflowTest extends TestCase
 
     public function testChildWorkflowFailurePropagatesToParentRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestParentFailingChildWorkflow::class, 'parent-child-failure');
         $workflow->start();
         $parentRunId = $workflow->runId();
 
         $this->assertNotNull($parentRunId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->failed());
 
         /** @var WorkflowLink $link */
@@ -5526,9 +5544,12 @@ final class V2WorkflowTest extends TestCase
 
     public function testRepairReturnsAcceptedNoOpForHealthySignalWait(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'repair-signal');
         $workflow->start();
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
         $runId = $workflow->runId();
@@ -6520,6 +6541,8 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanCompleteImmediateTimerWithoutSchedulingATimerTask(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class);
         $workflow->start(0);
 
@@ -6527,6 +6550,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertNotNull($runId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         $this->assertSame([
@@ -6646,6 +6670,8 @@ final class V2WorkflowTest extends TestCase
 
     public function testRunTargetedCancelUsesRunScopeForCurrentRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'run-target-current');
         $workflow->start(5);
 
@@ -6653,6 +6679,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertNotNull($runId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'timer');
 
@@ -6953,9 +6980,12 @@ final class V2WorkflowTest extends TestCase
 
     public function testAttemptSignalRejectsClosedRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'closed-signal-instance');
         $workflow->start('Taylor');
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         $result = $workflow->attemptSignal('name-provided', 'Jordan');
@@ -6980,9 +7010,12 @@ final class V2WorkflowTest extends TestCase
 
     public function testAttemptSignalRejectsUnknownSignalName(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'unknown-signal-instance');
         $workflow->start();
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
 
         $result = $workflow->attemptSignal('unknown-signal', 'Jordan');
@@ -7007,9 +7040,12 @@ final class V2WorkflowTest extends TestCase
 
     public function testAttemptTerminateRejectsClosedRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'completed-instance');
         $workflow->start('Taylor');
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         $result = $workflow->attemptTerminate();
