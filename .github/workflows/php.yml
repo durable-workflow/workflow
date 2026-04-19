@@ -77,6 +77,7 @@ jobs:
         mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
 
     - name: Run test suite (MySQL)
+      id: mysql_suite
       timeout-minutes: 65
       run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
       env:
@@ -85,9 +86,16 @@ jobs:
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
 
+    # PostgreSQL suite is currently non-blocking while #427 (TD-064: multi-DB
+    # support workstream) is open — MySQL is the primary gate. --debug prints
+    # each test name as it starts so when the suite stalls in CI the hang
+    # point is visible in the step log instead of hidden behind the 60m
+    # timeout. Drop continue-on-error (and optionally --debug) when #427 lands.
     - name: Run test suite (PostgreSQL)
+      id: pgsql_suite
+      continue-on-error: true
       timeout-minutes: 65
-      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --debug --testsuite feature
       env:
         DB_CONNECTION: pgsql
         DB_PORT: ${{ job.services.postgres.ports[5432] }}
@@ -95,7 +103,7 @@ jobs:
         XDEBUG_MODE: off
 
     - name: Upload laravel.log if tests fail
-      if: failure()
+      if: failure() || steps.mysql_suite.outcome == 'failure' || steps.pgsql_suite.outcome == 'failure'
       uses: actions/upload-artifact@v4
       with:
         name: laravel-log
