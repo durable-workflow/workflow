@@ -6561,12 +6561,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanBeCancelledWhileWaitingOnTimer(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class);
         $workflow->start(2);
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'timer');
@@ -6680,12 +6684,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanBeTerminatedWhileWaitingOnTimer(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class);
         $workflow->start(5);
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'timer');
@@ -7803,12 +7811,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testCancelWithoutReasonLeavesReasonNull(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-no-reason');
         $workflow->start(2);
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'timer');
@@ -7833,12 +7845,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testCancelCreatesFailureRowWithCancelledCategory(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-failure-row');
         $workflow->start(5);
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'timer');
@@ -7883,12 +7899,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testTerminateCreatesFailureRowWithTerminatedCategory(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'terminate-failure-row');
         $workflow->start(5);
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'timer');
@@ -7933,12 +7953,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testCancelWithoutReasonCreatesFailureRowWithDefaultMessage(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-no-reason-failure');
         $workflow->start(5);
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'timer');
@@ -7957,12 +7981,16 @@ final class V2WorkflowTest extends TestCase
 
     public function testCancelFailureRowAppearsInFailureSnapshots(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'cancel-snapshots');
         $workflow->start(5);
 
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
 
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'timer');
@@ -8014,6 +8042,10 @@ final class V2WorkflowTest extends TestCase
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->where('status', TaskStatus::Ready->value)
+                ->where(static function ($query): void {
+                    $query->whereNull('available_at')
+                        ->orWhere('available_at', '<=', now());
+                })
                 ->orderBy('created_at')
                 ->first();
 
