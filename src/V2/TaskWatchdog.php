@@ -40,7 +40,15 @@ final class TaskWatchdog
 
     public static function wake(?string $connection = null, ?string $queue = null): void
     {
-        self::runPass($connection, $queue, respectThrottle: true);
+        try {
+            self::runPass($connection, $queue, respectThrottle: true);
+        } catch (Throwable $throwable) {
+            // Queue workers call wake() on every poll; a transient table-not-found
+            // error during test migrate:fresh windows or a deadlock under heavy
+            // contention must not kill the worker. The next poll re-enters the
+            // pass once the schema/locks settle.
+            report($throwable);
+        }
     }
 
     /**
