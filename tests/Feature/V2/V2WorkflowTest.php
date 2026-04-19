@@ -2917,12 +2917,15 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowSummaryProjectsChildWaitAndHealthyRepairNoOp(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestParentWaitingOnChildWorkflow::class, 'parent-child-waiting');
         $workflow->start(60);
         $parentRunId = $workflow->runId();
 
         $this->assertNotNull($parentRunId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'child');
 
         /** @var WorkflowLink $link */
