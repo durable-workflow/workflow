@@ -3823,12 +3823,15 @@ final class V2RunDetailViewTest extends TestCase
         $deadline = microtime(true) + 10;
 
         while (microtime(true) < $deadline) {
+            $cutoff = now()
+                ->format('Y-m-d H:i:s.u');
+
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->where('status', TaskStatus::Ready->value)
-                ->where(static function ($query): void {
+                ->where(static function ($query) use ($cutoff): void {
                     $query->whereNull('available_at')
-                        ->orWhere('available_at', '<=', now());
+                        ->orWhere('available_at', '<=', $cutoff);
                 })
                 ->orderBy('created_at')
                 ->first();
