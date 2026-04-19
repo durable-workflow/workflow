@@ -2403,11 +2403,11 @@ final class V2WorkflowTest extends TestCase
         $this->assertTrue($result->accepted());
         $this->assertIsString($runId);
         $this->assertSame('order-123', $workflow->businessKey());
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $workflow->visibilityLabels());
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => [
                 'name' => 'Taylor',
                 'vip' => true,
@@ -2428,11 +2428,11 @@ final class V2WorkflowTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('order-123', $instance->business_key);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $instance->visibility_labels);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => [
                 'name' => 'Taylor',
                 'vip' => true,
@@ -2440,11 +2440,11 @@ final class V2WorkflowTest extends TestCase
             'line_items' => [123, 456],
         ], $instance->memo);
         $this->assertSame('order-123', $run->business_key);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $run->visibility_labels);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => [
                 'name' => 'Taylor',
                 'vip' => true,
@@ -2452,16 +2452,16 @@ final class V2WorkflowTest extends TestCase
             'line_items' => [123, 456],
         ], $run->memo);
         $this->assertSame('order-123', $summary->business_key);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $summary->visibility_labels);
         $this->assertSame('order-123', $started->payload['business_key'] ?? null);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $started->payload['visibility_labels'] ?? null);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => [
                 'name' => 'Taylor',
                 'vip' => true,
@@ -2473,11 +2473,11 @@ final class V2WorkflowTest extends TestCase
         $export = $workflow->historyExport();
 
         $this->assertSame('order-123', $detail['business_key']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $detail['visibility_labels']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => [
                 'name' => 'Taylor',
                 'vip' => true,
@@ -2485,11 +2485,11 @@ final class V2WorkflowTest extends TestCase
             'line_items' => [123, 456],
         ], $detail['memo']);
         $this->assertSame('order-123', $export['workflow']['business_key']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $export['workflow']['visibility_labels']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => [
                 'name' => 'Taylor',
                 'vip' => true,
@@ -2497,7 +2497,7 @@ final class V2WorkflowTest extends TestCase
             'line_items' => [123, 456],
         ], $export['workflow']['memo']);
         $this->assertSame('order-123', $export['summary']['business_key']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $export['summary']['visibility_labels']);
@@ -5597,7 +5597,7 @@ final class V2WorkflowTest extends TestCase
             ->where('status', TaskStatus::Ready->value)
             ->sole();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'workflow_wait_kind' => 'signal',
             'open_wait_id' => 'signal-application:' . $signalRecord->id,
             'resume_source_kind' => 'workflow_signal',
@@ -5688,7 +5688,7 @@ final class V2WorkflowTest extends TestCase
             ->where('status', TaskStatus::Ready->value)
             ->sole();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'workflow_wait_kind' => 'signal',
             'open_wait_id' => 'signal-application:' . $signalRecord->id,
             'resume_source_kind' => 'workflow_signal',
