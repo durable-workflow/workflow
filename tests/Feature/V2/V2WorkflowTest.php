@@ -4311,6 +4311,12 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('activity_execution', $handledEvent->payload['source_kind'] ?? null);
         $this->assertSame($failure->source_id, $handledEvent->payload['source_id'] ?? null);
         $this->assertSame('activity', $handledEvent->payload['propagation_kind'] ?? null);
+        $this->assertSame($failure->failure_category->value, $handledEvent->payload['failure_category'] ?? null);
+        $this->assertTrue(in_array(
+            $handledEvent->payload['failure_category'] ?? null,
+            array_map(static fn ($c) => $c->value, FailureCategory::cases()),
+            true,
+        ), 'FailureHandled payload must carry a known FailureCategory enum value.');
         $this->assertTrue($handledEvent->payload['handled'] ?? false);
     }
 

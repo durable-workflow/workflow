@@ -2947,10 +2947,12 @@ final class WorkflowExecutor
         $exceptionType = is_string($failurePayload['exception_type'] ?? null)
             ? $failurePayload['exception_type']
             : (is_string($exceptionPayload['type'] ?? null) ? $exceptionPayload['type'] : null);
+        $failureCategory = self::resolveFailureHandledCategory($failure, $failurePayload);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::FailureHandled, array_filter([
             'failure_id' => $failureId,
             'sequence' => $workflowSequence,
+            'failure_category' => $failureCategory,
             'source_kind' => $failure?->source_kind
                 ?? (is_string($failurePayload['source_kind'] ?? null) ? $failurePayload['source_kind'] : null),
             'source_id' => $failure?->source_id
@@ -2966,6 +2968,34 @@ final class WorkflowExecutor
                 ?? (is_string($failurePayload['message'] ?? null) ? $failurePayload['message'] : null),
             'handled' => true,
         ], static fn (mixed $value): bool => $value !== null), $task);
+    }
+
+    /**
+     * Resolve a canonical FailureCategory value for a FailureHandled event.
+     *
+     * The DB row is authoritative when available (it carries an enum-cast
+     * value); fall back to the failurePayload (which carries the same string
+     * for child propagation), then to the catch-all Application category so
+     * downstream consumers can rely on the field being present and a member
+     * of the FailureCategory enum.
+     *
+     * @param array<string, mixed> $failurePayload
+     */
+    private static function resolveFailureHandledCategory(
+        ?WorkflowFailure $failure,
+        array $failurePayload,
+    ): string {
+        $modelCategory = $failure?->failure_category;
+        if ($modelCategory instanceof FailureCategory) {
+            return $modelCategory->value;
+        }
+
+        $payloadCategory = $failurePayload['failure_category'] ?? null;
+        if (is_string($payloadCategory) && FailureCategory::tryFrom($payloadCategory) !== null) {
+            return $payloadCategory;
+        }
+
+        return FailureCategory::Application->value;
     }
 
     private function startChildRetryIfAvailable(
