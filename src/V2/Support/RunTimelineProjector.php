@@ -63,15 +63,7 @@ final class RunTimelineProjector
             $projected[] = $row;
         }
 
-        $staleQuery = $entryModel::query()
-            ->where('workflow_run_id', $run->id);
-
-        if ($seen === []) {
-            $staleQuery->delete();
-        } else {
-            $staleQuery->whereNotIn('id', $seen)
-                ->delete();
-        }
+        StaleProjectionCleanup::forRun($entryModel, $run->id, $seen);
 
         $run->unsetRelation('timelineEntries');
 

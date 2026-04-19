@@ -38,15 +38,7 @@ final class RunLineageProjector
             $projected[] = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen);
         }
 
-        $staleQuery = $lineageModel::query()
-            ->where('workflow_run_id', $run->id);
-
-        if ($seen === []) {
-            $staleQuery->delete();
-        } else {
-            $staleQuery->whereNotIn('id', $seen)
-                ->delete();
-        }
+        StaleProjectionCleanup::forRun($lineageModel, $run->id, $seen);
 
         $run->unsetRelation('lineageEntries');
 
