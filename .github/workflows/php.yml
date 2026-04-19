@@ -76,10 +76,16 @@ jobs:
         touch testbench.sqlite
         mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
 
+    # --debug prints each test name as it starts so when the suite stalls
+    # the hang point is visible in the step log instead of hidden behind
+    # the 60m timeout. Currently chasing a stall around tests 882-913 that
+    # only reproduces in CI (runs 24635883692 and 24637564241). Drop --debug
+    # when the cluster tracked under #427 / the post-#429 MySQL flake is
+    # resolved and MySQL has been consistently green.
     - name: Run test suite (MySQL)
       id: mysql_suite
       timeout-minutes: 65
-      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --debug --testsuite feature
       env:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports[3306] }}
