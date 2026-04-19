@@ -6042,6 +6042,13 @@ final class V2WorkflowTest extends TestCase
                 ->addSeconds(25),
         ]);
 
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => 1,
+            'delay_seconds' => 30,
+            'fire_at' => $timer->fire_at?->toJSON(),
+        ]);
+
         $summary = RunSummaryProjector::project(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
@@ -6280,6 +6287,13 @@ final class V2WorkflowTest extends TestCase
                 ->subSeconds(25),
         ]);
 
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'sequence' => 1,
+        ]);
+
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
@@ -6497,6 +6511,13 @@ final class V2WorkflowTest extends TestCase
             'delay_seconds' => 30,
             'fire_at' => now()
                 ->addSeconds(20),
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => 1,
+            'delay_seconds' => 30,
+            'fire_at' => $timer->fire_at?->toJSON(),
         ]);
 
         /** @var WorkflowTask $task */
@@ -7113,6 +7134,13 @@ final class V2WorkflowTest extends TestCase
             'arguments' => Serializer::serialize(['Taylor']),
             'connection' => 'redis',
             'queue' => 'activities',
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => TestGreetingActivity::class,
+            'activity_type' => TestGreetingActivity::class,
+            'sequence' => 1,
         ]);
 
         $summary = RunSummaryProjector::project(

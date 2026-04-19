@@ -2598,7 +2598,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('child_workflow', $detail['continuedWorkflows'][0]['link_type']);
         $this->assertSame($childCallId, $detail['continuedWorkflows'][0]['child_call_id']);
         $this->assertSame($currentChildRun->id, $detail['continuedWorkflows'][0]['child_workflow_run_id']);
-        $this->assertSame($currentChildRun->status->value, $detail['continuedWorkflows'][0]['status']);
+        $this->assertSame(RunStatus::Waiting->value, $detail['continuedWorkflows'][0]['status']);
         $this->assertSame($currentChildRun->workflow_type, $detail['continuedWorkflows'][0]['workflow_type']);
     }
 
