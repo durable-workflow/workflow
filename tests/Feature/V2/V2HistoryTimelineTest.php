@@ -557,7 +557,7 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame($originalCommandSequence, $signalReceived['command_sequence']);
         $this->assertSame('instance', $signalReceived['command']['target_scope']);
         $this->assertSame('name-provided', $signalReceived['command']['target_name']);
-        $this->assertSame(config('workflows.serializer'), $signalReceived['command']['payload_codec']);
+        $this->assertSame($run->payload_codec, $signalReceived['command']['payload_codec']);
         $this->assertTrue($signalReceived['command']['payload_available']);
         $this->assertSame([
             'name' => 'name-provided',
