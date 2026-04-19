@@ -7731,6 +7731,8 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanBeCancelledWithReasonWhileWaitingOnActivity(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestHeartbeatWorkflow::class, 'cancel-activity-wait');
         $workflow->start();
 
@@ -7738,10 +7740,14 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertNotNull($runId);
 
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'activity');
 
         $result = $workflow->cancel('Customer requested cancellation');
+
+        $this->drainReadyTasks();
 
         $this->assertTrue($result->accepted());
         $this->assertSame('cancel', $result->type());
@@ -7815,6 +7821,8 @@ final class V2WorkflowTest extends TestCase
 
     public function testWorkflowCanBeTerminatedWithReasonWhileWaitingOnActivity(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestHeartbeatWorkflow::class, 'terminate-activity-wait');
         $workflow->start();
 
@@ -7822,10 +7830,14 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertNotNull($runId);
 
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
         $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
             && $workflow->summary()?->wait_kind === 'activity');
 
         $result = $workflow->terminate('Operator emergency shutdown');
+
+        $this->drainReadyTasks();
 
         $this->assertTrue($result->accepted());
         $this->assertSame('terminate', $result->type());
