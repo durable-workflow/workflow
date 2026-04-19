@@ -541,13 +541,13 @@ final class V2WebhookWorkflowTest extends TestCase
             'region' => 'us-east',
             'tenant' => 'acme',
         ], $run->visibility_labels);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => [
                 'name' => 'Taylor',
                 'vip' => true,
             ],
         ], $instance->memo);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => [
                 'name' => 'Taylor',
                 'vip' => true,
@@ -2054,7 +2054,7 @@ final class V2WebhookWorkflowTest extends TestCase
             ->sole();
 
         $this->assertSame(1, $repairedTask->repair_count);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'workflow_wait_kind' => 'update',
             'open_wait_id' => 'update:' . $updateId,
             'resume_source_kind' => 'workflow_update',
@@ -2165,12 +2165,14 @@ final class V2WebhookWorkflowTest extends TestCase
             ->sole();
 
         $this->assertSame(1, $repairedTask->repair_count);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'workflow_wait_kind' => 'signal',
             'open_wait_id' => 'signal-application:' . $signal->id,
             'resume_source_kind' => 'workflow_signal',
             'resume_source_id' => $signal->id,
             'workflow_signal_id' => $signal->id,
+            'signal_name' => $signal->signal_name,
+            'signal_wait_id' => $signal->signal_wait_id,
             'workflow_command_id' => $commandId,
         ], $repairedTask->payload);
 

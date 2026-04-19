@@ -1566,7 +1566,7 @@ final class V2RunDetailViewTest extends TestCase
 
         $task->refresh();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'workflow_wait_kind' => 'update',
             'open_wait_id' => 'update:' . $result->updateId(),
             'resume_source_kind' => 'workflow_update',

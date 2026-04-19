@@ -474,7 +474,7 @@ final class V2UpdateWorkflowTest extends TestCase
             ->where('status', TaskStatus::Ready->value)
             ->sole();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'workflow_wait_kind' => 'update',
             'open_wait_id' => 'update:' . $update->updateId(),
             'resume_source_kind' => 'workflow_update',
