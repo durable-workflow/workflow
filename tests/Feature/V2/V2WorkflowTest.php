@@ -1079,6 +1079,14 @@ final class V2WorkflowTest extends TestCase
 
     public function testActivityRetriesBeforeResumingWorkflow(): void
     {
+        // Block the background TaskWatchdog so the testbench queue workers'
+        // wake() poll doesn't race our Queue::fake-driven Ready tasks. Each
+        // runReadyTaskForRun() creates a new Ready task whose created_at is
+        // stamped with the test's Carbon clock (2026-04-09), which reads as
+        // "overdue by days" from the worker's real-time now() and triggers a
+        // redispatch that can race with the test's direct handle() invocation.
+        Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 60);
+
         Queue::fake();
         Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:00'));
 
