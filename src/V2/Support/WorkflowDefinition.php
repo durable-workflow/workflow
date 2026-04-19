@@ -20,6 +20,24 @@ final class WorkflowDefinition
     private static array $fingerprints = [];
 
     /**
+     * Reverse index of {@see $fingerprints}: fingerprint hash → class-string.
+     *
+     * Populated lazily by {@see fingerprint()} so any workflow class whose
+     * fingerprint has been computed is resolvable by its recorded hash.
+     * Used by {@see WorkflowDefinitionFingerprint::resolveClassForRun()} to
+     * pin in-flight runs to the definition snapshot captured in their
+     * WorkflowStarted history event, even after `workflow_runs.workflow_class`
+     * has been updated to point at a newer class for the same workflow_type.
+     *
+     * When two registered classes compute the same fingerprint (they would
+     * produce identical replay behavior by definition), the first-registered
+     * class wins — subsequent identical-fingerprint registrations are ignored.
+     *
+     * @var array<string, class-string>
+     */
+    private static array $classesByFingerprint = [];
+
+    /**
      * @var array<class-string, list<string>>
      */
     private static array $queryMethods = [];
@@ -304,12 +322,38 @@ final class WorkflowDefinition
             self::collectFingerprintSources(new ReflectionClass($class), $sources, $seen);
             ksort($sources);
 
-            self::$fingerprints[$class] = $sources === []
+            $fingerprint = $sources === []
                 ? null
                 : 'sha256:' . hash('sha256', json_encode($sources, JSON_THROW_ON_ERROR));
+
+            self::$fingerprints[$class] = $fingerprint;
+
+            if ($fingerprint !== null && ! array_key_exists($fingerprint, self::$classesByFingerprint)) {
+                self::$classesByFingerprint[$fingerprint] = $class;
+            }
         }
 
         return self::$fingerprints[$class];
+    }
+
+    /**
+     * Reverse lookup: return the workflow class whose source fingerprint
+     * matches `$fingerprint`, or null if no such class has been seen in the
+     * current process.
+     *
+     * The reverse index is populated lazily by {@see fingerprint()}, so this
+     * resolver only sees classes whose fingerprint has already been computed.
+     * Callers that want to pin an in-flight run to the class that produced its
+     * `WorkflowStarted` fingerprint should warm the index by calling
+     * `fingerprint()` for every candidate class at boot — the current run's
+     * `workflow_class` plus every configured class under
+     * `workflows.v2.types.workflows` is a good seed.
+     *
+     * @return class-string|null
+     */
+    public static function findClassByFingerprint(string $fingerprint): ?string
+    {
+        return self::$classesByFingerprint[$fingerprint] ?? null;
     }
 
     /**

@@ -52,7 +52,7 @@ final class QueryStateReplayer
             'childLinks.childRun.historyEvents',
         ]);
 
-        $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);
         $workflow = new $workflowClass($run);
         $this->syncWorkflowCursor($workflow, 1);
         $entryMethod = EntryMethod::forWorkflow($workflow);

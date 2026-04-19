@@ -266,8 +266,6 @@ final class V2VersionWorkflowTest extends TestCase
 
     public function testSameCompatibilityUsesRecordedDefinitionFingerprintToKeepOlderRunOnDefaultVersion(): void
     {
-        $this->markTestSkipped('Fingerprint-pinned workflow class resolution is not yet implemented; tracked in #428.');
-
         config()
             ->set('workflows.v2.compatibility.current', 'build-b');
         config()
@@ -331,8 +329,6 @@ final class V2VersionWorkflowTest extends TestCase
 
     public function testOlderCompatibilityFallsBackToDefaultVersionWithoutRecordingMarkerAfterEarlierSignal(): void
     {
-        $this->markTestSkipped('Fingerprint-pinned workflow class resolution is not yet implemented; tracked in #428.');
-
         config()
             ->set('workflows.v2.compatibility.current', 'build-b');
         config()

@@ -69,6 +69,18 @@ return [
             'supported' => env('WORKFLOW_V2_SUPPORTED_COMPATIBILITIES', null),
             'namespace' => env('WORKFLOW_V2_COMPATIBILITY_NAMESPACE', null),
             'heartbeat_ttl_seconds' => (int) env('WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL', 30),
+            // When true (the default), in-flight runs resolve their workflow
+            // class from the `workflow_definition_fingerprint` recorded in
+            // their WorkflowStarted history event instead of the live
+            // `workflow_runs.workflow_class` column. This keeps a run pinned
+            // to the definition snapshot it started under even after a deploy
+            // swaps the class pointer for the same workflow_type.
+            //
+            // Set to false only if your deploy intentionally hot-swaps
+            // workflow classes mid-run and wants the replacement class to
+            // execute against the existing history from the next task
+            // forward.
+            'pin_to_recorded_fingerprint' => (bool) env('WORKFLOW_V2_PIN_TO_RECORDED_FINGERPRINT', true),
         ],
         'history_budget' => [
             'continue_as_new_event_threshold' => (int) env('WORKFLOW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD', 10000),

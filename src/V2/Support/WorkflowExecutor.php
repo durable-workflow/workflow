@@ -73,7 +73,7 @@ final class WorkflowExecutor
             return null;
         }
 
-        $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);
         $workflow = new $workflowClass($run);
         $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = $workflow->resolveMethodDependencies($run->workflowArguments(), $entryMethod);
@@ -451,16 +451,33 @@ final class WorkflowExecutor
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
-                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::VERSION_MARKER)) {
-                    return null;
-                }
-
                 $versionMarkerEvent = $this->versionMarkerEvent($run, $sequence);
 
                 try {
                     $resolution = VersionResolver::resolve($run, $versionMarkerEvent, $current, $sequence);
-                    $version = $resolution->version;
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
+                    return null;
+                }
+
+                // Only assert VERSION_MARKER history shape on paths that will
+                // occupy a history slot at this sequence (recorded / fresh).
+                // The legacy-default path records nothing and does not advance
+                // the workflow sequence — the next yield (activity, timer…)
+                // legitimately shares this slot, so checking for
+                // VERSION_MARKER-compatibility here would spuriously reject
+                // legacy replays that have since produced ACTIVITY/TIMER
+                // events at the same sequence.
+                if ($resolution->advancesSequence
+                    && ! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::VERSION_MARKER)
+                ) {
+                    return null;
+                }
+
+                $version = $resolution->version;
+
+                try {
                     if ($resolution->shouldRecordMarker) {
                         $versionMarkerEvent = $this->recordVersionMarker($run, $task, $sequence, $current, $version);
                     }
