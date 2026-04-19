@@ -4568,6 +4568,7 @@ final class V2WorkflowTest extends TestCase
             'WorkflowStarted',
             'SignalReceived',
             'SignalWaitOpened',
+            'MessageCursorAdvanced',
             'SignalApplied',
             'ActivityScheduled',
             'ActivityStarted',
