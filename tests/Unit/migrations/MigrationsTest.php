@@ -114,6 +114,15 @@ final class MigrationsTest extends TestCase
         $this->assertGreaterThanOrEqual(128, $summaryLength);
     }
 
+    public function testTimelineTimerIdMatchesTimerProjectionLength(): void
+    {
+        $timelineLength = $this->stringColumnLength('workflow_run_timeline_entries', 'timer_id');
+        $timerProjectionLength = $this->stringColumnLength('workflow_run_timer_entries', 'timer_id');
+
+        $this->assertSame($timerProjectionLength, $timelineLength);
+        $this->assertGreaterThanOrEqual(128, $timelineLength);
+    }
+
     private function stringColumnLength(string $table, string $column): int
     {
         $driver = DB::connection()->getDriverName();

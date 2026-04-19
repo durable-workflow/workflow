@@ -60,18 +60,18 @@ final class V2MemoUpsertTest extends TestCase
         $this->assertSame(2, $upsertEvents->count());
 
         $firstUpsert = $upsertEvents->first();
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer_name' => 'Taylor',
             'status' => 'processing',
             'tags' => ['greeting', 'test'],
         ], $firstUpsert->payload['entries']);
 
         $secondUpsert = $upsertEvents->last();
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'result_summary' => 'Hello, Taylor!',
             'status' => 'completed',
         ], $secondUpsert->payload['entries']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer_name' => 'Taylor',
             'result_summary' => 'Hello, Taylor!',
             'status' => 'completed',
@@ -91,7 +91,7 @@ final class V2MemoUpsertTest extends TestCase
 
         $run = WorkflowRun::query()->where('id', $workflow->runId())->firstOrFail();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer_name' => 'Taylor',
             'result_summary' => 'Hello, Taylor!',
             'status' => 'completed',

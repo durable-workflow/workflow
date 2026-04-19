@@ -61,17 +61,17 @@ final class V2SearchAttributeTest extends TestCase
         $this->assertSame(2, $upsertEvents->count());
 
         $firstUpsert = $upsertEvents->first();
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => 'Taylor',
             'status' => 'processing',
         ], $firstUpsert->payload['attributes']);
 
         $secondUpsert = $upsertEvents->last();
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'result' => 'success',
             'status' => 'completed',
         ], $secondUpsert->payload['attributes']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => 'Taylor',
             'result' => 'success',
             'status' => 'completed',
@@ -90,7 +90,7 @@ final class V2SearchAttributeTest extends TestCase
 
         $run = WorkflowRun::query()->where('id', $workflow->runId())->firstOrFail();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => 'Taylor',
             'result' => 'success',
             'status' => 'completed',
@@ -109,7 +109,7 @@ final class V2SearchAttributeTest extends TestCase
 
         $summary = WorkflowRunSummary::query()->where('id', $workflow->runId())->firstOrFail();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'customer' => 'Taylor',
             'result' => 'success',
             'status' => 'completed',
@@ -174,8 +174,8 @@ final class V2SearchAttributeTest extends TestCase
 
     public function testVisibilityFilterVersionIsUpdated(): void
     {
-        $this->assertSame(4, VisibilityFilters::VERSION);
-        $this->assertContains(4, VisibilityFilters::supportedVersions());
+        $this->assertSame(5, VisibilityFilters::VERSION);
+        $this->assertContains(5, VisibilityFilters::supportedVersions());
         $this->assertContains(3, VisibilityFilters::supportedVersions());
     }
 }

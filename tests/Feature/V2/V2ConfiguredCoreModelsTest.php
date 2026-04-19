@@ -145,7 +145,7 @@ final class V2ConfiguredCoreModelsTest extends TestCase
                 ->nullable();
             $table->timestamps(6);
 
-            $table->unique(['workflow_instance_id', 'run_number']);
+            $table->unique(['workflow_instance_id', 'run_number'], 'configured_core_runs_instance_run_unique');
         });
     }
 

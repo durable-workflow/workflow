@@ -173,7 +173,7 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame($activity->current_attempt_id, $heartbeat['activity']['attempt_id']);
         $this->assertSame(1, $heartbeat['activity']['attempt_count']);
         $this->assertSame($activity->last_heartbeat_at?->toJSON(), $heartbeat['activity']['last_heartbeat_at']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'message' => 'Polling remote job',
             'current' => 1,
             'total' => 3,
@@ -206,7 +206,7 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertCount(3, $timeline);
 
         $this->assertSame('parallel-activities:1:3', $timeline[0]['parallel_group_id']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',
@@ -217,7 +217,7 @@ final class V2HistoryTimelineTest extends TestCase
         ], $timeline[0]['parallel_group_path']);
 
         $this->assertSame('parallel-activities:2:2', $timeline[1]['parallel_group_id']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',
@@ -235,7 +235,7 @@ final class V2HistoryTimelineTest extends TestCase
         ], $timeline[1]['parallel_group_path']);
 
         $this->assertSame('parallel-activities:2:2', $timeline[2]['parallel_group_id']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',
@@ -421,6 +421,7 @@ final class V2HistoryTimelineTest extends TestCase
             'WorkflowStarted',
             'SignalWaitOpened',
             'SignalReceived',
+            'MessageCursorAdvanced',
             'SignalApplied',
             'ActivityScheduled',
             'ActivityStarted',
@@ -440,14 +441,14 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('signal_received', $timeline[3]['command_outcome']);
         $this->assertSame(2, $timeline[3]['command']['sequence']);
         $this->assertSame('name-provided', $timeline[3]['command']['target_name']);
-        $this->assertSame('signal', $timeline[4]['kind']);
-        $this->assertSame('signal_wait', $timeline[4]['source_kind']);
-        $this->assertSame('Applied signal name-provided.', $timeline[4]['summary']);
-        $this->assertSame('name-provided', $timeline[4]['signal_name']);
-        $this->assertSame(2, $timeline[4]['command_sequence']);
-        $this->assertSame('signal', $timeline[4]['command_type']);
+        $this->assertSame('signal', $timeline[5]['kind']);
+        $this->assertSame('signal_wait', $timeline[5]['source_kind']);
+        $this->assertSame('Applied signal name-provided.', $timeline[5]['summary']);
+        $this->assertSame('name-provided', $timeline[5]['signal_name']);
+        $this->assertSame(2, $timeline[5]['command_sequence']);
+        $this->assertSame('signal', $timeline[5]['command_type']);
         $this->assertSame($timeline[2]['signal_wait_id'], $timeline[2]['source_id']);
-        $this->assertSame($timeline[2]['signal_wait_id'], $timeline[4]['source_id']);
+        $this->assertSame($timeline[2]['signal_wait_id'], $timeline[5]['source_id']);
     }
 
     public function testTimelineExposesSignalWaitIdentityForRepeatedSameNamedSignals(): void

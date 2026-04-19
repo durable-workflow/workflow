@@ -17,8 +17,8 @@ final class V2RunSummarySortKeyTest extends TestCase
     {
         $sortTimestamp = Carbon::parse('2026-04-08 12:00:00');
 
-        $olderRunId = '01JTESTSORTKEY00000000000001';
-        $newerRunId = '01JTESTSORTKEY00000000000002';
+        $olderRunId = '01JTESTSORTKEY000000000001';
+        $newerRunId = '01JTESTSORTKEY000000000002';
 
         $older = $this->createRunningSummary(
             'sort-contract-older',

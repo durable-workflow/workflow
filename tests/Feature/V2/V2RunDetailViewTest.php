@@ -209,7 +209,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         $run = WorkflowRun::create([
-            'id' => '01JTESTFLOWRUNDETERMINISM01',
+            'id' => '01JTESTFLOWRUNDETERMINISM1',
             'workflow_instance_id' => $instance->id,
             'run_number' => 1,
             'workflow_class' => TestUnsafeDeterminismWorkflow::class,
@@ -263,7 +263,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         $run = WorkflowRun::create([
-            'id' => '01JTESTFLOWRUNDETERMINISM02',
+            'id' => '01JTESTFLOWRUNDETERMINISM2',
             'workflow_instance_id' => $instance->id,
             'run_number' => 1,
             'workflow_class' => TestUnsafeDeterminismWorkflow::class,
@@ -283,7 +283,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         WorkflowHistoryEvent::create([
-            'id' => '01JTESTHISTORYDETERMINISM0002',
+            'id' => '01JTESTHISTORYDETERMINISM2',
             'workflow_run_id' => $run->id,
             'sequence' => 1,
             'event_type' => HistoryEventType::WorkflowStarted->value,
@@ -541,7 +541,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         $run = WorkflowRun::create([
-            'id' => '01JTESTDETAILINTAKECOMPAT01',
+            'id' => '01JTESTDETAILINTAKECOMPAT1',
             'workflow_instance_id' => $instance->id,
             'run_number' => 1,
             'workflow_class' => TestSignalWorkflow::class,
@@ -2120,7 +2120,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         $run = WorkflowRun::query()->create([
-            'id' => '01JDETAILCOMMANDCONTEXT0001',
+            'id' => '01JDETAILCOMMANDCONTEXT001',
             'workflow_instance_id' => $instance->id,
             'run_number' => 1,
             'workflow_class' => TestSignalWorkflow::class,
@@ -2138,7 +2138,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         WorkflowCommand::query()->create([
-            'id' => '01JDETAILCOMMANDCTXCOMMAND01',
+            'id' => '01JDETAILCOMMANDCTXCMD001',
             'workflow_instance_id' => $instance->id,
             'workflow_run_id' => $run->id,
             'command_sequence' => 1,
@@ -2327,7 +2327,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         $run = WorkflowRun::create([
-            'id' => '01JTESTRUNDETAILCHILDAUTH01',
+            'id' => '01JTESTRUNDETAILCHILDAUTH1',
             'workflow_instance_id' => $parentInstance->id,
             'run_number' => 1,
             'workflow_class' => TestParentWaitingOnChildWorkflow::class,
@@ -2343,7 +2343,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         $childRun = WorkflowRun::create([
-            'id' => '01JTESTRUNDETAILCHILDAUTH02',
+            'id' => '01JTESTRUNDETAILCHILDAUTH2',
             'workflow_instance_id' => $childInstance->id,
             'run_number' => 1,
             'workflow_class' => TestTimerWorkflow::class,
@@ -2372,7 +2372,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         $link = WorkflowLink::create([
-            'id' => '01JTESTRUNDETAILCHILDLINK01',
+            'id' => '01JTESTRUNDETAILCHILDLINK1',
             'link_type' => 'child_workflow',
             'sequence' => 1,
             'parent_workflow_instance_id' => $parentInstance->id,
@@ -2387,7 +2387,7 @@ final class V2RunDetailViewTest extends TestCase
         ]);
 
         WorkflowHistoryEvent::create([
-            'id' => '01JTESTRUNDETAILCHILDEVENT1',
+            'id' => '01JTESTRUNDETAILCHILDEVNT1',
             'workflow_run_id' => $run->id,
             'sequence' => 1,
             'event_type' => HistoryEventType::ChildWorkflowScheduled->value,
@@ -2673,7 +2673,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertCount(3, $activityWaits);
 
         $this->assertSame('parallel-activities:1:3', $activityWaits[0]['parallel_group_id']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',
@@ -2684,7 +2684,7 @@ final class V2RunDetailViewTest extends TestCase
         ], $activityWaits[0]['parallel_group_path']);
 
         $this->assertSame('parallel-activities:2:2', $activityWaits[1]['parallel_group_id']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',
@@ -2702,7 +2702,7 @@ final class V2RunDetailViewTest extends TestCase
         ], $activityWaits[1]['parallel_group_path']);
 
         $this->assertSame('parallel-activities:2:2', $activityWaits[2]['parallel_group_id']);
-        $this->assertSame([
+        $this->assertSameJsonObject([
             [
                 'parallel_group_id' => 'parallel-activities:1:3',
                 'parallel_group_kind' => 'activity',
@@ -3690,8 +3690,8 @@ final class V2RunDetailViewTest extends TestCase
             $heartbeatAt->toJSON(),
             $detail['activities'][0]['attempts'][1]['last_heartbeat_at']?->toJSON()
         );
-        $this->assertSame($progress, $detail['activities'][0]['last_heartbeat_progress']);
-        $this->assertSame($progress, $detail['activities'][0]['attempts'][1]['last_heartbeat_progress']);
+        $this->assertSameJsonObject($progress, $detail['activities'][0]['last_heartbeat_progress']);
+        $this->assertSameJsonObject($progress, $detail['activities'][0]['attempts'][1]['last_heartbeat_progress']);
         $this->assertSame(
             $leaseExpiresAt->toJSON(),
             $detail['activities'][0]['attempts'][1]['lease_expires_at']?->toJSON()
@@ -3706,7 +3706,7 @@ final class V2RunDetailViewTest extends TestCase
             ],
             array_column($detail['timeline'], 'type')
         );
-        $this->assertSame($progress, $detail['timeline'][4]['activity']['last_heartbeat_progress']);
+        $this->assertSameJsonObject($progress, $detail['timeline'][4]['activity']['last_heartbeat_progress']);
         $this->assertNull($this->findTaskOrNull($detail['tasks'], 'activity'));
     }
 

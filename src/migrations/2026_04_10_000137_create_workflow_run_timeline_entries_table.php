@@ -49,7 +49,7 @@ return new class() extends Migration {
             $table->string('activity_execution_id', 26)
                 ->nullable()
                 ->index();
-            $table->string('timer_id', 26)
+            $table->string('timer_id', 191)
                 ->nullable()
                 ->index();
             $table->string('failure_id', 26)
