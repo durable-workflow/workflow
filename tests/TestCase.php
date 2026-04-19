@@ -79,6 +79,28 @@ abstract class TestCase extends BaseTestCase
         return [\Workflow\Providers\WorkflowServiceProvider::class];
     }
 
+    protected function assertSameJsonObject(mixed $expected, mixed $actual): void
+    {
+        $this->assertIsArray($expected);
+        $this->assertIsArray($actual);
+
+        $this->assertSame(self::normalizeJsonObject($expected), self::normalizeJsonObject($actual));
+    }
+
+    private static function normalizeJsonObject(array $value): array
+    {
+        $normalized = array_map(
+            static fn (mixed $item): mixed => is_array($item) ? self::normalizeJsonObject($item) : $item,
+            $value,
+        );
+
+        if (! array_is_list($normalized)) {
+            ksort($normalized);
+        }
+
+        return $normalized;
+    }
+
     private static function flushRedis(): void
     {
         $redisHost = getenv('REDIS_HOST') ?: ($_ENV['REDIS_HOST'] ?? null);
