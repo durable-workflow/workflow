@@ -144,20 +144,20 @@ abstract class Workflow
         $reversed = array_reverse($this->compensations);
 
         if ($this->parallelCompensation) {
-            $calls = [];
-
-            foreach ($reversed as $compensation) {
-                $calls[] = $compensation();
-            }
-
+            // Pass each compensation closure directly to all(): it uses
+            // whileInactive() to capture the ActivityCall/ChildWorkflowCall the
+            // closure produces without executing it serially in-fiber. Calling
+            // $compensation() here would resolve the activity synchronously and
+            // hand all() plain string results, which it rejects (AllCall only
+            // accepts the call objects).
             if ($this->continueWithError) {
                 try {
-                    all($calls);
+                    all($reversed);
                 } catch (Throwable) {
                     // continueWithError applies uniformly: swallow parallel compensation failures
                 }
             } else {
-                all($calls);
+                all($reversed);
             }
         } else {
             foreach ($reversed as $compensation) {
