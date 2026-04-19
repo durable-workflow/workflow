@@ -742,10 +742,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testCallingAnnotatedUpdateMethodReturnsTheRawUpdateResult(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-dynamic');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $result = $workflow->approve(true, 'console');
 
@@ -763,10 +765,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testAttemptUpdateCanonicalizesDefaultArgumentsInDurableHistory(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-defaults');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $result = $workflow->attemptUpdate('approve', true);
 
@@ -801,10 +805,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testAttemptUpdateRejectsInvalidArgumentsBeforeApplication(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-invalid');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $result = $workflow->attemptUpdate('approve');
 
@@ -839,10 +845,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testAttemptUpdateRejectsNullArgumentsWhenTheContractDisallowsNull(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-null-invalid');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $result = $workflow->attemptUpdate('approve', null);
 
@@ -872,12 +880,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testAttemptUpdateRejectsLaterUpdateWhileAnEarlierSignalIsStillPending(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalThenUpdateWorkflow::class, 'order-update-linearized');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
-
-        Queue::fake();
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $signal = $workflow->signal('advance', 'Taylor');
 
@@ -967,12 +975,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testAttemptUpdateDoesNotInlineDrainASignalThatWouldCloseTheRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-blocked');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
-
-        Queue::fake();
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $signal = $workflow->signal('name-provided', 'Taylor');
         $result = $workflow->attemptUpdate('approve', true, 'api');
@@ -1045,10 +1053,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testLegacyRunsBackfillCommandSequenceBeforeRecordingLaterCommands(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'legacy-update-seq');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         WorkflowCommand::query()
             ->where('workflow_run_id', $workflow->runId())
@@ -1061,8 +1071,6 @@ final class V2UpdateWorkflowTest extends TestCase
             ->update([
                 'last_command_sequence' => 0,
             ]);
-
-        Queue::fake();
 
         $signal = $workflow->signal('name-provided', 'Taylor');
         $update = $workflow->attemptUpdate('approve', true, 'api');
@@ -1120,10 +1128,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testUpdateFailuresAreRecordedWithoutClosingTheRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-failure');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $result = $workflow->attemptUpdate('explode', 'boom');
 
@@ -1345,10 +1355,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testAttemptUpdateRejectsUnknownUpdateTarget(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-unknown');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         $result = $workflow->attemptUpdate('missingUpdate', true);
 
@@ -1402,12 +1414,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testSignalIntakeUsesDurableRunContractWhenWorkflowClassCannotBeResolved(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-ct-signal');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
-
-        Queue::fake();
+        $this->runReadyWorkflowTask($workflow->runId());
 
         WorkflowRun::query()->whereKey($workflow->runId())->update([
             'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
@@ -1433,10 +1445,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testUnknownUpdateRejectionUsesDurableRunContractWhenWorkflowClassCannotBeResolved(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-ct-update');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         WorkflowRun::query()->whereKey($workflow->runId())->update([
             'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
@@ -1451,10 +1465,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testNamedUpdateValidationUsesDurableRunContractWhenWorkflowDefinitionCannotBeResolved(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-ct-update-validation');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         WorkflowRun::query()->whereKey($workflow->runId())->update([
             'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
@@ -1487,10 +1503,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     public function testAttemptUpdateRejectsWhenWorkflowDefinitionCannotBeResolvedAfterDurableValidation(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-ct-update-execution');
         $workflow->start();
 
-        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+        $this->runReadyWorkflowTask($workflow->runId());
 
         WorkflowRun::query()->whereKey($workflow->runId())->update([
             'workflow_class' => 'Missing\\Workflow\\TestUpdateWorkflow',
