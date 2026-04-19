@@ -673,6 +673,7 @@ final class V2UpdateWorkflowTest extends TestCase
             'UpdateAccepted',
             'UpdateApplied',
             'UpdateCompleted',
+            'MessageCursorAdvanced',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->orderBy('sequence')
@@ -730,6 +731,7 @@ final class V2UpdateWorkflowTest extends TestCase
             'SignalWaitOpened',
             'UpdateAccepted',
             'UpdateCompleted',
+            'MessageCursorAdvanced',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->orderBy('sequence')
@@ -1158,6 +1160,7 @@ final class V2UpdateWorkflowTest extends TestCase
             'SignalWaitOpened',
             'UpdateAccepted',
             'UpdateCompleted',
+            'MessageCursorAdvanced',
         ], WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $workflow->runId())
             ->orderBy('sequence')
