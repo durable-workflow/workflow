@@ -1094,16 +1094,20 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewIncludesCommandsActivitiesAndTimelineForCompletedSignalRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-complete');
         $workflow->start();
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
         $workflow->signal('name-provided', 'Taylor');
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         /** @var ActivityExecution $execution */
@@ -1203,16 +1207,20 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewKeepsActivityDetailWhenActivityRowDrifts(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-activity-row-drift');
         $workflow->start();
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
         $workflow->signal('name-provided', 'Taylor');
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         /** @var ActivityExecution $execution */
@@ -1250,16 +1258,20 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewFallsBackToTypedActivityHistoryWhenActivityRowIsMissing(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-activity-row-missing');
         $workflow->start();
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
         $workflow->signal('name-provided', 'Taylor');
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         ActivityExecution::query()
@@ -1291,16 +1303,20 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewKeepsSignalWaitCommandMetadataWhenCommandRowsDrift(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-signal-history-snapshot');
         $workflow->start();
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
         $workflow->signal('name-provided', 'Taylor');
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         /** @var WorkflowCommand $signalCommand */
@@ -2269,12 +2285,15 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewIncludesChildWaitAndLineageForParentRun(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestParentWaitingOnChildWorkflow::class, 'detail-child-parent');
         $workflow->start(60);
         $runId = $workflow->runId();
 
         $this->assertNotNull($runId);
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'child');
 
         /** @var WorkflowRun $run */
@@ -3713,13 +3732,17 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewReturnsTypedPayloadsNotPhpSerializedStrings(): void
     {
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'detail-typed-contract');
         $workflow->start();
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->summary()?->wait_kind === 'signal');
 
         $workflow->signal('name-provided', 'Taylor');
 
+        $this->drainReadyTasks();
         $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         /** @var WorkflowRun $run */
@@ -3803,6 +3826,10 @@ final class V2RunDetailViewTest extends TestCase
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->where('status', TaskStatus::Ready->value)
+                ->where(static function ($query): void {
+                    $query->whereNull('available_at')
+                        ->orWhere('available_at', '<=', now());
+                })
                 ->orderBy('created_at')
                 ->first();
 
