@@ -413,6 +413,79 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]);
     }
 
+    public function testOpenConditionWaitWithoutOptionalFieldsNormalizes(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'open_condition_wait',
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'open_condition_wait',
+        ]], $out);
+    }
+
+    public function testOpenConditionWaitTrimsKeyAndPreservesTimeout(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => '  order-ready ',
+                'condition_definition_fingerprint' => ' fp-1 ',
+                'timeout_seconds' => 30,
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'open_condition_wait',
+            'condition_key' => 'order-ready',
+            'condition_definition_fingerprint' => 'fp-1',
+            'timeout_seconds' => 30,
+        ]], $out);
+    }
+
+    public function testOpenConditionWaitRejectsNegativeTimeout(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'open_condition_wait',
+                'timeout_seconds' => -1,
+            ],
+        ]);
+    }
+
+    public function testOpenConditionWaitRejectsNonIntegerTimeout(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'open_condition_wait',
+                'timeout_seconds' => '30',
+            ],
+        ]);
+    }
+
+    public function testOpenConditionWaitAllowsZeroTimeout(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'k',
+                'timeout_seconds' => 0,
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'open_condition_wait',
+            'condition_key' => 'k',
+            'timeout_seconds' => 0,
+        ]], $out);
+    }
+
     public function testUnknownCommandTypeRejected(): void
     {
         $this->expectException(ValidationException::class);

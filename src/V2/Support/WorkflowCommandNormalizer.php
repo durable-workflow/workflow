@@ -313,6 +313,38 @@ final class WorkflowCommandNormalizer
                 continue;
             }
 
+            if ($type === 'open_condition_wait') {
+                $conditionKey = self::optionalCommandString($command, 'condition_key', $index, $errors);
+                $conditionDefinitionFingerprint = self::optionalCommandString(
+                    $command,
+                    'condition_definition_fingerprint',
+                    $index,
+                    $errors,
+                );
+                $timeoutSeconds = null;
+
+                if (array_key_exists('timeout_seconds', $command) && $command['timeout_seconds'] !== null) {
+                    if (! is_int($command['timeout_seconds']) || (int) $command['timeout_seconds'] < 0) {
+                        $errors["commands.{$index}.timeout_seconds"] = [
+                            'Open condition wait timeout_seconds must be a non-negative integer when provided.',
+                        ];
+
+                        continue;
+                    }
+
+                    $timeoutSeconds = (int) $command['timeout_seconds'];
+                }
+
+                $normalized[] = array_filter([
+                    'type' => $type,
+                    'condition_key' => $conditionKey,
+                    'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+                    'timeout_seconds' => $timeoutSeconds,
+                ], static fn (mixed $value): bool => $value !== null);
+
+                continue;
+            }
+
             $errors["commands.{$index}.type"] = [
                 sprintf('Workflow task command type [%s] is not supported by the server yet.', $type),
             ];

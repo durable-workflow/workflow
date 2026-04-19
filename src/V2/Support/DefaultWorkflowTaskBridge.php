@@ -48,6 +48,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         'record_side_effect',
         'record_version_marker',
         'upsert_search_attributes',
+        'open_condition_wait',
     ];
 
     public function __construct(
@@ -919,6 +920,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'record_side_effect' => $this->applyRecordSideEffect($run, $task, $command, $sequence),
             'record_version_marker' => $this->applyRecordVersionMarker($run, $task, $command, $sequence),
             'upsert_search_attributes' => $this->applyUpsertSearchAttributes($run, $task, $command, $sequence),
+            'open_condition_wait' => $this->applyOpenConditionWait($run, $task, $command, $sequence, $createdTaskIds),
             default => $sequence,
         };
     }
@@ -1308,6 +1310,88 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ]);
 
         $createdTaskIds[] = $timerTask->id;
+
+        return $sequence + 1;
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     condition_key?: string|null,
+     *     condition_definition_fingerprint?: string|null,
+     *     timeout_seconds?: int|null
+     * } $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyOpenConditionWait(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        $conditionKey = self::nonEmptyString($command['condition_key'] ?? null);
+        $conditionDefinitionFingerprint = self::nonEmptyString(
+            $command['condition_definition_fingerprint'] ?? null,
+        );
+        $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
+            ? (int) $command['timeout_seconds']
+            : null;
+
+        $waitId = (string) Str::ulid();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitOpened, array_filter([
+            'condition_wait_id' => $waitId,
+            'condition_key' => $conditionKey,
+            'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+            'sequence' => $sequence,
+            'timeout_seconds' => $timeoutSeconds,
+        ], static fn (mixed $value): bool => $value !== null), $task);
+
+        if ($timeoutSeconds !== null && $timeoutSeconds > 0) {
+            $fireAt = now()
+                ->addSeconds($timeoutSeconds);
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $sequence,
+                'status' => TimerStatus::Pending->value,
+                'delay_seconds' => $timeoutSeconds,
+                'fire_at' => $fireAt,
+            ]);
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, array_filter([
+                'timer_id' => $timer->id,
+                'sequence' => $sequence,
+                'delay_seconds' => $timer->delay_seconds,
+                'fire_at' => $timer->fire_at?->toJSON(),
+                'timer_kind' => 'condition_timeout',
+                'condition_wait_id' => $waitId,
+                'condition_key' => $conditionKey,
+                'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+            ], static fn (mixed $value): bool => $value !== null), $task);
+
+            /** @var WorkflowTask $timerTask */
+            $timerTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Timer->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => $fireAt,
+                'payload' => array_filter([
+                    'timer_id' => $timer->id,
+                    'condition_wait_id' => $waitId,
+                    'condition_key' => $conditionKey,
+                    'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+                ], static fn (mixed $value): bool => $value !== null),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $createdTaskIds[] = $timerTask->id;
+        }
 
         return $sequence + 1;
     }
@@ -2176,8 +2260,32 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'record_side_effect' => self::normalizeRecordSideEffectCommand($command),
             'record_version_marker' => self::normalizeRecordVersionMarkerCommand($command),
             'upsert_search_attributes' => self::normalizeUpsertSearchAttributesCommand($command),
+            'open_condition_wait' => self::normalizeOpenConditionWaitCommand($command),
             default => null,
         };
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     condition_key?: string,
+     *     condition_definition_fingerprint?: string,
+     *     timeout_seconds?: int
+     * }
+     */
+    private static function normalizeOpenConditionWaitCommand(array $command): array
+    {
+        $timeoutSeconds = $command['timeout_seconds'] ?? null;
+
+        return array_filter([
+            'type' => 'open_condition_wait',
+            'condition_key' => self::normalizeOptionalString($command['condition_key'] ?? null),
+            'condition_definition_fingerprint' => self::normalizeOptionalString(
+                $command['condition_definition_fingerprint'] ?? null,
+            ),
+            'timeout_seconds' => is_int($timeoutSeconds) && $timeoutSeconds >= 0 ? $timeoutSeconds : null,
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**

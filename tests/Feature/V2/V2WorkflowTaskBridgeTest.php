@@ -1618,6 +1618,127 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(HistoryEventType::TimerFired->value, $resumeTask->payload['workflow_event_type'] ?? null);
     }
 
+    public function testCompleteOpenConditionWaitWithoutTimeoutRecordsEventAndMarksWaiting(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'order-ready',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertSame([], $result['created_task_ids']);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Waiting, $run->status);
+
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->first();
+
+        $this->assertNotNull($event);
+        $this->assertSame('order-ready', $event->payload['condition_key'] ?? null);
+        $this->assertIsString($event->payload['condition_wait_id'] ?? null);
+        $this->assertSame(1, $event->payload['sequence'] ?? null);
+        $this->assertArrayNotHasKey('timeout_seconds', $event->payload);
+
+        $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function testCompleteOpenConditionWaitWithTimeoutSchedulesConditionTimeoutTimer(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'payment-cleared',
+                'condition_definition_fingerprint' => 'fp-1',
+                'timeout_seconds' => 45,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame('payment-cleared', $opened->payload['condition_key'] ?? null);
+        $this->assertSame('fp-1', $opened->payload['condition_definition_fingerprint'] ?? null);
+        $this->assertSame(45, $opened->payload['timeout_seconds'] ?? null);
+
+        $waitId = $opened->payload['condition_wait_id'] ?? null;
+        $this->assertIsString($waitId);
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(TimerStatus::Pending, $timer->status);
+        $this->assertSame(45, $timer->delay_seconds);
+        $this->assertSame(1, $timer->sequence);
+
+        $scheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame('condition_timeout', $scheduled->payload['timer_kind'] ?? null);
+        $this->assertSame($waitId, $scheduled->payload['condition_wait_id'] ?? null);
+        $this->assertSame('payment-cleared', $scheduled->payload['condition_key'] ?? null);
+        $this->assertSame('fp-1', $scheduled->payload['condition_definition_fingerprint'] ?? null);
+
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->firstOrFail();
+
+        $this->assertSame($timer->id, $timerTask->payload['timer_id'] ?? null);
+        $this->assertSame($waitId, $timerTask->payload['condition_wait_id'] ?? null);
+        $this->assertSame('payment-cleared', $timerTask->payload['condition_key'] ?? null);
+    }
+
+    public function testCompleteOpenConditionWaitWithZeroTimeoutDoesNotScheduleTimer(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_condition_wait',
+                'timeout_seconds' => 0,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame([], $result['created_task_ids']);
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame(0, $opened->payload['timeout_seconds'] ?? null);
+        $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
+    }
+
     public function testCompleteStartsChildWorkflow(): void
     {
         $run = $this->createWaitingRun();
@@ -1795,7 +1916,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('sequence', 1)
             ->firstOrFail();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'snapshot_version' => 1,
             'max_attempts' => 3,
             'backoff_seconds' => [2, 8],
@@ -1999,7 +2120,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('status', TaskStatus::Ready->value)
             ->firstOrFail();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'workflow_wait_kind' => 'child',
             'open_wait_id' => sprintf('child:%s', $link->id),
             'resume_source_kind' => 'child_workflow_run',
@@ -2241,7 +2362,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('workflow_run_id', $run->id)
             ->firstOrFail();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'snapshot_version' => 1,
             'max_attempts' => 4,
             'backoff_seconds' => [1, 5, 30],
