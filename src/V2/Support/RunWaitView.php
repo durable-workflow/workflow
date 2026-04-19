@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -31,8 +32,12 @@ final class RunWaitView
             'childLinks.childRun.historyEvents',
         ]);
 
-        $taskByActivityExecutionId = self::preferredTasksByPayloadKey($run, 'activity_execution_id');
-        $taskByTimerId = self::preferredTasksByPayloadKey($run, 'timer_id');
+        $taskByActivityExecutionId = self::preferredTasksByPayloadKey(
+            $run,
+            'activity_execution_id',
+            TaskType::Activity
+        );
+        $taskByTimerId = self::preferredTasksByPayloadKey($run, 'timer_id', TaskType::Timer);
         $taskByChildCallId = self::preferredTasksByPayloadKey($run, 'child_call_id');
         $taskByChildRunId = self::preferredTasksByPayloadKey($run, 'child_workflow_run_id');
         $conditionWaits = ConditionWaits::forRun($run);
@@ -521,12 +526,19 @@ final class RunWaitView
     /**
      * @return array<string, WorkflowTask>
      */
-    private static function preferredTasksByPayloadKey(WorkflowRun $run, string $payloadKey): array
-    {
+    private static function preferredTasksByPayloadKey(
+        WorkflowRun $run,
+        string $payloadKey,
+        ?TaskType $requiredType = null,
+    ): array {
         $tasks = [];
 
         foreach ($run->tasks as $task) {
             if (! $task instanceof WorkflowTask) {
+                continue;
+            }
+
+            if ($requiredType !== null && $task->task_type !== $requiredType) {
                 continue;
             }
 

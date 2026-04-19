@@ -1188,6 +1188,7 @@ final class V2RunDetailViewTest extends TestCase
             'WorkflowStarted',
             'SignalWaitOpened',
             'SignalReceived',
+            'MessageCursorAdvanced',
             'SignalApplied',
             'ActivityScheduled',
             'ActivityStarted',
@@ -1195,7 +1196,7 @@ final class V2RunDetailViewTest extends TestCase
             'WorkflowCompleted',
         ], array_column($detail['timeline'], 'type'));
         $this->assertSame(
-            [1, 1, null, 2, 2, null, null, null, null],
+            [1, 1, null, 2, null, 2, null, null, null, null],
             array_column($detail['timeline'], 'command_sequence')
         );
     }
