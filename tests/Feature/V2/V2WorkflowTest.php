@@ -1108,10 +1108,15 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame(ActivityStatus::Pending, $execution->refresh()->status);
             $this->assertSame('failed', $firstAttempt->status->value);
             $this->assertSame(1, $execution->attempt_count);
-            $this->assertSame([
+            $this->assertSameJsonObject([
                 'snapshot_version' => 1,
                 'max_attempts' => 2,
                 'backoff_seconds' => [5],
+                'start_to_close_timeout' => null,
+                'schedule_to_start_timeout' => null,
+                'schedule_to_close_timeout' => null,
+                'heartbeat_timeout' => null,
+                'non_retryable_error_types' => [],
             ], $execution->retry_policy);
             $this->assertSame(1, $retryTask->attempt_count);
             $this->assertSame($execution->id, $retryTask->payload['activity_execution_id'] ?? null);
@@ -1365,7 +1370,7 @@ final class V2WorkflowTest extends TestCase
             ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded->value)
             ->sole();
 
-        $this->assertSame($progress, $heartbeat->payload['progress'] ?? null);
+        $this->assertSameJsonObject($progress, $heartbeat->payload['progress'] ?? null);
 
         $this->assertSame($claim['activity_attempt_id'], $completed->payload['activity_attempt_id'] ?? null);
         $this->assertSame(1, $completed->payload['attempt_number'] ?? null);
@@ -1432,10 +1437,15 @@ final class V2WorkflowTest extends TestCase
                 ->firstOrFail();
 
             $this->assertSame(ActivityStatus::Pending, $execution->status);
-            $this->assertSame([
+            $this->assertSameJsonObject([
                 'snapshot_version' => 1,
                 'max_attempts' => 2,
                 'backoff_seconds' => [5],
+                'start_to_close_timeout' => null,
+                'schedule_to_start_timeout' => null,
+                'schedule_to_close_timeout' => null,
+                'heartbeat_timeout' => null,
+                'non_retryable_error_types' => [],
             ], $execution->retry_policy);
             $this->assertSame($execution->id, $retryTask->payload['activity_execution_id'] ?? null);
             $this->assertSame(
@@ -1789,7 +1799,7 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame($attempt->id, $heartbeat->payload['activity_attempt_id'] ?? null);
             $this->assertSame($heartbeatAt->toJSON(), $heartbeat->payload['heartbeat_at'] ?? null);
             $this->assertSame($leaseExpiresAt->toJSON(), $heartbeat->payload['lease_expires_at'] ?? null);
-            $this->assertSame($expectedProgress, $heartbeat->payload['progress'] ?? null);
+            $this->assertSameJsonObject($expectedProgress, $heartbeat->payload['progress'] ?? null);
             $this->assertSame($heartbeatAt->toJSON(), $heartbeat->payload['activity']['last_heartbeat_at'] ?? null);
             $this->assertSame($task->id, $heartbeat->workflow_task_id);
         } finally {
