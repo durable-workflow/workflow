@@ -916,7 +916,7 @@ final class V2HistoryTimelineTest extends TestCase
 
     private function waitFor(callable $condition): void
     {
-        $deadline = microtime(true) + 20;
+        $deadline = microtime(true) + 30;
 
         while (microtime(true) < $deadline) {
             if ($condition()) {

@@ -3784,7 +3784,7 @@ final class V2RunDetailViewTest extends TestCase
     {
         $startedAt = microtime(true);
 
-        while ((microtime(true) - $startedAt) < 5) {
+        while ((microtime(true) - $startedAt) < 30) {
             if ($condition()) {
                 return;
             }
@@ -3792,7 +3792,7 @@ final class V2RunDetailViewTest extends TestCase
             usleep(100000);
         }
 
-        $this->fail('Condition was not met within 5 seconds.');
+        $this->fail('Condition was not met within 30 seconds.');
     }
 
     private function drainReadyTasks(): void

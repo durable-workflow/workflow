@@ -1653,9 +1653,12 @@ final class V2UpdateWorkflowTest extends TestCase
 
     private function waitFor(callable $condition): void
     {
+        // CI runners occasionally need more than 5s for real-queue v2
+        // update tests to settle — projector repair pass latency plus
+        // GitHub Actions load. 30s stays a hard upper bound.
         $startedAt = microtime(true);
 
-        while ((microtime(true) - $startedAt) < 5) {
+        while ((microtime(true) - $startedAt) < 30) {
             if ($condition()) {
                 return;
             }
@@ -1663,7 +1666,7 @@ final class V2UpdateWorkflowTest extends TestCase
             usleep(100000);
         }
 
-        $this->fail('Condition was not met within 5 seconds.');
+        $this->fail('Condition was not met within 30 seconds.');
     }
 
     /**

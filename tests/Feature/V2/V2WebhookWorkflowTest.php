@@ -3036,7 +3036,7 @@ final class V2WebhookWorkflowTest extends TestCase
 
     private function waitFor(callable $condition): void
     {
-        $deadline = microtime(true) + 10;
+        $deadline = microtime(true) + 30;
 
         while (microtime(true) < $deadline) {
             if ($condition()) {

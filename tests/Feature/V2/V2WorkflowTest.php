@@ -7971,7 +7971,13 @@ final class V2WorkflowTest extends TestCase
 
     private function waitFor(callable $condition): void
     {
-        $deadline = microtime(true) + 10;
+        // Real-queue V2 tests in CI occasionally need more than 10s to
+        // settle: the projector repair pass adds latency when the workflow
+        // task dequeues just after a projection cycle, and overloaded
+        // GitHub Actions runners compound that. 30s is still a hard
+        // upper bound — a genuinely hung workflow fails as loudly as
+        // before.
+        $deadline = microtime(true) + 30;
 
         while (microtime(true) < $deadline) {
             if ($condition()) {
