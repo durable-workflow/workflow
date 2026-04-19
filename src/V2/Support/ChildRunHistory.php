@@ -468,11 +468,19 @@ final class ChildRunHistory
             $childRun,
         );
 
+        $parentMessage = self::parentPerspectiveMessage($resolutionEvent, $childRun);
+
+        if ($parentMessage !== null) {
+            $payload = is_array($payload) ? $payload : [];
+            $payload['message'] = $parentMessage;
+        }
+
         $fallbackClass = self::stringValue($resolutionEvent->payload['exception_class'] ?? null)
             ?? self::stringValue(self::terminalEventForRun($childRun)?->payload['exception_class'] ?? null)
             ?? self::failureRow($childRun)?->exception_class
             ?? RuntimeException::class;
-        $fallbackMessage = self::stringValue($resolutionEvent->payload['message'] ?? null)
+        $fallbackMessage = $parentMessage
+            ?? self::stringValue($resolutionEvent->payload['message'] ?? null)
             ?? self::stringValue(self::terminalEventForRun($childRun)?->payload['message'] ?? null)
             ?? self::failureRow($childRun)?->message
             ?? sprintf(
@@ -509,6 +517,37 @@ final class ChildRunHistory
             ),
             0,
         );
+    }
+
+    /**
+     * For cancelled/terminated child runs, the child-side message is just
+     * "Workflow cancelled." or "Workflow cancelled: <reason>" — boring or
+     * missing context from the parent's point of view. Build a parent-
+     * perspective message that names the child run and preserves any reason
+     * the canceller supplied. Failed children still surface the user-thrown
+     * exception message verbatim, so we leave that path alone.
+     */
+    private static function parentPerspectiveMessage(
+        WorkflowHistoryEvent $resolutionEvent,
+        ?WorkflowRun $childRun,
+    ): ?string {
+        $resolvedStatus = self::resolvedStatus($resolutionEvent, $childRun);
+
+        if ($resolvedStatus !== RunStatus::Cancelled && $resolvedStatus !== RunStatus::Terminated) {
+            return null;
+        }
+
+        $childIdentity = self::stringValue($resolutionEvent->payload['child_workflow_run_id'] ?? null)
+            ?? $childRun?->id
+            ?? 'unknown';
+        $statusLabel = $resolvedStatus->value;
+        $reason = self::stringValue(self::terminalEventForRun($childRun)?->payload['reason'] ?? null);
+
+        if ($reason !== null) {
+            return sprintf('Child workflow %s closed as %s: %s', $childIdentity, $statusLabel, $reason);
+        }
+
+        return sprintf('Child workflow %s closed as %s.', $childIdentity, $statusLabel);
     }
 
     private static function terminalEventForRun(?WorkflowRun $childRun): ?WorkflowHistoryEvent

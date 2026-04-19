@@ -2169,7 +2169,7 @@ final class V2RunDetailViewTest extends TestCase
                     'fingerprint' => 'sha256:detail-command-context',
                 ],
             ],
-            'payload_codec' => Serializer::class,
+            'payload_codec' => config('workflows.serializer'),
             'payload' => Serializer::serialize([
                 'name' => 'name-provided',
                 'arguments' => ['Taylor'],
