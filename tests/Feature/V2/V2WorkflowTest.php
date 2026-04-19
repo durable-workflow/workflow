@@ -4452,7 +4452,7 @@ final class V2WorkflowTest extends TestCase
             ->where('status', TaskStatus::Ready->value)
             ->sole();
 
-        $this->assertSame([
+        $this->assertSameJsonObject([
             'workflow_wait_kind' => 'signal',
             'open_wait_id' => 'signal-application:' . $signal->id,
             'resume_source_kind' => 'workflow_signal',
