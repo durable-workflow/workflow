@@ -73,7 +73,6 @@ final class VersionMarkerWireFormatTest extends TestCase
         // same process are not affected by our minimal container.
         $this->priorFacadeApp = \Illuminate\Support\Facades\Facade::getFacadeApplication();
         \Illuminate\Support\Facades\Facade::clearResolvedInstances();
-        // @phpstan-ignore-next-line argument.type — Facade accepts any bound container at runtime.
         \Illuminate\Support\Facades\Facade::setFacadeApplication($container);
     }
 
