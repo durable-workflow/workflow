@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Symfony\Component\Process\Process;
+use Workflow\V2\TaskWatchdog;
 
 abstract class TestCase extends BaseTestCase
 {
@@ -65,6 +66,26 @@ abstract class TestCase extends BaseTestCase
         Cache::flush();
 
         self::flushRedis();
+
+        if (TestSuiteSubscriber::getCurrentSuite() === 'feature') {
+            // Block the V2 TaskWatchdog for the duration of every feature test.
+            // The two testbench queue workers spawned in setUpBeforeClass run
+            // TaskWatchdog::wake() on every Looping event in separate PHP
+            // processes with real-time now(). Almost every V2 feature test
+            // uses Queue::fake() with Carbon::setTestNow() pointing at a past
+            // date, which leaves Ready tasks whose created_at is days behind
+            // the workers' wall clock — TaskRepairPolicy::dispatchOverdue
+            // flags them and a worker re-claims via the real Bus before the
+            // test's next runReadyTaskForRun / waitFor lookup. Setting the
+            // throttle key here short-circuits those wakes cleanly; tests
+            // that legitimately need the watchdog call $this->wakeTaskWatchdog()
+            // (or the equivalent inline Cache::forget) and reset it.
+            //
+            // V1 Watchdog is scoped under a different cache key
+            // ('workflow:watchdog:looping') and has its own 60s add-throttle
+            // inside Watchdog::wake, so this does not affect V1 tests.
+            Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 60);
+        }
     }
 
     protected function defineDatabaseMigrations()

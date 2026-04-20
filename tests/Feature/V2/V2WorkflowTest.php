@@ -91,24 +91,6 @@ use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        // Block the background TaskWatchdog for every test in this class. The
-        // two testbench queue workers spawned in TestCase::setUpBeforeClass run
-        // wake() on every Looping event in their own PHP processes with real
-        // system now(). Almost every V2WorkflowTest uses Queue::fake() plus
-        // Carbon::setTestNow() pointing at a past date; that combination leaves
-        // Ready tasks whose created_at is ~days behind the workers' wall clock,
-        // so TaskRepairPolicy::dispatchOverdue flags them and a worker re-claims
-        // via the real Bus before the test's next runReadyTaskForRun lookup
-        // (original shape under #399: "Expected a ready <type> task for run …").
-        // Tests that legitimately need the watchdog to run call
-        // $this->wakeTaskWatchdog(), which forgets this key before firing.
-        Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 60);
-    }
-
     public function testFiberWorkflowUsesStraightLineHelpersAndStillSupportsQueryReplay(): void
     {
         config()->set('queue.default', 'redis');
