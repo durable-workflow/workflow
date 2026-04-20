@@ -34,7 +34,8 @@ final class RunTimelineProjector
             $seen[] = $projectionId;
 
             /** @var WorkflowTimelineEntry $row */
-            $row = $entryModel::query()->updateOrCreate(
+            $row = IdempotentProjectionUpsert::upsert(
+                $entryModel,
                 [
                     'id' => $projectionId,
                 ],

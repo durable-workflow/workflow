@@ -30,7 +30,8 @@ final class RunWaitProjector
             $seen[] = $projectionId;
 
             /** @var WorkflowRunWait $row */
-            $row = $waitModel::query()->updateOrCreate(
+            $row = IdempotentProjectionUpsert::upsert(
+                $waitModel,
                 [
                     'id' => $projectionId,
                 ],

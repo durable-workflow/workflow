@@ -602,7 +602,12 @@ final class FailureFactory
 
         /** @var Throwable $throwable */
         $throwable = $reflection->newInstanceWithoutConstructor();
-        $baseClass = is_subclass_of($class, Error::class) ? Error::class : Exception::class;
+        // Throwable's protected message/code/file/line/trace properties are declared
+        // independently on Error and Exception (siblings, not parent/child). Use is_a
+        // with the allow_string flag so Error itself — not just its subclasses — picks
+        // the Error::class reflection target. Falling back to Exception here would
+        // raise "Cannot access protected property Error::$message" (#436).
+        $baseClass = is_a($class, Error::class, true) ? Error::class : Exception::class;
 
         self::setThrowableProperty($throwable, $baseClass, 'message', $payload['message']);
         self::setThrowableProperty($throwable, $baseClass, 'code', $payload['code']);

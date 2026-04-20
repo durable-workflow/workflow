@@ -302,7 +302,8 @@ final class RunSummaryProjector
         $selectedNextTask = $openUpdateWait !== null ? $openUpdateTask : $nextTask;
 
         /** @var WorkflowRunSummary $summary */
-        $summary = $summaryModel::query()->updateOrCreate(
+        $summary = IdempotentProjectionUpsert::upsert(
+            $summaryModel,
             [
                 'id' => $run->id,
             ],

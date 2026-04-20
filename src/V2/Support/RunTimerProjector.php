@@ -34,7 +34,8 @@ final class RunTimerProjector
             $seen[] = $projectionId;
 
             /** @var WorkflowRunTimerEntry $row */
-            $row = $entryModel::query()->updateOrCreate(
+            $row = IdempotentProjectionUpsert::upsert(
+                $entryModel,
                 [
                     'id' => $projectionId,
                 ],

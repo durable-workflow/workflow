@@ -131,7 +131,8 @@ final class RunLineageProjector
         $runId = self::stringValue($entry['workflow_run_id'] ?? null);
 
         /** @var WorkflowRunLineageEntry $row */
-        $row = $lineageModel::query()->updateOrCreate(
+        $row = IdempotentProjectionUpsert::upsert(
+            $lineageModel,
             [
                 'id' => $projectionId,
             ],
