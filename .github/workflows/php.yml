@@ -16,6 +16,12 @@ jobs:
         image: mysql
         env:
           MYSQL_ROOT_PASSWORD: password
+        # The feature suite runs migrate:fresh for every test case. MySQL's
+        # default overlay-backed datadir makes that repeated DDL/fsync path the
+        # CI long pole; keep test data on tmpfs because this database is
+        # disposable for each job.
+        options: >-
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1024m
         ports:
         - 3306:3306
 
