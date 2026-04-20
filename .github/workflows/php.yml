@@ -203,6 +203,12 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
 
+    services:
+      redis:
+        image: redis
+        ports:
+        - 6379:6379
+
     steps:
     - uses: actions/checkout@v4
       with:
@@ -221,6 +227,16 @@ jobs:
 
     - name: Create SQLite database
       run: touch testbench.sqlite
+
+    - name: Export coverage test defaults
+      run: |
+        {
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "REDIS_HOST=127.0.0.1"
+          echo "REDIS_PASSWORD="
+          echo "REDIS_PORT=${{ job.services.redis.ports['6379'] }}"
+          echo "QUEUE_FAILED_DRIVER=null"
+        } >> "$GITHUB_ENV"
 
     - name: Code Coverage
       run: vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --testsuite unit
