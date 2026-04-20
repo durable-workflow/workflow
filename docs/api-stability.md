@@ -106,6 +106,75 @@ point for external components. Implementations of these interfaces are
 expected to track the interface as it evolves; adding a method to a
 contract is a major-version change.
 
+## Frozen history-event wire formats
+
+History events are the durable, workflow-lifetime protocol. Once a
+workflow writes an event to `workflow_history_events`, every future
+SDK version that replays that workflow must decode the same field set.
+Renaming, removing, or repurposing a field in any published event is a
+protocol break — not a minor-version change — regardless of whether
+the PHP class that produced the event is `@internal`.
+
+### `VersionMarkerRecorded`
+
+This marker records the result of `Workflow::getVersion()` (PHP) and
+`workflow.get_version()` (Python SDK). The moment an operational
+workflow writes a `VersionMarkerRecorded` event, every replayer for
+the rest of that workflow's lifetime must continue to decode the same
+payload. See PHP `Workflow\V2\Support\DefaultWorkflowTaskBridge::applyRecordVersionMarker()`
+and Python `durable_workflow.workflow._workflow_state` for the
+authoritative emission and replay sites.
+
+**Payload shape — frozen:**
+
+| key             | type    | meaning                                   |
+| --------------- | ------- | ----------------------------------------- |
+| `sequence`      | integer | 1-indexed command sequence inside the task |
+| `change_id`     | string  | workflow author's identifier for the versioning point |
+| `version`       | integer | version recorded for this `change_id`     |
+| `min_supported` | integer | minimum version the author commits to replay |
+| `max_supported` | integer | maximum version supported at record time  |
+
+**Matching command wire format (`record_version_marker`) — frozen:**
+
+| key             | type    | meaning                                   |
+| --------------- | ------- | ----------------------------------------- |
+| `type`          | string  | constant `"record_version_marker"`        |
+| `change_id`     | string  | — same semantics as above —               |
+| `version`       | integer |                                           |
+| `min_supported` | integer |                                           |
+| `max_supported` | integer |                                           |
+
+**Evolution rules:**
+
+- Adding a field to either shape is a protocol break. Replayers running
+  older SDK builds will silently ignore the field, producing decisions
+  that diverge from replayers on the new build. Treat any new shape as
+  a **second, parallel primitive** with a new command/event type name —
+  never as an in-place extension of the existing one.
+- Renaming or removing a field is also a protocol break. Old workflow
+  rows still carry the old key. Keep the old key supported indefinitely.
+- Changing a field's type (e.g. integer → string) or its semantic
+  meaning is a protocol break even if the JSON shape decodes.
+- The set of SDKs that read this shape is not limited to the SDKs in
+  `repos/*`. Any third-party SDK may be replaying historic runs; the
+  wire format is a public protocol, not a private contract between the
+  packages in this fleet.
+
+Parity between PHP and Python emission/replay sites is pinned by
+`tests/Unit/V2/VersionMarkerWireFormatTest.php` (PHP, in this repo)
+and by the canonical fixture it snapshots. Any change to the PHP emit
+site that shifts keys, types, or emission order must update the test
+and the Python replay site (`repos/sdk-python/src/durable_workflow/workflow.py`)
+in the same change.
+
+**Broader history-event taxonomy.** The same freeze-at-stable rule
+applies to every `HistoryEventType` case. The full per-event schema
+enumeration is tracked as follow-up work before 2.0.0 stable; until
+then, treat `Workflow\V2\Support\DefaultWorkflowTaskBridge` as the
+authoritative emission site and `Workflow\V2\Models\WorkflowHistoryEvent`
+rows as the authoritative persisted shape.
+
 ## Changing this list
 
 Any pull request that removes a class from the list, changes a signature
