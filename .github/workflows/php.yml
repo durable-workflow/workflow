@@ -7,8 +7,35 @@ on:
     branches: [ master, v2 ]
 
 jobs:
-  build:
+  quality:
+    runs-on: ubuntu-latest
 
+    steps:
+    - uses: actions/checkout@v4
+      with:
+          fetch-depth: 10
+
+    - name: Validate composer.json and composer.lock
+      run: composer validate --strict
+
+    - name: Cache Composer packages
+      uses: actions/cache@v4
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Check coding style via ECS
+      run: vendor/bin/ecs check
+
+    - name: Run static analysis via PHPStan
+      run: vendor/bin/phpstan analyse src tests
+
+  feature-mysql:
     runs-on: ubuntu-latest
 
     services:
@@ -25,6 +52,75 @@ jobs:
         ports:
         - 3306:3306
 
+      redis:
+        image: redis
+        ports:
+        - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+          fetch-depth: 10
+
+    - name: Cache Composer packages
+      uses: actions/cache@v4
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Export GitHub Actions test defaults
+      run: |
+        {
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "DB_HOST=127.0.0.1"
+          echo "DB_DATABASE=testbench"
+          echo "DB_USERNAME=root"
+          echo "DB_PASSWORD=password"
+          echo "QUEUE_FAILED_DRIVER=null"
+          echo "REDIS_HOST=127.0.0.1"
+          echo "REDIS_PASSWORD="
+          echo "REDIS_PORT=${{ job.services.redis.ports['6379'] }}"
+          # Testbench defaults cache to array (per-process, in-memory). The V2
+          # TaskWatchdog throttle set by Tests\TestCase::setUp needs to be
+          # visible to the two queue:work worker processes so their wake()
+          # poll short-circuits — array cache means the workers never see the
+          # test's throttle and runPass races the test's DB state (originally
+          # diagnosed as the #427 PG "hang" and the MySQL Mode-B flakes).
+          # The local docker stack uses tests/.env.feature which already sets
+          # CACHE_DRIVER=redis for the same reason; mirror it here.
+          echo "CACHE_DRIVER=redis"
+          echo "CACHE_STORE=redis"
+        } >> "$GITHUB_ENV"
+
+    - name: Create MySQL database
+      run: mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports['3306'] }}
+
+    - name: Run feature test suite (MySQL)
+      id: mysql_suite
+      timeout-minutes: 65
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
+      env:
+        DB_CONNECTION: mysql
+        DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
+    - name: Upload laravel.log if MySQL tests fail
+      if: failure() || steps.mysql_suite.outcome == 'failure'
+      uses: actions/upload-artifact@v4
+      with:
+        name: laravel-log-mysql
+        path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
+
+  feature-postgresql:
+    runs-on: ubuntu-latest
+
+    services:
       postgres:
         image: postgres
         env:
@@ -40,16 +136,12 @@ jobs:
         - 6379:6379
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
           fetch-depth: 10
 
-    - name: Validate composer.json and composer.lock
-      run: composer validate --strict
-
     - name: Cache Composer packages
-      id: composer-cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: vendor
         key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
@@ -59,56 +151,37 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
-    - name: Check coding style via ECS
-      run: vendor/bin/ecs check
-
-    - name: Run static analysis via PHPStan
-      run: vendor/bin/phpstan analyse src tests
-
     - name: Export GitHub Actions test defaults
       run: |
-        echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI=" >> "$GITHUB_ENV"
-        echo "DB_HOST=127.0.0.1" >> "$GITHUB_ENV"
-        echo "DB_DATABASE=testbench" >> "$GITHUB_ENV"
-        echo "DB_USERNAME=root" >> "$GITHUB_ENV"
-        echo "DB_PASSWORD=password" >> "$GITHUB_ENV"
-        echo "QUEUE_FAILED_DRIVER=null" >> "$GITHUB_ENV"
-        echo "REDIS_HOST=127.0.0.1" >> "$GITHUB_ENV"
-        echo "REDIS_PASSWORD=" >> "$GITHUB_ENV"
-        echo "REDIS_PORT=${{ job.services.redis.ports[6379] }}" >> "$GITHUB_ENV"
-        # Testbench defaults cache to array (per-process, in-memory). The V2
-        # TaskWatchdog throttle set by Tests\TestCase::setUp needs to be
-        # visible to the two queue:work worker processes so their wake()
-        # poll short-circuits — array cache means the workers never see the
-        # test's throttle and runPass races the test's DB state (originally
-        # diagnosed as the #427 PG "hang" and the MySQL Mode-B flakes).
-        # The local docker stack uses tests/.env.feature which already sets
-        # CACHE_DRIVER=redis for the same reason; mirror it here.
-        echo "CACHE_DRIVER=redis" >> "$GITHUB_ENV"
-        echo "CACHE_STORE=redis" >> "$GITHUB_ENV"
+        {
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "DB_HOST=127.0.0.1"
+          echo "DB_DATABASE=testbench"
+          echo "DB_USERNAME=root"
+          echo "DB_PASSWORD=password"
+          echo "QUEUE_FAILED_DRIVER=null"
+          echo "REDIS_HOST=127.0.0.1"
+          echo "REDIS_PASSWORD="
+          echo "REDIS_PORT=${{ job.services.redis.ports['6379'] }}"
+          # Testbench defaults cache to array (per-process, in-memory). The V2
+          # TaskWatchdog throttle set by Tests\TestCase::setUp needs to be
+          # visible to the two queue:work worker processes so their wake()
+          # poll short-circuits — array cache means the workers never see the
+          # test's throttle and runPass races the test's DB state (originally
+          # diagnosed as the #427 PG "hang" and the MySQL Mode-B flakes).
+          # The local docker stack uses tests/.env.feature which already sets
+          # CACHE_DRIVER=redis for the same reason; mirror it here.
+          echo "CACHE_DRIVER=redis"
+          echo "CACHE_STORE=redis"
+        } >> "$GITHUB_ENV"
 
-    - name: Create databases
-      run: |
-        touch testbench.sqlite
-        mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
-
-    - name: Run test suite (MySQL)
-      id: mysql_suite
-      timeout-minutes: 65
-      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
-      env:
-        DB_CONNECTION: mysql
-        DB_PORT: ${{ job.services.mysql.ports[3306] }}
-        QUEUE_CONNECTION: redis
-        XDEBUG_MODE: off
-
-    - name: Run test suite (PostgreSQL)
+    - name: Run feature test suite (PostgreSQL)
       id: pgsql_suite
       timeout-minutes: 65
       run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
       env:
         DB_CONNECTION: pgsql
-        DB_PORT: ${{ job.services.postgres.ports[5432] }}
+        DB_PORT: ${{ job.services.postgres.ports['5432'] }}
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
         # Safety net kept after #427: libpq honors PGOPTIONS on every
@@ -120,16 +193,37 @@ jobs:
         # silent hang.
         PGOPTIONS: "-c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
 
-    - name: Upload laravel.log if tests fail
-      if: failure() || steps.mysql_suite.outcome == 'failure' || steps.pgsql_suite.outcome == 'failure'
+    - name: Upload laravel.log if PostgreSQL tests fail
+      if: failure() || steps.pgsql_suite.outcome == 'failure'
       uses: actions/upload-artifact@v4
       with:
-        name: laravel-log
+        name: laravel-log-postgresql
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+          fetch-depth: 10
+
+    - name: Cache Composer packages
+      uses: actions/cache@v4
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Create SQLite database
+      run: touch testbench.sqlite
+
     - name: Code Coverage
-      run: |
-        vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --testsuite unit
+      run: vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --testsuite unit
       env:
         DB_CONNECTION: sqlite
         DB_DATABASE: testbench.sqlite
@@ -142,3 +236,20 @@ jobs:
         files: ./coverage.xml
         fail_ci_if_error: false
         token: ${{ secrets.CODECOV_TOKEN }}
+
+  build:
+    runs-on: ubuntu-latest
+    needs:
+    - quality
+    - feature-mysql
+    - feature-postgresql
+    - coverage
+    if: always()
+
+    steps:
+    - name: Check required jobs
+      run: |
+        test "${{ needs.quality.result }}" = "success"
+        test "${{ needs.feature-mysql.result }}" = "success"
+        test "${{ needs.feature-postgresql.result }}" = "success"
+        test "${{ needs.coverage.result }}" = "success"
