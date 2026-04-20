@@ -76,10 +76,16 @@ jobs:
         touch testbench.sqlite
         mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
 
+    # --debug reinstated after run 24646203298 regressed despite the global
+    # throttle — a test at ~pos 200-252 crossed the 60s TTL in CI and let a
+    # worker wake() land in the window. TestCase::setUp TTL is now 600s but
+    # keep --debug until we have two consecutive clean MySQL runs so the
+    # next red run still names the hang. Drop in the same cleanup commit
+    # when #427 is closed.
     - name: Run test suite (MySQL)
       id: mysql_suite
       timeout-minutes: 65
-      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --debug --testsuite feature
       env:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports[3306] }}

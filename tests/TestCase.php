@@ -81,10 +81,16 @@ abstract class TestCase extends BaseTestCase
             // that legitimately need the watchdog call $this->wakeTaskWatchdog()
             // (or the equivalent inline Cache::forget) and reset it.
             //
+            // TTL is 600s (10 minutes) so slow CI runners can take any
+            // individual test well beyond the 60s original without the
+            // throttle expiring mid-test and letting a worker's runPass
+            // interleave. Each setUp re-arms the key regardless, so even
+            // long classes stay protected.
+            //
             // V1 Watchdog is scoped under a different cache key
             // ('workflow:watchdog:looping') and has its own 60s add-throttle
             // inside Watchdog::wake, so this does not affect V1 tests.
-            Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 60);
+            Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 600);
         }
     }
 
