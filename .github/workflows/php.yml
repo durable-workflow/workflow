@@ -76,45 +76,32 @@ jobs:
         touch testbench.sqlite
         mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
 
-    # Restored --debug after 81b48ad removed it prematurely: MySQL regressed
-    # on run 24642347385 with Mode-B hangs at tests 190-252 and a 60m step
-    # timeout, but without --debug we only see progress dots. Keep --debug
-    # here until we have 2-3 consecutive clean MySQL runs, then drop both
-    # --debug flags together.
     - name: Run test suite (MySQL)
       id: mysql_suite
       timeout-minutes: 65
-      run: timeout --foreground 60m vendor/bin/phpunit --testdox --debug --testsuite feature
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
       env:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports[3306] }}
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
 
-    # PostgreSQL suite is currently non-blocking while #427 (TD-064: multi-DB
-    # support workstream) is open — MySQL is the primary gate. --debug prints
-    # each test name as it starts so when the suite stalls in CI the hang
-    # point is visible in the step log instead of hidden behind the 60m
-    # timeout. Drop continue-on-error (and optionally --debug) when #427 lands.
     - name: Run test suite (PostgreSQL)
       id: pgsql_suite
-      continue-on-error: true
       timeout-minutes: 65
-      run: timeout --foreground 60m vendor/bin/phpunit --testdox --debug --testsuite feature
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
       env:
         DB_CONNECTION: pgsql
         DB_PORT: ${{ job.services.postgres.ports[5432] }}
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
-        # libpq honors PGOPTIONS on every connection. Bounds keep a runaway
-        # query or lock wait from consuming the entire 60m step budget:
-        #   statement_timeout - any single statement > 2m fails loudly
-        #   lock_timeout      - any lock wait > 30s fails loudly
-        #   idle_in_transaction_session_timeout - abandoned tx > 60s ends
-        # Each limit is well above legitimate migrate:fresh / query cost in
-        # this suite but well below the step budget, so CI surfaces the
-        # hang point instead of hiding it. Drop alongside continue-on-error
-        # when #427 closes if they are no longer needed as a safety net.
+        # Safety net kept after #427: libpq honors PGOPTIONS on every
+        # connection, so any runaway query or lock wait fails loudly inside
+        # the step budget instead of consuming the whole 60m timeout. The
+        # numbers are well above legitimate test cost (the suite runs in
+        # ~13m) but well below the step budget, so a future regression
+        # surfaces with the offending SQL in laravel.log rather than a
+        # silent hang.
         PGOPTIONS: "-c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
 
     - name: Upload laravel.log if tests fail
