@@ -22,7 +22,9 @@ final class IdempotentProjectionUpsertTest extends TestCase
 
         $row = IdempotentProjectionUpsert::upsert(
             WorkflowTimelineEntry::class,
-            ['id' => $projectionId],
+            [
+                'id' => $projectionId,
+            ],
             $this->timelineAttributes($run, 'happy-path', 'first-pass'),
         );
 
@@ -40,12 +42,16 @@ final class IdempotentProjectionUpsertTest extends TestCase
         $projectionId = hash('sha256', $run->id . '|already-exists');
 
         WorkflowTimelineEntry::query()->create(
-            ['id' => $projectionId] + $this->timelineAttributes($run, 'already-exists', 'old-summary'),
+            [
+                'id' => $projectionId,
+            ] + $this->timelineAttributes($run, 'already-exists', 'old-summary'),
         );
 
         $row = IdempotentProjectionUpsert::upsert(
             WorkflowTimelineEntry::class,
-            ['id' => $projectionId],
+            [
+                'id' => $projectionId,
+            ],
             $this->timelineAttributes($run, 'already-exists', 'new-summary'),
         );
 
@@ -67,7 +73,9 @@ final class IdempotentProjectionUpsertTest extends TestCase
 
         // Pre-encode payload + recorded_at because the raw INSERT inside the
         // listener bypasses Eloquent casts.
-        $raceRowAttributes = ['id' => $projectionId] + $this->timelineAttributes($run, 'raced', 'racing-writer');
+        $raceRowAttributes = [
+            'id' => $projectionId,
+        ] + $this->timelineAttributes($run, 'raced', 'racing-writer');
         $raceRowAttributes['payload'] = json_encode($raceRowAttributes['payload']);
         $raceRowAttributes['recorded_at'] = $raceRowAttributes['recorded_at']->format('Y-m-d H:i:s.u');
         $raceFired = false;
@@ -77,7 +85,10 @@ final class IdempotentProjectionUpsertTest extends TestCase
         // worker," which makes the in-flight INSERT fail with a duplicate-key
         // error. The helper must catch that, retry updateOrCreate, find the
         // row this hook wrote, and UPDATE it.
-        WorkflowTimelineEntry::saving(static function (WorkflowTimelineEntry $entry) use ($raceRowAttributes, &$raceFired): void {
+        WorkflowTimelineEntry::saving(static function (WorkflowTimelineEntry $entry) use (
+            $raceRowAttributes,
+            &$raceFired
+        ): void {
             if ($entry->exists || $entry->id !== $raceRowAttributes['id'] || $raceFired) {
                 return;
             }
@@ -89,7 +100,9 @@ final class IdempotentProjectionUpsertTest extends TestCase
         try {
             $row = IdempotentProjectionUpsert::upsert(
                 WorkflowTimelineEntry::class,
-                ['id' => $projectionId],
+                [
+                    'id' => $projectionId,
+                ],
                 $this->timelineAttributes($run, 'raced', 'final-writer'),
             );
         } finally {
@@ -127,7 +140,9 @@ final class IdempotentProjectionUpsertTest extends TestCase
             try {
                 IdempotentProjectionUpsert::upsert(
                     WorkflowTimelineEntry::class,
-                    ['id' => hash('sha256', $run->id . '|rethrow')],
+                    [
+                        'id' => hash('sha256', $run->id . '|rethrow'),
+                    ],
                     $this->timelineAttributes($run, 'rethrow', 'will-not-persist'),
                 );
             } catch (QueryException $e) {

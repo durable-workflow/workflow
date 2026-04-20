@@ -26,8 +26,10 @@ final class FailureFactoryRestoreTest extends TestCase
      *
      * @dataProvider errorSubclassesProvider
      */
-    public function testRestoresErrorSubclassesWithoutFallingBackToExceptionBaseClass(string $class, string $message): void
-    {
+    public function testRestoresErrorSubclassesWithoutFallingBackToExceptionBaseClass(
+        string $class,
+        string $message
+    ): void {
         $payload = FailureFactory::payload(new $class($message));
 
         $restored = FailureFactory::restoreForReplay($payload);
