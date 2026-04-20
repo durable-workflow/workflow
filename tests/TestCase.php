@@ -117,9 +117,14 @@ abstract class TestCase extends BaseTestCase
 
     protected function defineDatabaseMigrations()
     {
-        $this->loadLaravelMigrations();
-
+        // migrate:fresh drops everything and runs migrations from registered
+        // paths (the package's service provider). loadLaravelMigrations only
+        // executes the defaults — it does not register them — so we must run
+        // it AFTER migrate:fresh or the users table gets dropped and never
+        // recreated.
         $this->artisan('migrate:fresh');
+
+        $this->loadLaravelMigrations();
     }
 
     protected function getPackageProviders($app)

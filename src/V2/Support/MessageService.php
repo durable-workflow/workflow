@@ -84,10 +84,13 @@ class MessageService
 
             $message->save();
 
-            // Also create corresponding inbound message for target
+            // Also create corresponding inbound message for target. If the
+            // target instance has no current run yet (signal-with-start),
+            // workflow_run_id stays null and is claimed when a run first
+            // consumes from the instance's inbox.
             $inboundMessage = new WorkflowMessage([
                 'workflow_instance_id' => $targetInstanceId,
-                'workflow_run_id' => $targetInstance->current_run_id ?? $targetInstance->id, // May not have run yet
+                'workflow_run_id' => $targetInstance->current_run_id,
                 'direction' => MessageDirection::Inbound,
                 'channel' => $channel,
                 'stream_key' => $streamKey,

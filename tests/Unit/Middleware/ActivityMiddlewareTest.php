@@ -42,7 +42,11 @@ final class ActivityMiddlewareTest extends TestCase
             'status' => WorkflowWaitingStatus::class,
         ]);
 
-        Cache::flush();
+        // Workflow implements ShouldBeUnique. Queue::fake never runs the job,
+        // so the unique lock acquired by start() is still held — next() would
+        // silently drop the re-dispatch. Release it explicitly before the
+        // activity unlock so the second push actually reaches the fake queue.
+        $this->releaseUniqueLock($storedWorkflow);
 
         $activity = $this->mock(TestActivity::class);
         $activity->index = 0;
@@ -62,6 +66,14 @@ final class ActivityMiddlewareTest extends TestCase
         Event::assertDispatched(ActivityStarted::class);
         Event::assertDispatched(ActivityCompleted::class);
         Queue::assertPushed(TestWorkflow::class, 2);
+    }
+
+    private function releaseUniqueLock(StoredWorkflow $storedWorkflow): void
+    {
+        $job = new TestWorkflow($storedWorkflow);
+        (new \Illuminate\Bus\UniqueLock(
+            app(\Illuminate\Contracts\Cache\Repository::class)
+        ))->release($job);
     }
 
     public function testAlreadyCompleted(): void

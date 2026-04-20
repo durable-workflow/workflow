@@ -249,9 +249,8 @@ class MessageServiceTest extends TestCase
     {
         $sourceRun = $this->createRun();
         $closingRun = $this->createRun();
-        $continuedRun = $this->createRunForInstance($closingRun->instance);
 
-        // Send 5 messages to closing run
+        // Send 5 messages to closing run while it is the current run.
         for ($i = 0; $i < 5; $i++) {
             $this->service->sendMessage($sourceRun, MessageChannel::Signal, $closingRun->workflow_instance_id);
         }
@@ -264,6 +263,9 @@ class MessageServiceTest extends TestCase
         $closingRun->refresh();
         $this->assertEquals(2, $closingRun->message_cursor_position);
         $this->assertEquals(3, $this->service->getUnconsumedCount($closingRun));
+
+        // Continue-as-new promotes a new run on the same instance.
+        $continuedRun = $this->createRunForInstance($closingRun->instance);
 
         // Transfer to continued run
         $this->service->transferMessagesToContinuedRun($closingRun, $continuedRun);
@@ -380,15 +382,10 @@ class MessageServiceTest extends TestCase
             'request_123',
         );
 
-        // Query by correlation ID
+        // Query by correlation ID — two sendMessage calls produce outbound
+        // and inbound records each, so all four rows share the correlation.
         $correlated = $this->service->getMessagesByCorrelationId('request_123');
-        $this->assertCount(
-            2,
-            $correlated
-        ); // outbound + inbound for each = 4, but we get outbound only? Actually we get all
-
-        // Actually both inbound and outbound have same correlation_id
-        $this->assertGreaterThanOrEqual(2, $correlated->count());
+        $this->assertCount(4, $correlated);
         $this->assertTrue($correlated->every(static fn ($msg) => $msg->correlation_id === 'request_123'));
     }
 
@@ -478,7 +475,7 @@ class MessageServiceTest extends TestCase
     {
         $instance = $instance ?? $this->createInstance();
 
-        return WorkflowRun::create([
+        $run = WorkflowRun::create([
             'id' => 'run-' . uniqid(),
             'workflow_instance_id' => $instance->id,
             'run_number' => 1,
@@ -487,11 +484,15 @@ class MessageServiceTest extends TestCase
             'status' => 'running',
             'message_cursor_position' => 0,
         ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        return $run;
     }
 
     private function createRunForInstance(WorkflowInstance $instance): WorkflowRun
     {
-        return WorkflowRun::create([
+        $run = WorkflowRun::create([
             'id' => 'run-' . uniqid(),
             'workflow_instance_id' => $instance->id,
             'run_number' => 2,
@@ -500,5 +501,9 @@ class MessageServiceTest extends TestCase
             'status' => 'running',
             'message_cursor_position' => 0,
         ]);
+
+        $instance->forceFill(['current_run_id' => $run->id])->save();
+
+        return $run;
     }
 }

@@ -89,6 +89,7 @@ final class V2RepairPassCommandTest extends TestCase
             'resume_source_kind' => 'workflow_signal',
             'resume_source_id' => $signal->id,
             'workflow_signal_id' => $signal->id,
+            'signal_name' => $signal->signal_name,
             'workflow_command_id' => $signal->workflow_command_id,
         ], $task->payload);
 

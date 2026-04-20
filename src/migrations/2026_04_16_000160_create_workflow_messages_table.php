@@ -15,7 +15,11 @@ return new class() extends Migration {
             // Message ownership
             $table->string('workflow_instance_id', 191)
                 ->index();
+            // Nullable because inbound messages can be created for a target
+            // instance before it has a running run (signal-with-start). A run
+            // claims these messages by setting workflow_run_id on consume.
             $table->string('workflow_run_id', 26)
+                ->nullable()
                 ->index();
 
             // Message directionality (inbound, outbound)

@@ -410,17 +410,14 @@ class MemoTest extends TestCase
         // Verify memos exist
         $this->assertEquals(2, WorkflowMemo::count());
 
-        // Document: memos should NOT be used in WHERE clauses for filtering
-        // This is intentional - memos are returned-only metadata
-        // Filtering should use search attributes instead
-
-        // If you try to filter by memo value, it works at DB level but violates
-        // the contract - Waterline should NEVER query memo values for filtering
-        $memos = WorkflowMemo::whereJsonContains('value', 'acme')->get();
-        $this->assertCount(1, $memos);
-
-        // The point: the lack of indexes makes this inefficient by design
-        // Operators should use search attributes for filtering, not memos
+        // Document: memos should NOT be used in WHERE clauses for filtering.
+        // This is intentional — memos are returned-only metadata; callers
+        // wanting to filter must use search attributes instead. Even reading
+        // memo contents requires loading rows and inspecting in PHP (no
+        // indexes, and no portable JSON-path predicate across MySQL/PG/SQLite).
+        $acmeMemos = WorkflowMemo::all()
+            ->filter(static fn (WorkflowMemo $memo): bool => $memo->getValue() === 'acme');
+        $this->assertCount(1, $acmeMemos);
     }
 
     private function createRun(): WorkflowRun

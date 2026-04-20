@@ -88,7 +88,16 @@ final class WorkflowStubTest extends TestCase
         $storedWorkflow->status = WorkflowCreatedStatus::class;
         $storedWorkflow->save();
 
+        // The nested dispatch during cancel() signal processing is released by
+        // WithoutOverlappingMiddleware (the activity semaphore is held by the
+        // Signal), and a released job does not release its ShouldBeUnique lock
+        // (CallQueuedHandler only releases when the job completes or fails).
+        // The cache repo's default driver stores locks on a separate
+        // connection than flush() clears, so Cache::flush() alone is not
+        // sufficient — release the unique lock explicitly.
         Cache::flush();
+        (new \Illuminate\Bus\UniqueLock(app(\Illuminate\Contracts\Cache\Repository::class)))
+            ->release(new TestAwaitWorkflow($storedWorkflow));
 
         $workflow->resume();
         $this->assertSame('2022-01-01 00:00:00', WorkflowStub::now()->toDateTimeString());

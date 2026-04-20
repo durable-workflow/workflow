@@ -60,7 +60,10 @@ final class WithoutOverlappingMiddlewareTest extends TestCase
             $activity,
             $middleware3
         ) {
-            $this->assertSame(1, Cache::get($middleware1->getWorkflowSemaphoreKey()));
+            // Cast because the RedisStore returns the semaphore count as a
+            // numeric string whereas the middleware itself stores it as int;
+            // the middleware's own reads cast the same way.
+            $this->assertSame(1, (int) Cache::get($middleware1->getWorkflowSemaphoreKey()));
             $this->assertNull(Cache::get($middleware1->getActivitySemaphoreKey()));
 
             $middleware2->handle($workflow2, static function ($job) {

@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Workflow\Tests\Unit\V2;
+namespace Tests\Unit\V2;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Orchestra\Testbench\TestCase;
+use Tests\TestCase;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Models\WorkflowChildCall;

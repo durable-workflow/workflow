@@ -45,16 +45,22 @@ final class UpsertSearchAttributesCall implements YieldedCommand
                 continue;
             }
 
-            $stringValue = is_bool($value) ? ($value ? '1' : '0') : trim((string) $value);
+            if (is_string($value)) {
+                $trimmed = trim($value);
 
-            if ($stringValue !== '' && strlen($stringValue) > 191) {
-                throw new LogicException(sprintf(
-                    'Workflow v2 search attribute [%s] must be up to 191 characters when cast to string.',
-                    $key,
-                ));
+                if (strlen($trimmed) > 191) {
+                    throw new LogicException(sprintf(
+                        'Workflow v2 search attribute [%s] must be up to 191 characters.',
+                        $key,
+                    ));
+                }
+
+                $normalized[$key] = $trimmed === '' ? null : $trimmed;
+
+                continue;
             }
 
-            $normalized[$key] = $stringValue === '' ? null : $stringValue;
+            $normalized[$key] = $value;
         }
 
         ksort($normalized);

@@ -7,6 +7,7 @@ namespace Tests\Unit;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
@@ -151,14 +152,24 @@ final class WorkflowServiceProviderTest extends TestCase
     {
         $this->deletePublishedWorkflowMigrations();
 
-        try {
-            // 1. Publish the current package migrations.
-            Artisan::call('vendor:publish', [
-                '--tag' => 'migrations',
-                '--force' => true,
-            ]);
+        // Publish to a per-test scratch directory instead of
+        // database_path('migrations'). Laravel's Migrator::requireFiles calls
+        // require_once on each file — if a prior test in the class already
+        // required the same absolute path, modifications to the file here
+        // would not be re-read (the anonymous-class factory has already
+        // returned the original instance), and the test would silently run
+        // the unmodified migration.
+        $publishedDir = storage_path('app/test-migrations-' . uniqid());
+        if (! is_dir($publishedDir)) {
+            mkdir($publishedDir, 0755, true);
+        }
 
-            $publishedDir = database_path('migrations');
+        try {
+            // 1. Publish the current package migrations into the scratch dir.
+            foreach (glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [] as $source) {
+                copy($source, $publishedDir . '/' . basename($source));
+            }
+
             $repair = $publishedDir . '/2026_04_16_000158_repair_memo_on_workflow_run_summaries_table.php';
             $summaries = $publishedDir . '/2026_04_05_000106_create_workflow_run_summaries_table.php';
             $instances = $publishedDir . '/2026_04_05_000100_create_workflow_instances_table.php';
@@ -193,7 +204,13 @@ final class WorkflowServiceProviderTest extends TestCase
             file_put_contents($instances, str_replace($hook, $hook . $customIndex, $instancesContents));
 
             // 5. Run migrate from the customized published snapshot.
+            // Schema::dropAllTables() on a file-backed SQLite truncates the
+            // file in place but does not drop the live PDO connection, so
+            // subsequent queries can still see the prior-test schema. Purge
+            // the connection so migrate:install starts from a truly empty
+            // database.
             Schema::dropAllTables();
+            DB::purge();
             $this->artisan('migrate:install')
                 ->run();
             $this->artisan('migrate', [
@@ -233,7 +250,12 @@ final class WorkflowServiceProviderTest extends TestCase
                 'User-added custom index should survive the carry-forward migrate run.'
             );
         } finally {
-            $this->deletePublishedWorkflowMigrations();
+            if (is_dir($publishedDir)) {
+                foreach (glob($publishedDir . '/*') ?: [] as $file) {
+                    @unlink($file);
+                }
+                @rmdir($publishedDir);
+            }
         }
     }
 

@@ -187,10 +187,14 @@ class WorkflowSearchAttribute extends Model
         }
 
         if (is_string($value)) {
-            // Use keyword for short strings (likely IDs, enums, etc.)
-            return mb_strlen($value) <= self::MAX_KEYWORD_LENGTH
-                ? self::TYPE_KEYWORD
-                : self::TYPE_STRING;
+            // Keyword = short identifier-like strings (IDs, enums) with no
+            // whitespace. String = anything longer than the keyword column
+            // or prose containing whitespace.
+            if (mb_strlen($value) > self::MAX_KEYWORD_LENGTH || preg_match('/\s/u', $value) === 1) {
+                return self::TYPE_STRING;
+            }
+
+            return self::TYPE_KEYWORD;
         }
 
         if ($value === null) {
