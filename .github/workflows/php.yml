@@ -38,6 +38,11 @@ jobs:
   feature-mysql:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+
     services:
       mysql:
         image: mysql
@@ -100,10 +105,13 @@ jobs:
     - name: Create MySQL database
       run: mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports['3306'] }}
 
-    - name: Run feature test suite (MySQL)
+    - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
       id: mysql_suite
       timeout-minutes: 65
-      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
+      run: |
+        find tests/Feature -name '*Test.php' | sort | awk "((NR - 1) % 4) == ${{ matrix.shard }}" > /tmp/mysql-shard-files
+        cat /tmp/mysql-shard-files
+        timeout --foreground 60m xargs -a /tmp/mysql-shard-files vendor/bin/phpunit --testdox --testsuite feature
       env:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports['3306'] }}
@@ -114,7 +122,7 @@ jobs:
       if: failure() || steps.mysql_suite.outcome == 'failure'
       uses: actions/upload-artifact@v4
       with:
-        name: laravel-log-mysql
+        name: laravel-log-mysql-${{ matrix.shard }}
         path: vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log
 
   feature-postgresql:
