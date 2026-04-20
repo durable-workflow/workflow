@@ -33,8 +33,23 @@ abstract class TestCase extends BaseTestCase
 
         self::flushRedis();
 
+        // Explicitly hand our env to Process. testbench/laravel/.env hardcodes
+        // CACHE_DRIVER=file; without an inherited env (or when Symfony Process
+        // ignores the parent's env on some runners) the worker bootstraps its
+        // own file-backed cache and cannot see the LOOP_THROTTLE_KEY the test
+        // process writes to redis — original CI shape under #427. Merging
+        // $_ENV + $_SERVER + getenv() rather than relying on Process's
+        // default null-env inherit covers every environment variable source
+        // GitHub Actions, Orchestra, and the loaded .env.feature might have
+        // populated by this point.
+        $workerEnv = array_merge(array_filter($_SERVER, 'is_string'), array_filter($_ENV, 'is_string'));
+
         for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
-            self::$workers[$i] = new Process(['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work']);
+            self::$workers[$i] = new Process(
+                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work'],
+                null,
+                $workerEnv,
+            );
             self::$workers[$i]->disableOutput();
             self::$workers[$i]->start();
         }
