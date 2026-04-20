@@ -35,16 +35,14 @@ use Workflow\V2\Support\WorkflowCommandNormalizer;
  */
 final class VersionMarkerWireFormatTest extends TestCase
 {
-    /** @var list<string> */
-    private const FROZEN_COMMAND_KEYS = [
-        'type',
-        'change_id',
-        'version',
-        'min_supported',
-        'max_supported',
-    ];
+    /**
+     * @var list<string>
+     */
+    private const FROZEN_COMMAND_KEYS = ['type', 'change_id', 'version', 'min_supported', 'max_supported'];
 
-    /** @var list<string> */
+    /**
+     * @var list<string>
+     */
     private const FROZEN_EVENT_PAYLOAD_KEYS = [
         'sequence',
         'change_id',
@@ -110,9 +108,9 @@ final class VersionMarkerWireFormatTest extends TestCase
             $expected,
             $keys,
             'record_version_marker command wire format has shifted — this is a protocol break. '
-                .'If a new field is required, introduce a new command type (e.g. '
-                .'record_version_marker_v2) and update docs/api-stability.md; do NOT extend '
-                .'the existing shape.',
+                . 'If a new field is required, introduce a new command type (e.g. '
+                . 'record_version_marker_v2) and update docs/api-stability.md; do NOT extend '
+                . 'the existing shape.',
         );
 
         $this->assertSame('record_version_marker', $out[0]['type']);
@@ -158,27 +156,14 @@ final class VersionMarkerWireFormatTest extends TestCase
             unset($command[$missing]);
 
             $this->expectExceptionOnce(
-                fn () => WorkflowCommandNormalizer::normalize([$command]),
+                static fn () => WorkflowCommandNormalizer::normalize([$command]),
                 sprintf(
                     'Expected normalization to fail when "%s" is missing — the frozen contract '
-                        .'requires every field on every command.',
+                        . 'requires every field on every command.',
                     $missing,
                 ),
             );
         }
-    }
-
-    private function expectExceptionOnce(callable $callable, string $message): void
-    {
-        try {
-            $callable();
-        } catch (ValidationException) {
-            $this->addToAssertionCount(1);
-
-            return;
-        }
-
-        $this->fail($message);
     }
 
     public function testBridgeEmissionSiteStillUsesFrozenEventPayloadKeys(): void
@@ -188,9 +173,7 @@ final class VersionMarkerWireFormatTest extends TestCase
         // silently remove the frozen-key assertion expressed by this test.
         // Read the source, find the applyRecordVersionMarker() function, and
         // verify its payload literal still contains exactly the frozen keys.
-        $source = file_get_contents(
-            dirname(__DIR__, 3).'/src/V2/Support/DefaultWorkflowTaskBridge.php',
-        );
+        $source = file_get_contents(dirname(__DIR__, 3) . '/src/V2/Support/DefaultWorkflowTaskBridge.php');
         $this->assertIsString($source);
 
         // Extract the body between `applyRecordVersionMarker(...) { ... }` and
@@ -208,7 +191,7 @@ final class VersionMarkerWireFormatTest extends TestCase
         $this->assertNotFalse(
             $eventOffset,
             'applyRecordVersionMarker() no longer emits HistoryEventType::VersionMarkerRecorded. '
-                .'This is a protocol break — see docs/api-stability.md#frozen-history-event-wire-formats.',
+                . 'This is a protocol break — see docs/api-stability.md#frozen-history-event-wire-formats.',
         );
 
         // Collect every `'key' =>` pair on the lines immediately after the
@@ -225,9 +208,22 @@ final class VersionMarkerWireFormatTest extends TestCase
             $expected,
             $foundKeys,
             'VersionMarkerRecorded payload keys in applyRecordVersionMarker() have shifted — '
-                .'this is a protocol break. Old workflow rows still carry the old keys, and '
-                .'replayers on other SDKs still read them by name. Introduce a parallel event '
-                .'type (e.g. VersionMarkerRecordedV2) instead of changing this shape.',
+                . 'this is a protocol break. Old workflow rows still carry the old keys, and '
+                . 'replayers on other SDKs still read them by name. Introduce a parallel event '
+                . 'type (e.g. VersionMarkerRecordedV2) instead of changing this shape.',
         );
+    }
+
+    private function expectExceptionOnce(callable $callable, string $message): void
+    {
+        try {
+            $callable();
+        } catch (ValidationException) {
+            $this->addToAssertionCount(1);
+
+            return;
+        }
+
+        $this->fail($message);
     }
 }
