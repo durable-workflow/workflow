@@ -70,6 +70,16 @@ jobs:
         echo "REDIS_HOST=127.0.0.1" >> "$GITHUB_ENV"
         echo "REDIS_PASSWORD=" >> "$GITHUB_ENV"
         echo "REDIS_PORT=${{ job.services.redis.ports[6379] }}" >> "$GITHUB_ENV"
+        # Testbench defaults cache to array (per-process, in-memory). The V2
+        # TaskWatchdog throttle set by Tests\TestCase::setUp needs to be
+        # visible to the two queue:work worker processes so their wake()
+        # poll short-circuits — array cache means the workers never see the
+        # test's throttle and runPass races the test's DB state (originally
+        # diagnosed as the #427 PG "hang" and the MySQL Mode-B flakes).
+        # The local docker stack uses tests/.env.feature which already sets
+        # CACHE_DRIVER=redis for the same reason; mirror it here.
+        echo "CACHE_DRIVER=redis" >> "$GITHUB_ENV"
+        echo "CACHE_STORE=redis" >> "$GITHUB_ENV"
 
     - name: Create databases
       run: |
