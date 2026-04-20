@@ -76,10 +76,15 @@ jobs:
         touch testbench.sqlite
         mysql -e 'CREATE DATABASE testbench' -h127.0.0.1 -uroot -ppassword -P ${{ job.services.mysql.ports[3306] }}
 
+    # Restored --debug after 81b48ad removed it prematurely: MySQL regressed
+    # on run 24642347385 with Mode-B hangs at tests 190-252 and a 60m step
+    # timeout, but without --debug we only see progress dots. Keep --debug
+    # here until we have 2-3 consecutive clean MySQL runs, then drop both
+    # --debug flags together.
     - name: Run test suite (MySQL)
       id: mysql_suite
       timeout-minutes: 65
-      run: timeout --foreground 60m vendor/bin/phpunit --testdox --testsuite feature
+      run: timeout --foreground 60m vendor/bin/phpunit --testdox --debug --testsuite feature
       env:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports[3306] }}
