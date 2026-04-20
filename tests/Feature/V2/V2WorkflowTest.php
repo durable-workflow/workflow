@@ -8285,8 +8285,14 @@ final class V2WorkflowTest extends TestCase
 
     private function wakeTaskWatchdog(): void
     {
+        // Explicit runPass(respectThrottle: false) rather than wake() — now
+        // that the workers and test process share redis cache (CACHE_DRIVER=
+        // redis landed alongside #427), a background worker can race to
+        // Cache::add the throttle key between our forget and wake, which
+        // would cause wake's runPass(respectThrottle: true) to short-circuit
+        // and the test to see unchanged state. runPass(false) always runs.
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
-        TaskWatchdog::wake();
+        TaskWatchdog::runPass(respectThrottle: false);
     }
 
     private function configureGreetingTypeMaps(): void

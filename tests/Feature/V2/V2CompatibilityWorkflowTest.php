@@ -1095,7 +1095,7 @@ final class V2CompatibilityWorkflowTest extends TestCase
     private function wakeTaskWatchdog(): void
     {
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
-        TaskWatchdog::wake('redis', 'default');
+        TaskWatchdog::runPass(connection: 'redis', queue: 'default', respectThrottle: false);
     }
 
     /**

@@ -1666,7 +1666,7 @@ final class V2UpdateWorkflowTest extends TestCase
     private function wakeTaskWatchdog(): void
     {
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
-        TaskWatchdog::wake();
+        TaskWatchdog::runPass(respectThrottle: false);
     }
 
     private function waitFor(callable $condition): void
