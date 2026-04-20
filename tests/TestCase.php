@@ -83,29 +83,35 @@ abstract class TestCase extends BaseTestCase
         self::flushRedis();
 
         if (TestSuiteSubscriber::getCurrentSuite() === 'feature') {
-            // Block the V2 TaskWatchdog for the duration of every feature test.
-            // The two testbench queue workers spawned in setUpBeforeClass run
-            // TaskWatchdog::wake() on every Looping event in separate PHP
-            // processes with real-time now(). Almost every V2 feature test
-            // uses Queue::fake() with Carbon::setTestNow() pointing at a past
-            // date, which leaves Ready tasks whose created_at is days behind
-            // the workers' wall clock — TaskRepairPolicy::dispatchOverdue
-            // flags them and a worker re-claims via the real Bus before the
-            // test's next runReadyTaskForRun / waitFor lookup. Setting the
-            // throttle key here short-circuits those wakes cleanly; tests
-            // that legitimately need the watchdog call $this->wakeTaskWatchdog()
-            // (or the equivalent inline Cache::forget) and reset it.
+            // Block BOTH the V2 TaskWatchdog and the V1 Watchdog for the
+            // duration of every feature test. The two testbench queue
+            // workers spawned in setUpBeforeClass run both wake()s on every
+            // Looping event in separate PHP processes.
+            //
+            // V2: almost every V2 feature test uses Queue::fake() with
+            // Carbon::setTestNow() pointing at a past date, so Ready tasks
+            // carry created_at days behind the workers' real wall clock
+            // and TaskRepairPolicy::dispatchOverdue re-claims them before
+            // the test's next runReadyTaskForRun / waitFor lookup.
+            //
+            // V1: Watchdog::wake queries workflow_logs on every poll, and
+            // during migrate:fresh's DROP TABLE on PostgreSQL that read
+            // lock deadlocks against the test's exclusive-lock drop
+            // (seen on CI run 24671180438 for V2ActivityTimeoutTest).
+            // Blocking V1's 'workflow:watchdog:looping' here makes
+            // Watchdog::wake's Cache::add return false and short-circuit
+            // before the SELECT.
             //
             // TTL is 600s (10 minutes) so slow CI runners can take any
-            // individual test well beyond the 60s original without the
-            // throttle expiring mid-test and letting a worker's runPass
-            // interleave. Each setUp re-arms the key regardless, so even
-            // long classes stay protected.
+            // individual test well beyond either watchdog's internal
+            // throttle without expiring mid-test. Each setUp re-arms
+            // the keys.
             //
-            // V1 Watchdog is scoped under a different cache key
-            // ('workflow:watchdog:looping') and has its own 60s add-throttle
-            // inside Watchdog::wake, so this does not affect V1 tests.
+            // Tests that legitimately need either watchdog to fire call
+            // their local wakeTaskWatchdog() helper, which forgets the
+            // key and calls runPass(respectThrottle: false) directly.
             Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 600);
+            Cache::put('workflow:watchdog:looping', true, 600);
         }
     }
 
