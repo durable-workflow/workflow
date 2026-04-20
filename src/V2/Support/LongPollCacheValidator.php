@@ -82,7 +82,7 @@ class LongPollCacheValidator
         return [
             'safe' => false,
             'message' => sprintf(
-                'Multi-node deployment detected (WORKFLOW_V2_MULTI_NODE=true) but cache backend is "%s". %s',
+                'Multi-node deployment detected (DW_V2_MULTI_NODE=true) but cache backend is "%s". %s',
                 $validation['backend'],
                 $validation['reason']
             ),

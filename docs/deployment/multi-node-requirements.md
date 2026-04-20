@@ -74,20 +74,24 @@ See [Long-Poll Coordination](../long-poll-coordination.md) for technical details
 All nodes should have identical configuration for workflow behavior:
 ```env
 # Namespace (consistent across nodes)
-WORKFLOW_V2_NAMESPACE=production
+DW_V2_NAMESPACE=production
 
 # Compatibility (deploy same build to all nodes)
-WORKFLOW_V2_CURRENT_COMPATIBILITY=build-20260415-1a2b3c4
-WORKFLOW_V2_SUPPORTED_COMPATIBILITIES=build-20260415-1a2b3c4
+DW_V2_CURRENT_COMPATIBILITY=build-20260415-1a2b3c4
+DW_V2_SUPPORTED_COMPATIBILITIES=build-20260415-1a2b3c4
 
 # Task dispatch
-WORKFLOW_V2_TASK_DISPATCH_MODE=queue
+DW_V2_TASK_DISPATCH_MODE=queue
 
 # Limits (consistent across nodes)
-WORKFLOW_V2_LIMIT_PENDING_ACTIVITIES=2000
-WORKFLOW_V2_LIMIT_PENDING_CHILDREN=1000
+DW_V2_LIMIT_PENDING_ACTIVITIES=2000
+DW_V2_LIMIT_PENDING_CHILDREN=1000
 # ... etc
 ```
+
+The legacy `WORKFLOW_V2_*` names are honored as fallbacks during the
+deprecation window — see zorporation/durable-workflow#494 — but new
+deployments should use the `DW_V2_*` primary names.
 
 ### Node-Specific Variables
 
