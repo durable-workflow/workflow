@@ -68,14 +68,6 @@ final class ActivityMiddlewareTest extends TestCase
         Queue::assertPushed(TestWorkflow::class, 2);
     }
 
-    private function releaseUniqueLock(StoredWorkflow $storedWorkflow): void
-    {
-        $job = new TestWorkflow($storedWorkflow);
-        (new \Illuminate\Bus\UniqueLock(
-            app(\Illuminate\Contracts\Cache\Repository::class)
-        ))->release($job);
-    }
-
     public function testAlreadyCompleted(): void
     {
         Event::fake();
@@ -264,5 +256,11 @@ final class ActivityMiddlewareTest extends TestCase
         $this->assertSame(WorkflowFailedStatus::class, $workflow->status());
 
         Queue::assertPushed(TestWorkflow::class, 0);
+    }
+
+    private function releaseUniqueLock(StoredWorkflow $storedWorkflow): void
+    {
+        $job = new TestWorkflow($storedWorkflow);
+        (new \Illuminate\Bus\UniqueLock(app(\Illuminate\Contracts\Cache\Repository::class)))->release($job);
     }
 }

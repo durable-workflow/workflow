@@ -485,7 +485,9 @@ class MessageServiceTest extends TestCase
             'message_cursor_position' => 0,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         return $run;
     }
@@ -502,7 +504,9 @@ class MessageServiceTest extends TestCase
             'message_cursor_position' => 0,
         ]);
 
-        $instance->forceFill(['current_run_id' => $run->id])->save();
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
 
         return $run;
     }
