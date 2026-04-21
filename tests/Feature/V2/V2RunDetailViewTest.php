@@ -2775,6 +2775,11 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewIncludesTaskBackedTimerWaitForSelectedRun(): void
     {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-timer');
         $workflow->start(60);
         $runId = $workflow->runId();
@@ -2813,6 +2818,11 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewKeepsTimerWaitAndTaskMetadataWhenTimerRowDrifts(): void
     {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-timer-history');
         $workflow->start(60);
         $runId = $workflow->runId();
@@ -3017,6 +3027,11 @@ final class V2RunDetailViewTest extends TestCase
 
     public function testRunDetailViewMarksRepairNeededTimerWaitAsNotTaskBacked(): void
     {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'detail-timer-repair');
         $workflow->start(60);
         $runId = $workflow->runId();
