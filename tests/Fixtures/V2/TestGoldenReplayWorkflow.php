@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
+use Throwable;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\await;
+use function Workflow\V2\child;
 use function Workflow\V2\getVersion;
 use function Workflow\V2\signal;
 use Workflow\V2\Workflow;
@@ -31,6 +33,8 @@ final class TestGoldenReplayWorkflow extends Workflow
 
     private ?string $versionResult = null;
 
+    private ?string $reservationId = null;
+
     /**
      * @var list<string>
      */
@@ -43,6 +47,7 @@ final class TestGoldenReplayWorkflow extends Workflow
             'signal-activity' => $this->signalActivity(),
             'wait-condition' => $this->waitCondition(),
             'version-marker' => $this->versionMarker(),
+            'saga-compensation' => $this->sagaCompensation(),
             default => throw new \InvalidArgumentException("Unknown golden replay scenario [{$scenario}]."),
         };
     }
@@ -57,6 +62,7 @@ final class TestGoldenReplayWorkflow extends Workflow
             'approved' => $this->approved,
             'version' => $this->version,
             'version_result' => $this->versionResult,
+            'reservation_id' => $this->reservationId,
             'events' => $this->events,
         ];
     }
@@ -111,6 +117,31 @@ final class TestGoldenReplayWorkflow extends Workflow
             : activity(TestVersionedActivityV2::class);
         $this->events[] = "version:{$this->version}";
         $this->stage = 'completed';
+
+        return $this->currentState();
+    }
+
+    private function sagaCompensation(): array
+    {
+        $this->stage = 'reserving-inventory';
+        $this->reservationId = activity(TestSagaBookingActivity::class, 'inventory');
+        $this->addCompensation(
+            fn (): mixed => activity(TestSagaCancelActivity::class, 'inventory', $this->reservationId)
+        );
+
+        try {
+            child(TestFailingChildWorkflow::class);
+        } catch (Throwable $e) {
+            $this->stage = 'compensating';
+            $this->compensate();
+            $this->events[] = "compensated:{$e->getMessage()}";
+            $this->stage = 'compensated';
+
+            return $this->currentState();
+        }
+
+        $this->stage = 'completed';
+        $this->events[] = 'child-completed';
 
         return $this->currentState();
     }
