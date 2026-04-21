@@ -17,6 +17,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\MessageStreamCursor;
 use Workflow\V2\WorkflowStub;
 
@@ -148,6 +149,99 @@ final class V2MessageCursorContinueAsNewTest extends TestCase
 
         // Verify the output used the first signal's value.
         $this->assertSame('Alice', $workflow->output()['name']);
+    }
+
+    public function testAcceptedInstanceUpdateTransfersThroughContinueAsNew(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestConfiguredContinueSignalWorkflow::class, 'cursor-continue-update-1');
+        $workflow->start(0);
+
+        $update = $workflow->submitUpdate('mark-approved', true);
+
+        $this->assertTrue($update->accepted());
+        $this->assertSame('accepted', $update->status());
+
+        /** @var WorkflowUpdate $acceptedUpdate */
+        $acceptedUpdate = WorkflowUpdate::query()->findOrFail($update->updateId());
+        $firstRunId = $workflow->runId();
+
+        $this->assertSame($firstRunId, $acceptedUpdate->workflow_run_id);
+
+        $this->drainReadyTasks();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting'
+            && $workflow->summary()?->wait_kind === 'signal');
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'cursor-continue-update-1')
+            ->orderBy('run_number')
+            ->get();
+
+        $this->assertCount(2, $runs);
+
+        $firstRun = $runs[0];
+        $secondRun = $runs[1];
+
+        $acceptedUpdate->refresh();
+
+        $this->assertSame($firstRunId, $firstRun->id);
+        $this->assertSame($secondRun->id, $acceptedUpdate->workflow_run_id);
+        $this->assertSame($secondRun->id, $acceptedUpdate->resolved_workflow_run_id);
+        $this->assertSame('completed', $acceptedUpdate->status->value);
+        $this->assertSame(1, (int) $acceptedUpdate->workflow_sequence);
+        $this->assertSame([
+            'approved' => true,
+            'count' => 1,
+        ], $acceptedUpdate->updateResult());
+
+        $command = WorkflowCommand::query()->findOrFail($update->commandId());
+
+        $this->assertSame($secondRun->id, $command->workflow_run_id);
+        $this->assertSame($secondRun->id, $command->resolved_workflow_run_id);
+
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $firstRun->id)
+            ->where('event_type', HistoryEventType::UpdateAccepted->value)
+            ->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $secondRun->id)
+            ->where('event_type', HistoryEventType::UpdateAccepted->value)
+            ->where('workflow_command_id', $command->id)
+            ->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $secondRun->id)
+            ->where('event_type', HistoryEventType::UpdateApplied->value)
+            ->where('workflow_command_id', $command->id)
+            ->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $secondRun->id)
+            ->where('event_type', HistoryEventType::UpdateCompleted->value)
+            ->where('workflow_command_id', $command->id)
+            ->count());
+
+        $query = $workflow->query('current-approval');
+
+        $this->assertSame([
+            'approved' => true,
+            'count' => 1,
+        ], $query);
+
+        $signal = $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertTrue($signal->accepted());
+
+        $this->drainReadyTasks();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $this->assertSame([
+            'name' => 'Taylor',
+            'approved' => true,
+            'workflow_id' => 'cursor-continue-update-1',
+            'run_id' => $secondRun->id,
+        ], $workflow->output());
     }
 
     private function waitFor(callable $condition): void
