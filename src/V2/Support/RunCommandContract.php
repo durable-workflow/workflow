@@ -43,20 +43,69 @@ final class RunCommandContract
             return self::payload($state['contract'], self::SOURCE_DURABLE_HISTORY, false, false);
         }
 
-        if ($event instanceof WorkflowHistoryEvent && ! $state['backfill_needed']) {
-            $backfilled = self::backfillStartedEvent($run, $event);
-
-            if ($backfilled !== null) {
-                return self::payload($backfilled, self::SOURCE_DURABLE_HISTORY, false, false);
-            }
-        }
-
         return self::payload(
             $state['contract'] ?? self::emptyContract(),
             self::SOURCE_UNAVAILABLE,
             $state['backfill_needed'],
             $state['backfill_needed'] && self::snapshotForRun($run) !== null,
         );
+    }
+
+    /**
+     * Explicitly writes the current workflow command contract into the run's
+     * durable WorkflowStarted history event when that event needs repair.
+     *
+     * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     query_targets: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     signal_targets: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>,
+     *     update_targets: list<array<string, mixed>>,
+     *     entry_method: 'handle'|null,
+     *     entry_mode: 'canonical'|null,
+     *     entry_declaring_class: class-string|null,
+     *     source: string,
+     *     backfill_needed: bool,
+     *     backfill_available: bool,
+     *     backfilled: bool
+     * }
+     */
+    public static function backfillRun(WorkflowRun $run): array
+    {
+        $event = self::workflowStartedEvent($run);
+        $state = self::contractStateFromHistoryEvent($event);
+
+        if ($state['contract'] !== null && $state['strict']) {
+            return [
+                ...self::payload($state['contract'], self::SOURCE_DURABLE_HISTORY, false, false),
+                'backfilled' => false,
+            ];
+        }
+
+        if (! $event instanceof WorkflowHistoryEvent || ! $state['backfill_needed']) {
+            return [
+                ...self::payload($state['contract'] ?? self::emptyContract(), self::SOURCE_UNAVAILABLE, false, false),
+                'backfilled' => false,
+            ];
+        }
+
+        $backfilled = self::backfillStartedEvent($run, $event);
+
+        if ($backfilled === null) {
+            return [
+                ...self::payload($state['contract'] ?? self::emptyContract(), self::SOURCE_UNAVAILABLE, true, false),
+                'backfilled' => false,
+            ];
+        }
+
+        return [
+            ...self::payload($backfilled, self::SOURCE_DURABLE_HISTORY, false, false),
+            'backfilled' => true,
+        ];
     }
 
     public static function hasSignal(WorkflowRun $run, string $name): bool
@@ -189,7 +238,7 @@ final class RunCommandContract
             return [
                 'contract' => null,
                 'strict' => false,
-                'backfill_needed' => false,
+                'backfill_needed' => true,
             ];
         }
 
@@ -276,7 +325,7 @@ final class RunCommandContract
             return [
                 'contract' => null,
                 'strict' => false,
-                'backfill_needed' => false,
+                'backfill_needed' => true,
             ];
         }
 

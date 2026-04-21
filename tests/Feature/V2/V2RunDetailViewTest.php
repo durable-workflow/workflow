@@ -1092,6 +1092,60 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('unavailable', $detail['declared_contract_source']);
     }
 
+    public function testRunDetailViewReportsCommandContractBackfillWithoutMutatingHistory(): void
+    {
+        $instance = WorkflowInstance::create([
+            'id' => 'detail-command-contract-backfill',
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'workflow.command-contract-backfill',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::create([
+            'id' => '01JTESTFLOWRUNCONTRACTBCK',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'workflow.command-contract-backfill',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(20),
+        ]);
+
+        $instance->update([
+            'current_run_id' => $run->id,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'workflow.command-contract-backfill',
+        ]);
+
+        $detail = RunDetailView::forRun($run->fresh(['summary', 'historyEvents']));
+
+        $this->assertSame('unavailable', $detail['declared_contract_source']);
+        $this->assertTrue($detail['declared_contract_backfill_needed']);
+        $this->assertTrue($detail['declared_contract_backfill_available']);
+        $this->assertSame([], $detail['declared_queries']);
+        $this->assertSame([], $detail['declared_signals']);
+        $this->assertSame([], $detail['declared_updates']);
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $this->assertArrayNotHasKey('declared_queries', $started->payload);
+        $this->assertArrayNotHasKey('declared_signals', $started->payload);
+        $this->assertArrayNotHasKey('declared_updates', $started->payload);
+    }
+
     public function testRunDetailViewIncludesCommandsActivitiesAndTimelineForCompletedSignalRun(): void
     {
         Queue::fake();

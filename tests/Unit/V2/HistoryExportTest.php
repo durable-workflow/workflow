@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Avro;
 use Workflow\Serializers\Serializer;
@@ -43,6 +44,66 @@ use Workflow\V2\WorkflowStub;
 
 final class HistoryExportTest extends TestCase
 {
+    public function testItDoesNotBackfillCommandContractsDuringExport(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'export.command-contract-backfill',
+            'run_count' => 1,
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'export.command-contract-backfill',
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'payload_codec' => config('workflows.serializer'),
+            'arguments' => Serializer::serialize([]),
+            'output' => Serializer::serialize([
+                'ok' => true,
+            ]),
+            'connection' => 'redis',
+            'queue' => 'workflow',
+            'started_at' => now()
+                ->subMinute(),
+            'closed_at' => now(),
+            'last_progress_at' => now(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => TestCommandTargetWorkflow::class,
+            'workflow_type' => 'export.command-contract-backfill',
+        ]);
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::WorkflowCompleted, [
+            'result' => [
+                'ok' => true,
+            ],
+        ]);
+
+        $bundle = HistoryExport::forRun($run->fresh(['historyEvents']));
+
+        $this->assertSame('durable-workflow.v2.history-export', $bundle['schema']);
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $this->assertArrayNotHasKey('declared_queries', $started->payload);
+        $this->assertArrayNotHasKey('declared_signals', $started->payload);
+        $this->assertArrayNotHasKey('declared_updates', $started->payload);
+    }
+
     public function testItBuildsVersionedReplayBundleFromTypedHistoryAndProjections(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');

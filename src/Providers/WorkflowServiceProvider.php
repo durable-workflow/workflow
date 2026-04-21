@@ -12,6 +12,7 @@ use Illuminate\Support\ServiceProvider;
 use Laravel\SerializableClosure\SerializableClosure;
 use Workflow\Commands\ActivityMakeCommand;
 use Workflow\Commands\V1ListCommand;
+use Workflow\Commands\V2BackfillCommandContractsCommand;
 use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
@@ -87,6 +88,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             ActivityMakeCommand::class,
             WorkflowMakeCommand::class,
             V1ListCommand::class,
+            V2BackfillCommandContractsCommand::class,
             V2DoctorCommand::class,
             V2HistoryExportCommand::class,
             V2RepairPassCommand::class,
