@@ -31,21 +31,22 @@ final class OperatorMetrics
     /**
      * @return array<string, mixed>
      */
-    public static function snapshot(?CarbonInterface $now = null): array
+    public static function snapshot(?CarbonInterface $now = null, ?string $namespace = null): array
     {
         $now ??= now();
+        $namespace = self::normalizeNamespace($namespace);
 
         return [
             'generated_at' => $now->toJSON(),
-            'runs' => self::runMetrics(),
-            'tasks' => self::taskMetrics($now),
-            'activities' => self::activityMetrics(),
-            'backlog' => self::backlogMetrics($now),
-            'repair' => TaskRepairCandidates::snapshot($now),
-            'starts' => self::startMetrics($now),
-            'history' => self::historyMetrics(),
-            'command_contracts' => self::commandContractMetrics(),
-            'projections' => self::projectionMetrics(),
+            'runs' => self::runMetrics($namespace),
+            'tasks' => self::taskMetrics($now, $namespace),
+            'activities' => self::activityMetrics($namespace),
+            'backlog' => self::backlogMetrics($now, $namespace),
+            'repair' => $namespace === null ? TaskRepairCandidates::snapshot($now) : self::emptyRepairSnapshot(),
+            'starts' => self::startMetrics($now, $namespace),
+            'history' => self::historyMetrics($namespace),
+            'command_contracts' => self::commandContractMetrics($namespace),
+            'projections' => self::projectionMetrics($namespace),
             'workers' => self::workerMetrics(),
             'backend' => BackendCapabilities::snapshot($now),
             'structural_limits' => StructuralLimits::snapshot(),
@@ -57,89 +58,87 @@ final class OperatorMetrics
     /**
      * @return array<string, int>
      */
-    private static function runMetrics(): array
+    private static function runMetrics(?string $namespace): array
     {
-        $summaryModel = self::summaryModel();
-
         return [
-            'total' => $summaryModel::query()->count(),
-            'current' => $summaryModel::query()->where('is_current_run', true)->count(),
-            'running' => $summaryModel::query()->where('status_bucket', 'running')->count(),
-            'completed' => $summaryModel::query()->where('status', RunStatus::Completed->value)->count(),
-            'failed' => $summaryModel::query()->where('status', RunStatus::Failed->value)->count(),
-            'cancelled' => $summaryModel::query()->where('status', RunStatus::Cancelled->value)->count(),
-            'terminated' => $summaryModel::query()->where('status', RunStatus::Terminated->value)->count(),
-            'archived' => $summaryModel::query()->whereNotNull('archived_at')->count(),
-            'repair_needed' => $summaryModel::query()->where('liveness_state', 'repair_needed')->count(),
-            'claim_failed' => self::claimFailedRuns(),
-            'compatibility_blocked' => self::compatibilityBlockedRuns(),
+            'total' => self::summaryQuery($namespace)->count(),
+            'current' => self::summaryQuery($namespace)->where('is_current_run', true)->count(),
+            'running' => self::summaryQuery($namespace)->where('status_bucket', 'running')->count(),
+            'completed' => self::summaryQuery($namespace)->where('status', RunStatus::Completed->value)->count(),
+            'failed' => self::summaryQuery($namespace)->where('status', RunStatus::Failed->value)->count(),
+            'cancelled' => self::summaryQuery($namespace)->where('status', RunStatus::Cancelled->value)->count(),
+            'terminated' => self::summaryQuery($namespace)->where('status', RunStatus::Terminated->value)->count(),
+            'archived' => self::summaryQuery($namespace)->whereNotNull('archived_at')->count(),
+            'repair_needed' => self::summaryQuery($namespace)->where('liveness_state', 'repair_needed')->count(),
+            'claim_failed' => self::claimFailedRuns($namespace),
+            'compatibility_blocked' => self::compatibilityBlockedRuns($namespace),
         ];
     }
 
     /**
      * @return array<string, int>
      */
-    private static function taskMetrics(CarbonInterface $now): array
+    private static function taskMetrics(CarbonInterface $now, ?string $namespace): array
     {
         return [
-            'open' => self::openTasks(),
-            'ready' => self::readyTasks(),
-            'ready_due' => self::readyDueTasks($now),
-            'delayed' => self::delayedTasks($now),
-            'leased' => self::leasedTasks(),
-            'dispatch_failed' => self::dispatchFailedTasks(),
-            'claim_failed' => self::claimFailedTasks(),
-            'dispatch_overdue' => self::dispatchOverdueTasks($now),
-            'lease_expired' => self::leaseExpiredTasks($now),
-            'unhealthy' => self::dispatchFailedTasks()
-                + self::claimFailedTasks()
-                + self::dispatchOverdueTasks($now)
-                + self::leaseExpiredTasks($now),
+            'open' => self::openTasks($namespace),
+            'ready' => self::readyTasks($namespace),
+            'ready_due' => self::readyDueTasks($now, $namespace),
+            'delayed' => self::delayedTasks($now, $namespace),
+            'leased' => self::leasedTasks($namespace),
+            'dispatch_failed' => self::dispatchFailedTasks($namespace),
+            'claim_failed' => self::claimFailedTasks($namespace),
+            'dispatch_overdue' => self::dispatchOverdueTasks($now, $namespace),
+            'lease_expired' => self::leaseExpiredTasks($now, $namespace),
+            'unhealthy' => self::dispatchFailedTasks($namespace)
+                + self::claimFailedTasks($namespace)
+                + self::dispatchOverdueTasks($now, $namespace)
+                + self::leaseExpiredTasks($now, $namespace),
         ];
     }
 
     /**
      * @return array<string, int>
      */
-    private static function backlogMetrics(CarbonInterface $now): array
+    private static function backlogMetrics(CarbonInterface $now, ?string $namespace): array
     {
         return [
-            'runnable_tasks' => self::readyDueTasks($now),
-            'delayed_tasks' => self::delayedTasks($now),
-            'leased_tasks' => self::leasedTasks(),
-            'retrying_activities' => self::retryingActivities(),
-            'unhealthy_tasks' => self::dispatchFailedTasks()
-                + self::claimFailedTasks()
-                + self::dispatchOverdueTasks($now)
-                + self::leaseExpiredTasks($now),
-            'repair_needed_runs' => self::summaryModel()::query()
+            'runnable_tasks' => self::readyDueTasks($now, $namespace),
+            'delayed_tasks' => self::delayedTasks($now, $namespace),
+            'leased_tasks' => self::leasedTasks($namespace),
+            'retrying_activities' => self::retryingActivities($namespace),
+            'unhealthy_tasks' => self::dispatchFailedTasks($namespace)
+                + self::claimFailedTasks($namespace)
+                + self::dispatchOverdueTasks($now, $namespace)
+                + self::leaseExpiredTasks($now, $namespace),
+            'repair_needed_runs' => self::summaryQuery($namespace)
                 ->where('liveness_state', 'repair_needed')
                 ->count(),
-            'claim_failed_runs' => self::claimFailedRuns(),
-            'compatibility_blocked_runs' => self::compatibilityBlockedRuns(),
+            'claim_failed_runs' => self::claimFailedRuns($namespace),
+            'compatibility_blocked_runs' => self::compatibilityBlockedRuns($namespace),
         ];
     }
 
     /**
      * @return array<string, int>
      */
-    private static function activityMetrics(): array
+    private static function activityMetrics(?string $namespace): array
     {
         return [
-            'open' => self::activityExecutionModel()::query()
+            'open' => self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
                 ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
                 ->count(),
-            'pending' => self::activityExecutionModel()::query()
+            'pending' => self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
                 ->where('status', ActivityStatus::Pending->value)
                 ->count(),
-            'running' => self::activityExecutionModel()::query()
+            'running' => self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
                 ->where('status', ActivityStatus::Running->value)
                 ->count(),
-            'retrying' => self::retryingActivities(),
-            'failed_attempts' => self::activityAttemptModel()::query()
+            'retrying' => self::retryingActivities($namespace),
+            'failed_attempts' => self::scopedRunModelQuery(self::activityAttemptModel(), $namespace)
                 ->where('status', ActivityAttemptStatus::Failed->value)
                 ->count(),
-            'max_attempt_count' => (int) self::activityExecutionModel()::query()
+            'max_attempt_count' => (int) self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
                 ->max('attempt_count'),
         ];
     }
@@ -147,14 +146,14 @@ final class OperatorMetrics
     /**
      * @return array<string, int|string|null>
      */
-    private static function startMetrics(CarbonInterface $now): array
+    private static function startMetrics(CarbonInterface $now, ?string $namespace): array
     {
-        $oldestPendingStartAt = self::oldestPendingStartAt();
+        $oldestPendingStartAt = self::oldestPendingStartAt($namespace);
 
         return [
-            'pending_runs' => self::pendingStartRuns(),
-            'pending_commands' => self::pendingStartCommands(),
-            'ready_tasks' => self::readyPendingStartTasks($now),
+            'pending_runs' => self::pendingStartRuns($namespace),
+            'pending_commands' => self::pendingStartCommands($namespace),
+            'ready_tasks' => self::readyPendingStartTasks($now, $namespace),
             'oldest_pending_start_at' => $oldestPendingStartAt?->toJSON(),
             'max_pending_ms' => $oldestPendingStartAt === null
                 ? 0
@@ -200,16 +199,14 @@ final class OperatorMetrics
     /**
      * @return array<string, int>
      */
-    private static function historyMetrics(): array
+    private static function historyMetrics(?string $namespace): array
     {
-        $summaryModel = self::summaryModel();
-
         return [
-            'continue_as_new_recommended_runs' => $summaryModel::query()
+            'continue_as_new_recommended_runs' => self::summaryQuery($namespace)
                 ->where('continue_as_new_recommended', true)
                 ->count(),
-            'max_event_count' => (int) $summaryModel::query()->max('history_event_count'),
-            'max_size_bytes' => (int) $summaryModel::query()->max('history_size_bytes'),
+            'max_event_count' => (int) self::summaryQuery($namespace)->max('history_event_count'),
+            'max_size_bytes' => (int) self::summaryQuery($namespace)->max('history_size_bytes'),
             'event_threshold' => HistoryBudget::eventThreshold(),
             'size_bytes_threshold' => HistoryBudget::sizeBytesThreshold(),
         ];
@@ -218,12 +215,12 @@ final class OperatorMetrics
     /**
      * @return array<string, int>
      */
-    private static function commandContractMetrics(): array
+    private static function commandContractMetrics(?string $namespace): array
     {
         $needed = 0;
         $available = 0;
 
-        self::runModel()::query()
+        self::runQuery($namespace)
             ->whereHas('historyEvents', static function ($query): void {
                 $query->where('event_type', HistoryEventType::WorkflowStarted->value);
             })
@@ -263,39 +260,38 @@ final class OperatorMetrics
     /**
      * @return array<string, array<string, int|string|null>>
      */
-    private static function projectionMetrics(): array
+    private static function projectionMetrics(?string $namespace): array
     {
-        $summaryModel = self::summaryModel();
-        $runSummaries = RunSummaryProjectionDrift::metrics();
+        $runSummaries = RunSummaryProjectionDrift::metrics($namespace);
 
         return [
             'run_summaries' => [
                 ...$runSummaries,
-                'oldest_updated_at' => self::jsonTimestamp($summaryModel::query()->min('updated_at')),
-                'newest_updated_at' => self::jsonTimestamp($summaryModel::query()->max('updated_at')),
+                'oldest_updated_at' => self::jsonTimestamp(self::summaryQuery($namespace)->min('updated_at')),
+                'newest_updated_at' => self::jsonTimestamp(self::summaryQuery($namespace)->max('updated_at')),
             ],
-            'run_waits' => self::runWaitProjectionMetrics(),
-            'run_timeline_entries' => self::runTimelineProjectionMetrics(),
-            'run_timer_entries' => self::runTimerProjectionMetrics(),
-            'run_lineage_entries' => self::runLineageProjectionMetrics(),
+            'run_waits' => self::runWaitProjectionMetrics($namespace),
+            'run_timeline_entries' => self::runTimelineProjectionMetrics($namespace),
+            'run_timer_entries' => self::runTimerProjectionMetrics($namespace),
+            'run_lineage_entries' => self::runLineageProjectionMetrics($namespace),
         ];
     }
 
     /**
      * @return array<string, int|string|null>
      */
-    private static function runWaitProjectionMetrics(): array
+    private static function runWaitProjectionMetrics(?string $namespace): array
     {
         $waitModel = self::runWaitModel();
-        $summariesWithOpenWaits = self::summariesWithOpenWaits();
-        $missingCurrentOpenWaits = self::missingCurrentOpenWaitProjections();
-        $drift = SelectedRunProjectionDrift::waitMetrics();
-        $orphaned = self::projectionRowsMissingRun($waitModel);
+        $summariesWithOpenWaits = self::summariesWithOpenWaits($namespace);
+        $missingCurrentOpenWaits = self::missingCurrentOpenWaitProjections($namespace);
+        $drift = SelectedRunProjectionDrift::waitMetrics(namespace: $namespace);
+        $orphaned = self::projectionRowsMissingRun($waitModel, $namespace);
 
         return [
-            'runs' => self::runModel()::query()->count(),
-            'rows' => $waitModel::query()->count(),
-            'projected_runs' => $waitModel::query()->distinct()->count('workflow_run_id'),
+            'runs' => self::runQuery($namespace)->count(),
+            'rows' => self::scopedRunModelQuery($waitModel, $namespace)->count(),
+            'projected_runs' => self::scopedRunModelQuery($waitModel, $namespace)->distinct()->count('workflow_run_id'),
             'runs_with_waits' => $drift['runs_with_waits'],
             'projected_runs_with_waits' => $drift['projected_runs_with_waits'],
             'missing_runs_with_waits' => $drift['missing_runs_with_waits'],
@@ -305,26 +301,32 @@ final class OperatorMetrics
             'stale_projected_runs' => $drift['stale_projected_runs'],
             'orphaned' => $orphaned,
             'needs_rebuild' => $drift['missing_runs_with_waits'] + $drift['stale_projected_runs'] + $orphaned,
-            'oldest_updated_at' => self::jsonTimestamp($waitModel::query()->min('updated_at')),
-            'newest_updated_at' => self::jsonTimestamp($waitModel::query()->max('updated_at')),
+            'oldest_updated_at' => self::jsonTimestamp(
+                self::scopedRunModelQuery($waitModel, $namespace)->min('updated_at')
+            ),
+            'newest_updated_at' => self::jsonTimestamp(
+                self::scopedRunModelQuery($waitModel, $namespace)->max('updated_at')
+            ),
         ];
     }
 
     /**
      * @return array<string, int|string|null>
      */
-    private static function runTimelineProjectionMetrics(): array
+    private static function runTimelineProjectionMetrics(?string $namespace): array
     {
         $timelineModel = self::runTimelineEntryModel();
-        $missingHistoryEvents = self::missingTimelineEventProjections();
-        $drift = SelectedRunProjectionDrift::timelineMetrics();
-        $orphaned = self::orphanedTimelineRows();
+        $missingHistoryEvents = self::missingTimelineEventProjections($namespace);
+        $drift = SelectedRunProjectionDrift::timelineMetrics(namespace: $namespace);
+        $orphaned = self::orphanedTimelineRows($namespace);
 
         return [
-            'runs' => self::runModel()::query()->count(),
-            'history_events' => self::historyEventModel()::query()->count(),
-            'rows' => $timelineModel::query()->count(),
-            'projected_runs' => $timelineModel::query()->distinct()->count('workflow_run_id'),
+            'runs' => self::runQuery($namespace)->count(),
+            'history_events' => self::scopedRunModelQuery(self::historyEventModel(), $namespace)->count(),
+            'rows' => self::scopedRunModelQuery($timelineModel, $namespace)->count(),
+            'projected_runs' => self::scopedRunModelQuery($timelineModel, $namespace)->distinct()->count(
+                'workflow_run_id'
+            ),
             'runs_with_history' => $drift['runs_with_history'],
             'projected_runs_with_history' => $drift['projected_runs_with_history'],
             'missing_runs_with_history' => $drift['missing_runs_with_history'],
@@ -332,30 +334,36 @@ final class OperatorMetrics
             'stale_projected_runs' => $drift['stale_projected_runs'],
             'orphaned' => $orphaned,
             'needs_rebuild' => $drift['missing_runs_with_history'] + $drift['stale_projected_runs'] + $orphaned,
-            'oldest_updated_at' => self::jsonTimestamp($timelineModel::query()->min('updated_at')),
-            'newest_updated_at' => self::jsonTimestamp($timelineModel::query()->max('updated_at')),
+            'oldest_updated_at' => self::jsonTimestamp(
+                self::scopedRunModelQuery($timelineModel, $namespace)->min('updated_at')
+            ),
+            'newest_updated_at' => self::jsonTimestamp(
+                self::scopedRunModelQuery($timelineModel, $namespace)->max('updated_at')
+            ),
         ];
     }
 
     /**
      * @return array<string, int|string|null>
      */
-    private static function runTimerProjectionMetrics(): array
+    private static function runTimerProjectionMetrics(?string $namespace): array
     {
         $timerModel = self::runTimerEntryModel();
-        $drift = SelectedRunProjectionDrift::timerMetrics();
-        $orphaned = self::projectionRowsMissingRun($timerModel);
+        $drift = SelectedRunProjectionDrift::timerMetrics(namespace: $namespace);
+        $orphaned = self::projectionRowsMissingRun($timerModel, $namespace);
 
         return [
-            'runs' => self::runModel()::query()->count(),
-            'rows' => $timerModel::query()->count(),
-            'projected_runs' => $timerModel::query()->distinct()->count('workflow_run_id'),
+            'runs' => self::runQuery($namespace)->count(),
+            'rows' => self::scopedRunModelQuery($timerModel, $namespace)->count(),
+            'projected_runs' => self::scopedRunModelQuery($timerModel, $namespace)->distinct()->count(
+                'workflow_run_id'
+            ),
             'runs_with_timers' => $drift['runs_with_timers'],
             'projected_runs_with_timers' => $drift['projected_runs_with_timers'],
             'missing_runs_with_timers' => $drift['missing_runs_with_timers'],
             'stale_projected_runs' => $drift['stale_projected_runs'],
             'schema_version_mismatch_runs' => $drift['schema_version_mismatch_runs'],
-            'schema_version_mismatch_rows' => $timerModel::query()
+            'schema_version_mismatch_rows' => self::scopedRunModelQuery($timerModel, $namespace)
                 ->where(static function ($query): void {
                     $query->whereNull('schema_version')
                         ->orWhere('schema_version', '!=', WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION);
@@ -363,50 +371,60 @@ final class OperatorMetrics
                 ->count(),
             'orphaned' => $orphaned,
             'needs_rebuild' => $drift['missing_runs_with_timers'] + $drift['stale_projected_runs'] + $orphaned,
-            'oldest_updated_at' => self::jsonTimestamp($timerModel::query()->min('updated_at')),
-            'newest_updated_at' => self::jsonTimestamp($timerModel::query()->max('updated_at')),
+            'oldest_updated_at' => self::jsonTimestamp(
+                self::scopedRunModelQuery($timerModel, $namespace)->min('updated_at')
+            ),
+            'newest_updated_at' => self::jsonTimestamp(
+                self::scopedRunModelQuery($timerModel, $namespace)->max('updated_at')
+            ),
         ];
     }
 
     /**
      * @return array<string, int|string|null>
      */
-    private static function runLineageProjectionMetrics(): array
+    private static function runLineageProjectionMetrics(?string $namespace): array
     {
         $lineageModel = self::runLineageEntryModel();
-        $drift = SelectedRunProjectionDrift::lineageMetrics();
-        $orphaned = self::projectionRowsMissingRun($lineageModel);
+        $drift = SelectedRunProjectionDrift::lineageMetrics(namespace: $namespace);
+        $orphaned = self::projectionRowsMissingRun($lineageModel, $namespace);
 
         return [
-            'runs' => self::runModel()::query()->count(),
-            'rows' => $lineageModel::query()->count(),
-            'projected_runs' => $lineageModel::query()->distinct()->count('workflow_run_id'),
+            'runs' => self::runQuery($namespace)->count(),
+            'rows' => self::scopedRunModelQuery($lineageModel, $namespace)->count(),
+            'projected_runs' => self::scopedRunModelQuery($lineageModel, $namespace)->distinct()->count(
+                'workflow_run_id'
+            ),
             'runs_with_lineage' => $drift['runs_with_lineage'],
             'projected_runs_with_lineage' => $drift['projected_runs_with_lineage'],
             'missing_runs_with_lineage' => $drift['missing_runs_with_lineage'],
             'stale_projected_runs' => $drift['stale_projected_runs'],
             'orphaned' => $orphaned,
             'needs_rebuild' => $drift['missing_runs_with_lineage'] + $drift['stale_projected_runs'] + $orphaned,
-            'oldest_updated_at' => self::jsonTimestamp($lineageModel::query()->min('updated_at')),
-            'newest_updated_at' => self::jsonTimestamp($lineageModel::query()->max('updated_at')),
+            'oldest_updated_at' => self::jsonTimestamp(
+                self::scopedRunModelQuery($lineageModel, $namespace)->min('updated_at')
+            ),
+            'newest_updated_at' => self::jsonTimestamp(
+                self::scopedRunModelQuery($lineageModel, $namespace)->max('updated_at')
+            ),
         ];
     }
 
-    private static function summariesWithOpenWaits(): int
+    private static function summariesWithOpenWaits(?string $namespace): int
     {
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->whereNotNull('open_wait_id')
             ->count();
     }
 
-    private static function missingCurrentOpenWaitProjections(): int
+    private static function missingCurrentOpenWaitProjections(?string $namespace): int
     {
         $summaryModel = self::summaryModel();
         $waitModel = self::runWaitModel();
         $summaryTable = self::tableFor($summaryModel);
         $waitTable = self::tableFor($waitModel);
 
-        return $summaryModel::query()
+        return self::summaryQuery($namespace)
             ->leftJoin($waitTable, static function ($join) use ($summaryTable, $waitTable): void {
                 $join->on($waitTable . '.workflow_run_id', '=', $summaryTable . '.id')
                     ->on($waitTable . '.wait_id', '=', $summaryTable . '.open_wait_id');
@@ -419,26 +437,31 @@ final class OperatorMetrics
     /**
      * @param class-string<WorkflowRunWait|WorkflowTimelineEntry|WorkflowRunTimerEntry|WorkflowRunLineageEntry> $projectionModel
      */
-    private static function projectionRowsMissingRun(string $projectionModel): int
+    private static function projectionRowsMissingRun(string $projectionModel, ?string $namespace): int
     {
         $runModel = self::runModel();
         $projectionTable = self::tableFor($projectionModel);
         $runTable = self::tableFor($runModel);
 
-        return $projectionModel::query()
+        $query = $projectionModel::query()
             ->leftJoin($runTable, $projectionTable . '.workflow_run_id', '=', $runTable . '.id')
-            ->whereNull($runTable . '.id')
-            ->count($projectionTable . '.id');
+            ->whereNull($runTable . '.id');
+
+        if ($namespace !== null) {
+            return 0;
+        }
+
+        return $query->count($projectionTable . '.id');
     }
 
-    private static function missingTimelineEventProjections(): int
+    private static function missingTimelineEventProjections(?string $namespace): int
     {
         $historyModel = self::historyEventModel();
         $timelineModel = self::runTimelineEntryModel();
         $historyTable = self::tableFor($historyModel);
         $timelineTable = self::tableFor($timelineModel);
 
-        return $historyModel::query()
+        return self::scopedRunModelQuery($historyModel, $namespace)
             ->leftJoin($timelineTable, static function ($join) use ($historyTable, $timelineTable): void {
                 $join->on($timelineTable . '.workflow_run_id', '=', $historyTable . '.workflow_run_id')
                     ->on($timelineTable . '.history_event_id', '=', $historyTable . '.id');
@@ -447,8 +470,12 @@ final class OperatorMetrics
             ->count($historyTable . '.id');
     }
 
-    private static function orphanedTimelineRows(): int
+    private static function orphanedTimelineRows(?string $namespace): int
     {
+        if ($namespace !== null) {
+            return 0;
+        }
+
         $runModel = self::runModel();
         $historyModel = self::historyEventModel();
         $timelineModel = self::runTimelineEntryModel();
@@ -469,38 +496,38 @@ final class OperatorMetrics
             ->count($timelineTable . '.id');
     }
 
-    private static function compatibilityBlockedRuns(): int
+    private static function compatibilityBlockedRuns(?string $namespace): int
     {
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->where('liveness_state', 'like', '%_task_waiting_for_compatible_worker')
             ->count();
     }
 
-    private static function claimFailedRuns(): int
+    private static function claimFailedRuns(?string $namespace): int
     {
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->where('liveness_state', 'like', '%_task_claim_failed')
             ->count();
     }
 
-    private static function retryingActivities(): int
+    private static function retryingActivities(?string $namespace): int
     {
-        return self::activityExecutionModel()::query()
+        return self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
             ->where('status', ActivityStatus::Pending->value)
             ->where('attempt_count', '>', 0)
             ->count();
     }
 
-    private static function pendingStartRuns(): int
+    private static function pendingStartRuns(?string $namespace): int
     {
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->where('status', RunStatus::Pending->value)
             ->count();
     }
 
-    private static function pendingStartCommands(): int
+    private static function pendingStartCommands(?string $namespace): int
     {
-        return self::commandModel()::query()
+        return self::scopedRunModelQuery(self::commandModel(), $namespace)
             ->where('command_type', CommandType::Start->value)
             ->where('status', CommandStatus::Accepted->value)
             ->where('outcome', CommandOutcome::StartedNew->value)
@@ -510,9 +537,9 @@ final class OperatorMetrics
             ->count();
     }
 
-    private static function readyPendingStartTasks(CarbonInterface $now): int
+    private static function readyPendingStartTasks(CarbonInterface $now, ?string $namespace): int
     {
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Ready->value)
             ->where(static function ($query) use ($now): void {
@@ -525,10 +552,10 @@ final class OperatorMetrics
             ->count();
     }
 
-    private static function oldestPendingStartAt(): ?CarbonInterface
+    private static function oldestPendingStartAt(?string $namespace): ?CarbonInterface
     {
         /** @var WorkflowCommand|null $command */
-        $command = self::commandModel()::query()
+        $command = self::scopedRunModelQuery(self::commandModel(), $namespace)
             ->where('command_type', CommandType::Start->value)
             ->where('status', CommandStatus::Accepted->value)
             ->where('outcome', CommandOutcome::StartedNew->value)
@@ -545,7 +572,7 @@ final class OperatorMetrics
         }
 
         /** @var WorkflowRunSummary|null $summary */
-        $summary = self::summaryModel()::query()
+        $summary = self::summaryQuery($namespace)
             ->where('status', RunStatus::Pending->value)
             ->whereNotNull('started_at')
             ->orderBy('started_at')
@@ -555,23 +582,23 @@ final class OperatorMetrics
         return $summary?->started_at;
     }
 
-    private static function openTasks(): int
+    private static function openTasks(?string $namespace): int
     {
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
             ->count();
     }
 
-    private static function readyTasks(): int
+    private static function readyTasks(?string $namespace): int
     {
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('status', TaskStatus::Ready->value)
             ->count();
     }
 
-    private static function readyDueTasks(CarbonInterface $now): int
+    private static function readyDueTasks(CarbonInterface $now, ?string $namespace): int
     {
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('status', TaskStatus::Ready->value)
             ->where(static function ($query) use ($now): void {
                 $query->whereNull('available_at')
@@ -580,46 +607,46 @@ final class OperatorMetrics
             ->count();
     }
 
-    private static function delayedTasks(CarbonInterface $now): int
+    private static function delayedTasks(CarbonInterface $now, ?string $namespace): int
     {
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('status', TaskStatus::Ready->value)
             ->where('available_at', '>', $now)
             ->count();
     }
 
-    private static function leasedTasks(): int
+    private static function leasedTasks(?string $namespace): int
     {
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('status', TaskStatus::Leased->value)
             ->count();
     }
 
-    private static function leaseExpiredTasks(CarbonInterface $now): int
+    private static function leaseExpiredTasks(CarbonInterface $now, ?string $namespace): int
     {
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('status', TaskStatus::Leased->value)
             ->whereNotNull('lease_expires_at')
             ->where('lease_expires_at', '<=', $now)
             ->count();
     }
 
-    private static function dispatchFailedTasks(): int
+    private static function dispatchFailedTasks(?string $namespace): int
     {
-        return self::dispatchFailedQuery()->count();
+        return self::dispatchFailedQuery($namespace)->count();
     }
 
-    private static function claimFailedTasks(): int
+    private static function claimFailedTasks(?string $namespace): int
     {
-        return self::claimFailedQuery()->count();
+        return self::claimFailedQuery($namespace)->count();
     }
 
-    private static function dispatchOverdueTasks(CarbonInterface $now): int
+    private static function dispatchOverdueTasks(CarbonInterface $now, ?string $namespace): int
     {
         $cutoff = $now->copy()
             ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
 
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('status', TaskStatus::Ready->value)
             ->where(static function ($query) use ($now): void {
                 $query->whereNull('available_at')
@@ -643,18 +670,18 @@ final class OperatorMetrics
             ->count();
     }
 
-    private static function dispatchFailedQuery()
+    private static function dispatchFailedQuery(?string $namespace)
     {
-        $query = self::taskModel()::query();
+        $query = self::scopedRunModelQuery(self::taskModel(), $namespace);
 
         self::applyDispatchFailed($query);
 
         return $query;
     }
 
-    private static function claimFailedQuery()
+    private static function claimFailedQuery(?string $namespace)
     {
-        return self::taskModel()::query()
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('status', TaskStatus::Ready->value)
             ->whereNotNull('last_claim_failed_at')
             ->whereNotNull('last_claim_error')
@@ -692,6 +719,83 @@ final class OperatorMetrics
             ->whereNull('last_claim_failed_at')
             ->orWhereNull('last_claim_error')
             ->orWhere('last_claim_error', '');
+    }
+
+    private static function summaryQuery(?string $namespace)
+    {
+        $model = self::summaryModel();
+        $query = $model::query();
+
+        if ($namespace !== null) {
+            $query->where((new $model())->getTable() . '.namespace', $namespace);
+        }
+
+        return $query;
+    }
+
+    private static function runQuery(?string $namespace)
+    {
+        $model = self::runModel();
+        $query = $model::query();
+
+        if ($namespace !== null) {
+            $query->where((new $model())->getTable() . '.namespace', $namespace);
+        }
+
+        return $query;
+    }
+
+    private static function scopedRunModelQuery(string $model, ?string $namespace)
+    {
+        $query = $model::query();
+
+        if ($namespace !== null) {
+            $runModel = self::runModel();
+            $runTable = (new $runModel())->getTable();
+            $query->whereHas('run', static function ($run) use ($namespace, $runTable): void {
+                $run->where($runTable . '.namespace', $namespace);
+            });
+        }
+
+        return $query;
+    }
+
+    /**
+     * The repair candidate scanner is global because its fair scope selector is
+     * not namespace-aware yet. Namespace-pinned Waterline views must not expose
+     * global repair counts, so return an explicit zeroed repair snapshot there.
+     *
+     * @return array<string, mixed>
+     */
+    private static function emptyRepairSnapshot(): array
+    {
+        return [
+            'existing_task_candidates' => 0,
+            'missing_task_candidates' => 0,
+            'total_candidates' => 0,
+            'scan_limit' => TaskRepairPolicy::scanLimit(),
+            'scan_strategy' => TaskRepairPolicy::SCAN_STRATEGY,
+            'selected_existing_task_candidates' => 0,
+            'selected_missing_task_candidates' => 0,
+            'selected_total_candidates' => 0,
+            'existing_task_scan_limit_reached' => false,
+            'missing_task_scan_limit_reached' => false,
+            'scan_pressure' => false,
+            'oldest_task_candidate_created_at' => null,
+            'oldest_missing_run_started_at' => null,
+            'max_task_candidate_age_ms' => 0,
+            'max_missing_run_age_ms' => 0,
+            'scopes' => [],
+        ];
+    }
+
+    private static function normalizeNamespace(?string $namespace): ?string
+    {
+        if ($namespace === null || trim($namespace) === '') {
+            return null;
+        }
+
+        return trim($namespace);
     }
 
     /**

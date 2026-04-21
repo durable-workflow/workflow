@@ -16,25 +16,26 @@ final class OperatorDashboardSummary
     /**
      * @return array<string, mixed>
      */
-    public static function snapshot(?CarbonInterface $now = null): array
+    public static function snapshot(?CarbonInterface $now = null, ?string $namespace = null): array
     {
         $now ??= now();
-        $flowsPastHour = self::flowsPastHour($now);
+        $namespace = self::normalizeNamespace($namespace);
+        $flowsPastHour = self::flowsPastHour($now, $namespace);
 
         return [
-            'flows' => self::totalFlows(),
+            'flows' => self::totalFlows($namespace),
             'flows_per_minute' => $flowsPastHour / 60,
             'flows_past_hour' => $flowsPastHour,
-            'exceptions_past_hour' => self::exceptionsPastHour($now),
-            'failed_flows_past_week' => self::failedFlowsPastWeek($now),
-            'max_wait_time_workflow' => self::modelArray(self::maxWaitTimeWorkflow()),
-            'max_duration_workflow' => self::modelArray(self::maxDurationWorkflow()),
-            'max_exceptions_workflow' => self::modelArray(self::maxExceptionsWorkflow()),
-            'fleet_overview' => self::fleetOverview($now),
-            'workflow_type_health' => self::workflowTypeHealth($now),
-            'needs_attention' => self::needsAttention($now),
-            'fleet_trends_series' => self::fleetTrendsSeries($now),
-            'operator_metrics' => OperatorMetrics::snapshot($now),
+            'exceptions_past_hour' => self::exceptionsPastHour($now, $namespace),
+            'failed_flows_past_week' => self::failedFlowsPastWeek($now, $namespace),
+            'max_wait_time_workflow' => self::modelArray(self::maxWaitTimeWorkflow($namespace)),
+            'max_duration_workflow' => self::modelArray(self::maxDurationWorkflow($namespace)),
+            'max_exceptions_workflow' => self::modelArray(self::maxExceptionsWorkflow($namespace)),
+            'fleet_overview' => self::fleetOverview($now, $namespace),
+            'workflow_type_health' => self::workflowTypeHealth($now, $namespace),
+            'needs_attention' => self::needsAttention($now, $namespace),
+            'fleet_trends_series' => self::fleetTrendsSeries($now, $namespace),
+            'operator_metrics' => OperatorMetrics::snapshot($now, $namespace),
         ];
     }
 
@@ -44,15 +45,16 @@ final class OperatorDashboardSummary
      *
      * @return array<string, mixed>
      */
-    public static function fleetTrendsSeries(?CarbonInterface $now = null): array
+    public static function fleetTrendsSeries(?CarbonInterface $now = null, ?string $namespace = null): array
     {
         $now ??= now();
+        $namespace = self::normalizeNamespace($namespace);
         $weekAgo = $now->copy()
             ->subWeek();
 
         // Fetch terminal-run rows in the last 7 days and bucket them hourly in PHP
         // to avoid DB-specific date formatting (DATE_FORMAT is MySQL-only).
-        $rows = self::summaryModel()::query()
+        $rows = self::summaryQuery($namespace)
             ->select('closed_at', 'status_bucket')
             ->whereNotNull('closed_at')
             ->where('closed_at', '>=', $weekAgo)
@@ -98,7 +100,7 @@ final class OperatorDashboardSummary
      *
      * @return array<string, mixed>
      */
-    private static function fleetOverview(CarbonInterface $now): array
+    private static function fleetOverview(CarbonInterface $now, ?string $namespace): array
     {
         $hourAgo = $now->copy()
             ->subHour();
@@ -108,7 +110,7 @@ final class OperatorDashboardSummary
             ->subWeek();
 
         // Current counts by status bucket
-        $currentCounts = self::summaryModel()::query()
+        $currentCounts = self::summaryQuery($namespace)
             ->select('status_bucket', DB::raw('COUNT(*) as count'))
             ->where('status_bucket', '!=', 'completed') // Only active statuses
             ->groupBy('status_bucket')
@@ -116,7 +118,7 @@ final class OperatorDashboardSummary
             ->toArray();
 
         // Trend over last hour (completed in last hour)
-        $hourTrend = self::summaryModel()::query()
+        $hourTrend = self::summaryQuery($namespace)
             ->select('status_bucket', DB::raw('COUNT(*) as count'))
             ->where('closed_at', '>=', $hourAgo)
             ->whereIn('status_bucket', ['completed', 'failed'])
@@ -125,7 +127,7 @@ final class OperatorDashboardSummary
             ->toArray();
 
         // Trend over last day
-        $dayTrend = self::summaryModel()::query()
+        $dayTrend = self::summaryQuery($namespace)
             ->select('status_bucket', DB::raw('COUNT(*) as count'))
             ->where('closed_at', '>=', $dayAgo)
             ->whereIn('status_bucket', ['completed', 'failed'])
@@ -134,7 +136,7 @@ final class OperatorDashboardSummary
             ->toArray();
 
         // Trend over last week
-        $weekTrend = self::summaryModel()::query()
+        $weekTrend = self::summaryQuery($namespace)
             ->select('status_bucket', DB::raw('COUNT(*) as count'))
             ->where('closed_at', '>=', $weekAgo)
             ->whereIn('status_bucket', ['completed', 'failed'])
@@ -169,13 +171,13 @@ final class OperatorDashboardSummary
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function workflowTypeHealth(CarbonInterface $now): array
+    private static function workflowTypeHealth(CarbonInterface $now, ?string $namespace): array
     {
         $weekAgo = $now->copy()
             ->subWeek();
 
         // Get top 10 workflow types by volume in the last week
-        $types = self::summaryModel()::query()
+        $types = self::summaryQuery($namespace)
             ->select('workflow_type', DB::raw('COUNT(*) as total_runs'))
             ->where('created_at', '>=', $weekAgo)
             ->groupBy('workflow_type')
@@ -188,7 +190,7 @@ final class OperatorDashboardSummary
 
         foreach ($types as $workflowType => $totalRuns) {
             // Get status breakdown for this type
-            $statusCounts = self::summaryModel()::query()
+            $statusCounts = self::summaryQuery($namespace)
                 ->select('status', DB::raw('COUNT(*) as count'))
                 ->where('workflow_type', $workflowType)
                 ->where('created_at', '>=', $weekAgo)
@@ -205,7 +207,7 @@ final class OperatorDashboardSummary
             $passRate = $terminalRuns > 0 ? ($completed / $terminalRuns) * 100 : 0;
 
             // Get median duration for completed runs
-            $durations = self::summaryModel()::query()
+            $durations = self::summaryQuery($namespace)
                 ->where('workflow_type', $workflowType)
                 ->where('status', RunStatus::Completed->value)
                 ->where('created_at', '>=', $weekAgo)
@@ -245,7 +247,7 @@ final class OperatorDashboardSummary
      *
      * @return array<string, mixed>
      */
-    private static function needsAttention(CarbonInterface $now): array
+    private static function needsAttention(CarbonInterface $now, ?string $namespace): array
     {
         $alerts = [];
 
@@ -270,7 +272,7 @@ final class OperatorDashboardSummary
         // 2. Long-running workflows (running > 1 hour without wait)
         $longRunningThreshold = $now->copy()
             ->subHour();
-        $longRunners = self::summaryModel()::query()
+        $longRunners = self::summaryQuery($namespace)
             ->where('status_bucket', 'running')
             ->where('started_at', '<', $longRunningThreshold)
             ->whereNull('wait_started_at') // Not waiting
@@ -289,7 +291,7 @@ final class OperatorDashboardSummary
         // 3. Retry storms (workflows with 10+ exceptions in last hour)
         $hourAgo = $now->copy()
             ->subHour();
-        $retryStorms = self::summaryModel()::query()
+        $retryStorms = self::summaryQuery($namespace)
             ->where('status_bucket', 'running')
             ->where('updated_at', '>=', $hourAgo)
             ->where('exception_count', '>=', 10)
@@ -306,12 +308,12 @@ final class OperatorDashboardSummary
         }
 
         // 4. High failure rate in last hour
-        $recentFailed = self::summaryModel()::query()
+        $recentFailed = self::summaryQuery($namespace)
             ->where('status', RunStatus::Failed->value)
             ->where('closed_at', '>=', $hourAgo)
             ->count();
 
-        $recentCompleted = self::summaryModel()::query()
+        $recentCompleted = self::summaryQuery($namespace)
             ->where('status', RunStatus::Completed->value)
             ->where('closed_at', '>=', $hourAgo)
             ->count();
@@ -338,7 +340,7 @@ final class OperatorDashboardSummary
         // 5. Workflows waiting too long (wait > 30 minutes)
         $longWaitThreshold = $now->copy()
             ->subMinutes(30);
-        $longWaits = self::summaryModel()::query()
+        $longWaits = self::summaryQuery($namespace)
             ->where('status_bucket', 'running')
             ->whereNotNull('wait_started_at')
             ->where('wait_started_at', '<', $longWaitThreshold)
@@ -362,17 +364,17 @@ final class OperatorDashboardSummary
         ];
     }
 
-    private static function totalFlows(): int
+    private static function totalFlows(?string $namespace): int
     {
-        return self::summaryModel()::query()->count();
+        return self::summaryQuery($namespace)->count();
     }
 
-    private static function flowsPastHour(CarbonInterface $now): int
+    private static function flowsPastHour(CarbonInterface $now, ?string $namespace): int
     {
         $cutoff = $now->copy()
             ->subHour();
 
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->where(static function ($query) use ($cutoff): void {
                 $query->where('sort_timestamp', '>=', $cutoff)
                     ->orWhere(static function ($fallback) use ($cutoff): void {
@@ -383,24 +385,30 @@ final class OperatorDashboardSummary
             ->count();
     }
 
-    private static function exceptionsPastHour(CarbonInterface $now): int
+    private static function exceptionsPastHour(CarbonInterface $now, ?string $namespace): int
     {
-        return self::failureModel()::query()
+        $query = self::failureModel()::query()
             ->where('created_at', '>=', $now->copy()->subHour())
-            ->count();
+            ->whereHas('run', static function ($run) use ($namespace): void {
+                if ($namespace !== null) {
+                    $run->where('namespace', $namespace);
+                }
+            });
+
+        return $query->count();
     }
 
-    private static function failedFlowsPastWeek(CarbonInterface $now): int
+    private static function failedFlowsPastWeek(CarbonInterface $now, ?string $namespace): int
     {
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->where('status', RunStatus::Failed->value)
             ->where('updated_at', '>=', $now->copy()->subDays(7))
             ->count();
     }
 
-    private static function maxWaitTimeWorkflow(): ?WorkflowRunSummary
+    private static function maxWaitTimeWorkflow(?string $namespace): ?WorkflowRunSummary
     {
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->where('status_bucket', 'running')
             ->whereNotNull('wait_started_at')
             ->orderBy('wait_started_at')
@@ -410,9 +418,9 @@ final class OperatorDashboardSummary
             ->first();
     }
 
-    private static function maxDurationWorkflow(): ?WorkflowRunSummary
+    private static function maxDurationWorkflow(?string $namespace): ?WorkflowRunSummary
     {
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->whereNotNull('duration_ms')
             ->orderByDesc('duration_ms')
             ->orderByDesc('sort_timestamp')
@@ -421,9 +429,9 @@ final class OperatorDashboardSummary
             ->first();
     }
 
-    private static function maxExceptionsWorkflow(): ?WorkflowRunSummary
+    private static function maxExceptionsWorkflow(?string $namespace): ?WorkflowRunSummary
     {
-        return self::summaryModel()::query()
+        return self::summaryQuery($namespace)
             ->where('exception_count', '>', 0)
             ->orderByDesc('exception_count')
             ->orderByDesc('sort_timestamp')
@@ -449,6 +457,27 @@ final class OperatorDashboardSummary
         $model = config('workflows.v2.run_summary_model', WorkflowRunSummary::class);
 
         return $model;
+    }
+
+    private static function summaryQuery(?string $namespace)
+    {
+        $model = self::summaryModel();
+        $query = $model::query();
+
+        if ($namespace !== null) {
+            $query->where((new $model())->getTable() . '.namespace', $namespace);
+        }
+
+        return $query;
+    }
+
+    private static function normalizeNamespace(?string $namespace): ?string
+    {
+        if ($namespace === null || trim($namespace) === '') {
+            return null;
+        }
+
+        return trim($namespace);
     }
 
     /**

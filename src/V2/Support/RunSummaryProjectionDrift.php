@@ -14,18 +14,17 @@ final class RunSummaryProjectionDrift
     /**
      * @return array{runs: int, summaries: int, missing: int, orphaned: int, stale: int, schema_outdated: int, needs_rebuild: int}
      */
-    public static function metrics(): array
+    public static function metrics(?string $namespace = null): array
     {
-        $runModel = self::runModel();
-        $summaryModel = self::summaryModel();
-        $missing = self::missingRunQuery()->count();
-        $orphaned = self::orphanedSummaryQuery()->count();
-        $stale = self::staleSummaryQuery()->count();
-        $schemaOutdated = self::schemaOutdatedQuery()->count();
+        $namespace = self::normalizeNamespace($namespace);
+        $missing = self::missingRunQuery($namespace)->count();
+        $orphaned = self::orphanedSummaryQuery($namespace)->count();
+        $stale = self::staleSummaryQuery(namespace: $namespace)->count();
+        $schemaOutdated = self::schemaOutdatedQuery(namespace: $namespace)->count();
 
         return [
-            'runs' => $runModel::query()->count(),
-            'summaries' => $summaryModel::query()->count(),
+            'runs' => self::runQuery($namespace)->count(),
+            'summaries' => self::summaryQuery($namespace)->count(),
             'missing' => $missing,
             'orphaned' => $orphaned,
             'stale' => $stale,
@@ -42,12 +41,14 @@ final class RunSummaryProjectionDrift
      * visibility filters, saved views, and fleet search work correctly
      * across mixed-fleet deployments.
      */
-    public static function schemaOutdatedQuery(array $runIds = [], ?string $instanceId = null): Builder
-    {
-        $summaryModel = self::summaryModel();
+    public static function schemaOutdatedQuery(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): Builder {
         $currentVersion = RunSummaryProjector::SCHEMA_VERSION;
 
-        $query = $summaryModel::query()
+        $query = self::summaryQuery(self::normalizeNamespace($namespace))
             ->where(static function ($q) use ($currentVersion): void {
                 $q->whereNull('projection_schema_version')
                     ->orWhere('projection_schema_version', '<', $currentVersion);
@@ -64,29 +65,26 @@ final class RunSummaryProjectionDrift
         return $query;
     }
 
-    public static function missingRunQuery(): Builder
+    public static function missingRunQuery(?string $namespace = null): Builder
     {
-        $runModel = self::runModel();
-        $summaryModel = self::summaryModel();
-
-        return $runModel::query()
-            ->whereNotIn('id', $summaryModel::query()->select('id'));
+        return self::runQuery(self::normalizeNamespace($namespace))
+            ->whereNotIn('id', self::summaryQuery(self::normalizeNamespace($namespace))->select('id'));
     }
 
-    public static function orphanedSummaryQuery(): Builder
+    public static function orphanedSummaryQuery(?string $namespace = null): Builder
     {
-        $runModel = self::runModel();
-        $summaryModel = self::summaryModel();
-
-        return $summaryModel::query()
-            ->whereNotIn('id', $runModel::query()->select('id'));
+        return self::summaryQuery(self::normalizeNamespace($namespace))
+            ->whereNotIn('id', self::runQuery(self::normalizeNamespace($namespace))->select('id'));
     }
 
     /**
      * @param list<string> $runIds
      */
-    public static function staleSummaryQuery(array $runIds = [], ?string $instanceId = null): Builder
-    {
+    public static function staleSummaryQuery(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): Builder {
         $summaryModel = self::summaryModel();
         $runModel = self::runModel();
         $instanceModel = self::instanceModel();
@@ -94,7 +92,7 @@ final class RunSummaryProjectionDrift
         $runTable = self::table($runModel);
         $instanceTable = self::table($instanceModel);
 
-        $query = $summaryModel::query()
+        $query = self::summaryQuery(self::normalizeNamespace($namespace))
             ->join($runTable, sprintf('%s.id', $runTable), '=', sprintf('%s.id', $summaryTable))
             ->leftJoin(
                 $instanceTable,
@@ -260,5 +258,38 @@ final class RunSummaryProjectionDrift
         $model = config('workflows.v2.instance_model', WorkflowInstance::class);
 
         return $model;
+    }
+
+    private static function runQuery(?string $namespace): Builder
+    {
+        $runModel = self::runModel();
+        $query = $runModel::query();
+
+        if ($namespace !== null) {
+            $query->where(self::table($runModel) . '.namespace', $namespace);
+        }
+
+        return $query;
+    }
+
+    private static function summaryQuery(?string $namespace): Builder
+    {
+        $summaryModel = self::summaryModel();
+        $query = $summaryModel::query();
+
+        if ($namespace !== null) {
+            $query->where(self::table($summaryModel) . '.namespace', $namespace);
+        }
+
+        return $query;
+    }
+
+    private static function normalizeNamespace(?string $namespace): ?string
+    {
+        if ($namespace === null || trim($namespace) === '') {
+            return null;
+        }
+
+        return trim($namespace);
     }
 }

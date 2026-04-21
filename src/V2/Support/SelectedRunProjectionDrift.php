@@ -17,7 +17,7 @@ final class SelectedRunProjectionDrift
      *     stale_projected_runs: int
      * }
      */
-    public static function waitMetrics(array $runIds = [], ?string $instanceId = null): array
+    public static function waitMetrics(array $runIds = [], ?string $instanceId = null, ?string $namespace = null): array
     {
         $analysis = self::analyze(
             self::runQuery([
@@ -31,7 +31,7 @@ final class SelectedRunProjectionDrift
                 'childLinks.childRun.summary',
                 'childLinks.childRun.failures',
                 'childLinks.childRun.historyEvents',
-            ], $runIds, $instanceId),
+            ], $runIds, $instanceId, $namespace),
             static fn (WorkflowRun $run): array => SelectedRunSnapshot::waitDriftStatus($run),
         );
 
@@ -47,8 +47,11 @@ final class SelectedRunProjectionDrift
      * @param list<string> $runIds
      * @return list<string>
      */
-    public static function waitRunIdsNeedingRebuild(array $runIds = [], ?string $instanceId = null): array
-    {
+    public static function waitRunIdsNeedingRebuild(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): array {
         return self::runIdsNeedingRebuild(
             self::analyze(
                 self::runQuery([
@@ -62,7 +65,7 @@ final class SelectedRunProjectionDrift
                     'childLinks.childRun.summary',
                     'childLinks.childRun.failures',
                     'childLinks.childRun.historyEvents',
-                ], $runIds, $instanceId),
+                ], $runIds, $instanceId, $namespace),
                 static fn (WorkflowRun $run): array => SelectedRunSnapshot::waitDriftStatus($run),
             ),
         );
@@ -77,8 +80,11 @@ final class SelectedRunProjectionDrift
      *     stale_projected_runs: int
      * }
      */
-    public static function timelineMetrics(array $runIds = [], ?string $instanceId = null): array
-    {
+    public static function timelineMetrics(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): array {
         $analysis = self::analyze(
             self::runQuery([
                 'timelineEntries',
@@ -88,7 +94,7 @@ final class SelectedRunProjectionDrift
                 'activityExecutions',
                 'timers',
                 'failures',
-            ], $runIds, $instanceId),
+            ], $runIds, $instanceId, $namespace),
             static fn (WorkflowRun $run): array => SelectedRunSnapshot::timelineDriftStatus($run),
         );
 
@@ -104,8 +110,11 @@ final class SelectedRunProjectionDrift
      * @param list<string> $runIds
      * @return list<string>
      */
-    public static function timelineRunIdsNeedingRebuild(array $runIds = [], ?string $instanceId = null): array
-    {
+    public static function timelineRunIdsNeedingRebuild(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): array {
         return self::runIdsNeedingRebuild(
             self::analyze(
                 self::runQuery([
@@ -116,7 +125,7 @@ final class SelectedRunProjectionDrift
                     'activityExecutions',
                     'timers',
                     'failures',
-                ], $runIds, $instanceId),
+                ], $runIds, $instanceId, $namespace),
                 static fn (WorkflowRun $run): array => SelectedRunSnapshot::timelineDriftStatus($run),
             ),
         );
@@ -132,9 +141,12 @@ final class SelectedRunProjectionDrift
      *     schema_version_mismatch_runs: int
      * }
      */
-    public static function timerMetrics(array $runIds = [], ?string $instanceId = null): array
-    {
-        $analysis = self::timerAnalysis($runIds, $instanceId);
+    public static function timerMetrics(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): array {
+        $analysis = self::timerAnalysis($runIds, $instanceId, $namespace);
 
         return [
             'runs_with_timers' => $analysis['runs_with_canonical'],
@@ -149,9 +161,12 @@ final class SelectedRunProjectionDrift
      * @param list<string> $runIds
      * @return list<string>
      */
-    public static function timerRunIdsNeedingRebuild(array $runIds = [], ?string $instanceId = null): array
-    {
-        return self::runIdsNeedingRebuild(self::timerAnalysis($runIds, $instanceId));
+    public static function timerRunIdsNeedingRebuild(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): array {
+        return self::runIdsNeedingRebuild(self::timerAnalysis($runIds, $instanceId, $namespace));
     }
 
     /**
@@ -163,8 +178,11 @@ final class SelectedRunProjectionDrift
      *     stale_projected_runs: int
      * }
      */
-    public static function lineageMetrics(array $runIds = [], ?string $instanceId = null): array
-    {
+    public static function lineageMetrics(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): array {
         $analysis = self::analyze(
             self::runQuery([
                 'lineageEntries',
@@ -173,7 +191,7 @@ final class SelectedRunProjectionDrift
                 'childLinks.childRun.summary',
                 'childLinks.childRun.instance.currentRun.summary',
                 'instance.runs.summary',
-            ], $runIds, $instanceId),
+            ], $runIds, $instanceId, $namespace),
             static fn (WorkflowRun $run): array => SelectedRunSnapshot::lineageDriftStatus($run),
         );
 
@@ -189,8 +207,11 @@ final class SelectedRunProjectionDrift
      * @param list<string> $runIds
      * @return list<string>
      */
-    public static function lineageRunIdsNeedingRebuild(array $runIds = [], ?string $instanceId = null): array
-    {
+    public static function lineageRunIdsNeedingRebuild(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $namespace = null
+    ): array {
         return self::runIdsNeedingRebuild(
             self::analyze(
                 self::runQuery([
@@ -200,7 +221,7 @@ final class SelectedRunProjectionDrift
                     'childLinks.childRun.summary',
                     'childLinks.childRun.instance.currentRun.summary',
                     'instance.runs.summary',
-                ], $runIds, $instanceId),
+                ], $runIds, $instanceId, $namespace),
                 static fn (WorkflowRun $run): array => SelectedRunSnapshot::lineageDriftStatus($run),
             ),
         );
@@ -261,10 +282,11 @@ final class SelectedRunProjectionDrift
     /**
      * @param list<string> $runIds
      */
-    private static function runQuery(array $relations, array $runIds, ?string $instanceId)
+    private static function runQuery(array $relations, array $runIds, ?string $instanceId, ?string $namespace)
     {
         $runModel = self::runModel();
         $query = $runModel::query()->with($relations);
+        $namespace = self::normalizeNamespace($namespace);
 
         if ($runIds !== []) {
             $query->whereKey($runIds);
@@ -272,6 +294,10 @@ final class SelectedRunProjectionDrift
 
         if ($instanceId !== null) {
             $query->where('workflow_instance_id', $instanceId);
+        }
+
+        if ($namespace !== null) {
+            $query->where((new $runModel())->getTable() . '.namespace', $namespace);
         }
 
         return $query;
@@ -299,7 +325,7 @@ final class SelectedRunProjectionDrift
      *     schema_version_mismatch_run_ids: list<string>
      * }
      */
-    private static function timerAnalysis(array $runIds, ?string $instanceId): array
+    private static function timerAnalysis(array $runIds, ?string $instanceId, ?string $namespace): array
     {
         $runsWithCanonical = 0;
         $projectedRunsWithCanonical = 0;
@@ -307,7 +333,7 @@ final class SelectedRunProjectionDrift
         $staleRunIds = [];
         $schemaVersionMismatchRunIds = [];
 
-        self::runQuery(['timerEntries', 'timers', 'historyEvents'], $runIds, $instanceId)
+        self::runQuery(['timerEntries', 'timers', 'historyEvents'], $runIds, $instanceId, $namespace)
             ->chunkById(100, static function ($runs) use (
                 &$missingRunIds,
                 &$projectedRunsWithCanonical,
@@ -358,5 +384,14 @@ final class SelectedRunProjectionDrift
         $model = config('workflows.v2.run_model', WorkflowRun::class);
 
         return $model;
+    }
+
+    private static function normalizeNamespace(?string $namespace): ?string
+    {
+        if ($namespace === null || trim($namespace) === '') {
+            return null;
+        }
+
+        return trim($namespace);
     }
 }

@@ -46,10 +46,10 @@ interface OperatorObservabilityRepository
     /**
      * @return array<string, mixed>
      */
-    public function dashboardSummary(?CarbonInterface $now = null): array;
+    public function dashboardSummary(?CarbonInterface $now = null, ?string $namespace = null): array;
 
     /**
      * @return array<string, mixed>
      */
-    public function metrics(?CarbonInterface $now = null): array;
+    public function metrics(?CarbonInterface $now = null, ?string $namespace = null): array;
 }
