@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Symfony\Component\Process\Process;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\TaskWatchdog;
 
 abstract class TestCase extends BaseTestCase
@@ -59,6 +60,7 @@ abstract class TestCase extends BaseTestCase
 
         self::stopWorkers();
         self::flushRedis();
+        self::resetWorkflowDefinitionRegistrations();
 
         parent::setUp();
 
@@ -150,6 +152,12 @@ abstract class TestCase extends BaseTestCase
         }
 
         return $normalized;
+    }
+
+    private static function resetWorkflowDefinitionRegistrations(): void
+    {
+        $registrations = new \ReflectionProperty(WorkflowDefinition::class, 'workflowTypeRegistrations');
+        $registrations->setValue(null, []);
     }
 
     private static function startWorkers(): void

@@ -38,6 +38,11 @@ final class WorkflowDefinition
     private static array $classesByFingerprint = [];
 
     /**
+     * @var array<string, array{class: class-string, fingerprint: string}>
+     */
+    private static array $workflowTypeRegistrations = [];
+
+    /**
      * @var array<class-string, list<string>>
      */
     private static array $queryMethods = [];
@@ -354,6 +359,46 @@ final class WorkflowDefinition
     public static function findClassByFingerprint(string $fingerprint): ?string
     {
         return self::$classesByFingerprint[$fingerprint] ?? null;
+    }
+
+    /**
+     * @param class-string $class
+     */
+    public static function assertWorkflowTypeRegistration(string $workflowType, string $class): void
+    {
+        if ($workflowType === '' || ! self::isWorkflowClass($class)) {
+            return;
+        }
+
+        $fingerprint = self::fingerprint($class);
+
+        if ($fingerprint === null) {
+            return;
+        }
+
+        $existing = self::$workflowTypeRegistrations[$workflowType] ?? null;
+
+        if ($existing === null) {
+            self::$workflowTypeRegistrations[$workflowType] = [
+                'class' => $class,
+                'fingerprint' => $fingerprint,
+            ];
+
+            return;
+        }
+
+        if (hash_equals($existing['fingerprint'], $fingerprint)) {
+            return;
+        }
+
+        throw new LogicException(sprintf(
+            'Durable workflow type [%s] was already registered to [%s] with definition fingerprint [%s] and cannot be re-registered to [%s] with definition fingerprint [%s] in the same worker process. Restart the worker with a new identity before changing workflow definitions for an active type.',
+            $workflowType,
+            $existing['class'],
+            $existing['fingerprint'],
+            $class,
+            $fingerprint,
+        ));
     }
 
     /**

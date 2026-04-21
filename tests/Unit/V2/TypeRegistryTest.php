@@ -8,9 +8,11 @@ use LogicException;
 use ReflectionProperty;
 use Tests\Fixtures\V2\TestConfiguredGreetingActivity;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
+use Tests\Fixtures\V2\TestConfiguredStorageWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkflowDefinition;
 
 final class TypeRegistryTest extends TestCase
 {
@@ -21,6 +23,9 @@ final class TypeRegistryTest extends TestCase
         // Clear any cached type resolutions between tests.
         $cache = new ReflectionProperty(TypeRegistry::class, 'cache');
         $cache->setValue(null, []);
+
+        $registrations = new ReflectionProperty(WorkflowDefinition::class, 'workflowTypeRegistrations');
+        $registrations->setValue(null, []);
     }
 
     // ---------------------------------------------------------------
@@ -219,6 +224,45 @@ final class TypeRegistryTest extends TestCase
         TypeRegistry::validateTypeMap();
 
         $this->assertTrue(true);
+    }
+
+    public function testWorkflowTypeRegistrationAllowsUnchangedDefinition(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'billing.invoice-sync' => TestConfiguredGreetingWorkflow::class,
+        ]);
+
+        $this->assertSame('billing.invoice-sync', TypeRegistry::for(TestConfiguredGreetingWorkflow::class));
+        $this->assertSame(
+            TestConfiguredGreetingWorkflow::class,
+            TypeRegistry::resolveWorkflowClass('billing.invoice-sync', 'billing.invoice-sync'),
+        );
+
+        TypeRegistry::validateTypeMap();
+
+        $this->assertTrue(true);
+    }
+
+    public function testWorkflowTypeRegistrationRejectsChangedDefinitionInSameWorkerProcess(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'billing.invoice-sync' => TestConfiguredGreetingWorkflow::class,
+        ]);
+
+        $this->assertSame('billing.invoice-sync', TypeRegistry::for(TestConfiguredGreetingWorkflow::class));
+
+        config()
+            ->set('workflows.v2.types.workflows', [
+                'billing.invoice-sync' => TestConfiguredStorageWorkflow::class,
+            ]);
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('cannot be re-registered');
+        $this->expectExceptionMessage('billing.invoice-sync');
+        $this->expectExceptionMessage(TestConfiguredGreetingWorkflow::class);
+        $this->expectExceptionMessage(TestConfiguredStorageWorkflow::class);
+
+        TypeRegistry::for(TestConfiguredStorageWorkflow::class);
     }
 
     // ---------------------------------------------------------------

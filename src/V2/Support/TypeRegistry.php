@@ -26,6 +26,10 @@ final class TypeRegistry
         $configuredType = self::configuredTypeForClass($class);
 
         if ($configuredType !== null) {
+            if (is_subclass_of($class, Workflow::class)) {
+                WorkflowDefinition::assertWorkflowTypeRegistration($configuredType, $class);
+            }
+
             return $configuredType;
         }
 
@@ -36,6 +40,10 @@ final class TypeRegistry
             self::$cache[$class] = $attributes === []
                 ? $class
                 : $attributes[0]->newInstance()->key;
+        }
+
+        if (is_subclass_of($class, Workflow::class)) {
+            WorkflowDefinition::assertWorkflowTypeRegistration(self::$cache[$class], $class);
         }
 
         return self::$cache[$class];
@@ -155,6 +163,10 @@ final class TypeRegistry
             foreach ($types as $configuredKey => $class) {
                 if (! is_string($class) || ! self::isValidClass($class, $baseClass)) {
                     continue;
+                }
+
+                if ($baseClass === Workflow::class) {
+                    WorkflowDefinition::assertWorkflowTypeRegistration((string) $configuredKey, $class);
                 }
 
                 $reflection = new ReflectionClass($class);
