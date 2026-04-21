@@ -117,6 +117,37 @@ Renaming, removing, or repurposing a field in any published event is a
 protocol break — not a minor-version change — regardless of whether
 the PHP class that produced the event is `@internal`.
 
+Every stable event schema must name both its frozen payload keys and at
+least one replay or projection consumer. Frequently replayed event
+families are enumerated first because they sit on the hot path for
+cross-SDK replay:
+
+| event | frozen payload keys | primary replay / projection consumers |
+| --- | --- | --- |
+| `WorkflowStarted` | `workflow_class`, `workflow_type`, `workflow_instance_id`, `workflow_run_id`, `workflow_command_id`, `business_key`, `visibility_labels`, `memo`, `search_attributes`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at`, `workflow_definition_fingerprint`, `declared_queries`, `declared_query_contracts`, `declared_signals`, `declared_signal_contracts`, `declared_updates`, `declared_update_contracts`, `declared_entry_method`, `declared_entry_mode`, `declared_entry_declaring_class` | `WorkflowDefinitionFingerprint`, `RunLineageView`, worker history payload consumers |
+| `ActivityScheduled` | `activity_execution_id`, `activity_class`, `activity_type`, `sequence`, `activity` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ActivityRecovery` |
+| `ActivityCompleted` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `result`, `payload_codec`, `activity`, `parallel_group_path` | `WorkflowExecutor`, `QueryStateReplayer`, `ParallelChildGroup`, `ActivityRecovery` |
+| `TimerScheduled` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name` | `WorkflowStepHistory`, `QueryStateReplayer`, `RunTimerView`, `ConditionWaits`, `SignalWaits` |
+| `TimerFired` | `timer_id`, `sequence`, `delay_seconds`, `fired_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name` | `WorkflowStepHistory`, `QueryStateReplayer`, `RunTimerView`, `ConditionWaits`, `SignalWaits` |
+| `SignalReceived` | `workflow_command_id`, `signal_id`, `workflow_instance_id`, `workflow_run_id`, `signal_name`, `signal_wait_id` | `SignalWaits`, `RunSignalView`, worker history payload consumers |
+| `SignalApplied` | `workflow_command_id`, `signal_id`, `signal_name`, `signal_wait_id`, `sequence`, `value` | `WorkflowStepHistory`, `SignalWaits`, `RunSignalView`, `QueryStateReplayer` |
+| `UpdateAccepted` | `workflow_command_id`, `update_id`, `workflow_instance_id`, `workflow_run_id`, `update_name`, `arguments` | `RunUpdateView`, worker history payload consumers |
+| `UpdateApplied` | `workflow_command_id`, `update_id`, `workflow_instance_id`, `workflow_run_id`, `update_name`, `arguments`, `sequence` | `QueryStateReplayer`, `RunUpdateView`, worker history payload consumers |
+| `UpdateCompleted` | `workflow_command_id`, `update_id`, `workflow_instance_id`, `workflow_run_id`, `update_name`, `sequence`, `result` | `RunUpdateView`, worker history payload consumers |
+| `ConditionWaitOpened` | `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `sequence`, `timeout_seconds` | `WorkflowStepHistory`, `ConditionWaits`, worker history payload consumers |
+| `SideEffectRecorded` | `sequence`, `result` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer` |
+| `VersionMarkerRecorded` | `sequence`, `change_id`, `version`, `min_supported`, `max_supported` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer` |
+| `ChildWorkflowScheduled` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `parent_close_policy`, `retry_policy`, `timeout_policy` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ChildRunHistory`, `RunLineageView` |
+| `ChildRunStarted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `retry_policy`, `timeout_policy`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at` | `ChildRunHistory`, `RunLineageView`, worker history payload consumers |
+| `ChildRunCompleted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `output`, `parallel_group_path` | `WorkflowExecutor`, `QueryStateReplayer`, `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView` |
+
+The key list is a wire-format list, not a promise that every event row
+contains every key. Some keys are optional because older rows predate a
+projection, a branch does not have that attribute, or `array_filter`
+omitted a null value. Consumers must continue to accept missing optional
+keys indefinitely. Producers must not rename, remove, or change the type
+or meaning of an existing key.
+
 ### `VersionMarkerRecorded`
 
 This marker records the result of `Workflow::getVersion()`, `Workflow::patched()`,
