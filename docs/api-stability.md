@@ -77,8 +77,8 @@ The abstract base class `Workflow\V2\Workflow` is the canonical authoring
 API for v2 workflows. It exposes two surfaces, both covered by the
 semver guarantee:
 
-- **Instance members** applications rely on inside an `execute()` /
-  `handle()` method: `workflowId()`, `runId()`, `lastChild()`,
+- **Instance members** applications rely on inside a `handle()` method:
+  `workflowId()`, `runId()`, `lastChild()`,
   `children()`, `historyLength()`, `historySize()`, `shouldContinueAsNew()`,
   `addCompensation()`, `setParallelCompensation()`,
   `setContinueWithError()`, `compensate()`, and the public properties

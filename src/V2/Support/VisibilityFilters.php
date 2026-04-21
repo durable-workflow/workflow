@@ -722,10 +722,6 @@ final class VisibilityFilters
                     'label' => 'Canonical',
                     'value' => 'canonical',
                 ],
-                [
-                    'label' => 'Compatibility',
-                    'value' => 'compatibility',
-                ],
             ],
             'declared_contract_source' => [
                 [

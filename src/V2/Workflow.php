@@ -14,15 +14,15 @@ use Workflow\V2\Support\HistoryBudget;
 /**
  * Base class for v2 workflows.
  *
- * Application workflows extend this class and implement an `execute` (or
- * `handle`) entry method. The class also exposes the v2 authoring API as
- * a static facade so workflow code can read like:
+ * Application workflows extend this class and implement a `handle` entry
+ * method. The class also exposes the v2 authoring API as a static facade so
+ * workflow code can read like:
  *
  *     use Workflow\V2\Workflow;
  *
  *     class MyWorkflow extends Workflow
  *     {
- *         public function execute(): mixed
+ *         public function handle(): mixed
  *         {
  *             $result = Workflow::activity(MyActivity::class, 'arg');
  *             Workflow::timer('5 seconds');

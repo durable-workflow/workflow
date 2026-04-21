@@ -25,8 +25,8 @@ final class EntryMethod
     /**
      * @return array{
      *     method: ReflectionMethod,
-     *     name: 'handle'|'execute',
-     *     mode: 'canonical'|'compatibility',
+     *     name: 'handle',
+     *     mode: 'canonical',
      *     declared_on: class-string
      * }
      */
@@ -38,8 +38,8 @@ final class EntryMethod
     /**
      * @return array{
      *     method: ReflectionMethod,
-     *     name: 'handle'|'execute',
-     *     mode: 'canonical'|'compatibility',
+     *     name: 'handle',
+     *     mode: 'canonical',
      *     declared_on: class-string
      * }
      */
@@ -51,8 +51,8 @@ final class EntryMethod
     /**
      * @return array{
      *     method: ReflectionMethod,
-     *     name: 'handle'|'execute',
-     *     mode: 'canonical'|'compatibility',
+     *     name: 'handle',
+     *     mode: 'canonical',
      *     declared_on: class-string
      * }
      */
@@ -61,52 +61,20 @@ final class EntryMethod
         $reflection = new ReflectionClass($target);
         $current = $reflection;
         $resolvedMethod = null;
-        $resolvedName = null;
-        $resolvedMode = null;
         $declaredOn = null;
+        $executeDeclaredOn = null;
 
         while ($current instanceof ReflectionClass && is_subclass_of($current->getName(), $baseClass)) {
             $handle = self::declaredPublicMethod($current, 'handle');
             $execute = self::declaredPublicMethod($current, 'execute');
 
-            if ($handle !== null && $execute !== null) {
-                throw new LogicException(sprintf(
-                    'V2 %s [%s] must declare only one entry method. Define handle() for new code or keep execute() for compatibility.',
-                    $type,
-                    $reflection->getName(),
-                ));
+            if ($execute instanceof ReflectionMethod && $executeDeclaredOn === null) {
+                $executeDeclaredOn = $current->getName();
             }
 
             if ($handle instanceof ReflectionMethod) {
-                if ($resolvedName === 'execute') {
-                    throw new LogicException(sprintf(
-                        'V2 %s [%s] cannot mix handle() and execute() across its inheritance chain. Normalize the hierarchy to one entry method.',
-                        $type,
-                        $reflection->getName(),
-                    ));
-                }
-
                 if ($resolvedMethod === null) {
                     $resolvedMethod = $handle;
-                    $resolvedName = 'handle';
-                    $resolvedMode = 'canonical';
-                    $declaredOn = $current->getName();
-                }
-            }
-
-            if ($execute instanceof ReflectionMethod) {
-                if ($resolvedName === 'handle') {
-                    throw new LogicException(sprintf(
-                        'V2 %s [%s] cannot mix handle() and execute() across its inheritance chain. Normalize the hierarchy to one entry method.',
-                        $type,
-                        $reflection->getName(),
-                    ));
-                }
-
-                if ($resolvedMethod === null) {
-                    $resolvedMethod = $execute;
-                    $resolvedName = 'execute';
-                    $resolvedMode = 'compatibility';
                     $declaredOn = $current->getName();
                 }
             }
@@ -114,17 +82,25 @@ final class EntryMethod
             $current = $current->getParentClass();
         }
 
+        if (is_string($executeDeclaredOn)) {
+            throw new LogicException(sprintf(
+                'V2 %s [%s] must use handle() as its only public entry method; execute() is not supported as a v2 entry method.',
+                $type,
+                $reflection->getName(),
+            ));
+        }
+
         if ($resolvedMethod instanceof ReflectionMethod && is_string($declaredOn)) {
             return [
                 'method' => $resolvedMethod,
-                'name' => $resolvedName,
-                'mode' => $resolvedMode,
+                'name' => 'handle',
+                'mode' => 'canonical',
                 'declared_on' => $declaredOn,
             ];
         }
 
         throw new LogicException(sprintf(
-            'V2 %s [%s] must declare a public handle() method or, for compatibility, a public execute() method.',
+            'V2 %s [%s] must declare a public handle() method.',
             $type,
             $reflection->getName(),
         ));

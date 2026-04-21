@@ -91,8 +91,8 @@ final class WorkflowDefinition
 
     /**
      * @var array<class-string, array{
-     *     entry_method: 'handle'|'execute',
-     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_method: 'handle',
+     *     entry_mode: 'canonical',
      *     entry_declaring_class: class-string
      * }>
      */
@@ -284,8 +284,8 @@ final class WorkflowDefinition
      *             allows_null: bool
      *         }>
      *     }>,
-     *     entry_method: 'handle'|'execute',
-     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_method: 'handle',
+     *     entry_mode: 'canonical',
      *     entry_declaring_class: class-string
      * }
      */
@@ -780,8 +780,8 @@ final class WorkflowDefinition
     /**
      * @param class-string $class
      * @return array{
-     *     entry_method: 'handle'|'execute',
-     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_method: 'handle',
+     *     entry_mode: 'canonical',
      *     entry_declaring_class: class-string
      * }
      */

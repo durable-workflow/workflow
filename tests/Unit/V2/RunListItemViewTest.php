@@ -224,13 +224,13 @@ final class RunListItemViewTest extends TestCase
     public function testFromSummaryProjectsCommandContractFields(): void
     {
         $summary = $this->makeSummary([
-            'declared_entry_mode' => 'compatibility',
+            'declared_entry_mode' => 'canonical',
             'declared_contract_source' => 'durable_history',
         ]);
 
         $item = RunListItemView::fromSummary($summary);
 
-        $this->assertSame('compatibility', $item['declared_entry_mode']);
+        $this->assertSame('canonical', $item['declared_entry_mode']);
         $this->assertSame('durable_history', $item['declared_contract_source']);
     }
 

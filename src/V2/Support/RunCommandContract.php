@@ -26,8 +26,8 @@ final class RunCommandContract
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
      *     update_targets: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute'|null,
-     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_method: 'handle'|null,
+     *     entry_mode: 'canonical'|null,
      *     entry_declaring_class: class-string|null,
      *     source: string,
      *     backfill_needed: bool,
@@ -148,8 +148,8 @@ final class RunCommandContract
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute',
-     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_method: 'handle',
+     *     entry_mode: 'canonical',
      *     entry_declaring_class: class-string
      * }
      */
@@ -167,8 +167,8 @@ final class RunCommandContract
      *         signal_contracts: list<array<string, mixed>>,
      *         updates: list<string>,
      *         update_contracts: list<array<string, mixed>>,
-     *         entry_method: 'handle'|'execute'|null,
-     *         entry_mode: 'canonical'|'compatibility'|null,
+     *         entry_method: 'handle'|null,
+     *         entry_mode: 'canonical'|null,
      *         entry_declaring_class: class-string|null
      *     }|null,
      *     strict: bool,
@@ -305,8 +305,8 @@ final class RunCommandContract
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute'|null,
-     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_method: 'handle'|null,
+     *     entry_mode: 'canonical'|null,
      *     entry_declaring_class: class-string|null
      * } $contract
      * @return array<string, mixed>
@@ -333,8 +333,8 @@ final class RunCommandContract
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute',
-     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_method: 'handle',
+     *     entry_mode: 'canonical',
      *     entry_declaring_class: class-string
      * }|null
      */
@@ -372,8 +372,8 @@ final class RunCommandContract
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute',
-     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_method: 'handle',
+     *     entry_mode: 'canonical',
      *     entry_declaring_class: class-string
      * }|null
      */
@@ -438,8 +438,8 @@ final class RunCommandContract
      *     signal_contracts: list<array<string, mixed>>,
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute'|null,
-     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_method: 'handle'|null,
+     *     entry_mode: 'canonical'|null,
      *     entry_declaring_class: class-string|null
      * }
      */
@@ -477,8 +477,8 @@ final class RunCommandContract
      *     updates: list<string>,
      *     update_contracts: list<array<string, mixed>>,
      *     update_targets: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute'|null,
-     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_method: 'handle'|null,
+     *     entry_mode: 'canonical'|null,
      *     entry_declaring_class: class-string|null
      * }
      */
@@ -593,21 +593,21 @@ final class RunCommandContract
     }
 
     /**
-     * @return 'handle'|'execute'|null
+     * @return 'handle'|null
      */
     private static function normalizeEntryMethod(mixed $value): ?string
     {
-        return in_array($value, ['handle', 'execute'], true)
+        return $value === 'handle'
             ? $value
             : null;
     }
 
     /**
-     * @return 'canonical'|'compatibility'|null
+     * @return 'canonical'|null
      */
     private static function normalizeEntryMode(mixed $value): ?string
     {
-        return in_array($value, ['canonical', 'compatibility'], true)
+        return $value === 'canonical'
             ? $value
             : null;
     }

@@ -12,7 +12,7 @@ use Workflow\V2\Workflow;
 
 final class EntryMethodTest extends TestCase
 {
-    public function testHandleIsPreferredWhenDeclared(): void
+    public function testHandleIsRequiredEntryMethod(): void
     {
         $this->assertSame('handle', EntryMethod::forWorkflow(HandleEntryWorkflow::class)->getName());
         $this->assertSame('handle', EntryMethod::forActivity(HandleEntryActivity::class)->getName());
@@ -23,15 +23,20 @@ final class EntryMethodTest extends TestCase
         );
     }
 
-    public function testExecuteFallsBackForCompatibility(): void
+    public function testExecuteIsRejectedForWorkflow(): void
     {
-        $this->assertSame('execute', EntryMethod::forWorkflow(ExecuteEntryWorkflow::class)->getName());
-        $this->assertSame('execute', EntryMethod::forActivity(ExecuteEntryActivity::class)->getName());
-        $this->assertSame('compatibility', EntryMethod::describeWorkflow(ExecuteEntryWorkflow::class)['mode']);
-        $this->assertSame(
-            ExecuteEntryWorkflow::class,
-            EntryMethod::describeWorkflow(ExecuteEntryWorkflow::class)['declared_on']
-        );
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('execute() is not supported as a v2 entry method');
+
+        EntryMethod::forWorkflow(ExecuteEntryWorkflow::class);
+    }
+
+    public function testExecuteIsRejectedForActivity(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('execute() is not supported as a v2 entry method');
+
+        EntryMethod::forActivity(ExecuteEntryActivity::class);
     }
 
     public function testEntryMethodCanBeInheritedFromParentWorkflow(): void
@@ -46,7 +51,7 @@ final class EntryMethodTest extends TestCase
     public function testDeclaringBothEntryMethodsRaisesAnError(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('must declare only one entry method');
+        $this->expectExceptionMessage('execute() is not supported as a v2 entry method');
 
         EntryMethod::forWorkflow(DualEntryWorkflow::class);
     }
@@ -54,9 +59,7 @@ final class EntryMethodTest extends TestCase
     public function testMissingEntryMethodRaisesAnError(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage(
-            'must declare a public handle() method or, for compatibility, a public execute() method'
-        );
+        $this->expectExceptionMessage('must declare a public handle() method');
 
         EntryMethod::forWorkflow(MissingEntryWorkflow::class);
     }
@@ -64,7 +67,7 @@ final class EntryMethodTest extends TestCase
     public function testMixedWorkflowHierarchyRaisesAnError(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('cannot mix handle() and execute() across its inheritance chain');
+        $this->expectExceptionMessage('execute() is not supported as a v2 entry method');
 
         EntryMethod::forWorkflow(MixedWorkflowChild::class);
     }
@@ -72,7 +75,7 @@ final class EntryMethodTest extends TestCase
     public function testMixedActivityHierarchyRaisesAnError(): void
     {
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('cannot mix handle() and execute() across its inheritance chain');
+        $this->expectExceptionMessage('execute() is not supported as a v2 entry method');
 
         EntryMethod::forActivity(MixedActivityChild::class);
     }

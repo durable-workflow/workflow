@@ -6,7 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use LogicException;
-use Tests\Fixtures\V2\TestExecuteCompatibilityWorkflow;
+use Tests\Fixtures\V2\TestExecuteEntryWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestMixedEntryActivityWorkflow;
 use Tests\Fixtures\V2\TestMixedEntryChildParentWorkflow;
@@ -62,48 +62,42 @@ final class V2EntryMethodTest extends TestCase
         $this->assertSame('durable_history', $summary->declared_contract_source);
     }
 
-    public function testExecuteBasedV2WorkflowsRemainLoadableForCompatibility(): void
+    public function testExecuteBasedV2WorkflowIsRejectedBeforeStartCreatesDurableRows(): void
     {
-        $workflow = WorkflowStub::make(TestExecuteCompatibilityWorkflow::class, 'execute-entry-method');
-        $workflow->start('Jordan');
+        $workflow = WorkflowStub::make(TestExecuteEntryWorkflow::class, 'execute-entry-method');
 
-        $this->drainReadyTasks();
+        try {
+            $workflow->start('Jordan');
+            $this->fail('Expected an execute entry method to be rejected.');
+        } catch (LogicException $exception) {
+            $this->assertStringContainsString(
+                'execute() is not supported as a v2 entry method',
+                $exception->getMessage()
+            );
+        }
 
-        $this->assertTrue($workflow->refresh()->completed());
-        $this->assertSame('Hello, Jordan!', $workflow->output()['greeting']);
-        $this->assertSame('Hello, Jordan!', $workflow->query('greeting'));
+        $instance = WorkflowInstance::query()->findOrFail('execute-entry-method');
 
-        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId()));
-        $summary = WorkflowRunSummary::query()->findOrFail($workflow->runId());
-
-        $this->assertSame('execute', $detail['declared_entry_method']);
-        $this->assertSame('compatibility', $detail['declared_entry_mode']);
-        $this->assertSame(TestExecuteCompatibilityWorkflow::class, $detail['declared_entry_declaring_class']);
-        $this->assertSame('compatibility', $summary->declared_entry_mode);
-        $this->assertSame('durable_history', $summary->declared_contract_source);
+        $this->assertNull($instance->current_run_id);
+        $this->assertSame(0, $instance->run_count);
+        $this->assertDatabaseMissing('workflow_runs', [
+            'workflow_instance_id' => 'execute-entry-method',
+        ]);
+        $this->assertDatabaseMissing('workflow_commands', [
+            'workflow_instance_id' => 'execute-entry-method',
+        ]);
     }
 
-    public function testWebhookStartStillSupportsExecuteBasedCompatibilityWorkflows(): void
+    public function testWebhookStartRejectsExecuteBasedV2WorkflowAsValidationError(): void
     {
-        Webhooks::routes([TestExecuteCompatibilityWorkflow::class]);
+        Webhooks::routes([TestExecuteEntryWorkflow::class]);
 
-        $response = $this->postJson('/webhooks/start/test-execute-compatibility-workflow', [
-            'workflow_id' => 'execute-compatibility-webhook',
+        $this->postJson('/webhooks/start/test-execute-entry-workflow', [
+            'workflow_id' => 'execute-entry-webhook',
             'name' => 'Casey',
-        ]);
-
-        $response
-            ->assertAccepted()
-            ->assertJsonPath('workflow_type', 'test-execute-compatibility-workflow');
-
-        $workflow = WorkflowStub::load('execute-compatibility-webhook');
-
-        $this->drainReadyTasks();
-
-        $workflow->refresh();
-
-        $this->assertSame('Hello, Casey!', $workflow->output()['greeting']);
-        $this->assertSame('Hello, Casey!', $workflow->query('greeting'));
+        ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['workflow']);
     }
 
     public function testMixedWorkflowEntryHierarchyIsRejectedBeforeStartCreatesDurableRows(): void
@@ -115,7 +109,7 @@ final class V2EntryMethodTest extends TestCase
             $this->fail('Expected a mixed entry-method hierarchy to be rejected.');
         } catch (LogicException $exception) {
             $this->assertStringContainsString(
-                'cannot mix handle() and execute() across its inheritance chain',
+                'execute() is not supported as a v2 entry method',
                 $exception->getMessage()
             );
         }
