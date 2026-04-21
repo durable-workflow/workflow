@@ -56,6 +56,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\WorkerProtocolVersion`
 - `Workflow\V2\Support\WorkflowCommandNormalizer`
 - `Workflow\V2\Support\WorkflowReplayer`
+- `Workflow\V2\Support\WorkflowRunRetentionCleanup`
 - `Workflow\V2\Support\WorkflowTaskOwnership`
 - `Workflow\V2\TaskWatchdog`
 
