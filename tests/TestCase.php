@@ -24,9 +24,11 @@ abstract class TestCase extends BaseTestCase
 
     public static function setUpBeforeClass(): void
     {
-        if (TestSuiteSubscriber::getCurrentSuite() === 'feature') {
+        $currentSuite = TestSuiteSubscriber::getCurrentSuite();
+
+        if ($currentSuite === 'feature') {
             Dotenv::createImmutable(__DIR__, '.env.feature')->safeLoad();
-        } elseif (TestSuiteSubscriber::getCurrentSuite() === 'unit') {
+        } elseif ($currentSuite === 'unit') {
             Dotenv::createImmutable(__DIR__, '.env.unit')->safeLoad();
         }
 
@@ -37,6 +39,11 @@ abstract class TestCase extends BaseTestCase
         }
 
         self::flushRedis();
+
+        if ($currentSuite !== 'feature') {
+            return;
+        }
+
         // The first feature test's migrate:fresh runs before setUp() can write
         // the Cache facade throttle keys, so prime Redis directly before the
         // background queue workers start polling.
