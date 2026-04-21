@@ -39,56 +39,26 @@ abstract class TestCase extends BaseTestCase
         }
 
         self::flushRedis();
-
-        if ($currentSuite !== 'feature') {
-            return;
-        }
-
-        // The first feature test's migrate:fresh runs before setUp() can write
-        // the Cache facade throttle keys, so prime Redis directly before the
-        // background queue workers start polling.
-        self::primeWatchdogThrottle();
-
-        // Explicitly hand our env to Process. testbench/laravel/.env hardcodes
-        // CACHE_DRIVER=file; without an inherited env (or when Symfony Process
-        // ignores the parent's env on some runners) the worker bootstraps its
-        // own file-backed cache and cannot see the LOOP_THROTTLE_KEY the test
-        // process writes to redis — original CI shape under #427. Merging
-        // $_ENV + $_SERVER + getenv() rather than relying on Process's
-        // default null-env inherit covers every environment variable source
-        // GitHub Actions, Orchestra, and the loaded .env.feature might have
-        // populated by this point.
-        $workerEnv = array_merge(array_filter($_SERVER, 'is_string'), array_filter($_ENV, 'is_string'));
-
-        for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
-            self::$workers[$i] = new Process(
-                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work'],
-                null,
-                $workerEnv,
-            );
-            self::$workers[$i]->disableOutput();
-            self::$workers[$i]->start();
-        }
     }
 
     public static function tearDownAfterClass(): void
     {
-        foreach (self::$workers as $worker) {
-            $worker->stop();
-        }
-
-        self::$workers = [];
-
+        self::stopWorkers();
         self::flushRedis();
     }
 
     protected function setUp(): void
     {
-        if (TestSuiteSubscriber::getCurrentSuite() === 'feature') {
+        $currentSuite = TestSuiteSubscriber::getCurrentSuite();
+
+        if ($currentSuite === 'feature') {
             Dotenv::createImmutable(__DIR__, '.env.feature')->safeLoad();
-        } elseif (TestSuiteSubscriber::getCurrentSuite() === 'unit') {
+        } elseif ($currentSuite === 'unit') {
             Dotenv::createImmutable(__DIR__, '.env.unit')->safeLoad();
         }
+
+        self::stopWorkers();
+        self::flushRedis();
 
         parent::setUp();
 
@@ -98,10 +68,10 @@ abstract class TestCase extends BaseTestCase
 
         self::flushRedis();
 
-        if (TestSuiteSubscriber::getCurrentSuite() === 'feature') {
+        if ($currentSuite === 'feature') {
             // Block BOTH the V2 TaskWatchdog and the V1 Watchdog for the
             // duration of every feature test. The two testbench queue
-            // workers spawned in setUpBeforeClass run both wake()s on every
+            // workers spawned after the per-test migration run both wake()s on every
             // Looping event in separate PHP processes.
             //
             // V2: almost every V2 feature test uses Queue::fake() with
@@ -128,6 +98,18 @@ abstract class TestCase extends BaseTestCase
             // key and calls runPass(respectThrottle: false) directly.
             Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, self::WATCHDOG_THROTTLE_TTL_SECONDS);
             Cache::put(self::V1_WATCHDOG_LOOP_THROTTLE_KEY, true, self::WATCHDOG_THROTTLE_TTL_SECONDS);
+            self::primeWatchdogThrottle();
+            self::startWorkers();
+        }
+    }
+
+    protected function tearDown(): void
+    {
+        try {
+            self::stopWorkers();
+            self::flushRedis();
+        } finally {
+            parent::tearDown();
         }
     }
 
@@ -168,6 +150,39 @@ abstract class TestCase extends BaseTestCase
         }
 
         return $normalized;
+    }
+
+    private static function startWorkers(): void
+    {
+        if (self::$workers !== []) {
+            return;
+        }
+
+        $environment = getenv();
+        $workerEnv = array_merge(
+            is_array($environment) ? array_filter($environment, 'is_string') : [],
+            array_filter($_SERVER, 'is_string'),
+            array_filter($_ENV, 'is_string'),
+        );
+
+        for ($i = 0; $i < self::NUMBER_OF_WORKERS; $i++) {
+            self::$workers[$i] = new Process(
+                ['php', __DIR__ . '/../vendor/bin/testbench', 'queue:work'],
+                null,
+                $workerEnv,
+            );
+            self::$workers[$i]->disableOutput();
+            self::$workers[$i]->start();
+        }
+    }
+
+    private static function stopWorkers(): void
+    {
+        foreach (self::$workers as $worker) {
+            $worker->stop(3);
+        }
+
+        self::$workers = [];
     }
 
     private static function flushRedis(): void
