@@ -151,6 +151,21 @@ final class RunTimelineProjector
         $total = (int) (clone $baseQuery)->count();
 
         if ($total === 0) {
+            $canonicalTimeline = HistoryTimeline::fromHistory($run);
+
+            if ($canonicalTimeline !== []) {
+                $reprojected = self::project($run, $canonicalTimeline);
+
+                return self::boundedTimelinePayload(
+                    collect($reprojected)
+                        ->map(static fn (WorkflowTimelineEntry $entry): array => $entry->toTimelinePayload())
+                        ->values()
+                        ->all(),
+                    $limit,
+                    'workflow_run_timeline_entries_rebuilt_window',
+                );
+            }
+
             return [
                 'source' => 'workflow_run_timeline_entries_window',
                 'timeline' => [],
@@ -173,6 +188,19 @@ final class RunTimelineProjector
                 ->values()
                 ->all(),
             'total_count' => $total,
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $timeline
+     * @return array{source: string, timeline: list<array<string, mixed>>, total_count: int}
+     */
+    private static function boundedTimelinePayload(array $timeline, int $limit, string $source): array
+    {
+        return [
+            'source' => $source,
+            'timeline' => array_values(array_slice($timeline, -$limit)),
+            'total_count' => count($timeline),
         ];
     }
 

@@ -721,6 +721,44 @@ final class V2HistoryTimelineTest extends TestCase
         );
     }
 
+    public function testBoundedTimelineRebuildsMissingProjectionRowsBeforeReturningWindow(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'timeline-projection-window-rebuild');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $historyCount = $run->historyEvents()
+            ->count();
+
+        $this->assertGreaterThan(2, $historyCount);
+
+        WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        $snapshot = RunTimelineProjector::snapshotForRun($run->fresh(), 2);
+
+        $this->assertSame('workflow_run_timeline_entries_rebuilt_window', $snapshot['source']);
+        $this->assertSame($historyCount, $snapshot['total_count']);
+        $this->assertCount(2, $snapshot['timeline']);
+        $this->assertSame(['ActivityCompleted', 'WorkflowCompleted'], array_column($snapshot['timeline'], 'type'));
+        $this->assertSame(
+            $historyCount,
+            WorkflowTimelineEntry::query()
+                ->where('workflow_run_id', $runId)
+                ->count(),
+        );
+    }
+
     public function testTimelineKeepsTimerSnapshotsWhenTimerRowDrifts(): void
     {
         Queue::fake();
