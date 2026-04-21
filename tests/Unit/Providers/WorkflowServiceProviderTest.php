@@ -7,7 +7,6 @@ namespace Tests\Unit;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
@@ -145,117 +144,6 @@ final class WorkflowServiceProviderTest extends TestCase
             $this->assertTrue(Schema::hasTable('workflow_schedule_history_events'));
         } finally {
             $this->deletePublishedWorkflowMigrations();
-        }
-    }
-
-    public function testCarryingForwardPackageMigrationOverCustomizedPublishedSet(): void
-    {
-        $this->deletePublishedWorkflowMigrations();
-
-        // Publish to a per-test scratch directory instead of
-        // database_path('migrations'). Laravel's Migrator::requireFiles calls
-        // require_once on each file — if a prior test in the class already
-        // required the same absolute path, modifications to the file here
-        // would not be re-read (the anonymous-class factory has already
-        // returned the original instance), and the test would silently run
-        // the unmodified migration.
-        $publishedDir = storage_path('app/test-migrations-' . uniqid());
-        if (! is_dir($publishedDir)) {
-            mkdir($publishedDir, 0755, true);
-        }
-
-        try {
-            // 1. Publish the current package migrations into the scratch dir.
-            foreach (glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [] as $source) {
-                copy($source, $publishedDir . '/' . basename($source));
-            }
-
-            $repair = $publishedDir . '/2026_04_16_000158_repair_memo_on_workflow_run_summaries_table.php';
-            $summaries = $publishedDir . '/2026_04_05_000106_create_workflow_run_summaries_table.php';
-            $instances = $publishedDir . '/2026_04_05_000100_create_workflow_instances_table.php';
-
-            $this->assertFileExists($repair, 'Expected publish to include the repair migration.');
-            $this->assertFileExists($summaries);
-            $this->assertFileExists($instances);
-
-            // 2. Simulate a published snapshot taken before the repair
-            //    migration shipped by removing it from the published set.
-            @unlink($repair);
-
-            // 3. Simulate that older snapshot's create_workflow_run_summaries
-            //    migration predating the memo column by stripping the column
-            //    declaration from the published copy only.
-            $summariesContents = file_get_contents($summaries);
-            $memoLine = "            \$table->json('memo')\n                ->nullable();\n";
-            if (! str_contains($summariesContents, $memoLine)) {
-                $this->markTestSkipped(
-                    'workflow_run_summaries published migration no longer matches the expected layout; adjust the test.'
-                );
-            }
-            file_put_contents($summaries, str_replace($memoLine, '', $summariesContents));
-
-            // 4. Apply a schema-compatible user customization: an extra
-            //    secondary index on workflow_instances(workflow_class) that
-            //    the package does not ship.
-            $instancesContents = file_get_contents($instances);
-            $customIndex = "            \$table->index('workflow_class', 'workflow_instances_workflow_class_index');\n";
-            $hook = "            \$table->string('workflow_class');\n";
-            $this->assertStringContainsString($hook, $instancesContents);
-            file_put_contents($instances, str_replace($hook, $hook . $customIndex, $instancesContents));
-
-            // 5. Run migrate from the customized published snapshot.
-            // Schema::dropAllTables() on a file-backed SQLite truncates the
-            // file in place but does not drop the live PDO connection, so
-            // subsequent queries can still see the prior-test schema. Purge
-            // the connection so migrate:install starts from a truly empty
-            // database.
-            Schema::dropAllTables();
-            DB::purge();
-            $this->artisan('migrate:install')
-                ->run();
-            $this->artisan('migrate', [
-                '--path' => $publishedDir,
-                '--realpath' => true,
-            ])->run();
-
-            $this->assertTrue(Schema::hasTable('workflow_run_summaries'));
-            $this->assertFalse(
-                Schema::hasColumn('workflow_run_summaries', 'memo'),
-                'Simulated older published snapshot should not yet carry the memo column.'
-            );
-            $this->assertTrue(
-                Schema::hasIndex('workflow_instances', ['workflow_class']),
-                'Custom index on the customized published migration should be present after migrate.'
-            );
-
-            // 6. Carry the newer package migration forward into the published
-            //    dir in timestamp order, per the migration-guide instructions.
-            $packageRepair = dirname(__DIR__, 3)
-                . '/src/migrations/2026_04_16_000158_repair_memo_on_workflow_run_summaries_table.php';
-            copy($packageRepair, $repair);
-
-            // 7. Re-run migrate. The repair migration should add the missing
-            //    column without disturbing the earlier customization.
-            $this->artisan('migrate', [
-                '--path' => $publishedDir,
-                '--realpath' => true,
-            ])->run();
-
-            $this->assertTrue(
-                Schema::hasColumn('workflow_run_summaries', 'memo'),
-                'Carry-forward of the repair migration should add memo to workflow_run_summaries.'
-            );
-            $this->assertTrue(
-                Schema::hasIndex('workflow_instances', ['workflow_class']),
-                'User-added custom index should survive the carry-forward migrate run.'
-            );
-        } finally {
-            if (is_dir($publishedDir)) {
-                foreach (glob($publishedDir . '/*') ?: [] as $file) {
-                    @unlink($file);
-                }
-                @rmdir($publishedDir);
-            }
         }
     }
 

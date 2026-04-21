@@ -29,6 +29,45 @@ final class MigrationsTest extends TestCase
         );
     }
 
+    public function testV2MigrationSlateIsCreateTableOnly(): void
+    {
+        $files = array_map('basename', glob(dirname(__DIR__, 3) . '/src/migrations/2026_04_*.php') ?: []);
+
+        $this->assertNotEmpty($files);
+
+        $nonCreateFiles = array_values(array_filter(
+            $files,
+            static fn (string $file): bool => ! str_contains($file, '_create_') || ! str_ends_with($file, '_table.php'),
+        ));
+
+        $this->assertSame(
+            [],
+            $nonCreateFiles,
+            'Unreleased v2 migrations must be final-form create-table migrations only.',
+        );
+    }
+
+    public function testV2MigrationSlateDoesNotUseSchemaDetectionGuards(): void
+    {
+        $violations = [];
+
+        foreach (glob(dirname(__DIR__, 3) . '/src/migrations/2026_04_*.php') ?: [] as $file) {
+            $contents = file_get_contents($file);
+
+            foreach (['Schema::hasTable', 'Schema::hasColumn', 'Schema::hasColumns', 'Schema::table'] as $guard) {
+                if (str_contains($contents, $guard)) {
+                    $violations[] = basename($file) . ' contains ' . $guard;
+                }
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $violations,
+            'Final v2 migrations must not contain write-on-read schema detection or ALTER-style table patches.',
+        );
+    }
+
     public function testDownMethodsDropTables(): void
     {
         $this->assertTrue(Schema::hasTable('workflows'));

@@ -9,14 +9,6 @@ use Illuminate\Support\Facades\Schema;
 return new class() extends Migration {
     public function up(): void
     {
-        if (Schema::hasTable('workflow_schedules')) {
-            if (Schema::hasColumn('workflow_schedules', 'schedule_id')) {
-                return;
-            }
-
-            Schema::drop('workflow_schedules');
-        }
-
         Schema::create('workflow_schedules', static function (Blueprint $table): void {
             $table->string('id', 26)
                 ->primary();
