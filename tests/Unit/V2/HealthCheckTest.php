@@ -314,6 +314,36 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(1, $projection['data']['lineage_orphaned']);
     }
 
+    public function testSnapshotWarnsWhenHistoryEventsOutliveTheirRun(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        WorkflowHistoryEvent::query()->create([
+            'id' => '01JHEALTHHISTORYORPHAN001',
+            'workflow_run_id' => '01JHEALTHHISTORYGONE0001',
+            'sequence' => 1,
+            'event_type' => HistoryEventType::WorkflowStarted->value,
+            'payload' => [
+                'workflow_run_id' => '01JHEALTHHISTORYGONE0001',
+            ],
+            'recorded_at' => now(),
+        ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $history = collect($snapshot['checks'])->firstWhere('name', 'history_retention_invariant');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertSame('warning', $history['status']);
+        $this->assertSame(1, $history['data']['history_orphan_total']);
+        $this->assertSame(1, $history['data']['events']);
+    }
+
     public function testSnapshotWarnsWhenSelectedRunProjectionPayloadsAreStale(): void
     {
         config()->set('queue.default', 'redis');

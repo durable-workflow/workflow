@@ -19,6 +19,7 @@ final class HealthCheck
             self::backendCheck($metrics['backend'] ?? []),
             self::runSummaryProjectionCheck($metrics['projections']['run_summaries'] ?? []),
             self::selectedRunProjectionCheck($metrics['projections'] ?? []),
+            self::historyRetentionInvariantCheck($metrics['history'] ?? []),
             self::commandContractCheck($metrics['command_contracts'] ?? []),
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
             self::durableResumePathCheck($metrics['backlog'] ?? [], $metrics['repair'] ?? []),
@@ -141,6 +142,27 @@ final class HealthCheck
                 'lineage_missing_runs_with_lineage' => self::integer($lineage['missing_runs_with_lineage'] ?? 0),
                 'lineage_stale_projected_runs' => self::integer($lineage['stale_projected_runs'] ?? 0),
                 'lineage_orphaned' => self::integer($lineage['orphaned'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $history
+     * @return array<string, mixed>
+     */
+    private static function historyRetentionInvariantCheck(array $history): array
+    {
+        $orphaned = self::integer($history['history_orphan_total'] ?? 0);
+
+        return self::check(
+            'history_retention_invariant',
+            $orphaned === 0 ? 'ok' : 'warning',
+            $orphaned === 0
+                ? 'Workflow history events all reference retained workflow runs.'
+                : 'Workflow history events exist without retained workflow runs; retention cleanup must reconcile them.',
+            [
+                'history_orphan_total' => $orphaned,
+                'events' => self::integer($history['events'] ?? 0),
             ],
         );
     }

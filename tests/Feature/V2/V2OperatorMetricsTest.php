@@ -217,6 +217,7 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame('2026-04-09T11:59:30.000000Z', $snapshot['starts']['oldest_pending_start_at']);
         $this->assertSame(30000, $snapshot['starts']['max_pending_ms']);
         $this->assertSame(1, $snapshot['history']['continue_as_new_recommended_runs']);
+        $this->assertSame(0, $snapshot['history']['history_orphan_total']);
         $this->assertSame(7, $snapshot['history']['max_event_count']);
         $this->assertSame(4096, $snapshot['history']['max_size_bytes']);
         $this->assertSame(5, $snapshot['history']['event_threshold']);
@@ -274,6 +275,43 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['projections']['run_summaries']['orphaned']);
         $this->assertSame(1, $snapshot['projections']['run_summaries']['stale']);
         $this->assertSame(1, $snapshot['projections']['run_summaries']['needs_rebuild']);
+    }
+
+    public function testSnapshotCountsHistoryEventsWhoseRunWasDeleted(): void
+    {
+        $run = $this->createRunWithSummary(
+            instanceId: 'metrics-history-retained-i',
+            runId: '01JMETRICSHISTORYLIVE001',
+            status: 'completed',
+            statusBucket: 'completed',
+            livenessState: 'closed',
+        );
+
+        WorkflowHistoryEvent::query()->create([
+            'id' => '01JMETRICSHISTORYRETAIN1',
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'event_type' => HistoryEventType::WorkflowStarted->value,
+            'payload' => [
+                'workflow_run_id' => $run->id,
+            ],
+            'recorded_at' => now(),
+        ]);
+        WorkflowHistoryEvent::query()->create([
+            'id' => '01JMETRICSHISTORYORPHAN1',
+            'workflow_run_id' => '01JMETRICSHISTORYGONE001',
+            'sequence' => 1,
+            'event_type' => HistoryEventType::WorkflowStarted->value,
+            'payload' => [
+                'workflow_run_id' => '01JMETRICSHISTORYGONE001',
+            ],
+            'recorded_at' => now(),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertSame(2, $snapshot['history']['events']);
+        $this->assertSame(1, $snapshot['history']['history_orphan_total']);
     }
 
     public function testSnapshotCountsSelectedRunProjectionDrift(): void

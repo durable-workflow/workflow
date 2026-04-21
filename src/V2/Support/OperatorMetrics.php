@@ -205,6 +205,8 @@ final class OperatorMetrics
             'continue_as_new_recommended_runs' => self::summaryQuery($namespace)
                 ->where('continue_as_new_recommended', true)
                 ->count(),
+            'events' => self::scopedRunModelQuery(self::historyEventModel(), $namespace)->count(),
+            'history_orphan_total' => self::historyEventsMissingRun($namespace),
             'max_event_count' => (int) self::summaryQuery($namespace)->max('history_event_count'),
             'max_size_bytes' => (int) self::summaryQuery($namespace)->max('history_size_bytes'),
             'event_threshold' => HistoryBudget::eventThreshold(),
@@ -494,6 +496,23 @@ final class OperatorMetrics
                     ->orWhereNull($historyTable . '.id');
             })
             ->count($timelineTable . '.id');
+    }
+
+    private static function historyEventsMissingRun(?string $namespace): int
+    {
+        if ($namespace !== null) {
+            return 0;
+        }
+
+        $runModel = self::runModel();
+        $historyModel = self::historyEventModel();
+        $runTable = self::tableFor($runModel);
+        $historyTable = self::tableFor($historyModel);
+
+        return $historyModel::query()
+            ->leftJoin($runTable, $historyTable . '.workflow_run_id', '=', $runTable . '.id')
+            ->whereNull($runTable . '.id')
+            ->count($historyTable . '.id');
     }
 
     private static function compatibilityBlockedRuns(?string $namespace): int
