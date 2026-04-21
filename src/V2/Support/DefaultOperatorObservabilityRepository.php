@@ -15,9 +15,9 @@ final class DefaultOperatorObservabilityRepository implements OperatorObservabil
     /**
      * @return array<string, mixed>
      */
-    public function runDetail(WorkflowRun $run): array
+    public function runDetail(WorkflowRun $run, ?int $timelineLimit = null): array
     {
-        return RunDetailView::forRun($run);
+        return RunDetailView::forRun($run, $timelineLimit);
     }
 
     /**

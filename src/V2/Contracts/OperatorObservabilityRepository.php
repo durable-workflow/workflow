@@ -25,7 +25,7 @@ interface OperatorObservabilityRepository
     /**
      * @return array<string, mixed>
      */
-    public function runDetail(WorkflowRun $run): array;
+    public function runDetail(WorkflowRun $run, ?int $timelineLimit = null): array;
 
     /**
      * Project a summary row into the typed list-item contract.

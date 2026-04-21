@@ -17,7 +17,7 @@ final class SelectedRunSnapshot
      *         source: ?string
      *     },
      *     waits: array{source: string, waits: list<array<string, mixed>>},
-     *     timeline: array{source: string, timeline: list<array<string, mixed>>},
+     *     timeline: array{source: string, timeline: list<array<string, mixed>>, total_count: int},
      *     timers: array{source: string, timers: list<array<string, mixed>>, rebuild_reasons: list<string>},
      *     lineage: array{
      *         source: string,
@@ -26,12 +26,12 @@ final class SelectedRunSnapshot
      *     }
      * }
      */
-    public static function forRun(WorkflowRun $run): array
+    public static function forRun(WorkflowRun $run, ?int $timelineLimit = null): array
     {
         return [
             'current_run' => self::currentRun($run),
             'waits' => self::waits($run),
-            'timeline' => self::timeline($run),
+            'timeline' => self::timeline($run, $timelineLimit),
             'timers' => self::timers($run),
             'lineage' => self::lineage($run),
         ];
@@ -67,11 +67,11 @@ final class SelectedRunSnapshot
     }
 
     /**
-     * @return array{source: string, timeline: list<array<string, mixed>>}
+     * @return array{source: string, timeline: list<array<string, mixed>>, total_count: int}
      */
-    public static function timeline(WorkflowRun $run): array
+    public static function timeline(WorkflowRun $run, ?int $limit = null): array
     {
-        return RunTimelineProjector::snapshotForRun($run);
+        return RunTimelineProjector::snapshotForRun($run, $limit);
     }
 
     /**

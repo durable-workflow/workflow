@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\Fixtures\V2\TestChildGreetingWorkflow;
@@ -36,6 +37,7 @@ use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\WorkflowStub;
 
 final class V2HistoryTimelineTest extends TestCase
@@ -680,6 +682,43 @@ final class V2HistoryTimelineTest extends TestCase
         $this->assertSame('Scheduled TestGreetingActivity.', $scheduled['summary']);
         $this->assertSame(TestGreetingActivity::class, $scheduled['activity_type']);
         $this->assertSame(TestGreetingActivity::class, $scheduled['activity']['class']);
+    }
+
+    public function testTimelineProjectorCanReadBoundedProjectedWindowWithoutHistoryEventsQuery(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'timeline-projection-window');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertGreaterThan(2, WorkflowTimelineEntry::query()->where('workflow_run_id', $runId)->count());
+
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = $query->sql;
+        });
+
+        $snapshot = RunTimelineProjector::snapshotForRun($run->fresh(), 2);
+
+        $this->assertSame('workflow_run_timeline_entries_window', $snapshot['source']);
+        $this->assertSame(
+            WorkflowTimelineEntry::query()->where('workflow_run_id', $runId)->count(),
+            $snapshot['total_count'],
+        );
+        $this->assertCount(2, $snapshot['timeline']);
+        $this->assertFalse(
+            collect($queries)
+                ->contains(static fn (string $sql): bool => str_contains($sql, 'workflow_history_events')),
+            'Bounded operator details should not query workflow_history_events when projected timeline rows exist.',
+        );
     }
 
     public function testTimelineKeepsTimerSnapshotsWhenTimerRowDrifts(): void

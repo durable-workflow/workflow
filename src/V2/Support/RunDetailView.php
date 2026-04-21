@@ -13,9 +13,9 @@ final class RunDetailView
     /**
      * @return array<string, mixed>
      */
-    public static function forRun(WorkflowRun $run): array
+    public static function forRun(WorkflowRun $run, ?int $timelineLimit = null): array
     {
-        $run->loadMissing([
+        $relations = [
             'summary',
             'commands',
             'signals.command',
@@ -27,17 +27,22 @@ final class RunDetailView
             'failures',
             'historyEvents',
             'waits',
-            'timelineEntries',
             'timerEntries',
             'lineageEntries',
             'parentLinks.parentRun.summary',
             'childLinks.childRun.summary',
             'childLinks.childRun.historyEvents',
             'instance.runs.summary',
-        ]);
+        ];
+
+        if ($timelineLimit === null) {
+            $relations[] = 'timelineEntries';
+        }
+
+        $run->loadMissing($relations);
 
         $summary = $run->summary;
-        $selectedRun = SelectedRunSnapshot::forRun($run);
+        $selectedRun = SelectedRunSnapshot::forRun($run, $timelineLimit);
         $currentRunResolution = $selectedRun['current_run'];
         $currentRun = $currentRunResolution['run'];
         $currentSummary = $currentRunResolution['summary'];
@@ -343,6 +348,7 @@ final class RunDetailView
             'timeline_scope' => 'selected_run',
             'timeline_projection_source' => $timelineSnapshot['source'],
             'timeline' => $timelineSnapshot['timeline'],
+            'timeline_total_count' => $timelineSnapshot['total_count'],
             'timers_projection_source' => $timerSnapshot['source'],
             'timers_projection_rebuild_reasons' => $timerSnapshot['rebuild_reasons'],
             'logs' => RunActivityView::logsFromActivities($activities),

@@ -72,10 +72,14 @@ final class RunTimelineProjector
     }
 
     /**
-     * @return array{source: string, timeline: list<array<string, mixed>>}
+     * @return array{source: string, timeline: list<array<string, mixed>>, total_count: int}
      */
-    public static function snapshotForRun(WorkflowRun $run): array
+    public static function snapshotForRun(WorkflowRun $run, ?int $limit = null): array
     {
+        if ($limit !== null) {
+            return self::projectedWindow($run, max(1, $limit));
+        }
+
         $projected = self::projectedRows($run);
         $canonicalTimeline = HistoryTimeline::fromHistory($run);
 
@@ -83,27 +87,33 @@ final class RunTimelineProjector
             return [
                 'source' => 'workflow_run_timeline_entries',
                 'timeline' => [],
+                'total_count' => 0,
             ];
         }
 
         if ($projected->isNotEmpty() && self::projectionMatchesHistory($projected, $canonicalTimeline)) {
+            $timeline = $projected
+                ->map(static fn (WorkflowTimelineEntry $entry): array => $entry->toTimelinePayload())
+                ->values()
+                ->all();
+
             return [
                 'source' => 'workflow_run_timeline_entries',
-                'timeline' => $projected
-                    ->map(static fn (WorkflowTimelineEntry $entry): array => $entry->toTimelinePayload())
-                    ->values()
-                    ->all(),
+                'timeline' => $timeline,
+                'total_count' => count($timeline),
             ];
         }
 
         $reprojected = self::project($run, $canonicalTimeline);
+        $timeline = collect($reprojected)
+            ->map(static fn (WorkflowTimelineEntry $entry): array => $entry->toTimelinePayload())
+            ->values()
+            ->all();
 
         return [
             'source' => 'workflow_run_timeline_entries_rebuilt',
-            'timeline' => collect($reprojected)
-                ->map(static fn (WorkflowTimelineEntry $entry): array => $entry->toTimelinePayload())
-                ->values()
-                ->all(),
+            'timeline' => $timeline,
+            'total_count' => count($timeline),
         ];
     }
 
@@ -127,6 +137,42 @@ final class RunTimelineProjector
             'has_canonical' => $hasCanonical,
             'missing' => $hasCanonical && ! $hasProjection,
             'stale' => $hasProjection && ! self::projectionMatchesHistory($projected, $canonicalTimeline),
+        ];
+    }
+
+    /**
+     * @return array{source: string, timeline: list<array<string, mixed>>, total_count: int}
+     */
+    private static function projectedWindow(WorkflowRun $run, int $limit): array
+    {
+        $entryModel = self::entryModel();
+        $baseQuery = $entryModel::query()
+            ->where('workflow_run_id', $run->id);
+        $total = (int) (clone $baseQuery)->count();
+
+        if ($total === 0) {
+            return [
+                'source' => 'workflow_run_timeline_entries_window',
+                'timeline' => [],
+                'total_count' => 0,
+            ];
+        }
+
+        /** @var EloquentCollection<int, WorkflowTimelineEntry> $entries */
+        $entries = $baseQuery
+            ->orderByDesc('sequence')
+            ->orderByDesc('history_event_id')
+            ->limit($limit)
+            ->get();
+
+        return [
+            'source' => 'workflow_run_timeline_entries_window',
+            'timeline' => $entries
+                ->reverse()
+                ->map(static fn (WorkflowTimelineEntry $entry): array => $entry->toTimelinePayload())
+                ->values()
+                ->all(),
+            'total_count' => $total,
         ];
     }
 
