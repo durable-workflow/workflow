@@ -2329,6 +2329,7 @@ final class WorkflowExecutor
             $now,
             $childCallId,
         );
+        $this->transferAcceptedUpdatesToContinuedRun($run, $continuedRun);
 
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
@@ -2525,6 +2526,54 @@ final class WorkflowExecutor
         );
 
         return $continuedTask;
+    }
+
+    private function transferAcceptedUpdatesToContinuedRun(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
+    {
+        $updates = WorkflowUpdate::query()
+            ->where('workflow_run_id', $closingRun->id)
+            ->where('target_scope', 'instance')
+            ->where('status', UpdateStatus::Accepted->value)
+            ->whereNull('workflow_sequence')
+            ->lockForUpdate()
+            ->get();
+
+        foreach ($updates as $update) {
+            if (! $update instanceof WorkflowUpdate) {
+                continue;
+            }
+
+            /** @var WorkflowCommand|null $command */
+            $command = $update->workflow_command_id === null
+                ? null
+                : WorkflowCommand::query()
+                    ->lockForUpdate()
+                    ->find($update->workflow_command_id);
+
+            $update->forceFill([
+                'workflow_run_id' => $continuedRun->id,
+                'resolved_workflow_run_id' => $continuedRun->id,
+            ])->save();
+
+            if ($command instanceof WorkflowCommand
+                && $command->command_type === CommandType::Update
+                && $command->status === CommandStatus::Accepted
+            ) {
+                $command->forceFill([
+                    'workflow_run_id' => $continuedRun->id,
+                    'resolved_workflow_run_id' => $continuedRun->id,
+                ])->save();
+            }
+
+            WorkflowHistoryEvent::record($continuedRun, HistoryEventType::UpdateAccepted, [
+                'workflow_command_id' => $command?->id,
+                'update_id' => $update->id,
+                'workflow_instance_id' => $continuedRun->workflow_instance_id,
+                'workflow_run_id' => $continuedRun->id,
+                'update_name' => $update->update_name,
+                'arguments' => $update->arguments,
+            ], null, $command);
+        }
     }
 
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void
