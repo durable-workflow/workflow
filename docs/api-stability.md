@@ -101,31 +101,6 @@ preference; both produce identical `Support\*` Call value objects.
 Adding new static methods to the facade is an additive (non-breaking)
 change. Removing or renaming a documented method is a major change.
 
-## Continue-As-New Interleaving Contract
-
-Continue-as-new keeps one logical workflow instance while closing one run
-and creating the next run. Commands that target the logical instance keep
-their ordering and lifecycle across that boundary:
-
-- Signals are ordered by the instance message stream. A signal accepted
-  before the continue-as-new transition commits remains pending until the
-  continued run consumes it. Cursor transfer is durable and monotonic.
-- Instance-scoped updates accepted before the transition but not yet
-  applied are carried to the continued run. The update id remains stable,
-  `inspectUpdate()` follows the same lifecycle row, and the continued run
-  records the `UpdateApplied` / `UpdateCompleted` history for the update.
-- Run-targeted commands are bound to their selected run. They are not
-  retargeted to a continued run; callers that need logical-workflow
-  behavior should use the instance-scoped command surface.
-- Queries are non-durable reads. A query resolves the current run at the
-  time the query executes; if the continue-as-new transaction has already
-  committed, the query reads the continued run, otherwise it reads the
-  still-current closing run. Queries are not buffered or replayed.
-
-This contract is intentionally instance-first so external server, CLI,
-and SDK callers can reason about a stable logical workflow id without
-having to retry around the brief run handoff window.
-
 ## Pre-existing `Contracts\*` interfaces
 
 Interfaces under `Workflow\V2\Contracts\*` are the preferred extension

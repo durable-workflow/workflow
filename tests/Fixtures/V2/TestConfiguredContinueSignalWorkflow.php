@@ -21,8 +21,6 @@ final class TestConfiguredContinueSignalWorkflow extends Workflow
 {
     private int $count = 0;
 
-    private bool $approved = false;
-
     public function handle(int $count = 0): mixed
     {
         $this->count = $count;
@@ -35,7 +33,6 @@ final class TestConfiguredContinueSignalWorkflow extends Workflow
 
         return [
             'name' => $name,
-            'approved' => $this->approved,
             'workflow_id' => $this->workflowId(),
             'run_id' => $this->runId(),
         ];
@@ -50,20 +47,8 @@ final class TestConfiguredContinueSignalWorkflow extends Workflow
     #[UpdateMethod('mark-approved')]
     public function approve(bool $approved): array
     {
-        $this->approved = $approved;
-
         return [
             'approved' => $approved,
-            'count' => $this->count,
-        ];
-    }
-
-    #[QueryMethod('current-approval')]
-    public function currentApproval(): array
-    {
-        return [
-            'approved' => $this->approved,
-            'count' => $this->count,
         ];
     }
 }
