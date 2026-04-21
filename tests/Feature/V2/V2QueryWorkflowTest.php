@@ -146,7 +146,7 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame('waiting', $workflow->refresh()->status());
         $workflow->signal('payload-provided', 'Taylor');
         $this->drainReadyTasks();
-        $this->assertTrue($workflow->refresh()->completed());
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
 
         /** @var WorkflowHistoryEvent $event */
         $event = WorkflowHistoryEvent::query()
@@ -1950,6 +1950,21 @@ final class V2QueryWorkflowTest extends TestCase
         }
 
         $this->fail('Timed out draining ready workflow tasks.');
+    }
+
+    private function waitFor(callable $condition): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            if ($condition()) {
+                return;
+            }
+
+            usleep(100000);
+        }
+
+        $this->fail('Timed out waiting for condition.');
     }
 
     private function runNextReadyTask(): void
