@@ -171,6 +171,30 @@ if (! function_exists(__NAMESPACE__ . '\\sideEffect')) {
     }
 }
 
+if (! function_exists(__NAMESPACE__ . '\\uuid4')) {
+    /**
+     * Generate a UUIDv4 and record it as durable history so replay returns
+     * the original value instead of reading randomness again.
+     */
+    function uuid4(): mixed
+    {
+        return sideEffect(static fn (): string => Support\DeterministicUuid::uuid4());
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\uuid7')) {
+    /**
+     * Generate a time-sortable UUIDv7 from deterministic workflow time and
+     * record it as durable history so replay returns the original value.
+     */
+    function uuid7(): mixed
+    {
+        $time = now();
+
+        return sideEffect(static fn (): string => Support\DeterministicUuid::uuid7($time));
+    }
+}
+
 if (! function_exists(__NAMESPACE__ . '\\continueAsNew')) {
     function continueAsNew(...$arguments): mixed
     {

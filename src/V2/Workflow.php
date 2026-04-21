@@ -326,6 +326,26 @@ abstract class Workflow
     }
 
     /**
+     * Generate a replay-stable UUIDv4.
+     *
+     * @see uuid4()
+     */
+    public static function uuid4(): mixed
+    {
+        return uuid4();
+    }
+
+    /**
+     * Generate a replay-stable, time-sortable UUIDv7.
+     *
+     * @see uuid7()
+     */
+    public static function uuid7(): mixed
+    {
+        return uuid7();
+    }
+
+    /**
      * Terminate the current run by starting a new one with the provided
      * arguments, preserving workflow instance identity.
      *

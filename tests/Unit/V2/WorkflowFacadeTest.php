@@ -109,6 +109,12 @@ class WorkflowFacadeTest extends TestCase
         $this->assertInstanceOf(SideEffectCall::class, $call);
     }
 
+    public function testUuidHelpersReturnSideEffectCalls(): void
+    {
+        $this->assertInstanceOf(SideEffectCall::class, Workflow::uuid4());
+        $this->assertInstanceOf(SideEffectCall::class, Workflow::uuid7());
+    }
+
     public function testContinueAsNewReturnsAContinueAsNewCall(): void
     {
         $call = Workflow::continueAsNew('arg1', 'arg2');
@@ -203,6 +209,8 @@ class WorkflowFacadeTest extends TestCase
             'awaitSignal',
             'timer',
             'sideEffect',
+            'uuid4',
+            'uuid7',
             'continueAsNew',
             'getVersion',
             'patched',

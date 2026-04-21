@@ -86,11 +86,10 @@ guarantee:
 - **Static method facade** mirroring the helpers in
   `Workflow\V2\functions.php`: `activity`, `executeActivity`, `child`,
   `executeChildWorkflow`, `async`, `all`, `parallel`, `await`,
-  `awaitWithTimeout`, `awaitSignal`, `timer`, `sideEffect`,
-  `continueAsNew`, `getVersion`, `patched`, `deprecatePatch`,
-  `upsertMemo`, `upsertSearchAttributes`,
-  and the timer sugar `seconds`/`minutes`/`hours`/`days`/`weeks`/
-  `months`/`years`.
+  `awaitWithTimeout`, `awaitSignal`, `timer`, `sideEffect`, `uuid4`,
+  `uuid7`, `continueAsNew`, `getVersion`, `patched`, `deprecatePatch`,
+  `upsertMemo`, `upsertSearchAttributes`, and the timer sugar
+  `seconds`/`minutes`/`hours`/`days`/`weeks`/`months`/`years`.
 
 The namespaced helper functions under `Workflow\V2\*` remain the
 equivalent functional-style surface and are equally stable. Choosing
