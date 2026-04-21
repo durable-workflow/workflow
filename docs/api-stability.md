@@ -73,9 +73,9 @@ major bump.
 
 ## `Workflow\V2\Workflow` authoring facade
 
-The abstract base class `Workflow\V2\Workflow` is the canonical authoring
-API for v2 workflows. It exposes two surfaces, both covered by the
-semver guarantee:
+The abstract base class `Workflow\V2\Workflow` is the stable authoring API
+for v2 workflows. It exposes two surfaces, both covered by the semver
+guarantee:
 
 - **Instance members** applications rely on inside a `handle()` method:
   `workflowId()`, `runId()`, `lastChild()`,

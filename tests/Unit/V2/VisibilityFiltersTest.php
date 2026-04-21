@@ -259,7 +259,7 @@ final class VisibilityFiltersTest extends TestCase
             'Exact-match indexed operator metadata copied onto the run summary and saved-view contract.',
             $definition['fields']['business_key']['help'],
         );
-        $this->assertSame('Entry Mode', $definition['fields']['declared_entry_mode']['label']);
+        $this->assertSame('Entry Contract', $definition['fields']['declared_entry_mode']['label']);
         $this->assertSame('string', $definition['fields']['declared_entry_mode']['type']);
         $this->assertSame('select', $definition['fields']['declared_entry_mode']['input']);
         $this->assertSame('Canonical', $definition['fields']['declared_entry_mode']['options'][0]['label']);

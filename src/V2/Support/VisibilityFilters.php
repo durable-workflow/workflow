@@ -23,7 +23,7 @@ final class VisibilityFilters
         'workflow_type' => 'Workflow Type',
         'business_key' => 'Business Key',
         'compatibility' => 'Compatibility',
-        'declared_entry_mode' => 'Entry Mode',
+        'declared_entry_mode' => 'Entry Contract',
         'declared_contract_source' => 'Command Contract Source',
         'queue' => 'Queue',
         'connection' => 'Connection',

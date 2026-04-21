@@ -84,7 +84,7 @@ final class EntryMethod
 
         if (is_string($executeDeclaredOn)) {
             throw new LogicException(sprintf(
-                'V2 %s [%s] must use handle() as its only public entry method; execute() is not supported as a v2 entry method.',
+                'V2 %s [%s] must declare a public handle() method; execute() is not supported as a v2 entry method.',
                 $type,
                 $reflection->getName(),
             ));

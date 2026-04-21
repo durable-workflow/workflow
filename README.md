@@ -29,14 +29,14 @@ There's also a [sample application](https://github.com/durable-workflow/sample-a
 
 **1. Create a workflow**
 ```php
-use function Workflow\activity;
-use Workflow\Workflow;
+use function Workflow\V2\activity;
+use Workflow\V2\Workflow;
 
 class MyWorkflow extends Workflow
 {
-    public function execute($name)
+    public function handle(string $name): string
     {
-        $result = yield activity(MyActivity::class, $name);
+        $result = activity(MyActivity::class, $name);
 
         return $result;
     }
@@ -45,11 +45,11 @@ class MyWorkflow extends Workflow
 
 **2. Create an activity**
 ```php
-use Workflow\Activity;
+use Workflow\V2\Activity;
 
 class MyActivity extends Activity
 {
-    public function execute($name)
+    public function handle(string $name): string
     {
         return "Hello, {$name}!";
     }
@@ -58,7 +58,7 @@ class MyActivity extends Activity
 
 **3. Run the workflow**
 ```php
-use Workflow\WorkflowStub;
+use Workflow\V2\WorkflowStub;
 
 $workflow = WorkflowStub::make(MyWorkflow::class);
 $workflow->start('world');
