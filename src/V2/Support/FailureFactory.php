@@ -66,7 +66,9 @@ final class FailureFactory
         ?Throwable $throwable = null
     ): FailureCategory {
         return match ($propagationKind) {
-            'activity' => FailureCategory::Activity,
+            'activity' => $throwable instanceof StructuralLimitExceededException
+                ? FailureCategory::StructuralLimit
+                : FailureCategory::Activity,
             'child' => FailureCategory::ChildWorkflow,
             'cancelled' => FailureCategory::Cancelled,
             'terminated' => FailureCategory::Terminated,
@@ -105,6 +107,10 @@ final class FailureFactory
     {
         if ($throwable instanceof RestoredWorkflowException) {
             return (bool) ($throwable->failurePayload()['non_retryable'] ?? false);
+        }
+
+        if ($throwable instanceof StructuralLimitExceededException) {
+            return true;
         }
 
         return $throwable instanceof NonRetryableExceptionContract;

@@ -10,10 +10,12 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
@@ -111,12 +113,39 @@ final class ActivityOutcomeRecorder
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
                 ? $run->payload_codec
                 : null;
+            $serializedSuccessfulResult = null;
+            $resultCodec = null;
+
+            if ($throwable === null) {
+                $serializedSuccessfulResult = self::serializeWithCodec($result, $codec, $runCodec);
+                $resultCodec = self::payloadCodec($codec, $runCodec);
+
+                StructuralLimits::logWarning(
+                    StructuralLimits::warnApproachingPayloadSize($serializedSuccessfulResult),
+                    [
+                        'workflow_run_id' => $run->id,
+                        'workflow_type' => $run->workflow_type,
+                        'payload_site' => 'activity_output',
+                        'activity_class' => $lockedExecution->activity_class,
+                        'activity_type' => $lockedExecution->activity_type,
+                        'activity_execution_id' => $lockedExecution->id,
+                    ],
+                );
+
+                try {
+                    StructuralLimits::guardPayloadSize($serializedSuccessfulResult);
+                } catch (StructuralLimitExceededException $limitExceeded) {
+                    $throwable = $limitExceeded;
+                    $serializedSuccessfulResult = null;
+                    $resultCodec = null;
+                }
+            }
 
             if (in_array($run->status, [RunStatus::Completed, RunStatus::Failed], true)) {
                 $lockedExecution->forceFill([
                     'status' => $throwable === null ? ActivityStatus::Completed : ActivityStatus::Failed,
                     'result' => $throwable === null
-                        ? self::serializeWithCodec($result, $codec, $runCodec)
+                        ? $serializedSuccessfulResult
                         : $lockedExecution->result,
                     'exception' => $throwable === null
                         ? $lockedExecution->exception
@@ -147,24 +176,9 @@ final class ActivityOutcomeRecorder
             $resolutionEvent = null;
 
             if ($throwable === null) {
-                $serializedResult = self::serializeWithCodec($result, $codec, $runCodec);
-                $resultCodec = self::payloadCodec($codec, $runCodec);
-
-                StructuralLimits::logWarning(
-                    StructuralLimits::warnApproachingPayloadSize($serializedResult),
-                    [
-                        'workflow_run_id' => $run->id,
-                        'workflow_type' => $run->workflow_type,
-                        'payload_site' => 'activity_output',
-                        'activity_class' => $lockedExecution->activity_class,
-                        'activity_type' => $lockedExecution->activity_type,
-                        'activity_execution_id' => $lockedExecution->id,
-                    ],
-                );
-
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,
-                    'result' => $serializedResult,
+                    'result' => $serializedSuccessfulResult,
                     'exception' => null,
                     'closed_at' => now(),
                 ])->save();
@@ -258,7 +272,9 @@ final class ActivityOutcomeRecorder
                 return self::recorded($retryTask);
             } else {
                 $exceptionPayload = self::failurePayload($throwable, $codec);
-                $activityFailureCategory = FailureFactory::classify('activity', 'activity_execution', $throwable);
+                $activityFailureCategory = $throwable instanceof StructuralLimitExceededException
+                    ? FailureCategory::StructuralLimit
+                    : FailureFactory::classify('activity', 'activity_execution', $throwable);
                 $activityNonRetryable = ActivityRetryPolicy::isNonRetryableFailure($lockedExecution, $throwable);
 
                 /** @var WorkflowFailure $failure */
@@ -297,7 +313,7 @@ final class ActivityOutcomeRecorder
                     'code' => $throwable->getCode(),
                     'exception' => $exceptionPayload,
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
-                ], $parallelMetadata ?? []), $task);
+                ], self::structuralLimitPayload($throwable), $parallelMetadata ?? []), $task);
 
                 LifecycleEventDispatcher::activityFailed(
                     $run,
@@ -428,6 +444,26 @@ final class ActivityOutcomeRecorder
             'reason' => $reason,
             'next_task' => null,
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function structuralLimitPayload(Throwable $throwable): array
+    {
+        if (! $throwable instanceof StructuralLimitExceededException) {
+            return [];
+        }
+
+        try {
+            return [
+                'structural_limit_kind' => $throwable->limitKind->value,
+                'structural_limit_value' => $throwable->currentValue,
+                'structural_limit_configured' => $throwable->configuredLimit,
+            ];
+        } catch (\Error) {
+            return [];
+        }
     }
 
     private static function closeAttempt(string $attemptId, ActivityAttemptStatus $status): void

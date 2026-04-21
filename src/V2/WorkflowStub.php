@@ -1849,14 +1849,6 @@ final class WorkflowStub
                 return;
             }
 
-            /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
-                'command_type' => CommandType::Update->value,
-                'target_scope' => $this->commandTargetScope(),
-                'status' => CommandStatus::Accepted->value,
-                'accepted_at' => now(),
-            ], $updateCommandAttributes)));
-
             $updateCodec = $run->payload_codec ?? CodecRegistry::defaultCodec();
             $serializedUpdateArguments = Serializer::serializeWithCodec($updateCodec, $arguments);
 
@@ -1869,6 +1861,31 @@ final class WorkflowStub
                     'update_name' => $updateName,
                 ],
             );
+
+            try {
+                StructuralLimits::guardPayloadSize($serializedUpdateArguments);
+            } catch (StructuralLimitExceededException $e) {
+                [$command, $update] = $this->rejectUpdateCommand(
+                    $instance,
+                    $run,
+                    $updateName,
+                    [],
+                    'structural_limit_exceeded',
+                    $this->commandTargetScope(),
+                    $this->payloadLimitExceededCommandPayloadAttributes($updateName, $updateCodec, $e),
+                    ['arguments' => [$e->getMessage()]],
+                );
+
+                return;
+            }
+
+            /** @var WorkflowCommand $command */
+            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
+                'command_type' => CommandType::Update->value,
+                'target_scope' => $this->commandTargetScope(),
+                'status' => CommandStatus::Accepted->value,
+                'accepted_at' => now(),
+            ], $updateCommandAttributes)));
 
             /** @var WorkflowUpdate $update */
             $update = WorkflowUpdate::query()->create([
@@ -2191,6 +2208,35 @@ final class WorkflowStub
                 return;
             }
 
+            $signalCodec = $payloadCodec ?? $run->payload_codec ?? CodecRegistry::defaultCodec();
+            $serializedSignalArguments = $payloadBlob ?? Serializer::serializeWithCodec($signalCodec, $arguments);
+
+            StructuralLimits::logWarning(
+                StructuralLimits::warnApproachingPayloadSize($serializedSignalArguments),
+                [
+                    'workflow_run_id' => $run->id,
+                    'workflow_type' => $run->workflow_type,
+                    'payload_site' => 'signal_input',
+                    'signal_name' => $name,
+                ],
+            );
+
+            try {
+                StructuralLimits::guardPayloadSize($serializedSignalArguments);
+            } catch (StructuralLimitExceededException $e) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Signal,
+                    'structural_limit_exceeded',
+                    $this->commandTargetScope(),
+                    $this->payloadLimitExceededCommandPayloadAttributes($name, $signalCodec, $e),
+                );
+                $this->recordRejectedSignal($command, $name, [], ['arguments' => [$e->getMessage()]]);
+
+                return;
+            }
+
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Signal->value,
@@ -2210,7 +2256,7 @@ final class WorkflowStub
                 $arguments,
                 $signalWaitId,
                 $payloadCodec,
-                $payloadBlob
+                $serializedSignalArguments,
             );
 
             WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
@@ -3107,16 +3153,7 @@ final class WorkflowStub
     ): WorkflowSignal {
         $codec = $payloadCodec ?? $run->payload_codec ?? CodecRegistry::defaultCodec();
         $serializedArguments = $payloadBlob ?? Serializer::serializeWithCodec($codec, $arguments);
-
-        StructuralLimits::logWarning(
-            StructuralLimits::warnApproachingPayloadSize($serializedArguments),
-            [
-                'workflow_run_id' => $run->id,
-                'workflow_type' => $run->workflow_type,
-                'payload_site' => 'signal_input',
-                'signal_name' => $name,
-            ],
-        );
+        StructuralLimits::guardPayloadSize($serializedArguments);
 
         /** @var WorkflowSignal $signal */
         $signal = WorkflowSignal::query()->create([
@@ -3261,6 +3298,29 @@ final class WorkflowStub
                 'name' => $method,
                 'arguments' => $arguments,
                 'validation_errors' => $validationErrors,
+            ]),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function payloadLimitExceededCommandPayloadAttributes(
+        string $name,
+        string $codec,
+        StructuralLimitExceededException $exception,
+    ): array {
+        return [
+            'payload_codec' => $codec,
+            'payload' => Serializer::serializeWithCodec($codec, [
+                'name' => $name,
+                'arguments' => [],
+                'validation_errors' => [
+                    'arguments' => [$exception->getMessage()],
+                ],
+                'structural_limit_kind' => $exception->limitKind->value,
+                'structural_limit_value' => $exception->currentValue,
+                'structural_limit_configured' => $exception->configuredLimit,
             ]),
         ];
     }

@@ -87,7 +87,11 @@ final class WorkflowExecutor
         }
 
         if (! $workflowExecution->valid()) {
-            $this->completeRun($run, $task, $workflowExecution->getReturn());
+            try {
+                $this->completeRun($run, $task, $workflowExecution->getReturn());
+            } catch (Throwable $throwable) {
+                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            }
 
             return null;
         }
@@ -1290,7 +1294,13 @@ final class WorkflowExecutor
                     return null;
                 }
 
-                return $this->continueAsNew($run, $task, $sequence, $current, $workflowClass);
+                try {
+                    return $this->continueAsNew($run, $task, $sequence, $current, $workflowClass);
+                } catch (StructuralLimitExceededException $limitExceeded) {
+                    $this->failRun($run, $task, $limitExceeded, 'workflow_run', $run->id);
+
+                    return null;
+                }
             }
 
             $this->failRun(
@@ -2249,6 +2259,7 @@ final class WorkflowExecutor
             $run,
             ['payload_site' => 'continue_as_new_input', 'target_workflow_class' => $workflowClass],
         );
+        StructuralLimits::guardPayloadSize($continueAsNewArguments);
 
         /** @var WorkflowRun $continuedRun */
         $continuedRun = WorkflowRun::query()->create([
@@ -2499,6 +2510,7 @@ final class WorkflowExecutor
             $run,
             ['payload_site' => 'workflow_output'],
         );
+        StructuralLimits::guardPayloadSize($serializedOutput);
 
         $run->forceFill([
             'status' => RunStatus::Completed,
@@ -2780,9 +2792,14 @@ final class WorkflowExecutor
         ];
 
         if ($throwable instanceof StructuralLimitExceededException) {
-            $failedEventPayload['structural_limit_kind'] = $throwable->limitKind->value;
-            $failedEventPayload['structural_limit_value'] = $throwable->currentValue;
-            $failedEventPayload['structural_limit_configured'] = $throwable->configuredLimit;
+            try {
+                $failedEventPayload['structural_limit_kind'] = $throwable->limitKind->value;
+                $failedEventPayload['structural_limit_value'] = $throwable->currentValue;
+                $failedEventPayload['structural_limit_configured'] = $throwable->configuredLimit;
+            } catch (\Error) {
+                // Restored structural-limit exceptions from older history can
+                // be catchable without their readonly metadata initialized.
+            }
         }
 
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $failedEventPayload, $task);

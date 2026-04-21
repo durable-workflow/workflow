@@ -5,21 +5,26 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Log;
+use Tests\Fixtures\V2\TestContinueAsNewLargePayloadWorkflow;
 use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestLargeMemoWorkflow;
 use Tests\Fixtures\V2\TestLargePayloadChildWorkflow;
 use Tests\Fixtures\V2\TestLargePayloadWorkflow;
 use Tests\Fixtures\V2\TestLargeSearchAttributeWorkflow;
+use Tests\Fixtures\V2\TestLargeWorkflowOutputWorkflow;
 use Tests\Fixtures\V2\TestManyActivitiesWorkflow;
 use Tests\Fixtures\V2\TestManySideEffectsWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -213,6 +218,231 @@ final class V2StructuralLimitTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('payload_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testPayloadSizeLimitFailsContinueAsNewBeforeCreatingNextRun(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(
+            TestContinueAsNewLargePayloadWorkflow::class,
+            'limit-payload-continue-as-new-1'
+        );
+        $workflow->start(str_repeat('c', 200));
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to continue-as-new payload size.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-continue-as-new-1')
+            ->firstOrFail();
+
+        $this->assertSame(
+            1,
+            WorkflowRun::query()->where('workflow_instance_id', 'limit-payload-continue-as-new-1')->count(),
+            'Oversize continue-as-new arguments must not create the next run.'
+        );
+        $this->assertSame(RunStatus::Failed->value, $run->status->value ?? $run->status);
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::WorkflowContinuedAsNew->value)
+                ->count(),
+            'Oversize continue-as-new arguments must not record WorkflowContinuedAsNew.'
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('payload_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testPayloadSizeLimitFailsWorkflowOutputBeforeCompletionIsPersisted(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(TestLargeWorkflowOutputWorkflow::class, 'limit-payload-output-1');
+        $workflow->start(str_repeat('o', 200));
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to workflow output payload size.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-output-1')
+            ->firstOrFail();
+
+        $this->assertNull($run->output, 'Oversize workflow output must not be persisted.');
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+                ->count(),
+            'Oversize workflow output must not record WorkflowCompleted.'
+        );
+
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('payload_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testPayloadSizeLimitFailsActivityOutputBeforeCompletionIsPersisted(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, str_repeat('a', 200));
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(TestLargePayloadWorkflow::class, 'limit-payload-activity-output-1');
+        $workflow->start('short');
+        $workflow->refresh();
+
+        $this->assertTrue($workflow->failed(), 'Workflow should have failed due to activity output payload size.');
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-activity-output-1')
+            ->firstOrFail();
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(ActivityStatus::Failed->value, $execution->status->value ?? $execution->status);
+        $this->assertNull($execution->result, 'Oversize activity output must not be persisted.');
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ActivityCompleted->value)
+                ->count(),
+            'Oversize activity output must not record ActivityCompleted.'
+        );
+
+        $failedActivityEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $this->assertSame('payload_size', $failedActivityEvent->payload['structural_limit_kind'] ?? null);
+
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('source_kind', 'activity_execution')
+            ->firstOrFail();
+
+        $this->assertSame(
+            FailureCategory::StructuralLimit->value,
+            $failure->failure_category?->value ?? $failure->failure_category,
+        );
+    }
+
+    public function testPayloadSizeLimitRejectsOversizeSignalInputWithoutAcceptingSignal(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello');
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'limit-payload-signal-input-1');
+        $workflow->start();
+
+        $result = $workflow->attemptSignal('name-provided', str_repeat('s', 200));
+
+        $this->assertTrue($result->rejected(), 'Signal should have been rejected due to payload size.');
+        $this->assertSame('structural_limit_exceeded', $result->rejectionReason());
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-signal-input-1')
+            ->firstOrFail();
+
+        $this->assertSame(
+            0,
+            WorkflowSignal::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('status', SignalStatus::Received->value)
+                ->count(),
+            'Oversize signal input must not create a received signal row.'
+        );
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::SignalReceived->value)
+                ->count(),
+            'Oversize signal input must not record SignalReceived.'
+        );
+
+        $rejectedSignal = WorkflowSignal::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', SignalStatus::Rejected->value)
+            ->firstOrFail();
+
+        $this->assertSame([], $rejectedSignal->signalArguments());
+        $this->assertArrayHasKey('arguments', $rejectedSignal->normalizedValidationErrors());
+    }
+
+    public function testPayloadSizeLimitRejectsOversizeUpdateInputWithoutAcceptingUpdate(): void
+    {
+        WorkflowStub::fake();
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 64,
+        ]);
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'limit-payload-update-input-1');
+        $workflow->start();
+
+        $result = $workflow->submitUpdate('approve', true, str_repeat('u', 200));
+
+        $this->assertTrue($result->rejected(), 'Update should have been rejected due to payload size.');
+        $this->assertSame('structural_limit_exceeded', $result->rejectionReason());
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'limit-payload-update-input-1')
+            ->firstOrFail();
+
+        $this->assertSame(
+            0,
+            WorkflowUpdate::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('status', UpdateStatus::Accepted->value)
+                ->count(),
+            'Oversize update input must not create an accepted update row.'
+        );
+        $this->assertSame(
+            0,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::UpdateAccepted->value)
+                ->count(),
+            'Oversize update input must not record UpdateAccepted.'
+        );
+
+        $rejectedUpdate = WorkflowUpdate::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', UpdateStatus::Rejected->value)
+            ->firstOrFail();
+
+        $this->assertSame([], $rejectedUpdate->updateArguments());
+        $this->assertArrayHasKey('arguments', $rejectedUpdate->normalizedValidationErrors());
     }
 
     public function testMemoSizeLimitFailsUpsert(): void
@@ -477,8 +707,8 @@ final class V2StructuralLimitTest extends TestCase
 
         Log::shouldReceive('warning')
             ->once()
-            ->withArgs(static function (string $message) {
-                return str_contains($message, 'approaching structural limit')
+            ->withArgs(static function (string $message, array $context = []) {
+                return str_contains(strtolower($message), 'approaching structural limit')
                     && str_contains($message, 'command_batch_size');
             });
 
