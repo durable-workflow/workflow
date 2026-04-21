@@ -182,6 +182,23 @@ then, treat `Workflow\V2\Support\DefaultWorkflowTaskBridge` as the
 authoritative emission site and `Workflow\V2\Models\WorkflowHistoryEvent`
 rows as the authoritative persisted shape.
 
+## Signal And Update Payload Decode Failures
+
+Signal and update payload decode failures are operational failures, not
+silent replay skips. When v2 decodes a persisted signal/update history
+payload or a queued signal/update command payload, the worker logs a
+`Workflow payload decode failed.` warning with workflow-scoped context:
+`workflow_id`, `run_id`, `event_id` or `workflow_command_id`,
+`signal_name` or `update_name`, `codec`, `exception_type`, and a short
+`payload_head` prefix for triage.
+
+The default policy is fail-visible: replay surfaces
+`Workflow\V2\Exceptions\WorkflowPayloadDecodeException`, and worker
+execution records the failure through the normal workflow/update failure
+path rather than dropping the signal or update. Hosts that need a
+drop-or-DLQ policy should implement that outside the replay decoder so the
+durable history still records that the payload was malformed.
+
 ## Changing this list
 
 Any pull request that removes a class from the list, changes a signature

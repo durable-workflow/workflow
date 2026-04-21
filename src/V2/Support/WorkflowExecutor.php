@@ -1947,7 +1947,11 @@ final class WorkflowExecutor
                 static fn (WorkflowCommand $command): bool => $command->command_type === CommandType::Signal
                     && $command->status === CommandStatus::Accepted
                     && $command->applied_at === null
-                    && $command->targetName() === $signalCall->name
+                    && WorkflowPayloadDecoder::commandTargetName($command, [
+                        'workflow_id' => $run->workflow_instance_id,
+                        'run_id' => $run->id,
+                        'signal_name' => $signalCall->name,
+                    ]) === $signalCall->name
             )
             ->sort(static function (WorkflowCommand $left, WorkflowCommand $right): int {
                 $leftSequence = $left->command_sequence ?? PHP_INT_MAX;
@@ -1990,7 +1994,7 @@ final class WorkflowExecutor
         WorkflowCommand $command,
         string $signalWaitId,
     ): WorkflowHistoryEvent {
-        $value = $this->signalPayloadValue($command);
+        $value = $this->signalPayloadValue($command, $signalCall->name);
         $signal = WorkflowSignal::query()
             ->where('workflow_command_id', $command->id)
             ->first();
@@ -2107,12 +2111,21 @@ final class WorkflowExecutor
             return null;
         }
 
-        return $this->unserializePayloadWithRun($serialized, $run);
+        return WorkflowPayloadDecoder::unserializeWithRun($serialized, $run, [
+            'workflow_id' => $run?->workflow_instance_id,
+            'run_id' => $run?->id,
+            'event_id' => $event->id,
+            'signal_name' => $this->stringValue($event->payload['signal_name'] ?? null),
+        ]);
     }
 
-    private function signalPayloadValue(WorkflowCommand $command): mixed
+    private function signalPayloadValue(WorkflowCommand $command, string $signalName): mixed
     {
-        $arguments = $command->payloadArguments();
+        $arguments = WorkflowPayloadDecoder::commandArguments($command, [
+            'workflow_id' => $command->workflow_instance_id,
+            'run_id' => $command->workflow_run_id,
+            'signal_name' => $signalName,
+        ]);
 
         if ($arguments === []) {
             return true;
@@ -4054,7 +4067,13 @@ final class WorkflowExecutor
                     ? null
                     : $run->commands->firstWhere('id', $event->workflow_command_id);
 
-                $target = $event->payload['update_name'] ?? $command?->targetName();
+                $target = $event->payload['update_name'] ?? ($command === null
+                    ? null
+                    : WorkflowPayloadDecoder::commandTargetName($command, [
+                        'workflow_id' => $run->workflow_instance_id,
+                        'run_id' => $run->id,
+                        'event_id' => $event->id,
+                    ]));
 
                 if (! is_string($target) || $target === '') {
                     throw new LogicException(sprintf(
@@ -4067,8 +4086,21 @@ final class WorkflowExecutor
 
                 $serializedArguments = $event->payload['arguments'] ?? null;
                 $arguments = is_string($serializedArguments)
-                    ? Serializer::unserialize($serializedArguments)
-                    : $command?->payloadArguments();
+                    ? WorkflowPayloadDecoder::unserializeWithRun($serializedArguments, $run, [
+                        'workflow_id' => $run->workflow_instance_id,
+                        'run_id' => $run->id,
+                        'event_id' => $event->id,
+                        'update_name' => $target,
+                        'workflow_command_id' => $command?->id,
+                    ])
+                    : ($command === null
+                        ? null
+                        : WorkflowPayloadDecoder::commandArguments($command, [
+                            'workflow_id' => $run->workflow_instance_id,
+                            'run_id' => $run->id,
+                            'event_id' => $event->id,
+                            'update_name' => $target,
+                        ]));
 
                 $parameters = $workflow->resolveMethodDependencies(
                     is_array($arguments) ? array_values($arguments) : [],
@@ -4142,7 +4174,11 @@ final class WorkflowExecutor
                 }
 
                 $parameters = $workflow->resolveMethodDependencies(
-                    $update->updateArguments(),
+                    WorkflowPayloadDecoder::updateArguments($update, [
+                        'workflow_id' => $run->workflow_instance_id,
+                        'run_id' => $run->id,
+                        'update_name' => $target,
+                    ]),
                     new ReflectionMethod($workflow, $resolvedTarget['method']),
                 );
                 $result = $workflow->{$resolvedTarget['method']}(...$parameters);

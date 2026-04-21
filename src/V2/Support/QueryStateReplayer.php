@@ -625,7 +625,12 @@ final class QueryStateReplayer
             return null;
         }
 
-        return $this->unserializeWithRun($serialized, $run);
+        return WorkflowPayloadDecoder::unserializeWithRun($serialized, $run, [
+            'workflow_id' => $run?->workflow_instance_id,
+            'run_id' => $run?->id,
+            'event_id' => $event->id,
+            'signal_name' => $this->stringValue($event->payload['signal_name'] ?? null),
+        ]);
     }
 
     private function activityResult(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed
@@ -900,7 +905,12 @@ final class QueryStateReplayer
         WorkflowHistoryEvent $event,
         ?WorkflowCommand $command,
     ): ?string {
-        $target = $event->payload['update_name'] ?? $command?->targetName();
+        $target = $event->payload['update_name'] ?? ($command === null
+            ? null
+            : WorkflowPayloadDecoder::commandTargetName($command, [
+                'event_id' => $event->id,
+                'update_name' => $this->stringValue($event->payload['update_name'] ?? null),
+            ]));
 
         if (! is_string($target) || $target === '') {
             return null;
@@ -920,14 +930,27 @@ final class QueryStateReplayer
         $serialized = $event->payload['arguments'] ?? null;
 
         if (is_string($serialized)) {
-            $arguments = $this->unserializeWithRun($serialized, $run);
+            $arguments = WorkflowPayloadDecoder::unserializeWithRun($serialized, $run, [
+                'workflow_id' => $run?->workflow_instance_id,
+                'run_id' => $run?->id,
+                'event_id' => $event->id,
+                'update_name' => $this->stringValue($event->payload['update_name'] ?? null),
+                'workflow_command_id' => $command?->id,
+            ]);
 
             return is_array($arguments)
                 ? array_values($arguments)
                 : [];
         }
 
-        return $command?->payloadArguments() ?? [];
+        return $command === null
+            ? []
+            : WorkflowPayloadDecoder::commandArguments($command, [
+                'workflow_id' => $run?->workflow_instance_id,
+                'run_id' => $run?->id,
+                'event_id' => $event->id,
+                'update_name' => $this->stringValue($event->payload['update_name'] ?? null),
+            ]);
     }
 
     private function syncWorkflowCursor(Workflow $workflow, int $visibleSequence): void

@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAbstractReplayedException;
 use Tests\Fixtures\V2\TestBroadChildFailureCatchWorkflow;
@@ -33,6 +34,8 @@ use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestReplayedDomainException;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
+use Tests\Fixtures\V2\TestSignalPayloadWorkflow;
+use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
@@ -45,6 +48,7 @@ use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
+use Workflow\V2\Exceptions\WorkflowPayloadDecodeException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -131,6 +135,85 @@ final class V2QueryWorkflowTest extends TestCase
         $this->assertSame('events-starting-with', $contracts->get('events-starting-with')['name'] ?? null);
         $this->assertSame('prefix', $contracts->get('events-starting-with')['parameters'][0]['name'] ?? null);
         $this->assertSame('string', $contracts->get('events-starting-with')['parameters'][0]['type'] ?? null);
+    }
+
+    public function testSignalPayloadDecodeFailuresLogWorkflowContext(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalPayloadWorkflow::class, 'query-signal-decode-context');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $workflow->signal('payload-provided', 'Taylor');
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::SignalApplied->value)
+            ->firstOrFail();
+        $event->forceFill([
+            'payload' => array_merge($event->payload, [
+                'value' => 'not-avro',
+            ]),
+        ])->save();
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(static function (string $message, array $context = []) use ($workflow, $event): bool {
+                return $message === 'Workflow payload decode failed.'
+                    && ($context['workflow_id'] ?? null) === 'query-signal-decode-context'
+                    && ($context['run_id'] ?? null) === $workflow->runId()
+                    && ($context['event_id'] ?? null) === $event->id
+                    && ($context['signal_name'] ?? null) === 'payload-provided'
+                    && ($context['codec'] ?? null) === 'avro'
+                    && ($context['payload_head'] ?? null) === 'not-avro'
+                    && is_string($context['exception_type'] ?? null);
+            });
+
+        $this->expectException(WorkflowPayloadDecodeException::class);
+
+        (new QueryStateReplayer())->replayState(WorkflowRun::query()->findOrFail($workflow->runId()));
+    }
+
+    public function testUpdatePayloadDecodeFailuresLogWorkflowContext(): void
+    {
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'query-update-decode-context');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $workflow->attemptUpdate('approve', true, 'api');
+        $this->drainReadyTasks();
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::UpdateApplied->value)
+            ->firstOrFail();
+        $event->forceFill([
+            'payload' => array_merge($event->payload, [
+                'arguments' => 'not-avro',
+            ]),
+        ])->save();
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(static function (string $message, array $context = []) use ($workflow, $event): bool {
+                return $message === 'Workflow payload decode failed.'
+                    && ($context['workflow_id'] ?? null) === 'query-update-decode-context'
+                    && ($context['run_id'] ?? null) === $workflow->runId()
+                    && ($context['event_id'] ?? null) === $event->id
+                    && ($context['update_name'] ?? null) === 'approve'
+                    && ($context['codec'] ?? null) === 'avro'
+                    && ($context['payload_head'] ?? null) === 'not-avro'
+                    && is_string($context['exception_type'] ?? null);
+            });
+
+        $this->expectException(WorkflowPayloadDecodeException::class);
+
+        (new QueryStateReplayer())->query(WorkflowRun::query()->findOrFail($workflow->runId()), 'currentState');
     }
 
     public function testQueriesThrowExplicitExecutionUnavailableWhenWorkflowDefinitionCannotBeResolved(): void
