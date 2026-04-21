@@ -737,6 +737,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ];
             }
 
+            $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
+
             foreach ($parsed['non_terminal'] as $command) {
                 $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
             }
@@ -964,6 +966,140 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return null;
+    }
+
+    /**
+     * External SDKs resolve condition waits by replaying signal history, then
+     * either re-opening the wait or advancing to the next command. When a signal
+     * resume advances, make that resolution explicit in history for replay and
+     * Waterline instead of leaving only SignalReceived as an implicit cue.
+     *
+     * @param list<array{type: string, ...}> $nonTerminalCommands
+     */
+    private function recordSatisfiedConditionWaitForSignalResume(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $nonTerminalCommands,
+    ): void {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+
+        if (($taskPayload['resume_source_kind'] ?? null) !== 'workflow_signal') {
+            return;
+        }
+
+        foreach ($nonTerminalCommands as $command) {
+            if (($command['type'] ?? null) === 'open_condition_wait') {
+                return;
+            }
+        }
+
+        $wait = $this->latestOpenConditionWait($run);
+
+        if ($wait === null) {
+            return;
+        }
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitSatisfied, array_filter([
+            'condition_wait_id' => $wait['condition_wait_id'],
+            'condition_key' => $wait['condition_key'],
+            'condition_definition_fingerprint' => $wait['condition_definition_fingerprint'],
+            'sequence' => $wait['sequence'],
+            'timer_id' => $wait['timer_id'],
+            'timeout_seconds' => $wait['timeout_seconds'],
+            'workflow_signal_id' => self::nonEmptyString($taskPayload['workflow_signal_id'] ?? null),
+            'signal_name' => self::nonEmptyString($taskPayload['signal_name'] ?? null),
+            'signal_wait_id' => self::nonEmptyString($taskPayload['signal_wait_id'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null), $task);
+
+        $this->cancelOpenConditionTimer($run, $task, $wait);
+    }
+
+    /**
+     * @return array{
+     *     condition_wait_id: string,
+     *     condition_key: string|null,
+     *     condition_definition_fingerprint: string|null,
+     *     sequence: int|null,
+     *     status: string,
+     *     source_status: string,
+     *     timeout_seconds: int|null,
+     *     timer_id: string|null
+     * }|null
+     */
+    private function latestOpenConditionWait(WorkflowRun $run): ?array
+    {
+        $open = array_values(array_filter(
+            ConditionWaits::forRun($run),
+            static fn (array $wait): bool => ($wait['status'] ?? null) === 'open'
+                && ($wait['source_status'] ?? null) !== 'timeout_fired'
+                && self::nonEmptyString($wait['condition_wait_id'] ?? null) !== null,
+        ));
+
+        if ($open === []) {
+            return null;
+        }
+
+        usort(
+            $open,
+            static fn (array $left, array $right): int => ((int) ($left['sequence'] ?? 0))
+                <=> ((int) ($right['sequence'] ?? 0)),
+        );
+
+        /** @var array{
+         *     condition_wait_id: string,
+         *     condition_key: string|null,
+         *     condition_definition_fingerprint: string|null,
+         *     sequence: int|null,
+         *     status: string,
+         *     source_status: string,
+         *     timeout_seconds: int|null,
+         *     timer_id: string|null
+         * } $wait
+         */
+        $wait = end($open);
+
+        return $wait;
+    }
+
+    /**
+     * @param array{timer_id: string|null} $wait
+     */
+    private function cancelOpenConditionTimer(WorkflowRun $run, WorkflowTask $task, array $wait): void
+    {
+        $timerId = self::nonEmptyString($wait['timer_id'] ?? null);
+
+        if ($timerId === null) {
+            return;
+        }
+
+        /** @var WorkflowTimer|null $timer */
+        $timer = ConfiguredV2Models::query('timer_model', WorkflowTimer::class)
+            ->whereKey($timerId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if (! $timer instanceof WorkflowTimer || $timer->status !== TimerStatus::Pending) {
+            return;
+        }
+
+        $timer->forceFill([
+            'status' => TimerStatus::Cancelled,
+        ])->save();
+
+        TimerCancellation::record($run, $timer, $task);
+
+        ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->where('payload->timer_id', $timer->id)
+            ->get()
+            ->each(static function (WorkflowTask $timerTask): void {
+                $timerTask->forceFill([
+                    'status' => TaskStatus::Cancelled,
+                    'lease_expires_at' => null,
+                    'last_error' => null,
+                ])->save();
+            });
     }
 
     /**

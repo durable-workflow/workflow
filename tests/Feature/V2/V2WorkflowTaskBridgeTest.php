@@ -1739,6 +1739,96 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
     }
 
+    public function testSignalResumeCompletionRecordsSatisfiedConditionWaitAndCancelsTimeout(): void
+    {
+        $run = $this->createWaitingRun();
+
+        $openTask = $this->createLeasedTask($run);
+
+        $openedResult = $this->bridge->complete($openTask->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'approval.ready',
+                'condition_definition_fingerprint' => 'condition-fp-1',
+                'timeout_seconds' => 60,
+            ],
+        ]);
+
+        $this->assertTrue($openedResult['completed']);
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->firstOrFail();
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->firstOrFail();
+
+        $conditionWaitId = $opened->payload['condition_wait_id'] ?? null;
+
+        $this->assertIsString($conditionWaitId);
+        $this->assertSame(TimerStatus::Pending, $timer->status);
+        $this->assertSame(TaskStatus::Ready, $timerTask->status);
+
+        $resumeTask = $this->createLeasedTask($run);
+        $resumeTask->forceFill([
+            'payload' => [
+                'workflow_wait_kind' => 'signal',
+                'open_wait_id' => 'signal-application:signal-1',
+                'resume_source_kind' => 'workflow_signal',
+                'resume_source_id' => 'signal-1',
+                'workflow_signal_id' => 'signal-1',
+                'signal_name' => 'advance',
+                'signal_wait_id' => 'signal-wait-1',
+            ],
+        ])->save();
+
+        $completed = $this->bridge->complete($resumeTask->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize([
+                    'approved' => true,
+                ]),
+            ],
+        ]);
+
+        $this->assertTrue($completed['completed']);
+        $this->assertSame('completed', $completed['run_status']);
+
+        $satisfied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitSatisfied->value)
+            ->firstOrFail();
+
+        $this->assertSame($conditionWaitId, $satisfied->payload['condition_wait_id'] ?? null);
+        $this->assertSame('approval.ready', $satisfied->payload['condition_key'] ?? null);
+        $this->assertSame('condition-fp-1', $satisfied->payload['condition_definition_fingerprint'] ?? null);
+        $this->assertSame(1, $satisfied->payload['sequence'] ?? null);
+        $this->assertSame($timer->id, $satisfied->payload['timer_id'] ?? null);
+        $this->assertSame(60, $satisfied->payload['timeout_seconds'] ?? null);
+        $this->assertSame('signal-1', $satisfied->payload['workflow_signal_id'] ?? null);
+        $this->assertSame('advance', $satisfied->payload['signal_name'] ?? null);
+        $this->assertSame('signal-wait-1', $satisfied->payload['signal_wait_id'] ?? null);
+
+        $timer->refresh();
+        $timerTask->refresh();
+
+        $this->assertSame(TimerStatus::Cancelled, $timer->status);
+        $this->assertSame(TaskStatus::Cancelled, $timerTask->status);
+
+        $cancelled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerCancelled->value)
+            ->firstOrFail();
+
+        $this->assertSame($timer->id, $cancelled->payload['timer_id'] ?? null);
+        $this->assertSame($conditionWaitId, $cancelled->payload['condition_wait_id'] ?? null);
+    }
+
     public function testCompleteStartsChildWorkflow(): void
     {
         $run = $this->createWaitingRun();
