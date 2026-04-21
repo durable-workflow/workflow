@@ -224,6 +224,20 @@ if (! function_exists(__NAMESPACE__ . '\\getVersion')) {
     }
 }
 
+if (! function_exists(__NAMESPACE__ . '\\patched')) {
+    function patched(string $changeId): mixed
+    {
+        return WorkflowFiberContext::suspend(VersionCall::patched($changeId));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\deprecatePatch')) {
+    function deprecatePatch(string $changeId): mixed
+    {
+        return WorkflowFiberContext::suspend(VersionCall::deprecatePatch($changeId));
+    }
+}
+
 // Timer sugar
 
 if (! function_exists(__NAMESPACE__ . '\\seconds')) {

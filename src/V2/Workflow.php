@@ -351,6 +351,26 @@ abstract class Workflow
     }
 
     /**
+     * Return whether this workflow run has crossed a replay-safe code patch.
+     *
+     * @see patched()
+     */
+    public static function patched(string $changeId): mixed
+    {
+        return patched($changeId);
+    }
+
+    /**
+     * Keep a patch marker alive after the old workflow branch is removed.
+     *
+     * @see deprecatePatch()
+     */
+    public static function deprecatePatch(string $changeId): mixed
+    {
+        return deprecatePatch($changeId);
+    }
+
+    /**
      * Upsert non-indexed memo metadata on the current workflow run.
      *
      * @param array<string, mixed> $entries

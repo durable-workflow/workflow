@@ -87,7 +87,8 @@ guarantee:
   `Workflow\V2\functions.php`: `activity`, `executeActivity`, `child`,
   `executeChildWorkflow`, `async`, `all`, `parallel`, `await`,
   `awaitWithTimeout`, `awaitSignal`, `timer`, `sideEffect`,
-  `continueAsNew`, `getVersion`, `upsertMemo`, `upsertSearchAttributes`,
+  `continueAsNew`, `getVersion`, `patched`, `deprecatePatch`,
+  `upsertMemo`, `upsertSearchAttributes`,
   and the timer sugar `seconds`/`minutes`/`hours`/`days`/`weeks`/
   `months`/`years`.
 
@@ -117,13 +118,20 @@ the PHP class that produced the event is `@internal`.
 
 ### `VersionMarkerRecorded`
 
-This marker records the result of `Workflow::getVersion()` (PHP) and
-`workflow.get_version()` (Python SDK). The moment an operational
+This marker records the result of `Workflow::getVersion()`, `Workflow::patched()`,
+or `Workflow::deprecatePatch()` (PHP) and `workflow.get_version()`,
+`workflow.patched()`, or `workflow.deprecate_patch()` (Python SDK). The moment an operational
 workflow writes a `VersionMarkerRecorded` event, every replayer for
 the rest of that workflow's lifetime must continue to decode the same
 payload. See PHP `Workflow\V2\Support\DefaultWorkflowTaskBridge::applyRecordVersionMarker()`
 and Python `durable_workflow.workflow._workflow_state` for the
 authoritative emission and replay sites.
+
+`patched(change_id)` and `deprecatePatch(change_id)` / `deprecate_patch(change_id)`
+are additive sugar over this same frozen shape. They do not introduce a new
+event type: patched markers use `min_supported = -1`, `max_supported = 1`,
+and `version = 1`; replaying version `-1` means the workflow reached the patch
+site before the patch marker existed.
 
 **Payload shape — frozen:**
 

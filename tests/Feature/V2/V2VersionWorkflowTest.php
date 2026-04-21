@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestDeprecatedPatchWorkflow;
+use Tests\Fixtures\V2\TestPatchedWorkflow;
 use Tests\Fixtures\V2\TestVersionAfterSignalWorkflow;
 use Tests\Fixtures\V2\TestVersionBeforeSignalWorkflow;
 use Tests\Fixtures\V2\TestVersionMinSupportedWorkflow;
@@ -134,6 +136,95 @@ final class V2VersionWorkflowTest extends TestCase
 
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame('v2_result', $workflow->output()['result']);
+    }
+
+    public function testPatchedRecordsMarkerAndResolvesTrueForCurrentRuns(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestPatchedWorkflow::class, 'patched-current');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'patched' => true,
+            'branch' => 'patched',
+        ], $workflow->output());
+
+        /** @var WorkflowHistoryEvent $marker */
+        $marker = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
+            ->firstOrFail();
+
+        $this->assertSame('patch-1', $marker->payload['change_id'] ?? null);
+        $this->assertSame(1, $marker->payload['version'] ?? null);
+        $this->assertSame(WorkflowStub::DEFAULT_VERSION, $marker->payload['min_supported'] ?? null);
+        $this->assertSame(1, $marker->payload['max_supported'] ?? null);
+    }
+
+    public function testPatchedResolvesFalseForRecordedLegacyMarker(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestPatchedWorkflow::class, 'patched-legacy');
+        $workflow->start();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 3,
+            'event_type' => HistoryEventType::VersionMarkerRecorded->value,
+            'payload' => [
+                'sequence' => 1,
+                'change_id' => 'patch-1',
+                'version' => WorkflowStub::DEFAULT_VERSION,
+                'min_supported' => WorkflowStub::DEFAULT_VERSION,
+                'max_supported' => 1,
+            ],
+            'recorded_at' => now(),
+        ]);
+
+        $run->forceFill([
+            'last_history_sequence' => 3,
+        ])->save();
+
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'patched' => false,
+            'branch' => 'legacy',
+        ], $workflow->output());
+    }
+
+    public function testDeprecatePatchRecordsMarkerAndReturnsNull(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestDeprecatedPatchWorkflow::class, 'patch-deprecated');
+        $workflow->start();
+
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'marker_result' => null,
+            'branch' => 'patched',
+        ], $workflow->output());
+
+        /** @var WorkflowHistoryEvent $marker */
+        $marker = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
+            ->firstOrFail();
+
+        $this->assertSame('patch-1', $marker->payload['change_id'] ?? null);
+        $this->assertSame(1, $marker->payload['version'] ?? null);
     }
 
     public function testVersionMarkersFailRunWhenRecordedVersionIsNotSupported(): void

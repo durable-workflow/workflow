@@ -235,7 +235,10 @@ final class QueryStateReplayer
                 $resolution = VersionResolver::resolve($run, $versionEvent, $current, $sequence);
 
                 $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
-                $current = $workflowExecution->send($resolution->version, $versionEvent?->recorded_at);
+                $current = $workflowExecution->send(
+                    $current->resolveValue($resolution->version),
+                    $versionEvent?->recorded_at
+                );
 
                 if ($resolution->advancesSequence) {
                     ++$sequence;
@@ -592,7 +595,7 @@ final class QueryStateReplayer
 
             $this->syncWorkflowCursor($workflow, $sequence);
             throw new UnsupportedWorkflowYieldException(sprintf(
-                'Workflow %s yielded %s. v2 currently supports activity(), child(), async(), all(), await(), signal(), timer(), sideEffect(), continueAsNew(), getVersion(), upsertMemo(), and upsertSearchAttributes() only.',
+                'Workflow %s yielded %s. v2 currently supports activity(), child(), async(), all(), await(), signal(), timer(), sideEffect(), continueAsNew(), getVersion(), patched(), deprecatePatch(), upsertMemo(), and upsertSearchAttributes() only.',
                 $run->workflow_class,
                 get_debug_type($current),
             ));

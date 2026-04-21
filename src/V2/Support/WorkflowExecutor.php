@@ -487,7 +487,10 @@ final class WorkflowExecutor
                     }
 
                     $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
-                    $current = $workflowExecution->send($version, $versionMarkerEvent?->recorded_at);
+                    $current = $workflowExecution->send(
+                        $current->resolveValue($version),
+                        $versionMarkerEvent?->recorded_at
+                    );
                 } catch (Throwable $throwable) {
                     $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
 
@@ -1307,7 +1310,7 @@ final class WorkflowExecutor
                 $run,
                 $task,
                 new UnsupportedWorkflowYieldException(sprintf(
-                    'Workflow %s yielded %s. v2 currently supports activity(), child(), async(), all(), await(), signal(), timer(), sideEffect(), continueAsNew(), getVersion(), upsertMemo(), and upsertSearchAttributes() only.',
+                    'Workflow %s yielded %s. v2 currently supports activity(), child(), async(), all(), await(), signal(), timer(), sideEffect(), continueAsNew(), getVersion(), patched(), deprecatePatch(), upsertMemo(), and upsertSearchAttributes() only.',
                     $run->workflow_class,
                     get_debug_type($current),
                 )),

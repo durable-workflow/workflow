@@ -19,6 +19,7 @@ use Workflow\V2\Support\UpsertMemoCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
 use Workflow\V2\Workflow;
+use Workflow\V2\WorkflowStub;
 
 /**
  * The static facade on Workflow\V2\Workflow is a thin delegate to the
@@ -122,6 +123,27 @@ class WorkflowFacadeTest extends TestCase
         $this->assertInstanceOf(VersionCall::class, $call);
     }
 
+    public function testPatchedReturnsAVersionCallWithBooleanResultKind(): void
+    {
+        $call = Workflow::patched('change-one');
+
+        $this->assertInstanceOf(VersionCall::class, $call);
+        $this->assertSame('change-one', $call->changeId);
+        $this->assertSame(WorkflowStub::DEFAULT_VERSION, $call->minSupported);
+        $this->assertSame(1, $call->maxSupported);
+        $this->assertTrue($call->resolveValue(1));
+        $this->assertFalse($call->resolveValue(WorkflowStub::DEFAULT_VERSION));
+    }
+
+    public function testDeprecatePatchReturnsAVersionCallWithNullResultKind(): void
+    {
+        $call = Workflow::deprecatePatch('change-one');
+
+        $this->assertInstanceOf(VersionCall::class, $call);
+        $this->assertSame('change-one', $call->changeId);
+        $this->assertNull($call->resolveValue(1));
+    }
+
     public function testAllReturnsAnAllCall(): void
     {
         $call = Workflow::all([
@@ -183,6 +205,8 @@ class WorkflowFacadeTest extends TestCase
             'sideEffect',
             'continueAsNew',
             'getVersion',
+            'patched',
+            'deprecatePatch',
             'upsertMemo',
             'upsertSearchAttributes',
             'seconds',
