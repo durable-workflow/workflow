@@ -128,6 +128,17 @@ final class CommandContext
         ]);
     }
 
+    public function withPrincipal(string $type, string $id, ?string $label = null): self
+    {
+        return $this->with([
+            'principal' => array_filter([
+                'type' => $type,
+                'id' => $id,
+                'label' => $label,
+            ], static fn (mixed $value): bool => is_string($value) && trim($value) !== ''),
+        ]);
+    }
+
     /**
      * @return array<string, mixed>
      */

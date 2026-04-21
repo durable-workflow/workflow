@@ -210,6 +210,7 @@ class WorkflowCommand extends Model
     {
         $workflow = $this->commandContext()['workflow'] ?? null;
         $intake = $this->commandContext()['intake'] ?? null;
+        $principal = $this->commandContext()['principal'] ?? null;
 
         $publicWorkflow = is_array($workflow)
             ? array_filter([
@@ -239,10 +240,52 @@ class WorkflowCommand extends Model
             ], static fn (mixed $value): bool => $value !== null && $value !== '')
             : [];
 
+        $publicPrincipal = is_array($principal)
+            ? array_filter([
+                'type' => is_string($principal['type'] ?? null)
+                    ? $principal['type']
+                    : null,
+                'id' => is_string($principal['id'] ?? null)
+                    ? $principal['id']
+                    : null,
+                'label' => is_string($principal['label'] ?? null)
+                    ? $principal['label']
+                    : null,
+            ], static fn (mixed $value): bool => $value !== null && $value !== '')
+            : [];
+
         return array_filter([
             'workflow' => $publicWorkflow === [] ? null : $publicWorkflow,
             'intake' => $publicIntake === [] ? null : $publicIntake,
+            'principal' => $publicPrincipal === [] ? null : $publicPrincipal,
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    public function principalType(): ?string
+    {
+        $principal = $this->commandContext()['principal'] ?? null;
+
+        return is_array($principal) && is_string($principal['type'] ?? null)
+            ? $principal['type']
+            : null;
+    }
+
+    public function principalId(): ?string
+    {
+        $principal = $this->commandContext()['principal'] ?? null;
+
+        return is_array($principal) && is_string($principal['id'] ?? null)
+            ? $principal['id']
+            : null;
+    }
+
+    public function principalLabel(): ?string
+    {
+        $principal = $this->commandContext()['principal'] ?? null;
+
+        return is_array($principal) && is_string($principal['label'] ?? null)
+            ? $principal['label']
+            : null;
     }
 
     public function callerLabel(): ?string

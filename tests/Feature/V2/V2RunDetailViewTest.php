@@ -2229,6 +2229,11 @@ final class V2RunDetailViewTest extends TestCase
                     'status' => 'authorized',
                     'method' => 'token',
                 ],
+                'principal' => [
+                    'type' => 'user',
+                    'id' => '42',
+                    'label' => 'Taylor Otwell',
+                ],
                 'request' => [
                     'method' => 'POST',
                     'path' => '/webhooks/instances/detail-command-context/signals/name-provided',
@@ -2260,8 +2265,17 @@ final class V2RunDetailViewTest extends TestCase
         $detail = RunDetailView::forRun($run->fresh(['summary']));
 
         $this->assertCount(1, $detail['commands']);
-        $this->assertSame([], $detail['commands'][0]['context']);
+        $this->assertSame([
+            'principal' => [
+                'type' => 'user',
+                'id' => '42',
+                'label' => 'Taylor Otwell',
+            ],
+        ], $detail['commands'][0]['context']);
         $this->assertSame('Webhook', $detail['commands'][0]['caller_label']);
+        $this->assertSame('user', $detail['commands'][0]['principal_type']);
+        $this->assertSame('42', $detail['commands'][0]['principal_id']);
+        $this->assertSame('Taylor Otwell', $detail['commands'][0]['principal_label']);
         $this->assertSame('authorized', $detail['commands'][0]['auth_status']);
         $this->assertSame('token', $detail['commands'][0]['auth_method']);
         $this->assertSame('POST', $detail['commands'][0]['request_method']);
