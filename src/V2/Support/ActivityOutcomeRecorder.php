@@ -150,6 +150,18 @@ final class ActivityOutcomeRecorder
                 $serializedResult = self::serializeWithCodec($result, $codec, $runCodec);
                 $resultCodec = self::payloadCodec($codec, $runCodec);
 
+                StructuralLimits::logWarning(
+                    StructuralLimits::warnApproachingPayloadSize($serializedResult),
+                    [
+                        'workflow_run_id' => $run->id,
+                        'workflow_type' => $run->workflow_type,
+                        'payload_site' => 'activity_output',
+                        'activity_class' => $lockedExecution->activity_class,
+                        'activity_type' => $lockedExecution->activity_type,
+                        'activity_execution_id' => $lockedExecution->id,
+                    ],
+                );
+
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,
                     'result' => $serializedResult,

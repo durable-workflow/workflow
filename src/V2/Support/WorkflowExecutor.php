@@ -1346,6 +1346,11 @@ final class WorkflowExecutor
         // a stored per-execution codec column. See #429.
         $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $activityCall->arguments);
         $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $activityCall->arguments);
+        $this->logApproachingLimit(
+            StructuralLimits::warnApproachingPayloadSize($serializedArguments),
+            $run,
+            ['payload_site' => 'activity_input', 'activity_class' => $activityCall->activity],
+        );
         StructuralLimits::guardPayloadSize($serializedArguments);
 
         /** @var ActivityExecution $execution */
@@ -1552,6 +1557,11 @@ final class WorkflowExecutor
         // matches what the blob was serialized with.
         $childCodec = Serializer::chooseCodecForData($preferredChildCodec, $metadata->arguments);
         $serializedChildArguments = Serializer::serializeWithCodec($childCodec, $metadata->arguments);
+        $this->logApproachingLimit(
+            StructuralLimits::warnApproachingPayloadSize($serializedChildArguments),
+            $run,
+            ['payload_site' => 'child_workflow_input', 'child_workflow_class' => $childWorkflowCall->workflow],
+        );
         StructuralLimits::guardPayloadSize($serializedChildArguments);
 
         /** @var WorkflowInstance $childInstance */
@@ -2233,6 +2243,13 @@ final class WorkflowExecutor
                 ->addSeconds((int) $runTimeoutSeconds)
             : null;
 
+        $continueAsNewArguments = Serializer::serializeWithCodec($run->payload_codec, $continueAsNew->arguments);
+        $this->logApproachingLimit(
+            StructuralLimits::warnApproachingPayloadSize($continueAsNewArguments),
+            $run,
+            ['payload_site' => 'continue_as_new_input', 'target_workflow_class' => $workflowClass],
+        );
+
         /** @var WorkflowRun $continuedRun */
         $continuedRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $run->workflow_instance_id,
@@ -2250,7 +2267,7 @@ final class WorkflowExecutor
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,
-            'arguments' => Serializer::serializeWithCodec($run->payload_codec, $continueAsNew->arguments),
+            'arguments' => $continueAsNewArguments,
             'connection' => $run->connection,
             'queue' => $run->queue,
             'started_at' => $now,
@@ -2476,10 +2493,17 @@ final class WorkflowExecutor
 
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void
     {
+        $serializedOutput = Serializer::serializeWithCodec($run->payload_codec, $result);
+        $this->logApproachingLimit(
+            StructuralLimits::warnApproachingPayloadSize($serializedOutput),
+            $run,
+            ['payload_site' => 'workflow_output'],
+        );
+
         $run->forceFill([
             'status' => RunStatus::Completed,
             'closed_reason' => 'completed',
-            'output' => Serializer::serializeWithCodec($run->payload_codec, $result),
+            'output' => $serializedOutput,
             'closed_at' => now(),
             'last_progress_at' => now(),
         ])->save();
@@ -3724,7 +3748,13 @@ final class WorkflowExecutor
         }
 
         ksort($merged);
-        StructuralLimits::guardSearchAttributeSize(json_encode($merged, JSON_THROW_ON_ERROR));
+        $serializedSearchAttributes = json_encode($merged, JSON_THROW_ON_ERROR);
+        $this->logApproachingLimit(
+            StructuralLimits::warnApproachingSearchAttributeSize($serializedSearchAttributes),
+            $run,
+            ['payload_site' => 'search_attributes'],
+        );
+        StructuralLimits::guardSearchAttributeSize($serializedSearchAttributes);
 
         $run->search_attributes = $merged;
         $run->save();
@@ -3795,7 +3825,13 @@ final class WorkflowExecutor
 
         ksort($merged);
 
-        StructuralLimits::guardMemoSize(json_encode($merged, JSON_THROW_ON_ERROR));
+        $serializedMemo = json_encode($merged, JSON_THROW_ON_ERROR);
+        $this->logApproachingLimit(
+            StructuralLimits::warnApproachingMemoSize($serializedMemo),
+            $run,
+            ['payload_site' => 'memo'],
+        );
+        StructuralLimits::guardMemoSize($serializedMemo);
 
         $run->memo = $merged;
         $run->save();
@@ -4484,34 +4520,19 @@ final class WorkflowExecutor
     }
 
     /**
-     * Log a structured warning when a count-based resource is approaching
-     * its hard structural limit. Callers pass the result of one of the
-     * `StructuralLimits::warnApproaching*()` helpers — null means "safe,
-     * no warning needed."
+     * Log a structured warning when a count- or size-based resource is
+     * approaching its hard structural limit. Callers pass the result of
+     * one of the `StructuralLimits::warnApproaching*()` helpers — null
+     * means "safe, no warning needed."
      *
      * @param array{limit_kind: string, current: int, limit: int, threshold_percent: int, utilization_percent: int}|null $warning
+     * @param array<string, mixed> $extraContext
      */
-    private function logApproachingLimit(?array $warning, WorkflowRun $run): void
+    private function logApproachingLimit(?array $warning, WorkflowRun $run, array $extraContext = []): void
     {
-        if ($warning === null) {
-            return;
-        }
-
-        Log::warning(sprintf(
-            '[Durable Workflow] Run %d approaching structural limit [%s]: %d / %d (%d%% utilization, warning at %d%%).',
-            $run->id,
-            $warning['limit_kind'],
-            $warning['current'],
-            $warning['limit'],
-            $warning['utilization_percent'],
-            $warning['threshold_percent'],
-        ), [
+        StructuralLimits::logWarning($warning, array_merge([
             'workflow_run_id' => $run->id,
             'workflow_type' => $run->workflow_type,
-            'limit_kind' => $warning['limit_kind'],
-            'current' => $warning['current'],
-            'limit' => $warning['limit'],
-            'utilization_percent' => $warning['utilization_percent'],
-        ]);
+        ], $extraContext));
     }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
@@ -419,6 +420,61 @@ final class StructuralLimits
     public static function warnApproachingCommandBatch(int $batchSize): ?array
     {
         return self::checkApproaching(StructuralLimitKind::CommandBatchSize, $batchSize);
+    }
+
+    /**
+     * @return array{limit_kind: string, current: int, limit: int, threshold_percent: int, utilization_percent: int}|null
+     */
+    public static function warnApproachingPayloadSize(string $serialized): ?array
+    {
+        return self::checkApproaching(StructuralLimitKind::PayloadSize, strlen($serialized));
+    }
+
+    /**
+     * @return array{limit_kind: string, current: int, limit: int, threshold_percent: int, utilization_percent: int}|null
+     */
+    public static function warnApproachingMemoSize(string $serialized): ?array
+    {
+        return self::checkApproaching(StructuralLimitKind::MemoSize, strlen($serialized));
+    }
+
+    /**
+     * @return array{limit_kind: string, current: int, limit: int, threshold_percent: int, utilization_percent: int}|null
+     */
+    public static function warnApproachingSearchAttributeSize(string $serialized): ?array
+    {
+        return self::checkApproaching(StructuralLimitKind::SearchAttributeSize, strlen($serialized));
+    }
+
+    /**
+     * Emit a structured Laravel log warning when a soft-limit check
+     * returns a snapshot. Call sites pass the result of
+     * checkApproaching / warnApproaching* directly; null is a no-op so
+     * callers don't need to branch.
+     *
+     * @param array{limit_kind: string, current: int, limit: int, threshold_percent: int, utilization_percent: int}|null $warning
+     * @param array<string, mixed> $context
+     */
+    public static function logWarning(?array $warning, array $context = []): void
+    {
+        if ($warning === null) {
+            return;
+        }
+
+        Log::warning(sprintf(
+            '[Durable Workflow] Approaching structural limit [%s]: %d / %d (%d%% utilization, warning at %d%%).',
+            $warning['limit_kind'],
+            $warning['current'],
+            $warning['limit'],
+            $warning['utilization_percent'],
+            $warning['threshold_percent'],
+        ), array_merge([
+            'limit_kind' => $warning['limit_kind'],
+            'current' => $warning['current'],
+            'limit' => $warning['limit'],
+            'utilization_percent' => $warning['utilization_percent'],
+            'threshold_percent' => $warning['threshold_percent'],
+        ], $context));
     }
 
     /**

@@ -1857,6 +1857,19 @@ final class WorkflowStub
                 'accepted_at' => now(),
             ], $updateCommandAttributes)));
 
+            $updateCodec = $run->payload_codec ?? CodecRegistry::defaultCodec();
+            $serializedUpdateArguments = Serializer::serializeWithCodec($updateCodec, $arguments);
+
+            StructuralLimits::logWarning(
+                StructuralLimits::warnApproachingPayloadSize($serializedUpdateArguments),
+                [
+                    'workflow_run_id' => $run->id,
+                    'workflow_type' => $run->workflow_type,
+                    'payload_site' => 'update_input',
+                    'update_name' => $updateName,
+                ],
+            );
+
             /** @var WorkflowUpdate $update */
             $update = WorkflowUpdate::query()->create([
                 'workflow_command_id' => $command->id,
@@ -1868,11 +1881,8 @@ final class WorkflowStub
                 'update_name' => $updateName,
                 'status' => UpdateStatus::Accepted->value,
                 'command_sequence' => $command->command_sequence,
-                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                'arguments' => Serializer::serializeWithCodec(
-                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                    $arguments
-                ),
+                'payload_codec' => $updateCodec,
+                'arguments' => $serializedUpdateArguments,
                 'accepted_at' => $command->accepted_at,
             ]);
 
@@ -1882,10 +1892,7 @@ final class WorkflowStub
                 'workflow_instance_id' => $instance->id,
                 'workflow_run_id' => $run->id,
                 'update_name' => $updateName,
-                'arguments' => Serializer::serializeWithCodec(
-                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                    $arguments
-                ),
+                'arguments' => $serializedUpdateArguments,
             ], null, $command);
 
             $resumeTask = $this->readyWorkflowTaskForDispatch($run->id);
@@ -3099,6 +3106,17 @@ final class WorkflowStub
         ?string $payloadBlob = null,
     ): WorkflowSignal {
         $codec = $payloadCodec ?? $run->payload_codec ?? CodecRegistry::defaultCodec();
+        $serializedArguments = $payloadBlob ?? Serializer::serializeWithCodec($codec, $arguments);
+
+        StructuralLimits::logWarning(
+            StructuralLimits::warnApproachingPayloadSize($serializedArguments),
+            [
+                'workflow_run_id' => $run->id,
+                'workflow_type' => $run->workflow_type,
+                'payload_site' => 'signal_input',
+                'signal_name' => $name,
+            ],
+        );
 
         /** @var WorkflowSignal $signal */
         $signal = WorkflowSignal::query()->create([
@@ -3114,7 +3132,7 @@ final class WorkflowStub
             'outcome' => $command->outcome?->value,
             'command_sequence' => $command->command_sequence,
             'payload_codec' => $codec,
-            'arguments' => $payloadBlob ?? Serializer::serializeWithCodec($codec, $arguments),
+            'arguments' => $serializedArguments,
             'received_at' => $command->accepted_at,
         ]);
 
