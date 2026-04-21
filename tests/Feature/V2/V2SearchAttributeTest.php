@@ -174,7 +174,8 @@ final class V2SearchAttributeTest extends TestCase
 
     public function testVisibilityFilterVersionIsUpdated(): void
     {
-        $this->assertSame(5, VisibilityFilters::VERSION);
+        $this->assertSame(6, VisibilityFilters::VERSION);
+        $this->assertContains(6, VisibilityFilters::supportedVersions());
         $this->assertContains(5, VisibilityFilters::supportedVersions());
         $this->assertContains(3, VisibilityFilters::supportedVersions());
     }

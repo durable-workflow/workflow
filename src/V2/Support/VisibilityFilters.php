@@ -11,7 +11,7 @@ use Workflow\V2\Enums\StatusBucket;
 
 final class VisibilityFilters
 {
-    public const VERSION = 5;
+    public const VERSION = 6;
 
     public const MINIMUM_SUPPORTED_VERSION = 1;
 
@@ -22,6 +22,10 @@ final class VisibilityFilters
         'namespace' => 'Namespace',
         'workflow_type' => 'Workflow Type',
         'business_key' => 'Business Key',
+        'instance_id_contains' => 'Instance ID Contains',
+        'run_id_contains' => 'Run ID Contains',
+        'workflow_type_contains' => 'Workflow Type Contains',
+        'business_key_contains' => 'Business Key Contains',
         'compatibility' => 'Compatibility',
         'declared_entry_mode' => 'Entry Contract',
         'declared_contract_source' => 'Command Contract Source',
@@ -68,6 +72,13 @@ final class VisibilityFilters
         'is_terminal',
     ];
 
+    private const CONTAINS_FIELDS = [
+        'instance_id_contains' => 'instance_id',
+        'run_id_contains' => 'run_id',
+        'workflow_type_contains' => 'workflow_type',
+        'business_key_contains' => 'business_key',
+    ];
+
     private const LABEL_KEY_REGEX = '^[A-Za-z0-9_.:-]{1,64}$';
 
     private const LABEL_KEY_PATTERN = '/^[A-Za-z0-9_.:-]{1,64}$/';
@@ -81,7 +92,7 @@ final class VisibilityFilters
      */
     public static function supportedVersions(): array
     {
-        return [1, 2, 3, 4, self::VERSION];
+        return [1, 2, 3, 4, 5, self::VERSION];
     }
 
     public static function minimumSupportedVersion(): int
@@ -141,7 +152,7 @@ final class VisibilityFilters
                 'Summaries projected by older workers may have NULL for fields added in later schema versions; exact-match filters will not match NULL, so those rows are excluded from filtered views until re-projected.',
                 'The rebuild-projections command re-projects from durable runtime state, filling in any derived fields missing from older schema versions.',
                 'Saved views remain readable across filter version bumps; updating a deprecated saved view rewrites it onto the current version.',
-                'Boolean and string filter fields use exact-match semantics; no partial or range matching is applied.',
+                'Boolean and base string filter fields use exact-match semantics; explicit *_contains string filters use escaped SQL LIKE substring matching on the run-summary projection.',
             ],
             'projection_backfill_authority' => [
                 'trigger' => 'Summaries with a NULL or lower projection_schema_version than the current build need re-projection.',
@@ -162,6 +173,14 @@ final class VisibilityFilters
     }
 
     /**
+     * @return list<string>
+     */
+    public static function containsFields(): array
+    {
+        return array_keys(self::CONTAINS_FIELDS);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public static function definition(): array
@@ -175,6 +194,10 @@ final class VisibilityFilters
 
         foreach (self::BOOLEAN_FIELDS as $field) {
             $fields[$field] = self::fieldDefinition($field, 'boolean', $order++);
+        }
+
+        foreach (self::CONTAINS_FIELDS as $field => $exactField) {
+            $fields[$field] = self::fieldDefinition($field, 'string', $order++, 'contains', $exactField);
         }
 
         return [
@@ -285,6 +308,18 @@ final class VisibilityFilters
             }
         }
 
+        foreach (self::CONTAINS_FIELDS as $field => $exactField) {
+            $value = self::stringValue($filters[$field] ?? null);
+
+            if ($value === null && is_array($filters['contains'] ?? null)) {
+                $value = self::stringValue($filters['contains'][$exactField] ?? null);
+            }
+
+            if ($value !== null) {
+                $normalized[$field] = $value;
+            }
+        }
+
         $labels = self::normalizeLabels($filters['labels'] ?? $filters['label'] ?? []);
 
         if ($labels !== []) {
@@ -311,6 +346,10 @@ final class VisibilityFilters
             $filters[$field] = $request->query($field);
         }
 
+        foreach (self::containsFields() as $field) {
+            $filters[$field] = $request->query($field);
+        }
+
         $filters['labels'] = $request->query('label', $request->query('labels', []));
         $filters['search_attributes'] = $request->query('search_attribute', $request->query('search_attributes', []));
 
@@ -329,6 +368,12 @@ final class VisibilityFilters
             $normalized = self::normalize($filter);
 
             foreach (self::exactFields() as $field) {
+                if (array_key_exists($field, $normalized)) {
+                    $merged[$field] = $normalized[$field];
+                }
+            }
+
+            foreach (self::containsFields() as $field) {
                 if (array_key_exists($field, $normalized)) {
                     $merged[$field] = $normalized[$field];
                 }
@@ -369,6 +414,12 @@ final class VisibilityFilters
         foreach (self::STRING_FIELDS as $field) {
             if (array_key_exists($field, $normalized)) {
                 $query->where(self::columnForField($field), $normalized[$field]);
+            }
+        }
+
+        foreach (self::CONTAINS_FIELDS as $field => $exactField) {
+            if (array_key_exists($field, $normalized)) {
+                self::applyContainsFilter($query, self::columnForField($exactField), $normalized[$field]);
             }
         }
 
@@ -537,8 +588,13 @@ final class VisibilityFilters
     /**
      * @return array<string, mixed>
      */
-    private static function fieldDefinition(string $field, string $type, int $order): array
-    {
+    private static function fieldDefinition(
+        string $field,
+        string $type,
+        int $order,
+        string $operator = 'exact',
+        ?string $containsField = null,
+    ): array {
         $options = self::optionsForField($field, $type);
 
         $definition = [
@@ -547,12 +603,16 @@ final class VisibilityFilters
             'input' => $type === 'boolean'
                 ? 'boolean_select'
                 : ($options === [] ? 'text' : 'select'),
-            'operator' => 'exact',
+            'operator' => $operator,
             'filterable' => true,
             'saved_view_compatible' => true,
             'order' => $order,
             'query_parameter' => $field,
         ];
+
+        if ($containsField !== null) {
+            $definition['contains_field'] = $containsField;
+        }
 
         $help = self::helpForField($field);
 
@@ -627,8 +687,25 @@ final class VisibilityFilters
     {
         return match ($field) {
             'business_key' => 'Exact-match indexed operator metadata copied onto the run summary and saved-view contract.',
+            'instance_id_contains' => 'Substring match against workflow instance IDs for fragment lookup.',
+            'run_id_contains' => 'Substring match against workflow run IDs for fragment lookup.',
+            'workflow_type_contains' => 'Substring match against workflow type names for fragment lookup.',
+            'business_key_contains' => 'Substring match against indexed business keys for fragment lookup.',
             default => null,
         };
+    }
+
+    /**
+     * @param Builder<\Illuminate\Database\Eloquent\Model> $query
+     */
+    private static function applyContainsFilter(Builder $query, string $column, string $value): void
+    {
+        $wrappedColumn = $query->getQuery()
+            ->getGrammar()
+            ->wrap($column);
+        $escaped = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value);
+
+        $query->whereRaw($wrappedColumn . " LIKE ? ESCAPE '!'", ['%' . $escaped . '%']);
     }
 
     /**
