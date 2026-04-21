@@ -46,6 +46,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\HistoryPayloadCompression`
 - `Workflow\V2\Support\OperatorQueueVisibility`
 - `Workflow\V2\Support\PayloadEnvelopeResolver`
+- `Workflow\V2\Support\ReplayState`
 - `Workflow\V2\Support\ScheduleManager`
 - `Workflow\V2\Support\ScheduleStartResult`
 - `Workflow\V2\Support\StructuralLimits`
@@ -54,6 +55,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\WorkerCompatibilityFleet`
 - `Workflow\V2\Support\WorkerProtocolVersion`
 - `Workflow\V2\Support\WorkflowCommandNormalizer`
+- `Workflow\V2\Support\WorkflowReplayer`
 - `Workflow\V2\Support\WorkflowTaskOwnership`
 - `Workflow\V2\TaskWatchdog`
 
