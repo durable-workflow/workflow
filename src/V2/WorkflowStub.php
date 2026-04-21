@@ -1873,7 +1873,9 @@ final class WorkflowStub
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
                     $this->payloadLimitExceededCommandPayloadAttributes($updateName, $updateCodec, $e),
-                    ['arguments' => [$e->getMessage()]],
+                    [
+                        'arguments' => [$e->getMessage()],
+                    ],
                 );
 
                 return;
@@ -2232,7 +2234,9 @@ final class WorkflowStub
                     $this->commandTargetScope(),
                     $this->payloadLimitExceededCommandPayloadAttributes($name, $signalCodec, $e),
                 );
-                $this->recordRejectedSignal($command, $name, [], ['arguments' => [$e->getMessage()]]);
+                $this->recordRejectedSignal($command, $name, [], [
+                    'arguments' => [$e->getMessage()],
+                ]);
 
                 return;
             }

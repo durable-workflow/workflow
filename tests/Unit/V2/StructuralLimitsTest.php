@@ -528,32 +528,46 @@ final class StructuralLimitsTest extends TestCase
 
     public function testLogWarningIsNoOpWhenWarningIsNull(): void
     {
-        $logger = new class extends AbstractLogger {
-            /** @var list<array{level: string, message: string, context: array}> */
+        $logger = new class() extends AbstractLogger {
+            /**
+             * @var list<array{level: string, message: string, context: array}>
+             */
             public array $records = [];
 
             public function log($level, $message, array $context = []): void
             {
-                $this->records[] = ['level' => (string) $level, 'message' => (string) $message, 'context' => $context];
+                $this->records[] = [
+                    'level' => (string) $level,
+                    'message' => (string) $message,
+                    'context' => $context,
+                ];
             }
         };
 
         Log::swap($logger);
 
-        StructuralLimits::logWarning(null, ['workflow_run_id' => 'run-1']);
+        StructuralLimits::logWarning(null, [
+            'workflow_run_id' => 'run-1',
+        ]);
 
         $this->assertSame([], $logger->records);
     }
 
     public function testLogWarningEmitsStructuredRecordWithContext(): void
     {
-        $logger = new class extends AbstractLogger {
-            /** @var list<array{level: string, message: string, context: array}> */
+        $logger = new class() extends AbstractLogger {
+            /**
+             * @var list<array{level: string, message: string, context: array}>
+             */
             public array $records = [];
 
             public function log($level, $message, array $context = []): void
             {
-                $this->records[] = ['level' => (string) $level, 'message' => (string) $message, 'context' => $context];
+                $this->records[] = [
+                    'level' => (string) $level,
+                    'message' => (string) $message,
+                    'context' => $context,
+                ];
             }
         };
 

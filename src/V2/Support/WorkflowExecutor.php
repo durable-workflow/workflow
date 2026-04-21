@@ -1359,7 +1359,10 @@ final class WorkflowExecutor
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingPayloadSize($serializedArguments),
             $run,
-            ['payload_site' => 'activity_input', 'activity_class' => $activityCall->activity],
+            [
+                'payload_site' => 'activity_input',
+                'activity_class' => $activityCall->activity,
+            ],
         );
         StructuralLimits::guardPayloadSize($serializedArguments);
 
@@ -1570,7 +1573,10 @@ final class WorkflowExecutor
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingPayloadSize($serializedChildArguments),
             $run,
-            ['payload_site' => 'child_workflow_input', 'child_workflow_class' => $childWorkflowCall->workflow],
+            [
+                'payload_site' => 'child_workflow_input',
+                'child_workflow_class' => $childWorkflowCall->workflow,
+            ],
         );
         StructuralLimits::guardPayloadSize($serializedChildArguments);
 
@@ -2257,7 +2263,10 @@ final class WorkflowExecutor
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingPayloadSize($continueAsNewArguments),
             $run,
-            ['payload_site' => 'continue_as_new_input', 'target_workflow_class' => $workflowClass],
+            [
+                'payload_site' => 'continue_as_new_input',
+                'target_workflow_class' => $workflowClass,
+            ],
         );
         StructuralLimits::guardPayloadSize($continueAsNewArguments);
 
@@ -2508,7 +2517,9 @@ final class WorkflowExecutor
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingPayloadSize($serializedOutput),
             $run,
-            ['payload_site' => 'workflow_output'],
+            [
+                'payload_site' => 'workflow_output',
+            ],
         );
         StructuralLimits::guardPayloadSize($serializedOutput);
 
@@ -3769,7 +3780,9 @@ final class WorkflowExecutor
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingSearchAttributeSize($serializedSearchAttributes),
             $run,
-            ['payload_site' => 'search_attributes'],
+            [
+                'payload_site' => 'search_attributes',
+            ],
         );
         StructuralLimits::guardSearchAttributeSize($serializedSearchAttributes);
 
@@ -3846,7 +3859,9 @@ final class WorkflowExecutor
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingMemoSize($serializedMemo),
             $run,
-            ['payload_site' => 'memo'],
+            [
+                'payload_site' => 'memo',
+            ],
         );
         StructuralLimits::guardMemoSize($serializedMemo);
 

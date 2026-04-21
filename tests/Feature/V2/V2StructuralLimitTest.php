@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Log;
-use Tests\Fixtures\V2\TestContinueAsNewLargePayloadWorkflow;
 use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
+use Tests\Fixtures\V2\TestContinueAsNewLargePayloadWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestLargeMemoWorkflow;
 use Tests\Fixtures\V2\TestLargePayloadChildWorkflow;
