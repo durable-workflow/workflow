@@ -10,6 +10,7 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -43,6 +44,7 @@ final class OperatorMetrics
             'repair' => TaskRepairCandidates::snapshot($now),
             'starts' => self::startMetrics($now),
             'history' => self::historyMetrics(),
+            'command_contracts' => self::commandContractMetrics(),
             'projections' => self::projectionMetrics(),
             'workers' => self::workerMetrics(),
             'backend' => BackendCapabilities::snapshot($now),
@@ -210,6 +212,51 @@ final class OperatorMetrics
             'max_size_bytes' => (int) $summaryModel::query()->max('history_size_bytes'),
             'event_threshold' => HistoryBudget::eventThreshold(),
             'size_bytes_threshold' => HistoryBudget::sizeBytesThreshold(),
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private static function commandContractMetrics(): array
+    {
+        $needed = 0;
+        $available = 0;
+
+        self::runModel()::query()
+            ->whereHas('historyEvents', static function ($query): void {
+                $query->where('event_type', HistoryEventType::WorkflowStarted->value);
+            })
+            ->with([
+                'historyEvents' => static function ($query): void {
+                    $query->where('event_type', HistoryEventType::WorkflowStarted->value)
+                        ->orderBy('sequence');
+                },
+            ])
+            ->chunkById(200, static function ($runs) use (&$needed, &$available): void {
+                foreach ($runs as $run) {
+                    if (! $run instanceof WorkflowRun) {
+                        continue;
+                    }
+
+                    $status = RunCommandContract::backfillStatus($run);
+
+                    if (! $status['needed']) {
+                        continue;
+                    }
+
+                    $needed++;
+
+                    if ($status['available']) {
+                        $available++;
+                    }
+                }
+            });
+
+        return [
+            'backfill_needed_runs' => $needed,
+            'backfill_available_runs' => $available,
+            'backfill_unavailable_runs' => max(0, $needed - $available),
         ];
     }
 

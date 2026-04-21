@@ -19,6 +19,7 @@ final class HealthCheck
             self::backendCheck($metrics['backend'] ?? []),
             self::runSummaryProjectionCheck($metrics['projections']['run_summaries'] ?? []),
             self::selectedRunProjectionCheck($metrics['projections'] ?? []),
+            self::commandContractCheck($metrics['command_contracts'] ?? []),
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
             self::durableResumePathCheck($metrics['backlog'] ?? [], $metrics['repair'] ?? []),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
@@ -140,6 +141,28 @@ final class HealthCheck
                 'lineage_missing_runs_with_lineage' => self::integer($lineage['missing_runs_with_lineage'] ?? 0),
                 'lineage_stale_projected_runs' => self::integer($lineage['stale_projected_runs'] ?? 0),
                 'lineage_orphaned' => self::integer($lineage['orphaned'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $metrics
+     * @return array<string, mixed>
+     */
+    private static function commandContractCheck(array $metrics): array
+    {
+        $needed = self::integer($metrics['backfill_needed_runs'] ?? 0);
+
+        return self::check(
+            'command_contract_snapshots',
+            $needed === 0 ? 'ok' : 'warning',
+            $needed === 0
+                ? 'WorkflowStarted command-contract snapshots are complete.'
+                : 'Some WorkflowStarted command-contract snapshots need backfill before operators can trust command forms.',
+            [
+                'backfill_needed_runs' => $needed,
+                'backfill_available_runs' => self::integer($metrics['backfill_available_runs'] ?? 0),
+                'backfill_unavailable_runs' => self::integer($metrics['backfill_unavailable_runs'] ?? 0),
             ],
         );
     }

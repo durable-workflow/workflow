@@ -13,15 +13,21 @@ final class SelectedRunLocator
     /**
      * @param list<string> $relations
      */
-    public static function forIdOrFail(string $id, array $relations = []): WorkflowRun
+    public static function forIdOrFail(string $id, array $relations = [], ?string $namespace = null): WorkflowRun
     {
-        $run = self::runQuery($relations)->find($id);
+        $query = self::runQuery($relations);
+
+        if ($namespace !== null) {
+            $query->where('namespace', $namespace);
+        }
+
+        $run = $query->find($id);
 
         if ($run instanceof WorkflowRun) {
             return $run;
         }
 
-        return self::forInstanceIdOrFail($id, null, $relations);
+        return self::forInstanceIdOrFail($id, null, $relations, $namespace);
     }
 
     /**
@@ -48,13 +54,19 @@ final class SelectedRunLocator
         string $instanceId,
         ?string $runId = null,
         array $relations = [],
+        ?string $namespace = null,
     ): WorkflowRun {
         $instanceModel = self::instanceModel();
+        $query = $instanceModel::query();
+
+        if ($namespace !== null) {
+            $query->where('namespace', $namespace);
+        }
 
         /** @var WorkflowInstance $instance */
-        $instance = $instanceModel::query()->findOrFail($instanceId);
+        $instance = $query->findOrFail($instanceId);
 
-        return self::forInstanceOrFail($instance, $runId, $relations);
+        return self::forInstanceOrFail($instance, $runId, $relations, $namespace);
     }
 
     /**
@@ -64,13 +76,23 @@ final class SelectedRunLocator
         WorkflowInstance $instance,
         ?string $runId = null,
         array $relations = [],
+        ?string $namespace = null,
     ): WorkflowRun {
+        if ($namespace !== null && $instance->namespace !== $namespace) {
+            self::throwRunNotFound($instance->id);
+        }
+
         if ($runId !== null) {
-            /** @var WorkflowRun $run */
-            $run = self::runQuery($relations)
+            $query = self::runQuery($relations)
                 ->where('workflow_instance_id', $instance->id)
-                ->whereKey($runId)
-                ->firstOrFail();
+                ->whereKey($runId);
+
+            if ($namespace !== null) {
+                $query->where('namespace', $namespace);
+            }
+
+            /** @var WorkflowRun $run */
+            $run = $query->firstOrFail();
 
             return $run;
         }

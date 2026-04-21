@@ -57,6 +57,8 @@ final class HistoryExport
             'childLinks',
         ]);
 
+        RunCommandContract::forRun($run);
+
         $summary = $run->summary;
         $selectedRun = SelectedRunSnapshot::forRun($run);
         $currentRunResolution = $selectedRun['current_run'];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Throwable;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -28,29 +29,53 @@ final class RunCommandContract
      *     entry_method: 'handle'|'execute'|null,
      *     entry_mode: 'canonical'|'compatibility'|null,
      *     entry_declaring_class: class-string|null,
-     *     source: string
+     *     source: string,
+     *     backfill_needed: bool,
+     *     backfill_available: bool
      * }
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $contract = self::contractFromHistory($run);
+        $event = self::workflowStartedEvent($run);
+        $state = self::contractStateFromHistoryEvent($event);
 
-        if ($contract !== null) {
-            return [
-                ...self::withTargets($contract),
-                'source' => self::SOURCE_DURABLE_HISTORY,
-            ];
+        if ($state['contract'] !== null && $state['strict']) {
+            return self::payload($state['contract'], self::SOURCE_DURABLE_HISTORY, false, false);
         }
 
-        return [
-            ...self::withTargets(self::emptyContract()),
-            'source' => self::SOURCE_UNAVAILABLE,
-        ];
+        if ($event instanceof WorkflowHistoryEvent && ! $state['backfill_needed']) {
+            $backfilled = self::backfillStartedEvent($run, $event);
+
+            if ($backfilled !== null) {
+                return self::payload($backfilled, self::SOURCE_DURABLE_HISTORY, false, false);
+            }
+        }
+
+        return self::payload(
+            $state['contract'] ?? self::emptyContract(),
+            self::SOURCE_UNAVAILABLE,
+            $state['backfill_needed'],
+            $state['backfill_needed'] && self::snapshotForRun($run) !== null,
+        );
     }
 
     public static function hasSignal(WorkflowRun $run, string $name): bool
     {
         return in_array($name, self::forRun($run)['signals'], true);
+    }
+
+    /**
+     * @return array{needed: bool, available: bool}
+     */
+    public static function backfillStatus(WorkflowRun $run): array
+    {
+        $state = self::contractStateFromHistoryEvent(self::workflowStartedEvent($run));
+        $needed = $state['backfill_needed'];
+
+        return [
+            'needed' => $needed,
+            'available' => $needed && self::snapshotForRun($run) !== null,
+        ];
     }
 
     public static function hasQueryMethod(WorkflowRun $run, string $name): bool
@@ -135,43 +160,37 @@ final class RunCommandContract
 
     /**
      * @return array{
-     *     queries: list<string>,
-     *     query_contracts: list<array<string, mixed>>,
-     *     signals: list<string>,
-     *     signal_contracts: list<array<string, mixed>>,
-     *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute'|null,
-     *     entry_mode: 'canonical'|'compatibility'|null,
-     *     entry_declaring_class: class-string|null
-     * }|null
+     *     contract: array{
+     *         queries: list<string>,
+     *         query_contracts: list<array<string, mixed>>,
+     *         signals: list<string>,
+     *         signal_contracts: list<array<string, mixed>>,
+     *         updates: list<string>,
+     *         update_contracts: list<array<string, mixed>>,
+     *         entry_method: 'handle'|'execute'|null,
+     *         entry_mode: 'canonical'|'compatibility'|null,
+     *         entry_declaring_class: class-string|null
+     *     }|null,
+     *     strict: bool,
+     *     backfill_needed: bool
+     * }
      */
-    private static function contractFromHistory(WorkflowRun $run): ?array
-    {
-        return self::contractFromHistoryEvent(self::workflowStartedEvent($run));
-    }
-
-    /**
-     * @return array{
-     *     queries: list<string>,
-     *     query_contracts: list<array<string, mixed>>,
-     *     signals: list<string>,
-     *     signal_contracts: list<array<string, mixed>>,
-     *     updates: list<string>,
-     *     update_contracts: list<array<string, mixed>>,
-     *     entry_method: 'handle'|'execute'|null,
-     *     entry_mode: 'canonical'|'compatibility'|null,
-     *     entry_declaring_class: class-string|null
-     * }|null
-     */
-    private static function contractFromHistoryEvent(?WorkflowHistoryEvent $event): ?array
+    private static function contractStateFromHistoryEvent(?WorkflowHistoryEvent $event): array
     {
         if (! $event instanceof WorkflowHistoryEvent) {
-            return null;
+            return [
+                'contract' => null,
+                'strict' => false,
+                'backfill_needed' => false,
+            ];
         }
 
         if (! is_array($event->payload)) {
-            return null;
+            return [
+                'contract' => null,
+                'strict' => false,
+                'backfill_needed' => false,
+            ];
         }
 
         $queries = self::normalizeList($event->payload['declared_queries'] ?? null);
@@ -183,6 +202,27 @@ final class RunCommandContract
         $entryMethod = self::normalizeEntryMethod($event->payload['declared_entry_method'] ?? null);
         $entryMode = self::normalizeEntryMode($event->payload['declared_entry_mode'] ?? null);
         $entryDeclaringClass = self::normalizeClassString($event->payload['declared_entry_declaring_class'] ?? null);
+
+        $declaredPayloadKeys = [
+            'declared_queries',
+            'declared_query_contracts',
+            'declared_signals',
+            'declared_signal_contracts',
+            'declared_updates',
+            'declared_update_contracts',
+            'declared_entry_method',
+            'declared_entry_mode',
+            'declared_entry_declaring_class',
+        ];
+        $hasAnyDeclaredPayload = false;
+
+        foreach ($declaredPayloadKeys as $key) {
+            if (array_key_exists($key, $event->payload)) {
+                $hasAnyDeclaredPayload = true;
+
+                break;
+            }
+        }
 
         $hasStrictPayload = array_key_exists('declared_queries', $event->payload)
             && array_key_exists('declared_query_contracts', $event->payload)
@@ -216,42 +256,138 @@ final class RunCommandContract
             /** @var list<array<string, mixed>> $updateContracts */
 
             return [
-                'queries' => $queries,
-                'query_contracts' => $queryContracts,
-                'signals' => $signals,
-                'signal_contracts' => $signalContracts,
-                'updates' => $updates,
-                'update_contracts' => $updateContracts,
-                'entry_method' => $entryMethod,
-                'entry_mode' => $entryMode,
-                'entry_declaring_class' => $entryDeclaringClass,
+                'contract' => [
+                    'queries' => $queries,
+                    'query_contracts' => $queryContracts,
+                    'signals' => $signals,
+                    'signal_contracts' => $signalContracts,
+                    'updates' => $updates,
+                    'update_contracts' => $updateContracts,
+                    'entry_method' => $entryMethod,
+                    'entry_mode' => $entryMode,
+                    'entry_declaring_class' => $entryDeclaringClass,
+                ],
+                'strict' => true,
+                'backfill_needed' => false,
             ];
         }
 
-        // Legacy-shape fallback: a WorkflowStarted payload persisted before the
-        // declared_*_contracts / declared_entry_* fields were required can
-        // still declare the set of signals/updates/queries by name. Keep
-        // those declared names addressable (so `hasSignal()` is truthful and
-        // callers can reject named arguments with a contract-required error)
-        // while leaving the per-name contract lists empty. When the payload
-        // has none of the declared_* fields at all, we have no contract.
-        $legacyShape = $signals !== null || $updates !== null || $queries !== null;
-
-        if (! $legacyShape) {
-            return null;
+        if (! $hasAnyDeclaredPayload) {
+            return [
+                'contract' => null,
+                'strict' => false,
+                'backfill_needed' => false,
+            ];
         }
 
         return [
-            'queries' => $queries ?? [],
-            'query_contracts' => [],
-            'signals' => $signals ?? [],
-            'signal_contracts' => [],
-            'updates' => $updates ?? [],
-            'update_contracts' => [],
-            'entry_method' => $entryMethod,
-            'entry_mode' => $entryMode,
-            'entry_declaring_class' => $entryDeclaringClass,
+            'contract' => [
+                'queries' => $queries ?? [],
+                'query_contracts' => $queryContracts ?? [],
+                'signals' => $signals ?? [],
+                'signal_contracts' => $signalContracts ?? [],
+                'updates' => $updates ?? [],
+                'update_contracts' => $updateContracts ?? [],
+                'entry_method' => $entryMethod,
+                'entry_mode' => $entryMode,
+                'entry_declaring_class' => $entryDeclaringClass,
+            ],
+            'strict' => false,
+            'backfill_needed' => true,
         ];
+    }
+
+    /**
+     * @param array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute'|null,
+     *     entry_mode: 'canonical'|'compatibility'|null,
+     *     entry_declaring_class: class-string|null
+     * } $contract
+     * @return array<string, mixed>
+     */
+    private static function payload(
+        array $contract,
+        string $source,
+        bool $backfillNeeded,
+        bool $backfillAvailable,
+    ): array {
+        return [
+            ...self::withTargets($contract),
+            'source' => $source,
+            'backfill_needed' => $backfillNeeded,
+            'backfill_available' => $backfillAvailable,
+        ];
+    }
+
+    /**
+     * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
+     * }|null
+     */
+    private static function backfillStartedEvent(WorkflowRun $run, WorkflowHistoryEvent $event): ?array
+    {
+        $contract = self::snapshotForRun($run);
+
+        if ($contract === null) {
+            return null;
+        }
+
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $payload['declared_queries'] = $contract['queries'];
+        $payload['declared_query_contracts'] = $contract['query_contracts'];
+        $payload['declared_signals'] = $contract['signals'];
+        $payload['declared_signal_contracts'] = $contract['signal_contracts'];
+        $payload['declared_updates'] = $contract['updates'];
+        $payload['declared_update_contracts'] = $contract['update_contracts'];
+        $payload['declared_entry_method'] = $contract['entry_method'];
+        $payload['declared_entry_mode'] = $contract['entry_mode'];
+        $payload['declared_entry_declaring_class'] = $contract['entry_declaring_class'];
+
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        return $contract;
+    }
+
+    /**
+     * @return array{
+     *     queries: list<string>,
+     *     query_contracts: list<array<string, mixed>>,
+     *     signals: list<string>,
+     *     signal_contracts: list<array<string, mixed>>,
+     *     updates: list<string>,
+     *     update_contracts: list<array<string, mixed>>,
+     *     entry_method: 'handle'|'execute',
+     *     entry_mode: 'canonical'|'compatibility',
+     *     entry_declaring_class: class-string
+     * }|null
+     */
+    private static function snapshotForRun(WorkflowRun $run): ?array
+    {
+        if (! is_string($run->workflow_class) || $run->workflow_class === '') {
+            return null;
+        }
+
+        try {
+            return self::snapshot($run->workflow_class);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent

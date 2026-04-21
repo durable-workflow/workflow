@@ -9,6 +9,7 @@ use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\WorkflowStub;
 
 final class V2NamespaceScopedLoadTest extends TestCase
@@ -103,6 +104,42 @@ final class V2NamespaceScopedLoadTest extends TestCase
         $stub = WorkflowStub::loadSelection('ns-sel-inst', null, 'billing');
 
         $this->assertSame('ns-sel-inst', $stub->id());
+    }
+
+    public function testSelectedRunLocatorScopesRunIdLookupByNamespace(): void
+    {
+        $run = $this->createRun('ns-locator-run', '01JNSLOCATORRUN0000001', 'running', 'billing');
+
+        $this->assertSame($run->id, SelectedRunLocator::forIdOrFail($run->id, [], 'billing')->id);
+
+        $this->expectException(ModelNotFoundException::class);
+
+        SelectedRunLocator::forIdOrFail($run->id, [], 'shipping');
+    }
+
+    public function testSelectedRunLocatorScopesInstanceIdLookupByNamespace(): void
+    {
+        $run = $this->createRun('ns-locator-instance', '01JNSLOCATORINST000001', 'running', 'billing');
+
+        $this->assertSame($run->id, SelectedRunLocator::forIdOrFail('ns-locator-instance', [], 'billing')->id);
+
+        $this->expectException(ModelNotFoundException::class);
+
+        SelectedRunLocator::forIdOrFail('ns-locator-instance', [], 'shipping');
+    }
+
+    public function testSelectedRunLocatorScopesPinnedInstanceSelectionByNamespace(): void
+    {
+        $run = $this->createRun('ns-locator-selection', '01JNSLOCATORSEL0000001', 'running', 'billing');
+
+        $this->assertSame(
+            $run->id,
+            SelectedRunLocator::forInstanceIdOrFail('ns-locator-selection', $run->id, [], 'billing')->id,
+        );
+
+        $this->expectException(ModelNotFoundException::class);
+
+        SelectedRunLocator::forInstanceIdOrFail('ns-locator-selection', $run->id, [], 'shipping');
     }
 
     private function createRun(string $instanceId, string $runId, string $status, ?string $namespace): WorkflowRun

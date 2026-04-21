@@ -183,6 +183,8 @@ final class RunDetailView
             'declared_entry_mode' => $commandContract['entry_mode'],
             'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
             'declared_contract_source' => $commandContract['source'],
+            'declared_contract_backfill_needed' => $commandContract['backfill_needed'],
+            'declared_contract_backfill_available' => $commandContract['backfill_available'],
             'status_bucket' => $summary?->status_bucket,
             'closed_reason' => $summary?->closed_reason ?? $run->closed_reason,
             'closed_at' => $summary?->closed_at ?? $run->closed_at,

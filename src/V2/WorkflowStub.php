@@ -572,7 +572,7 @@ final class WorkflowStub
             return new self($instance);
         }
 
-        $run = SelectedRunLocator::forInstanceOrFail($instance, $runId);
+        $run = SelectedRunLocator::forInstanceOrFail($instance, $runId, [], $namespace);
 
         return new self($instance, $run, true);
     }
