@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\HistoryEventPayloadContract;
 
 class WorkflowHistoryEvent extends Model
 {
@@ -59,6 +60,7 @@ class WorkflowHistoryEvent extends Model
         $taskId = $taskModel?->id ?? (is_string($task) ? $task : null);
         $commandId = $commandModel?->id ?? (is_string($command) ? $command : null);
         $sequence = $run->last_history_sequence + 1;
+        HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
 
         /** @var self $event */
         $event = self::query()->create([

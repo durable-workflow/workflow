@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\HistoryEventPayloadContract;
 
 class WorkflowScheduleHistoryEvent extends Model
 {
@@ -56,6 +57,8 @@ class WorkflowScheduleHistoryEvent extends Model
         HistoryEventType $eventType,
         array $payload = [],
     ): self {
+        HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
+
         $snapshot = self::snapshotPayload($schedule, $payload);
         $workflowInstanceId = self::stringValue($payload['workflow_instance_id'] ?? null);
         $workflowRunId = self::stringValue($payload['workflow_run_id'] ?? null);
