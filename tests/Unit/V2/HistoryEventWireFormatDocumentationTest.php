@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
 
 /**
  * DB-free guards for the replay-critical history-event schema documented in
@@ -291,6 +292,24 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
                 '/\| `[^`]+` \| [^|]+ \| [^|]*[A-Za-z][^|]* \|/',
                 $row,
                 sprintf('%s must document at least one replay or projection consumer.', $eventType),
+            );
+        }
+    }
+
+    public function testEveryHistoryEventTypeHasADocumentedWireFormatRow(): void
+    {
+        $document = $this->fileContents('docs/api-stability.md');
+
+        foreach (HistoryEventType::cases() as $case) {
+            $row = $this->documentationRow($document, $case->value);
+
+            $this->assertMatchesRegularExpression(
+                '/^\| `[^`]+` \| [^|]*`[a-z_]+`[^|]* \| [^|]*[A-Za-z][^|]* \|$/',
+                $row,
+                sprintf(
+                    '%s must document frozen payload keys and at least one replay/projection consumer.',
+                    $case->value,
+                ),
             );
         }
     }
