@@ -7,6 +7,7 @@ namespace Tests;
 use Dotenv\Dotenv;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Symfony\Component\Process\Process;
 use Workflow\V2\TaskWatchdog;
@@ -14,6 +15,10 @@ use Workflow\V2\TaskWatchdog;
 abstract class TestCase extends BaseTestCase
 {
     public const NUMBER_OF_WORKERS = 2;
+
+    private const V1_WATCHDOG_LOOP_THROTTLE_KEY = 'workflow:watchdog:looping';
+
+    private const WATCHDOG_THROTTLE_TTL_SECONDS = 600;
 
     private static $workers = [];
 
@@ -32,6 +37,10 @@ abstract class TestCase extends BaseTestCase
         }
 
         self::flushRedis();
+        // The first feature test's migrate:fresh runs before setUp() can write
+        // the Cache facade throttle keys, so prime Redis directly before the
+        // background queue workers start polling.
+        self::primeWatchdogThrottle();
 
         // Explicitly hand our env to Process. testbench/laravel/.env hardcodes
         // CACHE_DRIVER=file; without an inherited env (or when Symfony Process
@@ -110,8 +119,8 @@ abstract class TestCase extends BaseTestCase
             // Tests that legitimately need either watchdog to fire call
             // their local wakeTaskWatchdog() helper, which forgets the
             // key and calls runPass(respectThrottle: false) directly.
-            Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 600);
-            Cache::put('workflow:watchdog:looping', true, 600);
+            Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, self::WATCHDOG_THROTTLE_TTL_SECONDS);
+            Cache::put(self::V1_WATCHDOG_LOOP_THROTTLE_KEY, true, self::WATCHDOG_THROTTLE_TTL_SECONDS);
         }
     }
 
@@ -156,16 +165,95 @@ abstract class TestCase extends BaseTestCase
 
     private static function flushRedis(): void
     {
-        $redisHost = getenv('REDIS_HOST') ?: ($_ENV['REDIS_HOST'] ?? null);
-        $redisPort = getenv('REDIS_PORT') ?: ($_ENV['REDIS_PORT'] ?? 6379);
-        if ($redisHost && class_exists(\Redis::class)) {
+        $redis = self::redisConnection();
+
+        if ($redis instanceof \Redis) {
             try {
-                $redis = new \Redis();
-                $redis->connect($redisHost, (int) $redisPort);
-                $redis->flushDB();
+                foreach (self::redisDatabases() as $database) {
+                    $redis->select($database);
+                    $redis->flushDB();
+                }
             } catch (\Throwable $e) {
                 // Ignore if no redis
+            } finally {
+                $redis->close();
             }
         }
+    }
+
+    private static function primeWatchdogThrottle(): void
+    {
+        $redis = self::redisConnection();
+
+        if ($redis instanceof \Redis) {
+            try {
+                $redis->select(self::redisCacheDatabase());
+
+                foreach ([TaskWatchdog::LOOP_THROTTLE_KEY, self::V1_WATCHDOG_LOOP_THROTTLE_KEY] as $key) {
+                    foreach (self::cacheKeyCandidates($key) as $candidate) {
+                        $redis->setex($candidate, self::WATCHDOG_THROTTLE_TTL_SECONDS, serialize(true));
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Ignore if no redis
+            } finally {
+                $redis->close();
+            }
+        }
+    }
+
+    private static function redisConnection(): ?\Redis
+    {
+        $redisHost = getenv('REDIS_HOST') ?: ($_ENV['REDIS_HOST'] ?? null);
+        if (! $redisHost || ! class_exists(\Redis::class)) {
+            return null;
+        }
+
+        try {
+            $redis = new \Redis();
+            $redis->connect($redisHost, self::redisPort());
+
+            return $redis;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * @return list<int>
+     */
+    private static function redisDatabases(): array
+    {
+        return array_values(array_unique([self::redisDatabase(), self::redisCacheDatabase()]));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function cacheKeyCandidates(string $key): array
+    {
+        $prefix = getenv('CACHE_PREFIX');
+
+        if ($prefix === false) {
+            $appName = getenv('APP_NAME') ?: ($_ENV['APP_NAME'] ?? 'Laravel');
+            $prefix = Str::slug($appName, '_') . '_cache_';
+        }
+
+        return array_values(array_unique([$key, $prefix === '' ? $key : $prefix . ':' . $key]));
+    }
+
+    private static function redisPort(): int
+    {
+        return (int) (getenv('REDIS_PORT') ?: ($_ENV['REDIS_PORT'] ?? 6379));
+    }
+
+    private static function redisDatabase(): int
+    {
+        return (int) (getenv('REDIS_DB') ?: ($_ENV['REDIS_DB'] ?? 0));
+    }
+
+    private static function redisCacheDatabase(): int
+    {
+        return (int) (getenv('REDIS_CACHE_DB') ?: ($_ENV['REDIS_CACHE_DB'] ?? 1));
     }
 }
