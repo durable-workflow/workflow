@@ -322,7 +322,7 @@ final class VisibilityFiltersTest extends TestCase
         $definition = VisibilityFilters::definition();
 
         $this->assertSame(VisibilityFilters::VERSION, $definition['version']);
-        $this->assertSame([1, 2, 3, 4, 5, VisibilityFilters::VERSION], $definition['supported_versions']);
+        $this->assertSame([VisibilityFilters::VERSION], $definition['supported_versions']);
         $this->assertSame('Instance ID', $definition['fields']['instance_id']['label']);
         $this->assertSame('string', $definition['fields']['instance_id']['type']);
         $this->assertSame('text', $definition['fields']['instance_id']['input']);
@@ -493,8 +493,7 @@ final class VisibilityFiltersTest extends TestCase
 
         $this->assertSame(VisibilityFilters::VERSION, $supported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $supported['current_version']);
-        $this->assertSame(VisibilityFilters::MINIMUM_SUPPORTED_VERSION, $supported['minimum_supported_version']);
-        $this->assertSame([1, 2, 3, 4, 5, VisibilityFilters::VERSION], $supported['supported_versions']);
+        $this->assertSame([VisibilityFilters::VERSION], $supported['supported_versions']);
         $this->assertTrue($supported['supported']);
         $this->assertFalse($supported['deprecated']);
         $this->assertSame('supported', $supported['status']);
@@ -502,59 +501,29 @@ final class VisibilityFiltersTest extends TestCase
 
         $this->assertSame(99, $unsupported['version']);
         $this->assertSame(VisibilityFilters::VERSION, $unsupported['current_version']);
-        $this->assertSame(VisibilityFilters::MINIMUM_SUPPORTED_VERSION, $unsupported['minimum_supported_version']);
-        $this->assertSame([1, 2, 3, 4, 5, VisibilityFilters::VERSION], $unsupported['supported_versions']);
+        $this->assertSame([VisibilityFilters::VERSION], $unsupported['supported_versions']);
         $this->assertFalse($unsupported['supported']);
         $this->assertFalse($unsupported['deprecated']);
         $this->assertSame('unsupported', $unsupported['status']);
         $this->assertSame(
-            'This saved view uses visibility filter version 99, but this Waterline build supports version 1, 2, 3, 4, 5, 6.',
+            'This saved view uses visibility filter version 99, but this Waterline build supports version 6.',
             $unsupported['message'],
         );
     }
 
-    public function testVersionMetadataMarksDeprecatedVersionsExplicitly(): void
+    public function testVersionMetadataRejectsPreStableV2AlphaVersions(): void
     {
-        $deprecated = VisibilityFilters::versionMetadata(1);
+        $alphaVersion = VisibilityFilters::versionMetadata(1);
 
-        $this->assertSame(1, $deprecated['version']);
-        $this->assertSame(VisibilityFilters::VERSION, $deprecated['current_version']);
-        $this->assertTrue($deprecated['supported']);
-        $this->assertTrue($deprecated['deprecated']);
-        $this->assertSame('deprecated', $deprecated['status']);
+        $this->assertSame(1, $alphaVersion['version']);
+        $this->assertSame(VisibilityFilters::VERSION, $alphaVersion['current_version']);
+        $this->assertFalse($alphaVersion['supported']);
+        $this->assertFalse($alphaVersion['deprecated']);
+        $this->assertSame('unsupported', $alphaVersion['status']);
         $this->assertSame(
-            'This saved view uses deprecated visibility filter version 1. Consider updating it to the current version 6.',
-            $deprecated['message'],
+            'This saved view uses visibility filter version 1, but this Waterline build supports version 6.',
+            $alphaVersion['message'],
         );
-
-        $deprecated2 = VisibilityFilters::versionMetadata(2);
-        $this->assertTrue($deprecated2['supported']);
-        $this->assertTrue($deprecated2['deprecated']);
-        $this->assertSame('deprecated', $deprecated2['status']);
-
-        $notDeprecated = VisibilityFilters::versionMetadata(3);
-        $this->assertTrue($notDeprecated['supported']);
-        $this->assertFalse($notDeprecated['deprecated']);
-        $this->assertSame('supported', $notDeprecated['status']);
-        $this->assertNull($notDeprecated['message']);
-    }
-
-    public function testVersionEvolutionPolicyExposesStableContract(): void
-    {
-        $policy = VisibilityFilters::versionEvolutionPolicy();
-
-        $this->assertSame(VisibilityFilters::VERSION, $policy['current_version']);
-        $this->assertSame(VisibilityFilters::MINIMUM_SUPPORTED_VERSION, $policy['minimum_supported_version']);
-        $this->assertSame([1, 2, 3, 4, 5, VisibilityFilters::VERSION], $policy['supported_versions']);
-        $this->assertSame([1, 2], $policy['deprecated_versions']);
-        $this->assertSame('system:', $policy['reserved_view_id_prefix']);
-        $this->assertIsString($policy['upgrade_policy']);
-
-        foreach ($policy['deprecated_versions'] as $version) {
-            $this->assertTrue(VisibilityFilters::isDeprecated($version));
-            $this->assertContains($version, $policy['supported_versions']);
-            $this->assertGreaterThanOrEqual($policy['minimum_supported_version'], $version);
-        }
     }
 
     public function testIsReservedViewIdGuardsSystemPrefix(): void
@@ -567,12 +536,13 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertFalse(VisibilityFilters::isReservedViewId(''));
     }
 
-    public function testDefinitionIncludesVersionEvolutionFields(): void
+    public function testDefinitionIncludesCleanSlateVersionFields(): void
     {
         $definition = VisibilityFilters::definition();
 
-        $this->assertSame(VisibilityFilters::MINIMUM_SUPPORTED_VERSION, $definition['minimum_supported_version']);
-        $this->assertSame([1, 2], $definition['deprecated_versions']);
+        $this->assertSame([VisibilityFilters::VERSION], $definition['supported_versions']);
+        $this->assertArrayNotHasKey('minimum_supported_version', $definition);
+        $this->assertArrayNotHasKey('deprecated_versions', $definition);
         $this->assertSame('system:', $definition['reserved_view_id_prefix']);
     }
 
@@ -673,31 +643,6 @@ final class VisibilityFiltersTest extends TestCase
         $this->assertSame(RunSummaryProjector::SCHEMA_VERSION, $definition['projection_schema_version']);
         $this->assertIsInt($definition['projection_schema_version']);
         $this->assertGreaterThanOrEqual(1, $definition['projection_schema_version']);
-    }
-
-    public function testMixedFleetPolicyExposesStableContract(): void
-    {
-        $policy = VisibilityFilters::mixedFleetPolicy();
-
-        $this->assertSame(RunSummaryProjector::SCHEMA_VERSION, $policy['projection_schema_version']);
-        $this->assertSame(VisibilityFilters::VERSION, $policy['filter_version']);
-        $this->assertIsArray($policy['invariants']);
-        $this->assertNotEmpty($policy['invariants']);
-
-        foreach ($policy['invariants'] as $invariant) {
-            $this->assertIsString($invariant);
-            $this->assertNotEmpty($invariant);
-        }
-
-        $this->assertArrayHasKey('projection_backfill_authority', $policy);
-        $backfill = $policy['projection_backfill_authority'];
-        $this->assertArrayHasKey('trigger', $backfill);
-        $this->assertArrayHasKey('mechanism', $backfill);
-        $this->assertArrayHasKey('scope', $backfill);
-        $this->assertArrayHasKey('safety', $backfill);
-
-        $this->assertIsString($policy['upgrade_path']);
-        $this->assertNotEmpty($policy['upgrade_path']);
     }
 
     public function testApplyFiltersExcludeRowsWithNullVisibilityFieldsFromFilteredViews(): void

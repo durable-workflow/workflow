@@ -13,8 +13,6 @@ final class VisibilityFilters
 {
     public const VERSION = 6;
 
-    public const MINIMUM_SUPPORTED_VERSION = 1;
-
     private const FIELD_LABELS = [
         'instance_id' => 'Instance ID',
         'run_id' => 'Run ID',
@@ -83,8 +81,6 @@ final class VisibilityFilters
 
     private const LABEL_KEY_PATTERN = '/^[A-Za-z0-9_.:-]{1,64}$/';
 
-    private const DEPRECATED_VERSIONS = [1, 2];
-
     private const RESERVED_VIEW_ID_PREFIX = 'system:';
 
     /**
@@ -92,76 +88,12 @@ final class VisibilityFilters
      */
     public static function supportedVersions(): array
     {
-        return [1, 2, 3, 4, 5, self::VERSION];
-    }
-
-    public static function minimumSupportedVersion(): int
-    {
-        return self::MINIMUM_SUPPORTED_VERSION;
-    }
-
-    public static function isDeprecated(int $version): bool
-    {
-        return in_array($version, self::DEPRECATED_VERSIONS, true);
+        return [self::VERSION];
     }
 
     public static function isReservedViewId(string $id): bool
     {
         return str_starts_with($id, self::RESERVED_VIEW_ID_PREFIX);
-    }
-
-    /**
-     * @return array{
-     *     current_version: int,
-     *     minimum_supported_version: int,
-     *     supported_versions: list<int>,
-     *     deprecated_versions: list<int>,
-     *     reserved_view_id_prefix: string,
-     *     upgrade_policy: string
-     * }
-     */
-    public static function versionEvolutionPolicy(): array
-    {
-        return [
-            'current_version' => self::VERSION,
-            'minimum_supported_version' => self::MINIMUM_SUPPORTED_VERSION,
-            'supported_versions' => self::supportedVersions(),
-            'deprecated_versions' => self::DEPRECATED_VERSIONS,
-            'reserved_view_id_prefix' => self::RESERVED_VIEW_ID_PREFIX,
-            'upgrade_policy' => 'Saved views written against any supported version remain readable. '
-                . 'Updating a saved view rewrites it onto the current version. '
-                . 'Deprecated versions are still loadable but should be migrated to the current version. '
-                . 'Versions below the minimum supported version are rejected.',
-        ];
-    }
-
-    /**
-     * Machine-readable policy describing how visibility filters behave when
-     * workers run different package versions concurrently and when projection
-     * rebuilds are authoritative for derived filter fields.
-     *
-     * @return array<string, mixed>
-     */
-    public static function mixedFleetPolicy(): array
-    {
-        return [
-            'projection_schema_version' => RunSummaryProjector::SCHEMA_VERSION,
-            'filter_version' => self::VERSION,
-            'invariants' => [
-                'Filter normalization is idempotent regardless of the worker package version that wrote the summary projection.',
-                'Summaries projected by older workers may have NULL for fields added in later schema versions; exact-match filters will not match NULL, so those rows are excluded from filtered views until re-projected.',
-                'The rebuild-projections command re-projects from durable runtime state, filling in any derived fields missing from older schema versions.',
-                'Saved views remain readable across filter version bumps; updating a deprecated saved view rewrites it onto the current version.',
-                'Boolean and base string filter fields use exact-match semantics; explicit *_contains string filters use escaped SQL LIKE substring matching on the run-summary projection.',
-            ],
-            'projection_backfill_authority' => [
-                'trigger' => 'Summaries with a NULL or lower projection_schema_version than the current build need re-projection.',
-                'mechanism' => 'workflow:v2:rebuild-projections --needs-rebuild detects schema-outdated rows and re-projects them from durable state.',
-                'scope' => 'Re-projection populates all current derived fields including namespace, search_attributes, visibility_labels, liveness_state, wait_kind, repair_blocked_reason, task_problem, and history budget.',
-                'safety' => 'Re-projection is idempotent. Running it on an already-current row produces the same output.',
-            ],
-            'upgrade_path' => 'Deploy the new package version to all workers, then run workflow:v2:rebuild-projections --needs-rebuild to backfill schema-outdated summaries. Mixed-fleet operation is safe during the rollout window — older workers continue projecting with their schema version, and the rebuild command brings all rows to the current schema after rollout completes.',
-        ];
     }
 
     /**
@@ -202,9 +134,7 @@ final class VisibilityFilters
 
         return [
             'version' => self::VERSION,
-            'minimum_supported_version' => self::MINIMUM_SUPPORTED_VERSION,
             'supported_versions' => self::supportedVersions(),
-            'deprecated_versions' => self::DEPRECATED_VERSIONS,
             'reserved_view_id_prefix' => self::RESERVED_VIEW_ID_PREFIX,
             'fields' => $fields,
             'labels' => [
@@ -243,7 +173,6 @@ final class VisibilityFilters
      * @return array{
      *     version: int|null,
      *     current_version: int,
-     *     minimum_supported_version: int,
      *     supported_versions: list<int>,
      *     supported: bool,
      *     deprecated: bool,
@@ -256,29 +185,21 @@ final class VisibilityFilters
         $normalizedVersion = self::normalizeVersion($version);
         $supportedVersions = self::supportedVersions();
         $supported = $normalizedVersion !== null && in_array($normalizedVersion, $supportedVersions, true);
-        $deprecated = $supported && self::isDeprecated($normalizedVersion);
 
         $status = match (true) {
             ! $supported => 'unsupported',
-            $deprecated => 'deprecated',
             default => 'supported',
         };
 
         return [
             'version' => $normalizedVersion,
             'current_version' => self::VERSION,
-            'minimum_supported_version' => self::MINIMUM_SUPPORTED_VERSION,
             'supported_versions' => $supportedVersions,
             'supported' => $supported,
-            'deprecated' => $deprecated,
+            'deprecated' => false,
             'status' => $status,
             'message' => match (true) {
                 ! $supported => self::unsupportedVersionMessage($normalizedVersion, $supportedVersions),
-                $deprecated => sprintf(
-                    'This saved view uses deprecated visibility filter version %d. Consider updating it to the current version %d.',
-                    $normalizedVersion,
-                    self::VERSION,
-                ),
                 default => null,
             },
         ];
