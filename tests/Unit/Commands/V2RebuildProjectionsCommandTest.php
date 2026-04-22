@@ -815,7 +815,9 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             $run->refresh(),
             HistoryEventType::WorkflowCompleted,
             [
-                'result_available' => true,
+                'output' => [
+                    'ok' => true,
+                ],
             ],
         );
 

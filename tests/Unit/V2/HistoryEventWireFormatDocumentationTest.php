@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Support\HistoryEventPayloadContract;
 
 /**
  * DB-free guards for the replay-critical history-event schema documented in
@@ -373,6 +374,32 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
         }
     }
 
+    public function testRuntimePayloadContractMatchesDocumentedWireFormatRows(): void
+    {
+        $documented = $this->documentedWireFormatKeys($this->fileContents('docs/api-stability.md'));
+        $contract = HistoryEventPayloadContract::payloadKeys();
+
+        ksort($documented);
+        ksort($contract);
+
+        $this->assertSame(
+            $documented,
+            $contract,
+            'HistoryEventPayloadContract must match docs/api-stability.md so producer guards track the public wire contract.',
+        );
+    }
+
+    public function testRuntimePayloadContractRejectsUndocumentedProducerKeys(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('WorkflowCompleted history payload contains undocumented key(s): surprise');
+
+        HistoryEventPayloadContract::assertKnownPayloadKeys(HistoryEventType::WorkflowCompleted, [
+            'output' => 'ok',
+            'surprise' => true,
+        ]);
+    }
+
     public function testRepresentativePhpEmitSitesStillUseDocumentedKeySets(): void
     {
         foreach (self::REPRESENTATIVE_EMIT_SITES as $eventType => $site) {
@@ -417,6 +444,25 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
         );
 
         return $matches[0];
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private function documentedWireFormatKeys(string $document): array
+    {
+        $section = strstr($document, 'The key list is a wire-format list', true);
+
+        $this->assertIsString($section, 'Could not find the end of the frozen history-event table.');
+        preg_match_all('/^\| `([^`]+)` \| ([^|]+) \|/m', $section, $matches, PREG_SET_ORDER);
+
+        $keys = [];
+        foreach ($matches as $match) {
+            preg_match_all('/`([^`]+)`/', $match[2], $keyMatches);
+            $keys[$match[1]] = $keyMatches[1];
+        }
+
+        return $keys;
     }
 
     /**

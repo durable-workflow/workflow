@@ -84,7 +84,7 @@ final class HistoryExportTest extends TestCase
             'workflow_type' => 'export.command-contract-backfill',
         ]);
         WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::WorkflowCompleted, [
-            'result' => [
+            'output' => [
                 'ok' => true,
             ],
         ]);
@@ -237,7 +237,9 @@ final class HistoryExportTest extends TestCase
             command: $command,
         );
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
-            'result_available' => true,
+            'output' => [
+                'ok' => true,
+            ],
         ],);
 
         $task = WorkflowTask::query()->create([
@@ -502,7 +504,7 @@ final class HistoryExportTest extends TestCase
             'sequence' => 1,
             'event_type' => HistoryEventType::WorkflowFailed->value,
             'payload' => [
-                'failure_id' => '01JTESTFAILUREHISTORYONLY000001',
+                'failure_id' => '01JTESTFAILUREHISTORY00001',
                 'source_kind' => 'workflow_run',
                 'source_id' => $run->id,
                 'exception_type' => 'runtime.failure',
@@ -532,7 +534,7 @@ final class HistoryExportTest extends TestCase
         $bundle = HistoryExport::forRun($run->fresh(['summary']));
 
         $this->assertCount(1, $bundle['failures']);
-        $this->assertSame('01JTESTFAILUREHISTORYONLY000001', $bundle['failures'][0]['id']);
+        $this->assertSame('01JTESTFAILUREHISTORY00001', $bundle['failures'][0]['id']);
         $this->assertSame('workflow_run', $bundle['failures'][0]['source_kind']);
         $this->assertSame($run->id, $bundle['failures'][0]['source_id']);
         $this->assertSame('terminal', $bundle['failures'][0]['propagation_kind']);
@@ -1481,7 +1483,9 @@ final class HistoryExportTest extends TestCase
             $run,
             HistoryEventType::WorkflowStarted,
             [
-                'arguments' => ['secret-order'],
+                'memo' => [
+                    'arguments' => ['secret-order'],
+                ],
             ],
             command: $command,
         );
@@ -1842,7 +1846,9 @@ final class HistoryExportTest extends TestCase
             'workflow_type' => 'export.signed',
         ]);
         WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::WorkflowCompleted, [
-            'result_available' => true,
+            'output' => [
+                'ok' => true,
+            ],
         ]);
 
         return $run->refresh();

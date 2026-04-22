@@ -142,7 +142,9 @@ final class V2HistoryExportCommandTest extends TestCase
             $run->refresh(),
             HistoryEventType::WorkflowCompleted,
             [
-                'result_available' => true,
+                'output' => [
+                    'ok' => true,
+                ],
             ],
         );
 

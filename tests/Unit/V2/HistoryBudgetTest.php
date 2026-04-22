@@ -164,10 +164,30 @@ final class HistoryBudgetTest extends TestCase
 
         $sequence = 1;
         foreach ($eventTypes as $eventType) {
-            WorkflowHistoryEvent::record($run, $eventType, [
-                'test' => true,
-                'sequence_info' => $sequence,
-            ]);
+            $payload = match ($eventType) {
+                HistoryEventType::WorkflowStarted => [
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                    'workflow_type' => $run->workflow_type,
+                ],
+                HistoryEventType::ActivityScheduled, HistoryEventType::ActivityStarted => [
+                    'sequence' => $sequence,
+                    'activity_type' => 'history.budget',
+                ],
+                HistoryEventType::ActivityCompleted => [
+                    'sequence' => $sequence,
+                    'activity_type' => 'history.budget',
+                    'result' => true,
+                ],
+                HistoryEventType::TimerScheduled, HistoryEventType::TimerFired => [
+                    'sequence' => $sequence,
+                ],
+                default => [
+                    'sequence' => $sequence,
+                ],
+            };
+
+            WorkflowHistoryEvent::record($run, $eventType, $payload);
             $sequence++;
         }
 
@@ -200,8 +220,9 @@ final class HistoryBudgetTest extends TestCase
 
         for ($i = 0; $i < $eventCount; $i++) {
             WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, [
-                'iteration' => $i,
-                'data' => str_repeat('x', 50),
+                'sequence' => $i + 1,
+                'activity_type' => 'history.budget',
+                'result' => str_repeat('x', 50),
             ]);
         }
 
