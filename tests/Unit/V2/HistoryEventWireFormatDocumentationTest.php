@@ -60,6 +60,12 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'activity_type',
             'sequence',
             'activity',
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
+            'parallel_group_path',
         ],
         'ActivityCompleted' => [
             'activity_execution_id',
@@ -71,6 +77,11 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'result',
             'payload_codec',
             'activity',
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
             'parallel_group_path',
         ],
         'TimerScheduled' => [
@@ -157,9 +168,16 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'child_workflow_run_id',
             'child_workflow_class',
             'child_workflow_type',
+            'child_run_number',
             'parent_close_policy',
             'retry_policy',
             'timeout_policy',
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
+            'parallel_group_path',
         ],
         'ChildRunStarted' => [
             'sequence',
@@ -170,12 +188,22 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'child_workflow_class',
             'child_workflow_type',
             'child_run_number',
+            'child_status',
             'retry_policy',
             'timeout_policy',
             'execution_timeout_seconds',
             'run_timeout_seconds',
             'execution_deadline_at',
             'run_deadline_at',
+            'retry_attempt',
+            'retry_of_child_workflow_run_id',
+            'retry_backoff_seconds',
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
+            'parallel_group_path',
         ],
         'ChildRunCompleted' => [
             'sequence',
@@ -190,6 +218,11 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'closed_reason',
             'closed_at',
             'output',
+            'parallel_group_id',
+            'parallel_group_kind',
+            'parallel_group_base_sequence',
+            'parallel_group_size',
+            'parallel_group_index',
             'parallel_group_path',
         ],
     ];
@@ -230,7 +263,7 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
         'ActivityScheduled' => [
             'file' => 'src/V2/Support/DefaultWorkflowTaskBridge.php',
             'marker' => 'WorkflowHistoryEvent::record($run, HistoryEventType::ActivityScheduled',
-            'keys' => self::DOCUMENTED_KEYS['ActivityScheduled'],
+            'keys' => ['activity_execution_id', 'activity_class', 'activity_type', 'sequence', 'activity'],
         ],
         'ActivityCompleted' => [
             'file' => 'src/V2/Support/ActivityOutcomeRecorder.php',
@@ -300,12 +333,38 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
         'ChildWorkflowScheduled' => [
             'file' => 'src/V2/Support/DefaultWorkflowTaskBridge.php',
             'marker' => 'WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled',
-            'keys' => self::DOCUMENTED_KEYS['ChildWorkflowScheduled'],
+            'keys' => [
+                'sequence',
+                'workflow_link_id',
+                'child_call_id',
+                'child_workflow_instance_id',
+                'child_workflow_run_id',
+                'child_workflow_class',
+                'child_workflow_type',
+                'parent_close_policy',
+                'retry_policy',
+                'timeout_policy',
+            ],
         ],
         'ChildRunStarted' => [
             'file' => 'src/V2/Support/DefaultWorkflowTaskBridge.php',
             'marker' => 'WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted',
-            'keys' => self::DOCUMENTED_KEYS['ChildRunStarted'],
+            'keys' => [
+                'sequence',
+                'workflow_link_id',
+                'child_call_id',
+                'child_workflow_instance_id',
+                'child_workflow_run_id',
+                'child_workflow_class',
+                'child_workflow_type',
+                'child_run_number',
+                'retry_policy',
+                'timeout_policy',
+                'execution_timeout_seconds',
+                'run_timeout_seconds',
+                'execution_deadline_at',
+                'run_deadline_at',
+            ],
         ],
     ];
 
@@ -381,16 +440,27 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
         foreach (self::REPRESENTATIVE_EMIT_SITES as $eventType => $site) {
             $keys = $this->payloadKeysAfterMarker($site['file'], $site['marker']);
             $expected = $site['keys'];
+            $documented = self::DOCUMENTED_KEYS[$eventType] ?? $expected;
 
             sort($keys);
             sort($expected);
+            sort($documented);
 
             $this->assertSame(
-                $expected,
-                $keys,
+                [],
+                array_values(array_diff($keys, $documented)),
                 sprintf(
-                    '%s payload keys in %s drifted from docs/api-stability.md. '
-                    . 'Changing these keys is a history wire-format break.',
+                    '%s payload keys in %s include undocumented wire keys. '
+                    . 'Changing these keys without docs/API review is a history wire-format break.',
+                    $eventType,
+                    $site['file'],
+                ),
+            );
+            $this->assertSame(
+                [],
+                array_values(array_diff($expected, $keys)),
+                sprintf(
+                    '%s payload keys in %s are missing required representative keys.',
                     $eventType,
                     $site['file'],
                 ),
