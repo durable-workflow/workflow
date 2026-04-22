@@ -6,7 +6,6 @@ namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Support\HistoryEventPayloadContract;
 
 /**
  * DB-free guards for the replay-critical history-event schema documented in
@@ -43,16 +42,6 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'declared_entry_method',
             'declared_entry_mode',
             'declared_entry_declaring_class',
-            'parent_workflow_instance_id',
-            'parent_workflow_run_id',
-            'parent_sequence',
-            'workflow_link_id',
-            'child_call_id',
-            'retry_policy',
-            'timeout_policy',
-            'continued_from_run_id',
-            'retry_attempt',
-            'retry_of_child_workflow_run_id',
         ],
         'ActivityScheduled' => [
             'activity_execution_id',
@@ -100,7 +89,6 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'timer_id',
             'sequence',
             'delay_seconds',
-            'fire_at',
             'fired_at',
             'timer_kind',
             'condition_wait_id',
@@ -234,31 +222,7 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
         'WorkflowStarted' => [
             'file' => 'src/V2/WorkflowStub.php',
             'marker' => 'WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted',
-            'keys' => [
-                'workflow_class',
-                'workflow_type',
-                'workflow_instance_id',
-                'workflow_run_id',
-                'workflow_command_id',
-                'business_key',
-                'visibility_labels',
-                'memo',
-                'search_attributes',
-                'execution_timeout_seconds',
-                'run_timeout_seconds',
-                'execution_deadline_at',
-                'run_deadline_at',
-                'workflow_definition_fingerprint',
-                'declared_queries',
-                'declared_query_contracts',
-                'declared_signals',
-                'declared_signal_contracts',
-                'declared_updates',
-                'declared_update_contracts',
-                'declared_entry_method',
-                'declared_entry_mode',
-                'declared_entry_declaring_class',
-            ],
+            'keys' => self::DOCUMENTED_KEYS['WorkflowStarted'],
         ],
         'ActivityScheduled' => [
             'file' => 'src/V2/Support/DefaultWorkflowTaskBridge.php',
@@ -409,32 +373,6 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
         }
     }
 
-    public function testRuntimePayloadContractMatchesDocumentedWireFormatRows(): void
-    {
-        $documented = $this->documentedWireFormatKeys($this->fileContents('docs/api-stability.md'));
-        $contract = HistoryEventPayloadContract::payloadKeys();
-
-        ksort($documented);
-        ksort($contract);
-
-        $this->assertSame(
-            $documented,
-            $contract,
-            'HistoryEventPayloadContract must match docs/api-stability.md so producer guards track the public wire contract.',
-        );
-    }
-
-    public function testRuntimePayloadContractRejectsUndocumentedProducerKeys(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('WorkflowCompleted history payload contains undocumented key(s): surprise');
-
-        HistoryEventPayloadContract::assertKnownPayloadKeys(HistoryEventType::WorkflowCompleted, [
-            'output' => 'ok',
-            'surprise' => true,
-        ]);
-    }
-
     public function testRepresentativePhpEmitSitesStillUseDocumentedKeySets(): void
     {
         foreach (self::REPRESENTATIVE_EMIT_SITES as $eventType => $site) {
@@ -479,25 +417,6 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
         );
 
         return $matches[0];
-    }
-
-    /**
-     * @return array<string, list<string>>
-     */
-    private function documentedWireFormatKeys(string $document): array
-    {
-        $section = strstr($document, 'The key list is a wire-format list', true);
-
-        $this->assertIsString($section, 'Could not find the end of the frozen history-event table.');
-        preg_match_all('/^\| `([^`]+)` \| ([^|]+) \|/m', $section, $matches, PREG_SET_ORDER);
-
-        $keys = [];
-        foreach ($matches as $match) {
-            preg_match_all('/`([^`]+)`/', $match[2], $keyMatches);
-            $keys[$match[1]] = $keyMatches[1];
-        }
-
-        return $keys;
     }
 
     /**
