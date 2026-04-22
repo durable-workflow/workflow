@@ -6144,6 +6144,8 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame($timerId, $summary->resume_source_id);
             $this->assertNull($summary->next_task_id);
 
+            Carbon::setTestNow(Carbon::parse('2026-04-09 18:01:00'));
+
             $this->wakeTaskWatchdog();
 
             /** @var WorkflowTimer $restoredTimer */

@@ -191,9 +191,7 @@ final class TaskRepair
                     'workflow_run_id' => $run->id,
                     'task_type' => TaskType::Timer->value,
                     'status' => TaskStatus::Ready->value,
-                    'available_at' => $timer->fire_at !== null && $timer->fire_at->isFuture()
-                        ? $timer->fire_at
-                        : now(),
+                    'available_at' => $timer->fire_at ?? now(),
                     'payload' => [
                         'timer_id' => $timer->id,
                     ],
