@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 
 /**
  * Resolves `input` request fields into a concrete `(codec, blob)` envelope.
@@ -43,8 +45,11 @@ final class PayloadEnvelopeResolver
      * @param  mixed  $input  the `input` field from a validated request
      * @return array<int|string, mixed>  arguments (positional or named)
      */
-    public static function resolveToArray($input, string $field = 'input'): array
-    {
+    public static function resolveToArray(
+        $input,
+        string $field = 'input',
+        ?ExternalPayloadStorageDriver $externalStorage = null
+    ): array {
         if ($input === null || $input === []) {
             return [];
         }
@@ -59,7 +64,7 @@ final class PayloadEnvelopeResolver
             return $input;
         }
 
-        $envelope = self::resolveExplicitEnvelope($input, $field);
+        $envelope = self::resolveExplicitEnvelope($input, $field, $externalStorage);
 
         try {
             $decoded = Serializer::unserializeWithCodec($envelope['codec'], $envelope['blob']);
@@ -95,14 +100,17 @@ final class PayloadEnvelopeResolver
      * @param  mixed  $value  the command field value (result, arguments, etc.)
      * @return mixed  the resolved payload — either the blob string or the raw value
      */
-    public static function resolveCommandPayload($value, string $field = 'result'): mixed
-    {
+    public static function resolveCommandPayload(
+        $value,
+        string $field = 'result',
+        ?ExternalPayloadStorageDriver $externalStorage = null
+    ): mixed {
         if ($value === null) {
             return null;
         }
 
         if (is_array($value) && self::looksLikeEnvelope($value)) {
-            $envelope = self::resolveExplicitEnvelope($value, $field);
+            $envelope = self::resolveExplicitEnvelope($value, $field, $externalStorage);
 
             return $envelope['blob'];
         }
@@ -115,8 +123,11 @@ final class PayloadEnvelopeResolver
      *
      * @return array{payload: mixed, codec: string|null}
      */
-    public static function resolveCommandPayloadWithCodec($value, string $field = 'result'): array
-    {
+    public static function resolveCommandPayloadWithCodec(
+        $value,
+        string $field = 'result',
+        ?ExternalPayloadStorageDriver $externalStorage = null
+    ): array {
         if ($value === null) {
             return [
                 'payload' => null,
@@ -125,7 +136,7 @@ final class PayloadEnvelopeResolver
         }
 
         if (is_array($value) && self::looksLikeEnvelope($value)) {
-            $envelope = self::resolveExplicitEnvelope($value, $field);
+            $envelope = self::resolveExplicitEnvelope($value, $field, $externalStorage);
 
             return [
                 'payload' => $envelope['blob'],
@@ -145,8 +156,11 @@ final class PayloadEnvelopeResolver
      *         codec/blob are null when the client sent no input — callers
      *         should fall through to the final v2 default codec.
      */
-    public static function resolve($input, string $field = 'input'): array
-    {
+    public static function resolve(
+        $input,
+        string $field = 'input',
+        ?ExternalPayloadStorageDriver $externalStorage = null
+    ): array {
         if ($input === null || $input === []) {
             return [
                 'codec' => null,
@@ -161,7 +175,7 @@ final class PayloadEnvelopeResolver
         }
 
         if (self::looksLikeEnvelope($input)) {
-            return self::resolveExplicitEnvelope($input, $field);
+            return self::resolveExplicitEnvelope($input, $field, $externalStorage);
         }
 
         $values = array_values($input);
@@ -174,9 +188,10 @@ final class PayloadEnvelopeResolver
     }
 
     /**
-     * Detect the `{codec, blob}` envelope shape.
+     * Detect the `{codec, blob}` or `{codec, external_storage}` envelope shape.
      *
-     * The array must be associative with keys exactly {codec, blob} (order-independent).
+     * The array must be associative with keys exactly {codec, blob} or
+     * {codec, external_storage} (order-independent).
      */
     private static function looksLikeEnvelope(array $input): bool
     {
@@ -184,22 +199,25 @@ final class PayloadEnvelopeResolver
             return false;
         }
 
-        if (! array_key_exists('codec', $input) || ! array_key_exists('blob', $input)) {
+        if (! array_key_exists('codec', $input)) {
             return false;
         }
 
-        $extra = array_diff(array_keys($input), ['codec', 'blob']);
+        $keys = array_keys($input);
+        sort($keys);
 
-        return $extra === [];
+        return $keys === ['blob', 'codec'] || $keys === ['codec', 'external_storage'];
     }
 
     /**
      * @return array{codec: string, blob: string}
      */
-    private static function resolveExplicitEnvelope(array $input, string $field): array
-    {
+    private static function resolveExplicitEnvelope(
+        array $input,
+        string $field,
+        ?ExternalPayloadStorageDriver $externalStorage = null,
+    ): array {
         $codec = $input['codec'] ?? null;
-        $blob = $input['blob'] ?? null;
 
         if (! is_string($codec) || $codec === '') {
             throw ValidationException::withMessages([
@@ -207,15 +225,9 @@ final class PayloadEnvelopeResolver
             ]);
         }
 
-        if (! is_string($blob)) {
-            throw ValidationException::withMessages([
-                $field . '.blob' => ['The payload envelope blob must be a string.'],
-            ]);
-        }
-
         try {
             $canonical = CodecRegistry::canonicalize($codec);
-        } catch (\InvalidArgumentException $e) {
+        } catch (InvalidArgumentException) {
             throw ValidationException::withMessages([
                 $field . '.codec' => [sprintf(
                     'Unknown payload codec "%s". Known codecs: %s.',
@@ -225,9 +237,65 @@ final class PayloadEnvelopeResolver
             ]);
         }
 
+        if (array_key_exists('external_storage', $input)) {
+            return self::resolveExternalStorageEnvelope($input, $field, $canonical, $externalStorage);
+        }
+
+        $blob = $input['blob'] ?? null;
+
+        if (! is_string($blob)) {
+            throw ValidationException::withMessages([
+                $field . '.blob' => ['The payload envelope blob must be a string.'],
+            ]);
+        }
+
         return [
             'codec' => $canonical,
             'blob' => $blob,
+        ];
+    }
+
+    /**
+     * @return array{codec: string, blob: string}
+     */
+    private static function resolveExternalStorageEnvelope(
+        array $input,
+        string $field,
+        string $canonicalCodec,
+        ?ExternalPayloadStorageDriver $externalStorage,
+    ): array {
+        if ($externalStorage === null) {
+            throw ValidationException::withMessages([
+                $field . '.external_storage' => ['External payload references require an external storage driver.'],
+            ]);
+        }
+
+        $referenceInput = $input['external_storage'] ?? null;
+        if (! is_array($referenceInput)) {
+            throw ValidationException::withMessages([
+                $field . '.external_storage' => ['The external payload reference must be an object.'],
+            ]);
+        }
+
+        try {
+            $reference = ExternalPayloadReference::fromArray($referenceInput);
+        } catch (InvalidArgumentException $e) {
+            throw ValidationException::withMessages([
+                $field . '.external_storage' => [$e->getMessage()],
+            ]);
+        }
+
+        if ($reference->codec !== $canonicalCodec) {
+            throw ValidationException::withMessages([
+                $field . '.external_storage.codec' => [
+                    'The external payload reference codec must match the payload envelope codec.',
+                ],
+            ]);
+        }
+
+        return [
+            'codec' => $canonicalCodec,
+            'blob' => ExternalPayloadStorage::fetch($externalStorage, $reference),
         ];
     }
 }
