@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestChildHandleParentWorkflow;
 use Tests\Fixtures\V2\TestSignalThenUpdateWorkflow;
+use Tests\Fixtures\V2\TestStartBoundaryReceiverWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -33,6 +34,70 @@ use Workflow\V2\WorkflowStub;
 
 final class V2UpdateWorkflowTest extends TestCase
 {
+    public function testStartBoundarySignalAndUpdateApplyAfterWorkflowInitialization(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestStartBoundaryReceiverWorkflow::class, 'start-boundary-receivers');
+        $workflow->start();
+
+        $runId = $workflow->runId();
+
+        $this->assertNotNull($runId);
+        $this->assertSame(['StartAccepted', 'WorkflowStarted'], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+
+        $update = $workflow->submitUpdate('approve', true, 'api');
+        $signal = $workflow->signal('name-provided', 'Taylor');
+
+        $this->assertTrue($update->accepted());
+        $this->assertFalse($update->completed());
+        $this->assertTrue($signal->accepted());
+        $this->assertSame('signal_received', $signal->outcome());
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->completed());
+
+        $this->assertSame([
+            'stage' => 'completed',
+            'events' => ['initialized', 'update:yes:api:initialized', 'signal:Taylor:completed'],
+            'workflow_id' => 'start-boundary-receivers',
+            'run_id' => $runId,
+        ], $workflow->output());
+
+        $this->assertDatabaseHas('workflow_updates', [
+            'id' => $update->updateId(),
+            'workflow_run_id' => $runId,
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+            'workflow_sequence' => 1,
+        ]);
+
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'UpdateAccepted',
+            'SignalReceived',
+            'UpdateApplied',
+            'UpdateCompleted',
+            'MessageCursorAdvanced',
+            'SignalWaitOpened',
+            'MessageCursorAdvanced',
+            'SignalApplied',
+            'WorkflowCompleted',
+        ], WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn ($eventType) => $eventType->value)
+            ->all());
+    }
+
     public function testAttemptUpdateUsesDeclaredAliasAsTheDurableTarget(): void
     {
         $workflow = WorkflowStub::make(TestAliasedUpdateWorkflow::class, 'order-update-alias');
