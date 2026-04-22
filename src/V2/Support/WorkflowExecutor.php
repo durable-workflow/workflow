@@ -1349,14 +1349,8 @@ final class WorkflowExecutor
 
         // Activity arguments often contain consumer-side PHP objects (messages,
         // DTOs, value objects) that the v2 default Avro codec can only encode
-        // by round-tripping through JSON — which drops class identity and
-        // hands the activity a plain associative array. Apply the same
-        // chooseCodecForData fallback child workflow scheduling uses so PHP-
-        // only arguments serialize with the legacy Y codec and arrive at the
-        // activity as the typed objects the producer passed in. The blob is
-        // self-describing (Avro's wrapper prefix / PHP-serialize's "O:"/"a:"
-        // shapes are disjoint), so the decode path can sniff without needing
-        // a stored per-execution codec column. See #429.
+        // by round-tripping through JSON. Persist the chosen codec beside the
+        // activity row so later reads never depend on payload sniffing.
         $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $activityCall->arguments);
         $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $activityCall->arguments);
         $this->logApproachingLimit(
@@ -1377,6 +1371,7 @@ final class WorkflowExecutor
             'activity_type' => TypeRegistry::for($activityCall->activity),
             'status' => ActivityStatus::Pending->value,
             'attempt_count' => 0,
+            'payload_codec' => $argumentsCodec,
             'arguments' => $serializedArguments,
             'connection' => RoutingResolver::activityConnection($activityCall->activity, $run, $options),
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run, $options),

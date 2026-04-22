@@ -18,6 +18,8 @@ return new class() extends Migration {
             $table->string('activity_class');
             $table->string('activity_type');
             $table->string('status');
+            $table->string('payload_codec')
+                ->nullable();
             $table->longText('arguments')
                 ->nullable();
             $table->longText('result')

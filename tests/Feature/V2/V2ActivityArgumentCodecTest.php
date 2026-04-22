@@ -6,8 +6,11 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestActivityArgumentObject;
+use Tests\Fixtures\V2\TestActivityArgumentObjectActivity;
 use Tests\Fixtures\V2\TestActivityArgumentObjectWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecDecodeException;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\WorkflowStub;
@@ -19,8 +22,8 @@ use Workflow\V2\WorkflowStub;
  * json_encode / json_decode and hands decoders a plain associative array.
  * scheduleActivity now applies the same chooseCodecForData fallback child
  * workflow scheduling uses so PHP-only arguments round-trip through the
- * legacy Y codec. The decode path sniffs the blob so the run codec tag can
- * stay Avro without breaking round-trip.
+ * legacy Y codec. The selected codec is stored on the activity row so the
+ * decode path does not depend on sniffing disjoint blob shapes.
  */
 final class V2ActivityArgumentCodecTest extends TestCase
 {
@@ -55,11 +58,39 @@ final class V2ActivityArgumentCodecTest extends TestCase
             ->where('workflow_run_id', $run->id)
             ->firstOrFail();
 
+        $this->assertSame('workflow-serializer-y', $execution->payload_codec);
+        $this->assertSame(sprintf('hello:3:%s', TestActivityArgumentObject::class), $execution->activityResult());
+
         [$argument] = $execution->activityArguments();
 
         $this->assertInstanceOf(TestActivityArgumentObject::class, $argument);
         $this->assertSame('hello', $argument->tag);
         $this->assertSame(3, $argument->count);
+    }
+
+    public function testActivityArgumentsUseStoredCodecInsteadOfSniffFallback(): void
+    {
+        $workflow = WorkflowStub::make(TestActivityArgumentObjectWorkflow::class, 'activity-arg-stored-codec');
+        $workflow->start();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 99,
+            'activity_class' => TestActivityArgumentObjectActivity::class,
+            'activity_type' => TestActivityArgumentObjectActivity::class,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'payload_codec' => 'avro',
+            'arguments' => json_encode(['sniffable-json'], JSON_THROW_ON_ERROR),
+        ]);
+
+        $this->expectException(CodecDecodeException::class);
+
+        $execution->activityArguments();
     }
 
     private function drainReadyTasks(): void

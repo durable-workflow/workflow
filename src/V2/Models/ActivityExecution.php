@@ -66,7 +66,7 @@ class ActivityExecution extends Model
         }
 
         /** @var array<int, mixed> $arguments */
-        $arguments = $this->unserializeWithRunCodec($this->arguments);
+        $arguments = $this->unserializeWithRowCodec($this->arguments);
 
         return $arguments;
     }
@@ -77,25 +77,20 @@ class ActivityExecution extends Model
             return null;
         }
 
-        return $this->unserializeWithRunCodec($this->result);
+        return $this->unserializeWithRowCodec($this->result);
     }
 
     /**
-     * Decode an activity payload. Activity executions do not carry their own
-     * payload_codec column because the scheduling path may fall back from
-     * Avro to the legacy Y codec when arguments carry PHP-only values (see
-     * WorkflowExecutor::scheduleActivity and #429). The blob is
-     * self-describing — Avro's base64-plus-prefix envelope and PHP
-     * serialize's `O:`/`a:`/… header byte are disjoint, so the legacy
-     * sniff-based unserialize path picks the right codec regardless of
-     * which one was chosen at write time.
-     *
-     * The run's `payload_codec` remains the authority for the rest of the
-     * run state (command payloads, history, etc.) — only the activity
-     * arguments/result blob gets the sniff treatment.
+     * Decode an activity payload with the codec persisted beside the row.
+     * Null is kept as a defensive fallback for rows written before this
+     * column existed in unreleased v2 builds.
      */
-    private function unserializeWithRunCodec(string $blob): mixed
+    private function unserializeWithRowCodec(string $blob): mixed
     {
+        if (is_string($this->payload_codec) && $this->payload_codec !== '') {
+            return Serializer::unserializeWithCodec($this->payload_codec, $blob);
+        }
+
         return Serializer::unserialize($blob);
     }
 }

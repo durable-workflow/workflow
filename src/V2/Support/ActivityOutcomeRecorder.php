@@ -113,15 +113,17 @@ final class ActivityOutcomeRecorder
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
                 ? $run->payload_codec
                 : null;
-            $serializedSuccessfulResult = null;
-            $resultCodec = null;
+            $encodedSuccessfulResult = null;
 
             if ($throwable === null) {
-                $serializedSuccessfulResult = self::serializeWithCodec($result, $codec, $runCodec);
-                $resultCodec = self::payloadCodec($codec, $runCodec);
+                $encodedSuccessfulResult = self::serializeWithCodec(
+                    $result,
+                    $codec,
+                    self::preferredPayloadCodec($lockedExecution, $runCodec),
+                );
 
                 StructuralLimits::logWarning(
-                    StructuralLimits::warnApproachingPayloadSize($serializedSuccessfulResult),
+                    StructuralLimits::warnApproachingPayloadSize($encodedSuccessfulResult['blob']),
                     [
                         'workflow_run_id' => $run->id,
                         'workflow_type' => $run->workflow_type,
@@ -133,11 +135,10 @@ final class ActivityOutcomeRecorder
                 );
 
                 try {
-                    StructuralLimits::guardPayloadSize($serializedSuccessfulResult);
+                    StructuralLimits::guardPayloadSize($encodedSuccessfulResult['blob']);
                 } catch (StructuralLimitExceededException $limitExceeded) {
                     $throwable = $limitExceeded;
-                    $serializedSuccessfulResult = null;
-                    $resultCodec = null;
+                    $encodedSuccessfulResult = null;
                 }
             }
 
@@ -145,11 +146,14 @@ final class ActivityOutcomeRecorder
                 $lockedExecution->forceFill([
                     'status' => $throwable === null ? ActivityStatus::Completed : ActivityStatus::Failed,
                     'result' => $throwable === null
-                        ? $serializedSuccessfulResult
+                        ? $encodedSuccessfulResult['blob']
                         : $lockedExecution->result,
+                    'payload_codec' => $throwable === null
+                        ? $encodedSuccessfulResult['codec']
+                        : $lockedExecution->payload_codec,
                     'exception' => $throwable === null
                         ? $lockedExecution->exception
-                        : self::serializeWithCodec(self::failurePayload($throwable, $codec), null, $runCodec),
+                        : self::serializeWithCodec(self::failurePayload($throwable, $codec), null, $runCodec)['blob'],
                     'closed_at' => $lockedExecution->closed_at ?? now(),
                 ])->save();
 
@@ -178,7 +182,8 @@ final class ActivityOutcomeRecorder
             if ($throwable === null) {
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,
-                    'result' => $serializedSuccessfulResult,
+                    'result' => $encodedSuccessfulResult['blob'],
+                    'payload_codec' => $encodedSuccessfulResult['codec'],
                     'exception' => null,
                     'closed_at' => now(),
                 ])->save();
@@ -191,7 +196,7 @@ final class ActivityOutcomeRecorder
                     'sequence' => $lockedExecution->sequence,
                     'attempt_number' => $attemptCount,
                     'result' => $lockedExecution->result,
-                    'payload_codec' => $resultCodec,
+                    'payload_codec' => $encodedSuccessfulResult['codec'],
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $parallelMetadata ?? []), $task);
 
@@ -214,7 +219,7 @@ final class ActivityOutcomeRecorder
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Pending,
-                    'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec),
+                    'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec)['blob'],
                     'last_heartbeat_at' => null,
                 ])->save();
 
@@ -293,7 +298,7 @@ final class ActivityOutcomeRecorder
 
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Failed,
-                    'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec),
+                    'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec)['blob'],
                     'closed_at' => now(),
                 ])->save();
 
@@ -509,25 +514,32 @@ final class ActivityOutcomeRecorder
      * codec (with a chooseCodecForData PHP-only fallback), then the package
      * default.
      *
-     * The encoded blob is stamped on the activity row; the workflow side
-     * later decodes it with a codec sniff so a Y-encoded fallback round-
-     * trips even when the run's codec tag says Avro. Keeps parity with
-     * activity-argument scheduling (see WorkflowExecutor::scheduleActivity
-     * and #429).
+     * @return array{blob: string, codec: string}
      */
-    private static function serializeWithCodec(mixed $value, ?string $workerCodec, ?string $runCodec): string
+    private static function serializeWithCodec(mixed $value, ?string $workerCodec, ?string $preferredCodec): array
     {
         if (is_string($workerCodec) && $workerCodec !== '' && is_string($value)) {
-            return $value;
+            return [
+                'blob' => $value,
+                'codec' => CodecRegistry::canonicalize($workerCodec),
+            ];
         }
 
-        if (is_string($runCodec) && $runCodec !== '') {
-            $chosenCodec = Serializer::chooseCodecForData($runCodec, $value);
+        if (is_string($preferredCodec) && $preferredCodec !== '') {
+            $chosenCodec = Serializer::chooseCodecForData($preferredCodec, $value);
 
-            return Serializer::serializeWithCodec($chosenCodec, $value);
+            return [
+                'blob' => Serializer::serializeWithCodec($chosenCodec, $value),
+                'codec' => $chosenCodec,
+            ];
         }
 
-        return Serializer::serialize($value);
+        $chosenCodec = Serializer::chooseCodecForData(CodecRegistry::defaultCodec(), $value);
+
+        return [
+            'blob' => Serializer::serializeWithCodec($chosenCodec, $value),
+            'codec' => $chosenCodec,
+        ];
     }
 
     /**
@@ -549,10 +561,10 @@ final class ActivityOutcomeRecorder
         return $payload;
     }
 
-    private static function payloadCodec(?string $workerCodec, ?string $runCodec): string
+    private static function preferredPayloadCodec(ActivityExecution $execution, ?string $runCodec): ?string
     {
-        if (is_string($workerCodec) && $workerCodec !== '') {
-            return $workerCodec;
+        if (is_string($execution->payload_codec) && $execution->payload_codec !== '') {
+            return $execution->payload_codec;
         }
 
         if (is_string($runCodec) && $runCodec !== '') {
