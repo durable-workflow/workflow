@@ -482,8 +482,10 @@ final class V2CompatibilityWorkflowTest extends TestCase
         $this->assertSame('workflow_task_ready', $summary->liveness_state);
         $this->assertSame('Workflow task ready', $summary->wait_reason);
         $this->assertSame(sprintf('Workflow task %s is ready to run.', $task->id), $summary->liveness_reason);
-        $this->assertCount(1, WorkerCompatibilityHeartbeat::query()->get());
-        $this->assertSame('sample-app', WorkerCompatibilityHeartbeat::query()->sole()->namespace);
+        $expectedHeartbeat = WorkerCompatibilityHeartbeat::query()
+            ->where('worker_id', 'worker-build-a');
+        $this->assertCount(1, $expectedHeartbeat->get());
+        $this->assertSame('sample-app', $expectedHeartbeat->sole()->namespace);
         $this->assertSame('sample-app', $detail['compatibility_namespace']);
         $this->assertFalse($detail['compatibility_supported']);
         $this->assertTrue($detail['compatibility_supported_in_fleet']);

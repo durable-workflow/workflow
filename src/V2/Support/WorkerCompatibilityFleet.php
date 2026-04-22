@@ -30,7 +30,7 @@ final class WorkerCompatibilityFleet
     private const SOURCE_CACHE = 'cache';
 
     /**
-     * @var array<string, array{supported: list<string>, namespace: ?string, connection: ?string, queues: list<string>, recorded_at: int}>
+     * @var array<string, array{supported: list<string>, namespace: ?string, connection: ?string, queues: list<string>, source: string, recorded_at: int}>
      */
     private static array $lastRecorded = [];
 
@@ -267,11 +267,15 @@ final class WorkerCompatibilityFleet
         $connection = self::normalizeValue($connection);
         $queues = self::normalizeQueues($queue);
 
-        if (self::shouldSkipRecord($workerId, $supported, $namespace, $connection, $queues)) {
+        $recordSource = self::heartbeatTableExists()
+            ? self::SOURCE_DATABASE
+            : self::SOURCE_CACHE;
+
+        if (self::shouldSkipRecord($workerId, $supported, $namespace, $connection, $queues, $recordSource)) {
             return;
         }
 
-        if (! self::heartbeatTableExists()) {
+        if ($recordSource === self::SOURCE_CACHE) {
             self::recordLegacySnapshot($workerId, $supported, $namespace, $connection, $queues);
 
             return;
@@ -300,7 +304,7 @@ final class WorkerCompatibilityFleet
                         'process_id' => self::processId(),
                         'connection' => $connection,
                         'queue' => $scopeQueue,
-                        'supported' => json_encode($supported),
+                        'supported' => $supported,
                         'recorded_at' => $now,
                         'expires_at' => $expiresAt,
                         'created_at' => $now,
@@ -314,8 +318,20 @@ final class WorkerCompatibilityFleet
                     ->where('worker_id', $workerId)
                     ->delete();
 
-                WorkerCompatibilityHeartbeat::query()
-                    ->insert($rows);
+                if (DB::connection()->getDriverName() !== 'pgsql') {
+                    WorkerCompatibilityHeartbeat::query()
+                        ->insert(array_map(static fn (array $row): array => [
+                            ...$row,
+                            'supported' => json_encode($row['supported']),
+                        ], $rows));
+
+                    return;
+                }
+
+                foreach ($rows as $row) {
+                    WorkerCompatibilityHeartbeat::query()
+                        ->create($row);
+                }
             }, 3);
         } catch (Throwable $throwable) {
             report($throwable);
@@ -324,7 +340,7 @@ final class WorkerCompatibilityFleet
             return;
         }
 
-        self::rememberRecorded($workerId, $supported, $namespace, $connection, $queues, $now->getTimestamp());
+        self::rememberRecorded($workerId, $supported, $namespace, $connection, $queues, self::SOURCE_DATABASE, $now->getTimestamp());
         self::forgetSnapshotCache();
     }
 
@@ -355,7 +371,7 @@ final class WorkerCompatibilityFleet
         ];
 
         Cache::put(self::LEGACY_CACHE_KEY, $fleet, self::ttlSeconds());
-        self::rememberRecorded($workerId, $supported, $namespace, $connection, $queues, $now);
+        self::rememberRecorded($workerId, $supported, $namespace, $connection, $queues, self::SOURCE_CACHE, $now);
         self::forgetSnapshotCache();
     }
 
@@ -369,6 +385,7 @@ final class WorkerCompatibilityFleet
         ?string $namespace,
         ?string $connection,
         array $queues,
+        string $source,
         int $recordedAt,
     ): void {
         self::$lastRecorded[$workerId] = [
@@ -376,6 +393,7 @@ final class WorkerCompatibilityFleet
             'namespace' => $namespace,
             'connection' => $connection,
             'queues' => $queues,
+            'source' => $source,
             'recorded_at' => $recordedAt,
         ];
     }
@@ -433,6 +451,7 @@ final class WorkerCompatibilityFleet
         ?string $namespace,
         ?string $connection,
         array $queues,
+        string $source,
     ): bool {
         $last = self::$lastRecorded[$workerId] ?? null;
 
@@ -445,6 +464,7 @@ final class WorkerCompatibilityFleet
             || $last['namespace'] !== $namespace
             || $last['connection'] !== $connection
             || $last['queues'] !== $queues
+            || $last['source'] !== $source
         ) {
             return false;
         }
