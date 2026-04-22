@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use League\Flysystem\Filesystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloadStorage;
@@ -21,6 +22,8 @@ final class ExternalPayloadStorageTest extends TestCase
 
     protected function tearDown(): void
     {
+        ExternalPayloadStorage::flushVerifiedCache();
+
         if ($this->storageRoot !== null) {
             $this->removeDirectory($this->storageRoot);
             $this->storageRoot = null;
@@ -73,6 +76,42 @@ final class ExternalPayloadStorageTest extends TestCase
 
         $this->expectException(\RuntimeException::class);
         $driver->get($reference->uri);
+    }
+
+    public function testFetchCachesVerifiedBytesByReference(): void
+    {
+        $localDriver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $driver = new class($localDriver) implements ExternalPayloadStorageDriver {
+            public int $getCalls = 0;
+
+            public function __construct(
+                private readonly ExternalPayloadStorageDriver $inner
+            ) {
+            }
+
+            public function put(string $data, string $sha256, string $codec): string
+            {
+                return $this->inner->put($data, $sha256, $codec);
+            }
+
+            public function get(string $uri): string
+            {
+                $this->getCalls++;
+
+                return $this->inner->get($uri);
+            }
+
+            public function delete(string $uri): void
+            {
+                $this->inner->delete($uri);
+            }
+        };
+
+        $reference = ExternalPayloadStorage::store($driver, 'encoded-payload', 'avro');
+
+        $this->assertSame('encoded-payload', ExternalPayloadStorage::fetch($driver, $reference));
+        $this->assertSame('encoded-payload', ExternalPayloadStorage::fetch($driver, $reference));
+        $this->assertSame(1, $driver->getCalls);
     }
 
     public function testFetchRejectsMutatedPayloadBytes(): void
