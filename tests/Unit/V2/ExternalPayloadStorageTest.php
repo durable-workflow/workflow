@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Filesystem\FilesystemAdapter;
 use InvalidArgumentException;
+use League\Flysystem\Filesystem;
+use League\Flysystem\Local\LocalFilesystemAdapter;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\FilesystemExternalPayloadStorage;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 
 final class ExternalPayloadStorageTest extends TestCase
@@ -107,11 +111,55 @@ final class ExternalPayloadStorageTest extends TestCase
         $driver->get('file:///etc/passwd');
     }
 
+    public function testFilesystemDriverStoresFetchesAndDeletesVerifiedBytes(): void
+    {
+        $driver = new FilesystemExternalPayloadStorage(
+            $this->makeDisk($this->makeStorageRoot()),
+            's3',
+            'workflow-payloads',
+            'namespaces/billing',
+        );
+
+        $reference = ExternalPayloadStorage::store($driver, 'encoded-payload', 'avro');
+
+        $this->assertStringStartsWith('s3://workflow-payloads/namespaces/billing/avro/', $reference->uri);
+        $this->assertSame('encoded-payload', ExternalPayloadStorage::fetch($driver, $reference));
+
+        $driver->delete($reference->uri);
+
+        $this->expectException(\RuntimeException::class);
+        $driver->get($reference->uri);
+    }
+
+    public function testFilesystemDriverRejectsUrisOutsideConfiguredPrefix(): void
+    {
+        $driver = new FilesystemExternalPayloadStorage(
+            $this->makeDisk($this->makeStorageRoot()),
+            'gs',
+            'workflow-payloads',
+            'namespaces/billing',
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('outside the configured storage prefix');
+
+        $driver->get('gs://workflow-payloads/namespaces/other/avro/aa/' . str_repeat('a', 64));
+    }
+
     private function makeStorageRoot(): string
     {
         $this->storageRoot = sys_get_temp_dir() . '/dw-external-payload-test-' . bin2hex(random_bytes(6));
 
         return $this->storageRoot;
+    }
+
+    private function makeDisk(string $root): FilesystemAdapter
+    {
+        $adapter = new LocalFilesystemAdapter($root);
+
+        return new FilesystemAdapter(new Filesystem($adapter), $adapter, [
+            'root' => $root,
+        ]);
     }
 
     private function pathFromFileUri(string $uri): string
