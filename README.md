@@ -91,3 +91,6 @@ The Durable Workflow package is sustained by the community via sponsors and volu
 Refer to https://github.com/durable-workflow/waterline for installation and configuration instructions.
 
 <sub><sup>"Laravel" is a registered trademark of Taylor Otwell. This project is not affiliated, associated, endorsed, or sponsored by Taylor Otwell, nor has it been reviewed, tested, or certified by Taylor Otwell. The use of the trademark "Laravel" is for informational and descriptive purposes only. Durable Workflow is not officially related to the Laravel trademark or Taylor Otwell.</sup></sub>
+## Public Boundary Checks
+
+This is a public repository. Do not add private tracker names, workspace-only absolute paths, or internal automation metadata to files or new commit metadata. Run `scripts/check-public-boundary.sh` before publishing changes; CI runs the same scan on pushes and pull requests.

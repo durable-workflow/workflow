@@ -1,0 +1,33 @@
+name: Public Boundary
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan public boundary
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan files and commit metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
+            range="${{ github.sha }}^..${{ github.sha }}"
+          else
+            range="${{ github.event.before }}..${{ github.sha }}"
+          fi
+
+          PUBLIC_BOUNDARY_GIT_RANGE="$range" scripts/check-public-boundary.sh
