@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestSignalThenUpdateWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
@@ -51,6 +52,7 @@ final class V2WebhookWorkflowTest extends TestCase
             TestGreetingWorkflow::class,
             TestSignalWorkflow::class,
             'test-timer-workflow' => TestTimerWorkflow::class,
+            TestQueryContinueAsNewWorkflow::class,
             TestQueryWorkflow::class,
             TestAliasedUpdateWorkflow::class,
             TestSignalThenUpdateWorkflow::class,
@@ -801,6 +803,47 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonPath('target_scope', 'run');
 
         $this->assertSame(1, $response->json('result'));
+    }
+
+    public function testQueryWebhooksExposeContinueAsNewCurrentAndSelectedRunSemantics(): void
+    {
+        $workflow = WorkflowStub::make(TestQueryContinueAsNewWorkflow::class, 'order-query-webhook-continue');
+        $started = $workflow->start(0, 2);
+        $firstRunId = $started->runId();
+
+        $this->assertNotNull($firstRunId);
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'order-query-webhook-continue')
+            ->orderBy('run_number')
+            ->get();
+
+        $this->assertCount(3, $runs);
+
+        $current = $this->postJson('/webhooks/instances/order-query-webhook-continue/queries/currentCount');
+
+        $current
+            ->assertStatus(200)
+            ->assertJsonPath('query_name', 'currentCount')
+            ->assertJsonPath('workflow_id', 'order-query-webhook-continue')
+            ->assertJsonPath('run_id', $runs->last()->id)
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('result', 2);
+
+        $historical = $this->postJson(
+            '/webhooks/instances/order-query-webhook-continue/runs/' . $firstRunId . '/queries/currentCount',
+        );
+
+        $historical
+            ->assertStatus(200)
+            ->assertJsonPath('query_name', 'currentCount')
+            ->assertJsonPath('workflow_id', 'order-query-webhook-continue')
+            ->assertJsonPath('run_id', $firstRunId)
+            ->assertJsonPath('target_scope', 'run')
+            ->assertJsonPath('result', 1);
     }
 
     public function testQueryWebhookReturnsValidationErrorsForInvalidArguments(): void

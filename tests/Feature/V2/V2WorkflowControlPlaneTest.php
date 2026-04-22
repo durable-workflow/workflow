@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestQueryContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
@@ -18,12 +19,16 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
+use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowControlPlaneTest extends TestCase
 {
@@ -638,6 +643,28 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertArrayHasKey('extra', $invalid['validation_errors']);
     }
 
+    public function testInstanceQueryReadsContinuedCurrentRunAfterContinueAsNew(): void
+    {
+        $workflow = WorkflowStub::make(TestQueryContinueAsNewWorkflow::class, 'ctrl-plane-query-continue');
+        $started = $workflow->start(0, 2);
+        $firstRunId = $started->runId();
+
+        $this->assertNotNull($firstRunId);
+
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->completed());
+
+        $result = $this->controlPlane->query('ctrl-plane-query-continue', 'currentCount');
+
+        $this->assertTrue($result['success']);
+        $this->assertSame(200, $result['status']);
+        $this->assertSame('ctrl-plane-query-continue', $result['workflow_id']);
+        $this->assertSame('currentCount', $result['query_name']);
+        $this->assertSame('instance', $result['target_scope']);
+        $this->assertSame(2, $result['result']);
+        $this->assertNotSame($firstRunId, $result['run_id']);
+    }
+
     // ── Update happy path ───────────────────────────────────────────
 
     public function testUpdateAccepted(): void
@@ -836,5 +863,36 @@ final class V2WorkflowControlPlaneTest extends TestCase
             $table->unsignedInteger('available_at');
             $table->unsignedInteger('created_at');
         });
+    }
+
+    private function drainReadyTasks(): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('created_at')
+                ->first();
+
+            if ($task === null) {
+                return;
+            }
+
+            if ($task->available_at !== null && $task->available_at->isFuture()) {
+                return;
+            }
+
+            $job = match ($task->task_type) {
+                TaskType::Workflow => new RunWorkflowTask($task->id),
+                TaskType::Activity => new RunActivityTask($task->id),
+                TaskType::Timer => new RunTimerTask($task->id),
+            };
+
+            $this->app->call([$job, 'handle']);
+        }
+
+        $this->fail('Timed out draining ready workflow tasks.');
     }
 }
