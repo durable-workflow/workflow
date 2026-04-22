@@ -109,14 +109,23 @@ jobs:
       id: mysql_suite
       timeout-minutes: 65
       run: |
+        mkdir -p build/test-results
         find tests/Feature -name '*Test.php' | sort | awk "((NR - 1) % 4) == ${{ matrix.shard }}" > /tmp/mysql-shard-files
         cat /tmp/mysql-shard-files
-        timeout --foreground 60m xargs -a /tmp/mysql-shard-files vendor/bin/phpunit --testdox --testsuite feature
+        cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
+        timeout --foreground 60m xargs -a /tmp/mysql-shard-files vendor/bin/phpunit --testdox --testsuite feature --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
       env:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports['3306'] }}
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
+
+    - name: Upload MySQL feature timing report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: feature-timing-mysql-${{ matrix.shard }}
+        path: build/test-results/mysql-shard-${{ matrix.shard }}*
 
     - name: Upload laravel.log if MySQL tests fail
       if: failure() || steps.mysql_suite.outcome == 'failure'
@@ -192,9 +201,11 @@ jobs:
       id: pgsql_suite
       timeout-minutes: 65
       run: |
+        mkdir -p build/test-results
         find tests/Feature -name '*Test.php' | sort | awk "((NR - 1) % 2) == ${{ matrix.shard }}" > /tmp/pgsql-shard-files
         cat /tmp/pgsql-shard-files
-        timeout --foreground 60m xargs -a /tmp/pgsql-shard-files vendor/bin/phpunit --testdox --testsuite feature
+        cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
+        timeout --foreground 60m xargs -a /tmp/pgsql-shard-files vendor/bin/phpunit --testdox --testsuite feature --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
       env:
         DB_CONNECTION: pgsql
         DB_PORT: ${{ job.services.postgres.ports['5432'] }}
@@ -208,6 +219,13 @@ jobs:
         # surfaces with the offending SQL in laravel.log rather than a
         # silent hang.
         PGOPTIONS: "-c statement_timeout=120000 -c lock_timeout=30000 -c idle_in_transaction_session_timeout=60000"
+
+    - name: Upload PostgreSQL feature timing report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: feature-timing-postgresql-${{ matrix.shard }}
+        path: build/test-results/pgsql-shard-${{ matrix.shard }}*
 
     - name: Upload laravel.log if PostgreSQL tests fail
       if: failure() || steps.pgsql_suite.outcome == 'failure'
