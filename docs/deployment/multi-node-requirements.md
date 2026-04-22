@@ -90,8 +90,8 @@ DW_V2_LIMIT_PENDING_CHILDREN=1000
 ```
 
 The legacy `WORKFLOW_V2_*` names are honored as fallbacks during the
-deprecation window — see zorporation/durable-workflow#494 — but new
-deployments should use the `DW_V2_*` primary names.
+deprecation window, but new deployments should use the `DW_V2_*` primary
+names.
 
 ### Node-Specific Variables
 

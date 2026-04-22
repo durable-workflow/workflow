@@ -13,8 +13,7 @@ use Workflow\Serializers\Serializer;
 /**
  * Loud, typed ingress failures for codec/bytes mismatch.
  *
- * Covers the negative-case acceptance criteria from
- * https://github.com/zorporation/durable-workflow/issues/362:
+ * Negative-case acceptance criteria:
  *  - JSON bytes labeled as `avro` produce a typed error naming the codec
  *    and a remediation hint, not a generic RuntimeException.
  *  - The legacy untagged JSON helper rejects Avro bytes loudly.

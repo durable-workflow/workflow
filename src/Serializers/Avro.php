@@ -479,8 +479,6 @@ final class Avro implements SerializerInterface
 
     /**
      * Suppress PHP 8.4 deprecation warnings from apache/avro's (double) casts.
-     *
-     * @see https://github.com/zorporation/durable-workflow/issues/332
      */
     private static function suppressDeprecations(callable $fn): mixed
     {

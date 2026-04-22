@@ -13,8 +13,8 @@ use Workflow\Support\Env;
 | first, falling back to the legacy WORKFLOW_* / WORKFLOW_V2_* names so
 | existing deployments keep working during the deprecation window. The
 | DW_* names are documented in the server image's
-| `config/dw-contract.php` — see zorporation/durable-workflow#494. Prefer
-| the DW_* name when wiring new environments.
+| `config/dw-contract.php`. Prefer the DW_* name when wiring new
+| environments.
 */
 
 return [

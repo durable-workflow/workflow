@@ -16,7 +16,7 @@ use Error;
  *
  * PHP does not allow user classes to implement ``\Throwable`` directly, so
  * ``\Error`` is the idiomatic escape hatch for non-{@see \Exception}
- * throwables. See zorporation/durable-workflow#441.
+ * throwables.
  */
 final class WorkflowCancelledException extends Error
 {

@@ -16,7 +16,7 @@ use Workflow\V2\Exceptions\WorkflowCancelledException;
  * Guards the pre-2.0 design decision that WorkflowCancelledException extends
  * {@see \Error} rather than {@see \Exception}, so that generic
  * ``catch (\Exception $e)`` blocks cannot accidentally swallow a cancellation
- * signal. See zorporation/durable-workflow#441.
+ * signal.
  */
 final class WorkflowCancelledExceptionTest extends TestCase
 {

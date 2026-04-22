@@ -19,8 +19,6 @@ use Throwable;
  * acceptance criteria — a JSON blob arriving under an `avro` codec tag
  * (or vice versa) must surface as a clearly attributable error instead
  * of a generic RuntimeException with binary noise.
- *
- * @see https://github.com/zorporation/durable-workflow/issues/362
  */
 final class CodecDecodeException extends RuntimeException
 {
