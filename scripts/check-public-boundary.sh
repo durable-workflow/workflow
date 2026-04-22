@@ -6,17 +6,31 @@ cd "$root"
 
 status=0
 
+pattern_from_hex() {
+  local hex="$1"
+  local output=""
+  local byte
+
+  while [[ -n "$hex" ]]; do
+    byte="${hex:0:2}"
+    hex="${hex:2}"
+    output+=$(printf '%b' "\\x$byte")
+  done
+
+  printf '%s' "$output"
+}
+
 file_patterns=(
-  "zor""poration/"
-  "/home/""vscode"
-  "/home/lab/""workspace-hq"
+  "$(pattern_from_hex 7a6f72706f726174696f6e2f)"
+  "$(pattern_from_hex 2f686f6d652f7673636f6465)"
+  "$(pattern_from_hex 2f686f6d652f6c61622f776f726b73706163652d6871)"
 )
 
 metadata_patterns=(
   "${file_patterns[@]}"
-  "Loop""-ID:"
-  ".tmp/""loops/"
-  "loop-""runner"
+  "$(pattern_from_hex 4c6f6f702d49443a)"
+  "$(pattern_from_hex 2e746d702f6c6f6f70732f)"
+  "$(pattern_from_hex 6c6f6f702d72756e6e6572)"
 )
 
 pathspec=(
