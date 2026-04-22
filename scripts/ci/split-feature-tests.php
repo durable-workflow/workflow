@@ -2,12 +2,13 @@
 
 declare(strict_types=1);
 
-$options = getopt('', ['dir::', 'shard:', 'shards:', 'weights::', 'summary::']);
+$options = getopt('', ['dir::', 'shard:', 'shards:', 'weights::', 'weight-profile::', 'summary::']);
 
 $dir = normalize_path((string) ($options['dir'] ?? 'tests/Feature'));
 $shard = parse_int_option($options, 'shard');
 $shards = parse_int_option($options, 'shards');
 $weightsFile = isset($options['weights']) ? (string) $options['weights'] : null;
+$weightProfile = isset($options['weight-profile']) ? (string) $options['weight-profile'] : null;
 $summaryFile = isset($options['summary']) ? (string) $options['summary'] : null;
 
 if ($shards < 1) {
@@ -22,7 +23,7 @@ if (! is_dir($dir)) {
     fail("Test directory [{$dir}] does not exist.");
 }
 
-$weights = $weightsFile !== null ? load_weights($weightsFile) : [];
+$weights = $weightsFile !== null ? load_weights($weightsFile, $weightProfile) : [];
 $files = find_test_files($dir);
 
 if ($files === []) {
@@ -65,7 +66,7 @@ function normalize_path(string $path): string
 /**
  * @return array<string, float>
  */
-function load_weights(string $path): array
+function load_weights(string $path, ?string $profile): array
 {
     if (! is_file($path)) {
         fail("Weights file [{$path}] does not exist.");
@@ -75,6 +76,18 @@ function load_weights(string $path): array
 
     if (! is_array($decoded)) {
         fail("Weights file [{$path}] must contain a JSON object.");
+    }
+
+    if ($profile !== null) {
+        if ($profile === '') {
+            fail('--weight-profile must not be empty.');
+        }
+
+        if (! is_array($decoded[$profile] ?? null)) {
+            fail("Weights file [{$path}] does not contain profile [{$profile}].");
+        }
+
+        $decoded = $decoded[$profile];
     }
 
     $weights = [];

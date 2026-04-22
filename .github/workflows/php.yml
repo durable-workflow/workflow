@@ -114,7 +114,8 @@ jobs:
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
           --shards=4 \
-          --weights=.github/test-weights/feature-mysql.json \
+          --weights=.github/feature-test-timings.json \
+          --weight-profile=mysql \
           --summary="build/test-results/mysql-shard-${{ matrix.shard }}-summary.txt" \
           > /tmp/mysql-shard-files
         cat /tmp/mysql-shard-files
@@ -224,7 +225,8 @@ jobs:
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
           --shards=2 \
-          --weights=.github/test-weights/feature-mysql.json \
+          --weights=.github/feature-test-timings.json \
+          --weight-profile=postgresql \
           --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
           > /tmp/pgsql-shard-files
         cat /tmp/pgsql-shard-files
