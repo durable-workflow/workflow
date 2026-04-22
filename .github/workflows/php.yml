@@ -110,7 +110,13 @@ jobs:
       timeout-minutes: 65
       run: |
         mkdir -p build/test-results
-        find tests/Feature -name '*Test.php' | sort | awk "((NR - 1) % 4) == ${{ matrix.shard }}" > /tmp/mysql-shard-files
+        php scripts/ci/split-feature-tests.php \
+          --dir=tests/Feature \
+          --shard=${{ matrix.shard }} \
+          --shards=4 \
+          --weights=.github/test-weights/feature-mysql.json \
+          --summary="build/test-results/mysql-shard-${{ matrix.shard }}-summary.txt" \
+          > /tmp/mysql-shard-files
         cat /tmp/mysql-shard-files
         cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
         timeout --foreground 60m xargs -a /tmp/mysql-shard-files vendor/bin/phpunit --testdox --testsuite feature --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
@@ -202,7 +208,13 @@ jobs:
       timeout-minutes: 65
       run: |
         mkdir -p build/test-results
-        find tests/Feature -name '*Test.php' | sort | awk "((NR - 1) % 2) == ${{ matrix.shard }}" > /tmp/pgsql-shard-files
+        php scripts/ci/split-feature-tests.php \
+          --dir=tests/Feature \
+          --shard=${{ matrix.shard }} \
+          --shards=2 \
+          --weights=.github/test-weights/feature-mysql.json \
+          --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
+          > /tmp/pgsql-shard-files
         cat /tmp/pgsql-shard-files
         cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
         timeout --foreground 60m xargs -a /tmp/pgsql-shard-files vendor/bin/phpunit --testdox --testsuite feature --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
