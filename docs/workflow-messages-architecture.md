@@ -170,10 +170,11 @@ Stream B: msg_seq_1, msg_seq_2, msg_seq_3
 
 **Sequence reservation:**
 1. Sender calls `sendMessage()`
-2. MessageService locks target instance (`SELECT ... FOR UPDATE`)
-3. `MessageStreamCursor::reserveNextSequence()` increments `instance.last_message_sequence`
-4. Both inbound and outbound messages get same sequence number
-5. Lock released on transaction commit
+2. MessageService locks sender and target instances (`SELECT ... FOR UPDATE`)
+3. `MessageStreamCursor::reserveNextSequence()` increments each instance's `last_message_sequence`
+4. The outbound row gets the sender instance's next sequence number
+5. The inbound row gets the target instance's next sequence number
+6. Lock released on transaction commit
 
 **Ordering guarantee:** Unique constraint prevents duplicate sequences in same stream.
 
@@ -273,11 +274,60 @@ enum MessageConsumeState: string
 
 ## API Surface
 
+### MessageStream
+
+Workflow authors and adapters should use `Workflow\V2\MessageStream` as the
+named v2 inbox/outbox contract instead of constructing the legacy
+`Workflow\Inbox` or `Workflow\Outbox` helpers. A stream is bound to one
+`WorkflowRun` and one `stream_key`.
+
+```php
+// From workflow code:
+$messages = $this->inbox('chat')->peek();
+$message = $this->inbox('chat')->receiveOne();
+
+// From runtime/control-plane code that already owns a run:
+$stream = app(MessageService::class)->stream($run, 'chat', $historySequence);
+$stream->sendReference(
+    targetInstanceId: $targetInstanceId,
+    payloadReference: $payloadReference,
+    correlationId: $requestId,
+);
+```
+
+Contract:
+
+- `peek($limit)` is read-only and returns pending inbound messages after the
+  run cursor.
+- `receive($limit, $consumedBySequence)` consumes pending inbound messages,
+  stamps each row with the workflow history sequence that performed the
+  receive, and advances the cursor to the highest consumed message sequence.
+- `receiveOne()` is `receive(1)`.
+- `sendReference()` sends an outbound message and creates the corresponding
+  target inbound row. The table stores a payload reference, not arbitrary
+  inline payload bytes.
+- `Workflow::messages()`, `Workflow::inbox()`, and `Workflow::outbox()` all
+  open this same stream facade for the current run. `inbox()` and `outbox()`
+  are semantic aliases for author readability, not separate storage models.
+
+Receive/consume operations require a positive workflow history sequence. The
+workflow base class supplies the current visible sequence when it opens a
+stream; lower-level callers must pass the sequence explicitly so replay,
+history export, and cursor diagnostics can identify the workflow step that
+consumed the messages.
+
 ### MessageService
 
 ```php
 class MessageService
 {
+    // Open the first-class stream facade
+    public function stream(
+        WorkflowRun $run,
+        ?string $streamKey = null,
+        ?int $defaultConsumedBySequence = null,
+    ): MessageStream;
+
     // Send outbound message
     public function sendMessage(
         WorkflowRun $sourceRun,
@@ -458,31 +508,32 @@ foreach ($webhooks as $webhook) {
 ```
 [Send Phase]
 1. Sender calls sendMessage()
-2. MessageService locks target instance
-3. Reserves next sequence number
-4. Creates outbound message (sender's record)
-5. Creates inbound message (receiver's record)
-6. Transaction commits
+2. MessageService locks sender and target instances
+3. Reserves the sender stream's next sequence for the outbound row
+4. Reserves the target stream's next sequence for the inbound row
+5. Creates outbound message (sender's record)
+6. Creates inbound message (receiver's record)
+7. Transaction commits
 
 [Receive Phase]  
-7. Receiver calls receiveMessages()
-8. Fetches pending inbound messages after cursor
-9. Returns messages in sequence order
+8. Receiver calls receiveMessages()
+9. Fetches pending inbound messages after cursor
+10. Returns messages in sequence order
 
 [Consume Phase]
-10. Receiver processes messages
-11. Calls consumeMessage() or consumeMessageBatch()
-12. Messages marked as consumed
-13. Cursor advanced to consumed sequence
-14. MessageCursorAdvanced history event recorded
+11. Receiver processes messages
+12. Calls consumeMessage() or consumeMessageBatch()
+13. Messages marked as consumed
+14. Cursor advanced to consumed sequence
+15. MessageCursorAdvanced history event recorded
 
 [Continue-As-New Phase]
-15. Closing run has cursor at position N
-16. Pending messages (sequence > N) still exist
-17. transferMessagesToContinuedRun() called
-18. Pending messages workflow_run_id updated to new run
-19. Cursor position transferred
-20. New run continues from position N
+16. Closing run has cursor at position N
+17. Pending messages (sequence > N) still exist
+18. transferMessagesToContinuedRun() called
+19. Pending messages workflow_run_id updated to new run
+20. Cursor position transferred
+21. New run continues from position N
 ```
 
 ## Integration with MessageStreamCursor

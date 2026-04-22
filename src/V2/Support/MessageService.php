@@ -9,12 +9,21 @@ use InvalidArgumentException;
 use Workflow\V2\Enums\MessageChannel;
 use Workflow\V2\Enums\MessageConsumeState;
 use Workflow\V2\Enums\MessageDirection;
+use Workflow\V2\MessageStream;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowMessage;
 use Workflow\V2\Models\WorkflowRun;
 
 class MessageService
 {
+    public function stream(
+        WorkflowRun $run,
+        ?string $streamKey = null,
+        ?int $defaultConsumedBySequence = null,
+    ): MessageStream {
+        return MessageStream::forRun($run, $streamKey, $this, $defaultConsumedBySequence);
+    }
+
     /**
      * Send an outbound message from a workflow run.
      *
@@ -55,13 +64,27 @@ class MessageService
             $metadata,
             $expiresAt,
         ): WorkflowMessage {
-            // Lock target instance to reserve sequence
-            $targetInstance = WorkflowInstance::where('id', $targetInstanceId)
-                ->lockForUpdate()
-                ->firstOrFail();
+            $instanceIds = array_values(array_unique([$sourceRun->workflow_instance_id, $targetInstanceId]));
+            sort($instanceIds);
 
-            // Reserve next sequence number
-            $sequence = MessageStreamCursor::reserveNextSequence($targetInstance);
+            /** @var \Illuminate\Support\Collection<string, WorkflowInstance> $instances */
+            $instances = WorkflowInstance::whereIn('id', $instanceIds)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
+
+            /** @var WorkflowInstance $sourceInstance */
+            $sourceInstance = $instances->get($sourceRun->workflow_instance_id)
+                ?? WorkflowInstance::where('id', $sourceRun->workflow_instance_id)->firstOrFail();
+            /** @var WorkflowInstance $targetInstance */
+            $targetInstance = $instances->get($targetInstanceId)
+                ?? WorkflowInstance::where('id', $targetInstanceId)->firstOrFail();
+
+            $outboundSequence = MessageStreamCursor::reserveNextSequence($sourceInstance);
+            $inboundSequence = $sourceRun->workflow_instance_id === $targetInstanceId
+                ? MessageStreamCursor::reserveNextSequence($sourceInstance)
+                : MessageStreamCursor::reserveNextSequence($targetInstance);
 
             // Create outbound message
             $message = new WorkflowMessage([
@@ -70,7 +93,7 @@ class MessageService
                 'direction' => MessageDirection::Outbound,
                 'channel' => $channel,
                 'stream_key' => $streamKey,
-                'sequence' => $sequence,
+                'sequence' => $outboundSequence,
                 'source_workflow_instance_id' => $sourceRun->workflow_instance_id,
                 'source_workflow_run_id' => $sourceRun->id,
                 'target_workflow_instance_id' => $targetInstanceId,
@@ -94,7 +117,7 @@ class MessageService
                 'direction' => MessageDirection::Inbound,
                 'channel' => $channel,
                 'stream_key' => $streamKey,
-                'sequence' => $sequence,
+                'sequence' => $inboundSequence,
                 'source_workflow_instance_id' => $sourceRun->workflow_instance_id,
                 'source_workflow_run_id' => $sourceRun->id,
                 'target_workflow_instance_id' => $targetInstanceId,

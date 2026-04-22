@@ -214,6 +214,30 @@ omitted a null value. Consumers must continue to accept missing optional
 keys indefinitely. Producers must not rename, remove, or change the type
 or meaning of an existing key.
 
+## Durable Message Stream Authoring API
+
+The first-class v2 inbox/outbox surface is `Workflow\V2\MessageStream`, opened
+from `Workflow::messages()`, `Workflow::inbox()`, `Workflow::outbox()`, or
+`MessageService::stream()`.
+
+Stable methods:
+
+- `key(): string`
+- `cursor(): int`
+- `hasPending(): bool`
+- `pendingCount(): int`
+- `peek(int $limit = 100): Collection`
+- `receive(int $limit = 1, ?int $consumedBySequence = null): Collection`
+- `receiveOne(?int $consumedBySequence = null): ?WorkflowMessage`
+- `sendReference(string $targetInstanceId, ?string $payloadReference = null, MessageChannel|string $channel = MessageChannel::WorkflowMessage, ?string $correlationId = null, ?string $idempotencyKey = null, array $metadata = [], ?DateTimeInterface $expiresAt = null): WorkflowMessage`
+
+`peek()` is non-mutating. `receive()` and `receiveOne()` consume pending inbound
+messages and advance the durable cursor; they must be associated with a
+positive workflow history sequence, either from the workflow base class or an
+explicit runtime/control-plane caller. `sendReference()` stores a payload
+reference and routing metadata only; inline payload storage is not part of the
+stable contract.
+
 ### `VersionMarkerRecorded`
 
 This marker records the result of `Workflow::getVersion()`, `Workflow::patched()`,

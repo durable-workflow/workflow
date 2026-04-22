@@ -94,7 +94,7 @@ class MessageServiceTest extends TestCase
         $this->assertEquals(2, $msg2->sequence);
         $this->assertEquals(3, $msg3->sequence);
 
-        // Check inbound messages have same sequences
+        // Check inbound messages are sequenced on the target instance stream.
         $inbound = WorkflowMessage::where('workflow_instance_id', $targetInstance->id)
             ->where('direction', MessageDirection::Inbound)
             ->orderBy('sequence')
@@ -102,6 +102,27 @@ class MessageServiceTest extends TestCase
             ->toArray();
 
         $this->assertEquals([1, 2, 3], $inbound);
+    }
+
+    public function testItReservesIndependentOutboundAndInboundSequencesForSelfTargetedStreams(): void
+    {
+        $run = $this->createRun();
+
+        $message = $this->service->sendMessage(
+            $run,
+            MessageChannel::WorkflowMessage,
+            $run->workflow_instance_id,
+            'payload_ref_self',
+            'self_stream',
+        );
+
+        $inboundMessage = WorkflowMessage::where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('direction', MessageDirection::Inbound)
+            ->firstOrFail();
+
+        $this->assertEquals(1, $message->sequence);
+        $this->assertEquals(2, $inboundMessage->sequence);
+        $this->assertEquals(2, $run->instance->refresh()->last_message_sequence);
     }
 
     public function testItReceivesUnconsumedInboundMessages(): void

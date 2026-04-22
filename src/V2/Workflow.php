@@ -10,6 +10,7 @@ use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildWorkflowHandles;
 use Workflow\V2\Support\HistoryBudget;
+use Workflow\V2\Support\MessageService;
 
 /**
  * Base class for v2 workflows.
@@ -116,6 +117,30 @@ abstract class Workflow
     public function shouldContinueAsNew(): bool
     {
         return HistoryBudget::forRun($this->run)['continue_as_new_recommended'];
+    }
+
+    /**
+     * Open the durable message stream for this run.
+     */
+    public function messages(?string $streamKey = null, ?MessageService $messages = null): MessageStream
+    {
+        return MessageStream::forRun($this->run, $streamKey, $messages, $this->visibleSequence);
+    }
+
+    /**
+     * Alias for {@see messages()} when workflow code is reading inbound messages.
+     */
+    public function inbox(?string $streamKey = null, ?MessageService $messages = null): MessageStream
+    {
+        return $this->messages($streamKey, $messages);
+    }
+
+    /**
+     * Alias for {@see messages()} when workflow code is sending outbound messages.
+     */
+    public function outbox(?string $streamKey = null, ?MessageService $messages = null): MessageStream
+    {
+        return $this->messages($streamKey, $messages);
     }
 
     public function addCompensation(callable $compensation): static
