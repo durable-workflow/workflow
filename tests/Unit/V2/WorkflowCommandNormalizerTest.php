@@ -507,4 +507,336 @@ final class WorkflowCommandNormalizerTest extends TestCase
             ],
         ]);
     }
+
+    public function testRetryPolicyRejectedOnCompleteWorkflow(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'complete_workflow',
+                'result' => '"ok"',
+                'retry_policy' => [
+                    'max_attempts' => 3,
+                ],
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.retry_policy', $errors);
+        $this->assertStringContainsString(
+            'not valid on a complete_workflow command',
+            $errors['commands.0.retry_policy'][0],
+        );
+        $this->assertStringContainsString('schedule_activity', $errors['commands.0.retry_policy'][0]);
+        $this->assertStringContainsString('start_child_workflow', $errors['commands.0.retry_policy'][0]);
+    }
+
+    public function testRetryPolicyRejectedOnFailWorkflow(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'fail_workflow',
+                'message' => 'boom',
+                'retry_policy' => [
+                    'max_attempts' => 3,
+                ],
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.retry_policy', $errors);
+        $this->assertStringContainsString(
+            'Workflow failure itself is non-retryable',
+            $errors['commands.0.retry_policy'][0],
+        );
+    }
+
+    public function testStartToCloseTimeoutRejectedOnChildWorkflow(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'start_to_close_timeout' => 60,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.start_to_close_timeout', $errors);
+        $this->assertStringContainsString(
+            'only applies to a schedule_activity command',
+            $errors['commands.0.start_to_close_timeout'][0],
+        );
+    }
+
+    public function testHeartbeatTimeoutRejectedOnFailWorkflow(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'fail_workflow',
+                'message' => 'boom',
+                'heartbeat_timeout' => 30,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.heartbeat_timeout', $errors);
+    }
+
+    public function testExecutionTimeoutSecondsRejectedOnScheduleActivity(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'execution_timeout_seconds' => 600,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.execution_timeout_seconds', $errors);
+        $this->assertStringContainsString(
+            'only applies to a start_child_workflow command',
+            $errors['commands.0.execution_timeout_seconds'][0],
+        );
+    }
+
+    public function testRunTimeoutSecondsRejectedOnScheduleActivity(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'run_timeout_seconds' => 60,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.run_timeout_seconds', $errors);
+    }
+
+    public function testNonRetryableRejectedOnScheduleActivity(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'non_retryable' => true,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.non_retryable', $errors);
+        $this->assertStringContainsString(
+            'retry_policy.non_retryable_error_types',
+            $errors['commands.0.non_retryable'][0],
+        );
+    }
+
+    public function testParentClosePolicyRejectedOnScheduleActivity(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'parent_close_policy' => 'abandon',
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.parent_close_policy', $errors);
+    }
+
+    public function testTimeoutSecondsRejectedOnScheduleActivity(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'timeout_seconds' => 60,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.timeout_seconds', $errors);
+        $this->assertStringContainsString(
+            'For activities use start_to_close_timeout',
+            $errors['commands.0.timeout_seconds'][0],
+        );
+    }
+
+    public function testDelaySecondsRejectedOnScheduleActivity(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'delay_seconds' => 30,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.delay_seconds', $errors);
+    }
+
+    public function testNullScopeFieldsAreIgnored(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'complete_workflow',
+                'result' => '"ok"',
+                'retry_policy' => null,
+                'start_to_close_timeout' => null,
+                'non_retryable' => null,
+                'parent_close_policy' => null,
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'complete_workflow',
+            'result' => '"ok"',
+        ]], $out);
+    }
+
+    public function testActivityScheduleToCloseSmallerThanStartToCloseRejected(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'start_to_close_timeout' => 120,
+                'schedule_to_close_timeout' => 60,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.schedule_to_close_timeout', $errors);
+        $this->assertStringContainsString(
+            'must be greater than or equal to start_to_close_timeout',
+            $errors['commands.0.schedule_to_close_timeout'][0],
+        );
+    }
+
+    public function testActivityScheduleToCloseEqualToStartToCloseAccepted(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'start_to_close_timeout' => 120,
+                'schedule_to_close_timeout' => 120,
+            ],
+        ]);
+
+        $this->assertSame(120, $out[0]['start_to_close_timeout']);
+        $this->assertSame(120, $out[0]['schedule_to_close_timeout']);
+    }
+
+    public function testActivityHeartbeatLargerThanStartToCloseRejected(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'start_to_close_timeout' => 60,
+                'heartbeat_timeout' => 120,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.heartbeat_timeout', $errors);
+        $this->assertStringContainsString(
+            'must be less than or equal to start_to_close_timeout',
+            $errors['commands.0.heartbeat_timeout'][0],
+        );
+    }
+
+    public function testActivityHeartbeatEqualToStartToCloseAccepted(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'start_to_close_timeout' => 60,
+                'heartbeat_timeout' => 60,
+            ],
+        ]);
+
+        $this->assertSame(60, $out[0]['heartbeat_timeout']);
+    }
+
+    public function testActivityTimeoutOrderingNotEnforcedWhenFieldsMissing(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'heartbeat_timeout' => 600,
+            ],
+        ]);
+
+        $this->assertSame(600, $out[0]['heartbeat_timeout']);
+    }
+
+    public function testChildWorkflowExecutionTimeoutSmallerThanRunTimeoutRejected(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'execution_timeout_seconds' => 60,
+                'run_timeout_seconds' => 120,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.execution_timeout_seconds', $errors);
+        $this->assertStringContainsString(
+            'must be greater than or equal to run_timeout_seconds',
+            $errors['commands.0.execution_timeout_seconds'][0],
+        );
+    }
+
+    public function testChildWorkflowExecutionTimeoutEqualToRunTimeoutAccepted(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'Child',
+                'execution_timeout_seconds' => 60,
+                'run_timeout_seconds' => 60,
+            ],
+        ]);
+
+        $this->assertSame(60, $out[0]['execution_timeout_seconds']);
+        $this->assertSame(60, $out[0]['run_timeout_seconds']);
+    }
+
+    public function testFailWorkflowAcceptsNonRetryableScope(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'fail_workflow',
+                'message' => 'boom',
+                'non_retryable' => false,
+            ],
+        ]);
+
+        $this->assertSame(false, $out[0]['non_retryable']);
+    }
+
+    public function testFailUpdateAcceptsNonRetryableScope(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'fail_update',
+                'update_id' => 'upd-1',
+                'message' => 'boom',
+                'non_retryable' => true,
+            ],
+        ]);
+
+        $this->assertSame(true, $out[0]['non_retryable']);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return array<string, list<string>>
+     */
+    private function normalizeAndCaptureErrors(array $commands): array
+    {
+        try {
+            WorkflowCommandNormalizer::normalize($commands);
+        } catch (ValidationException $e) {
+            return $e->errors();
+        }
+
+        $this->fail('Expected ValidationException was not thrown.');
+    }
 }

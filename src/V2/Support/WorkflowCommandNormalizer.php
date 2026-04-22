@@ -15,6 +15,14 @@ use Illuminate\Validation\ValidationException;
  * authoritative mapping from raw JSON into canonical command arrays the
  * workflow task bridge consumes.
  *
+ * Retry and timeout fields are scope-checked: durable activity retry policy
+ * and per-attempt/total/heartbeat timeouts only belong on `schedule_activity`,
+ * durable child workflow retry policy and execution/run timeouts only belong
+ * on `start_child_workflow`, and the worker-side `non_retryable` failure
+ * marker only belongs on `fail_workflow` / `fail_update`. Workflow failure
+ * itself is non-retryable, and the SDK HTTP transport retry policy is a
+ * client concern that does not appear in the workflow task command stream.
+ *
  * Extracted from App\Http\Controllers\Api\WorkerController so the server
  * is no longer the source of truth for the command grammar.
  *
@@ -24,6 +32,60 @@ use Illuminate\Validation\ValidationException;
  */
 final class WorkflowCommandNormalizer
 {
+    /**
+     * Scope contract for retry/timeout/failure fields. Each entry lists the
+     * command types that legitimately accept the field and a short guidance
+     * sentence that names the correct layer.
+     *
+     * @var array<string, array{allowed: list<string>, guidance: string}>
+     */
+    private const FIELD_SCOPES = [
+        'retry_policy' => [
+            'allowed' => ['schedule_activity', 'start_child_workflow'],
+            'guidance' => 'Configure activity retries on a schedule_activity command, or child workflow retries on a start_child_workflow command. Workflow failure itself is non-retryable, and SDK HTTP transport retry is a client concern that does not appear in the workflow task command stream.',
+        ],
+        'start_to_close_timeout' => [
+            'allowed' => ['schedule_activity'],
+            'guidance' => 'start_to_close_timeout limits one activity attempt and only applies to a schedule_activity command.',
+        ],
+        'schedule_to_start_timeout' => [
+            'allowed' => ['schedule_activity'],
+            'guidance' => 'schedule_to_start_timeout limits queue wait before an activity attempt starts and only applies to a schedule_activity command.',
+        ],
+        'schedule_to_close_timeout' => [
+            'allowed' => ['schedule_activity'],
+            'guidance' => 'schedule_to_close_timeout limits the entire activity execution including retries and only applies to a schedule_activity command.',
+        ],
+        'heartbeat_timeout' => [
+            'allowed' => ['schedule_activity'],
+            'guidance' => 'heartbeat_timeout limits the gap between activity heartbeats and only applies to a schedule_activity command.',
+        ],
+        'execution_timeout_seconds' => [
+            'allowed' => ['start_child_workflow'],
+            'guidance' => 'execution_timeout_seconds limits the entire child workflow execution and only applies to a start_child_workflow command.',
+        ],
+        'run_timeout_seconds' => [
+            'allowed' => ['start_child_workflow'],
+            'guidance' => 'run_timeout_seconds limits one child workflow run and only applies to a start_child_workflow command.',
+        ],
+        'non_retryable' => [
+            'allowed' => ['fail_workflow', 'fail_update'],
+            'guidance' => 'non_retryable marks a workflow or update failure as non-retryable and only applies to a fail_workflow or fail_update command. Activity non-retryable error types belong inside the schedule_activity retry_policy.non_retryable_error_types list.',
+        ],
+        'parent_close_policy' => [
+            'allowed' => ['start_child_workflow'],
+            'guidance' => 'parent_close_policy declares how a child workflow reacts when its parent closes and only applies to a start_child_workflow command.',
+        ],
+        'delay_seconds' => [
+            'allowed' => ['start_timer'],
+            'guidance' => 'delay_seconds is the timer delay and only applies to a start_timer command.',
+        ],
+        'timeout_seconds' => [
+            'allowed' => ['open_condition_wait'],
+            'guidance' => 'timeout_seconds only applies to open_condition_wait. For activities use start_to_close_timeout / schedule_to_start_timeout / schedule_to_close_timeout / heartbeat_timeout; for child workflows use execution_timeout_seconds / run_timeout_seconds.',
+        ],
+    ];
+
     /**
      * @param  list<array<string, mixed>>  $commands
      * @return list<array<string, mixed>>
@@ -41,6 +103,8 @@ final class WorkflowCommandNormalizer
 
                 continue;
             }
+
+            self::assertCommandFieldScope($type, is_array($command) ? $command : [], $index, $errors);
 
             if ($type === 'complete_workflow') {
                 $normalized[] = [
@@ -88,6 +152,12 @@ final class WorkflowCommandNormalizer
                 }
 
                 $retryPolicy = self::optionalRetryPolicy($command, $index, $errors, 'Activity');
+                $startToClose = self::optionalPositiveInt($command, 'start_to_close_timeout', $index, $errors);
+                $scheduleToStart = self::optionalPositiveInt($command, 'schedule_to_start_timeout', $index, $errors);
+                $scheduleToClose = self::optionalPositiveInt($command, 'schedule_to_close_timeout', $index, $errors);
+                $heartbeat = self::optionalPositiveInt($command, 'heartbeat_timeout', $index, $errors);
+
+                self::assertActivityTimeoutOrdering($startToClose, $scheduleToClose, $heartbeat, $index, $errors);
 
                 $normalized[] = array_filter([
                     'type' => $type,
@@ -96,25 +166,10 @@ final class WorkflowCommandNormalizer
                     'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
                     'retry_policy' => $retryPolicy,
-                    'start_to_close_timeout' => self::optionalPositiveInt(
-                        $command,
-                        'start_to_close_timeout',
-                        $index,
-                        $errors,
-                    ),
-                    'schedule_to_start_timeout' => self::optionalPositiveInt(
-                        $command,
-                        'schedule_to_start_timeout',
-                        $index,
-                        $errors,
-                    ),
-                    'schedule_to_close_timeout' => self::optionalPositiveInt(
-                        $command,
-                        'schedule_to_close_timeout',
-                        $index,
-                        $errors,
-                    ),
-                    'heartbeat_timeout' => self::optionalPositiveInt($command, 'heartbeat_timeout', $index, $errors),
+                    'start_to_close_timeout' => $startToClose,
+                    'schedule_to_start_timeout' => $scheduleToStart,
+                    'schedule_to_close_timeout' => $scheduleToClose,
+                    'heartbeat_timeout' => $heartbeat,
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
@@ -161,6 +216,11 @@ final class WorkflowCommandNormalizer
                     continue;
                 }
 
+                $executionTimeout = self::optionalPositiveInt($command, 'execution_timeout_seconds', $index, $errors);
+                $runTimeout = self::optionalPositiveInt($command, 'run_timeout_seconds', $index, $errors);
+
+                self::assertChildWorkflowTimeoutOrdering($executionTimeout, $runTimeout, $index, $errors);
+
                 $normalized[] = array_filter([
                     'type' => $type,
                     'workflow_type' => trim($command['workflow_type']),
@@ -169,18 +229,8 @@ final class WorkflowCommandNormalizer
                     'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
                     'parent_close_policy' => $parentClosePolicy,
                     'retry_policy' => $retryPolicy,
-                    'execution_timeout_seconds' => self::optionalPositiveInt(
-                        $command,
-                        'execution_timeout_seconds',
-                        $index,
-                        $errors,
-                    ),
-                    'run_timeout_seconds' => self::optionalPositiveInt(
-                        $command,
-                        'run_timeout_seconds',
-                        $index,
-                        $errors,
-                    ),
+                    'execution_timeout_seconds' => $executionTimeout,
+                    'run_timeout_seconds' => $runTimeout,
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
@@ -531,5 +581,96 @@ final class WorkflowCommandNormalizer
         }
 
         return $policy === [] ? null : $policy;
+    }
+
+    /**
+     * Reject retry/timeout/failure fields that have been placed on a command
+     * type that does not accept them. The check fires only when the field is
+     * populated (non-null and present), so omitting fields stays valid.
+     *
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     */
+    private static function assertCommandFieldScope(string $type, array $command, int $index, array &$errors): void
+    {
+        foreach (self::FIELD_SCOPES as $field => $scope) {
+            if (! array_key_exists($field, $command) || $command[$field] === null) {
+                continue;
+            }
+
+            if (in_array($type, $scope['allowed'], true)) {
+                continue;
+            }
+
+            $errors["commands.{$index}.{$field}"] = [
+                sprintf(
+                    'Workflow task command field [%s] is not valid on a %s command. %s',
+                    $field,
+                    $type,
+                    $scope['guidance'],
+                ),
+            ];
+        }
+    }
+
+    /**
+     * Activity timeout fields must form a coherent envelope:
+     * schedule_to_close covers the whole execution including retries, so it
+     * cannot be smaller than start_to_close, which limits one attempt; and
+     * heartbeat_timeout polices liveness within an attempt, so it cannot
+     * exceed start_to_close.
+     *
+     * @param  array<string, list<string>>  $errors
+     */
+    private static function assertActivityTimeoutOrdering(
+        ?int $startToClose,
+        ?int $scheduleToClose,
+        ?int $heartbeat,
+        int $index,
+        array &$errors,
+    ): void {
+        if ($startToClose !== null && $scheduleToClose !== null && $scheduleToClose < $startToClose) {
+            $errors["commands.{$index}.schedule_to_close_timeout"] = [
+                sprintf(
+                    'schedule_to_close_timeout (%d) must be greater than or equal to start_to_close_timeout (%d). schedule_to_close covers the whole activity execution including retries; one attempt cannot exceed the total budget.',
+                    $scheduleToClose,
+                    $startToClose,
+                ),
+            ];
+        }
+
+        if ($startToClose !== null && $heartbeat !== null && $heartbeat > $startToClose) {
+            $errors["commands.{$index}.heartbeat_timeout"] = [
+                sprintf(
+                    'heartbeat_timeout (%d) must be less than or equal to start_to_close_timeout (%d). heartbeat_timeout polices liveness within one attempt and cannot exceed the per-attempt budget.',
+                    $heartbeat,
+                    $startToClose,
+                ),
+            ];
+        }
+    }
+
+    /**
+     * Child workflow timeout fields must form a coherent envelope:
+     * execution_timeout_seconds covers the whole child execution across runs,
+     * so it cannot be smaller than run_timeout_seconds, which limits one run.
+     *
+     * @param  array<string, list<string>>  $errors
+     */
+    private static function assertChildWorkflowTimeoutOrdering(
+        ?int $executionTimeout,
+        ?int $runTimeout,
+        int $index,
+        array &$errors,
+    ): void {
+        if ($executionTimeout !== null && $runTimeout !== null && $executionTimeout < $runTimeout) {
+            $errors["commands.{$index}.execution_timeout_seconds"] = [
+                sprintf(
+                    'execution_timeout_seconds (%d) must be greater than or equal to run_timeout_seconds (%d). execution_timeout_seconds covers the whole child workflow execution; one run cannot exceed the total budget.',
+                    $executionTimeout,
+                    $runTimeout,
+                ),
+            ];
+        }
     }
 }
