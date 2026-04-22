@@ -340,7 +340,15 @@ final class WorkerCompatibilityFleet
             return;
         }
 
-        self::rememberRecorded($workerId, $supported, $namespace, $connection, $queues, self::SOURCE_DATABASE, $now->getTimestamp());
+        self::rememberRecorded(
+            $workerId,
+            $supported,
+            $namespace,
+            $connection,
+            $queues,
+            self::SOURCE_DATABASE,
+            $now->getTimestamp(),
+        );
         self::forgetSnapshotCache();
     }
 
