@@ -31,6 +31,7 @@ metadata_patterns=(
   "$(pattern_from_hex 4c6f6f702d49443a)"
   "$(pattern_from_hex 2e746d702f6c6f6f70732f)"
   "$(pattern_from_hex 6c6f6f702d72756e6e6572)"
+  "$(pattern_from_hex 4064757261626c652d776f726b666c6f772e6c6f63616c)"
 )
 
 pathspec=(
