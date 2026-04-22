@@ -272,6 +272,8 @@ final class WorkerCompatibilityFleet
         }
 
         if (! self::heartbeatTableExists()) {
+            self::recordLegacySnapshot($workerId, $supported, $namespace, $connection, $queues);
+
             return;
         }
 
@@ -317,18 +319,65 @@ final class WorkerCompatibilityFleet
             }, 3);
         } catch (Throwable $throwable) {
             report($throwable);
+            self::recordLegacySnapshot($workerId, $supported, $namespace, $connection, $queues);
 
             return;
         }
 
+        self::rememberRecorded($workerId, $supported, $namespace, $connection, $queues, $now->getTimestamp());
+        self::forgetSnapshotCache();
+    }
+
+    /**
+     * @param list<string> $supported
+     * @param list<string> $queues
+     */
+    private static function recordLegacySnapshot(
+        string $workerId,
+        array $supported,
+        ?string $namespace,
+        ?string $connection,
+        array $queues,
+    ): void {
+        $now = now()
+            ->getTimestamp();
+        $expiresAt = $now + self::ttlSeconds();
+        $fleet = Cache::get(self::LEGACY_CACHE_KEY);
+        $fleet = is_array($fleet) ? $fleet : [];
+
+        $fleet[$workerId] = [
+            'supported' => $supported,
+            'namespace' => $namespace,
+            'connection' => $connection,
+            'queues' => $queues,
+            'recorded_at' => $now,
+            'expires_at' => $expiresAt,
+        ];
+
+        Cache::put(self::LEGACY_CACHE_KEY, $fleet, self::ttlSeconds());
+        self::rememberRecorded($workerId, $supported, $namespace, $connection, $queues, $now);
+        self::forgetSnapshotCache();
+    }
+
+    /**
+     * @param list<string> $supported
+     * @param list<string> $queues
+     */
+    private static function rememberRecorded(
+        string $workerId,
+        array $supported,
+        ?string $namespace,
+        ?string $connection,
+        array $queues,
+        int $recordedAt,
+    ): void {
         self::$lastRecorded[$workerId] = [
             'supported' => $supported,
             'namespace' => $namespace,
             'connection' => $connection,
             'queues' => $queues,
-            'recorded_at' => $now->getTimestamp(),
+            'recorded_at' => $recordedAt,
         ];
-        self::forgetSnapshotCache();
     }
 
     /**

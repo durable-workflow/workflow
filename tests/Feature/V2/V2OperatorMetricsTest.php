@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
@@ -30,6 +31,31 @@ use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class V2OperatorMetricsTest extends TestCase
 {
+    public function testWorkerFleetSnapshotFallsBackToCacheWhenHeartbeatTableIsUnavailable(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+            WorkerCompatibilityFleet::clear();
+        });
+
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'metrics-test');
+
+        WorkerCompatibilityFleet::clear();
+        Schema::dropIfExists('workflow_worker_compatibility_heartbeats');
+
+        WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
+
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertSame(1, $snapshot['workers']['active_workers']);
+        $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
+        $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+    }
+
     public function testSnapshotSummarizesDurableBacklogRepairCompatibilityAndWorkerFleet(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');
