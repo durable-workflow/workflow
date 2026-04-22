@@ -119,7 +119,19 @@ jobs:
           > /tmp/mysql-shard-files
         cat /tmp/mysql-shard-files
         cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
-        timeout --foreground 60m xargs -a /tmp/mysql-shard-files vendor/bin/phpunit --testdox --testsuite feature --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
+        set +e
+        timeout --foreground 60m xargs -a /tmp/mysql-shard-files \
+          vendor/bin/phpunit --testdox --testsuite feature \
+          --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
+        status=$?
+        set -e
+        if [ -f "build/test-results/mysql-shard-${{ matrix.shard }}.xml" ]; then
+          php scripts/ci/summarize-junit-times.php \
+            --input="build/test-results/mysql-shard-${{ matrix.shard }}.xml" \
+            --output="build/test-results/mysql-shard-${{ matrix.shard }}-timing.md" \
+            --csv="build/test-results/mysql-shard-${{ matrix.shard }}-timing.csv"
+        fi
+        exit "$status"
       env:
         DB_CONNECTION: mysql
         DB_PORT: ${{ job.services.mysql.ports['3306'] }}
@@ -217,7 +229,19 @@ jobs:
           > /tmp/pgsql-shard-files
         cat /tmp/pgsql-shard-files
         cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
-        timeout --foreground 60m xargs -a /tmp/pgsql-shard-files vendor/bin/phpunit --testdox --testsuite feature --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
+        set +e
+        timeout --foreground 60m xargs -a /tmp/pgsql-shard-files \
+          vendor/bin/phpunit --testdox --testsuite feature \
+          --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
+        status=$?
+        set -e
+        if [ -f "build/test-results/pgsql-shard-${{ matrix.shard }}.xml" ]; then
+          php scripts/ci/summarize-junit-times.php \
+            --input="build/test-results/pgsql-shard-${{ matrix.shard }}.xml" \
+            --output="build/test-results/pgsql-shard-${{ matrix.shard }}-timing.md" \
+            --csv="build/test-results/pgsql-shard-${{ matrix.shard }}-timing.csv"
+        fi
+        exit "$status"
       env:
         DB_CONNECTION: pgsql
         DB_PORT: ${{ job.services.postgres.ports['5432'] }}
