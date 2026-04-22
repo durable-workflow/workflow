@@ -136,7 +136,34 @@ class MessageService
     }
 
     /**
-     * Receive unconsumed inbound messages for a workflow run.
+     * Peek at unconsumed inbound messages for a workflow run.
+     *
+     * Peeking is read-only: it never marks messages consumed and never advances
+     * the run cursor. Call {@see consumeMessage()} or {@see consumeMessages()}
+     * after workflow code has durably recorded how the messages were handled.
+     *
+     * @param WorkflowRun $run The receiving workflow run
+     * @param string|null $streamKey Stream key (defaults to instance stream)
+     * @param int $limit Maximum number of messages to fetch
+     *
+     * @return \Illuminate\Database\Eloquent\Collection<WorkflowMessage>
+     */
+    public function peekMessages(
+        WorkflowRun $run,
+        ?string $streamKey = null,
+        int $limit = 100,
+    ): \Illuminate\Database\Eloquent\Collection {
+        $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
+        $afterSequence = MessageStreamCursor::positionForRun($run);
+
+        return WorkflowMessage::getUnconsumedForStream($run, $streamKey, $afterSequence, $limit);
+    }
+
+    /**
+     * Compatibility alias for {@see peekMessages()}.
+     *
+     * "Receive" in the v2 message stream contract means "read pending
+     * messages without consuming them". Cursor movement remains explicit.
      *
      * @param WorkflowRun $run The receiving workflow run
      * @param string|null $streamKey Stream key (defaults to instance stream)
@@ -149,10 +176,7 @@ class MessageService
         ?string $streamKey = null,
         int $limit = 100,
     ): \Illuminate\Database\Eloquent\Collection {
-        $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
-        $afterSequence = MessageStreamCursor::positionForRun($run);
-
-        return WorkflowMessage::getUnconsumedForStream($run, $streamKey, $afterSequence, $limit);
+        return $this->peekMessages($run, $streamKey, $limit);
     }
 
     /**
@@ -196,7 +220,7 @@ class MessageService
      * @param array<WorkflowMessage> $messages Messages to consume
      * @param int $consumedBySequence The history sequence that consumed these messages
      */
-    public function consumeMessageBatch(WorkflowRun $run, array $messages, int $consumedBySequence): void
+    public function consumeMessages(WorkflowRun $run, array $messages, int $consumedBySequence): void
     {
         if (empty($messages)) {
             return;
@@ -233,11 +257,19 @@ class MessageService
                     ));
                 }
 
+                if ($streamKey !== null && $message->stream_key !== $streamKey) {
+                    throw new InvalidArgumentException(sprintf(
+                        'Cannot consume messages from multiple streams in one batch (%s, %s).',
+                        $streamKey,
+                        $message->stream_key,
+                    ));
+                }
+
+                $streamKey ??= $message->stream_key;
                 $message->markConsumed($consumedBySequence);
 
                 if ($message->sequence > $maxSequence) {
                     $maxSequence = $message->sequence;
-                    $streamKey = $message->stream_key;
                 }
             }
 
@@ -246,6 +278,18 @@ class MessageService
                 MessageStreamCursor::advanceCursor($run, $maxSequence, null, $streamKey);
             }
         });
+    }
+
+    /**
+     * Compatibility alias for {@see consumeMessages()}.
+     *
+     * @param WorkflowRun $run The consuming workflow run
+     * @param array<WorkflowMessage> $messages Messages to consume
+     * @param int $consumedBySequence The history sequence that consumed these messages
+     */
+    public function consumeMessageBatch(WorkflowRun $run, array $messages, int $consumedBySequence): void
+    {
+        $this->consumeMessages($run, $messages, $consumedBySequence);
     }
 
     /**

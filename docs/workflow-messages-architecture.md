@@ -182,10 +182,16 @@ Stream B: msg_seq_1, msg_seq_2, msg_seq_3
 
 ### Cursor Position
 
-Each workflow run tracks a cursor position per stream:
+Each workflow run tracks one monotonic cursor position across the instance
+message sequence:
 - `workflow_runs.message_cursor_position` - last consumed sequence
 - Default: 0 (no messages consumed yet)
 - Cursor only moves forward (monotonic)
+
+Stream keys scope receive and consume queries, but cursor advancement is still
+against the shared instance sequence. A single batch consume must therefore
+contain messages from one stream only; mixed-stream batches are rejected so the
+`MessageCursorAdvanced` event has one unambiguous `stream_key`.
 
 ### Cursor Advancement
 
@@ -198,9 +204,10 @@ When a message is consumed:
 
 **Idempotency:** `advanceCursor()` returns null if cursor already at or past requested position.
 
-### Receiving Messages
+### Peeking And Receiving Messages
 
 ```php
+$messages = $messageService->peekMessages($run, $streamKey);
 $messages = $messageService->receiveMessages($run, $streamKey);
 ```
 
@@ -211,7 +218,11 @@ Returns messages where:
 - `consume_state = 'pending'`
 - `sequence > $run->message_cursor_position`
 
-**Only unconsumed messages after cursor are returned.**
+`peekMessages()` and `receiveMessages()` are read-only. They return only
+unconsumed messages after the cursor, but they do not mark messages consumed and
+they do not advance the cursor. Cursor movement is explicit and happens only
+through `consumeMessage()` or `consumeMessages()` after workflow code has
+durably recorded how it handled the messages.
 
 ## Continue-As-New Handoff
 
@@ -341,7 +352,14 @@ class MessageService
         ?\DateTimeInterface $expiresAt = null,
     ): WorkflowMessage;
     
-    // Receive unconsumed inbound messages
+    // Peek unconsumed inbound messages without consuming or moving the cursor.
+    public function peekMessages(
+        WorkflowRun $run,
+        ?string $streamKey = null,
+        int $limit = 100,
+    ): Collection<WorkflowMessage>;
+
+    // Compatibility alias for peekMessages().
     public function receiveMessages(
         WorkflowRun $run,
         ?string $streamKey = null,
@@ -355,7 +373,14 @@ class MessageService
         int $consumedBySequence,
     ): void;
     
-    // Consume multiple messages (cursor advances to highest sequence)
+    // Consume multiple same-stream messages (cursor advances to highest sequence)
+    public function consumeMessages(
+        WorkflowRun $run,
+        array $messages,
+        int $consumedBySequence,
+    ): void;
+
+    // Compatibility alias for consumeMessages().
     public function consumeMessageBatch(
         WorkflowRun $run,
         array $messages,

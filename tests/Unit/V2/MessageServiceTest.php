@@ -148,6 +148,26 @@ class MessageServiceTest extends TestCase
         $this->assertEquals([1, 2, 3], $sequences);
     }
 
+    public function testPeekMessagesIsReadOnlyAndReceiveIsCompatibilityAlias(): void
+    {
+        $sourceRun = $this->createRun();
+        $targetRun = $this->createRun();
+
+        $this->service->sendMessage($sourceRun, MessageChannel::Signal, $targetRun->workflow_instance_id);
+        $this->service->sendMessage($sourceRun, MessageChannel::Signal, $targetRun->workflow_instance_id);
+
+        $peeked = $this->service->peekMessages($targetRun);
+        $received = $this->service->receiveMessages($targetRun);
+
+        $this->assertEquals($peeked->pluck('id')->all(), $received->pluck('id')->all());
+
+        $targetRun->refresh();
+        $this->assertSame(0, (int) $targetRun->message_cursor_position);
+        $this->assertTrue($peeked->every(
+            static fn (WorkflowMessage $message): bool => $message->consume_state === MessageConsumeState::Pending
+        ));
+    }
+
     public function testItConsumesMessageAndAdvancesCursor(): void
     {
         $sourceRun = $this->createRun();
@@ -200,6 +220,41 @@ class MessageServiceTest extends TestCase
         // Cursor should be at highest sequence
         $targetRun->refresh();
         $this->assertEquals(3, $targetRun->message_cursor_position);
+    }
+
+    public function testItRejectsMixedStreamBatchConsumption(): void
+    {
+        $sourceRun = $this->createRun();
+        $targetRun = $this->createRun();
+
+        $this->service->sendMessage(
+            $sourceRun,
+            MessageChannel::Signal,
+            $targetRun->workflow_instance_id,
+            null,
+            'stream_a'
+        );
+        $this->service->sendMessage(
+            $sourceRun,
+            MessageChannel::Signal,
+            $targetRun->workflow_instance_id,
+            null,
+            'stream_b'
+        );
+
+        $messages = [
+            $this->service->receiveMessages($targetRun, 'stream_a')
+                ->first(),
+            $this->service->receiveMessages($targetRun, 'stream_b')
+                ->first(),
+        ];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'Cannot consume messages from multiple streams in one batch (stream_a, stream_b).'
+        );
+
+        $this->service->consumeMessages($targetRun, $messages, 10);
     }
 
     public function testItOnlyReceivesMessagesAfterCursorPosition(): void

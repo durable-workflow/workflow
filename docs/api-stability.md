@@ -102,6 +102,25 @@ preference; both produce identical `Support\*` Call value objects.
 Adding new static methods to the facade is an additive (non-breaking)
 change. Removing or renaming a documented method is a major change.
 
+## Durable Message Stream Contract
+
+The v2 durable message service is the stable lower-level contract backing
+signals, updates, workflow-to-workflow messages, and repeated human-input
+flows:
+
+- `MessageService::sendMessage()` creates paired outbound and inbound
+  `workflow_messages` rows with one reserved instance sequence.
+- `MessageService::peekMessages()` and `receiveMessages()` read pending
+  inbound messages after the run cursor. They are intentionally read-only:
+  they do not mark messages consumed and do not advance the cursor.
+- `MessageService::consumeMessage()` and `consumeMessages()` are the only
+  message-service APIs that mark messages consumed and advance the cursor.
+  Batch consumption is same-stream only; mixed-stream batches are rejected so
+  each `MessageCursorAdvanced` event names exactly one `stream_key`.
+- `MessageService::transferMessagesToContinuedRun()` moves pending inbound
+  messages and the cursor position from the closing run to the continued run.
+  Consumed messages stay attached to the original run as historical record.
+
 ## Continue-As-New Interleaving Contract
 
 Continue-as-new keeps one logical workflow instance while closing one run
