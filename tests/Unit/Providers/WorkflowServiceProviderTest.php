@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
@@ -19,10 +20,12 @@ use Workflow\States\WorkflowPendingStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
 
@@ -53,6 +56,27 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertTrue(
             $this->app->getProvider(WorkflowServiceProvider::class) instanceof WorkflowServiceProvider
         );
+    }
+
+    public function testProviderBootRejectsConfiguredInstanceModelThatChangesInferredForeignKeys(): void
+    {
+        config()->set('workflows.v2.instance_model', MisconfiguredProviderWorkflowInstance::class);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('workflows.v2.instance_model');
+        $this->expectExceptionMessage('workflow_instance_id');
+        $this->expectExceptionMessage('runs()');
+
+        (new WorkflowServiceProvider($this->app))->boot();
+    }
+
+    public function testProviderBootAllowsConfiguredInstanceModelWithExplicitRelationOverrides(): void
+    {
+        config()->set('workflows.v2.instance_model', ValidatedProviderWorkflowInstance::class);
+
+        (new WorkflowServiceProvider($this->app))->boot();
+
+        $this->assertTrue(true);
     }
 
     public function testProviderMergesV2DefaultsIntoLegacyPublishedConfig(): void
@@ -346,5 +370,40 @@ final class WorkflowServiceProviderTest extends TestCase
                 @unlink($file);
             }
         }
+    }
+}
+
+final class MisconfiguredProviderWorkflowInstance extends WorkflowInstance
+{
+    protected $table = 'misconfigured_provider_workflow_instances';
+}
+
+final class ValidatedProviderWorkflowInstance extends WorkflowInstance
+{
+    protected $table = 'validated_provider_workflow_instances';
+
+    public function runs(): HasMany
+    {
+        return $this->hasMany(\Workflow\V2\Support\ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_instance_id');
+    }
+
+    public function commands(): HasMany
+    {
+        return $this->hasMany(
+            \Workflow\V2\Support\ConfiguredV2Models::resolve('command_model', WorkflowCommand::class),
+            'workflow_instance_id',
+        )->oldest('created_at');
+    }
+
+    public function updates(): HasMany
+    {
+        return $this->hasMany(
+            \Workflow\V2\Support\ConfiguredV2Models::resolve('update_model', WorkflowUpdate::class),
+            'workflow_instance_id',
+        )
+            ->orderBy('command_sequence')
+            ->oldest('accepted_at')
+            ->oldest('created_at')
+            ->oldest('id');
     }
 }

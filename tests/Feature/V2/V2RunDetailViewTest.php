@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -95,6 +96,23 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($exportedAt->toJSON(), $dashboard['operator_metrics']['generated_at']);
         $this->assertSame($exportedAt->toJSON(), $metrics['generated_at']);
         $this->assertArrayHasKey('runs', $metrics);
+    }
+
+    public function testWorkflowStubHistoryExportUsesCustomOperatorObservabilityRepositoryBinding(): void
+    {
+        config()->set('queue.default', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'custom-operator-observability-binding');
+        $workflow->start('Taylor');
+
+        $repository = new RecordingOperatorObservabilityRepository();
+        $this->app->instance(OperatorObservabilityRepository::class, $repository);
+
+        $export = $workflow->historyExport();
+
+        $this->assertSame('custom.operator.export', $export['schema']);
+        $this->assertSame((string) $workflow->runId(), $repository->capturedRunId);
     }
 
     public function testMultipleReplayBlockedFailuresStayOrderedAcrossDetailAndExport(): void
@@ -4025,5 +4043,57 @@ final class V2RunDetailViewTest extends TestCase
         }
 
         return null;
+    }
+}
+
+final class RecordingOperatorObservabilityRepository implements OperatorObservabilityRepository
+{
+    public ?string $capturedRunId = null;
+
+    public function runDetail(WorkflowRun $run, ?int $timelineLimit = null): array
+    {
+        return [
+            'instance_id' => $run->workflow_instance_id,
+            'run_id' => $run->id,
+            'timeline_limit' => $timelineLimit,
+        ];
+    }
+
+    public function listItem(WorkflowRunSummary $summary): array
+    {
+        return [
+            'run_id' => $summary->id,
+        ];
+    }
+
+    public function runHistoryExport(
+        WorkflowRun $run,
+        ?CarbonInterface $exportedAt = null,
+        \Workflow\V2\Contracts\HistoryExportRedactor|callable|null $redactor = null,
+    ): array {
+        $this->capturedRunId = $run->id;
+
+        return [
+            'schema' => 'custom.operator.export',
+            'run_id' => $run->id,
+            'exported_at' => $exportedAt?->toJSON(),
+        ];
+    }
+
+    public function dashboardSummary(?CarbonInterface $now = null, ?string $namespace = null): array
+    {
+        return [
+            'generated_at' => $now?->toJSON(),
+            'namespace' => $namespace,
+        ];
+    }
+
+    public function metrics(?CarbonInterface $now = null, ?string $namespace = null): array
+    {
+        return [
+            'generated_at' => $now?->toJSON(),
+            'namespace' => $namespace,
+            'runs' => [],
+        ];
     }
 }

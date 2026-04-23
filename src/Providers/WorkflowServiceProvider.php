@@ -34,6 +34,7 @@ use Workflow\V2\Observers\WorkflowLinkObserver;
 use Workflow\V2\Observers\WorkflowRunLineageEntryObserver;
 use Workflow\V2\Observers\WorkflowTaskObserver;
 use Workflow\V2\Support\CacheLongPollWakeStore;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
@@ -98,6 +99,7 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         TypeRegistry::validateTypeMap();
         WorkflowModeGuard::check();
+        ConfiguredV2Models::validateConfiguration();
 
         // Register long-poll wake signal observers
         $this->registerLongPollObservers();
