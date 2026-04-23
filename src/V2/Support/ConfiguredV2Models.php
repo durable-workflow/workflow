@@ -74,7 +74,8 @@ final class ConfiguredV2Models
             $mismatches = [];
 
             foreach ($validation['relations'] as $relationName) {
-                $declaringClass = (new \ReflectionMethod($configured, $relationName))->getDeclaringClass()->getName();
+                $declaringClass = (new \ReflectionMethod($configured, $relationName))->getDeclaringClass()
+                    ->getName();
 
                 if ($declaringClass === $default) {
                     $mismatches[] = sprintf(

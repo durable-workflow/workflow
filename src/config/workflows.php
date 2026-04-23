@@ -146,7 +146,7 @@ return [
             ),
         ],
         'guardrails' => [
-                'boot' => env('DW_V2_GUARDRAILS_BOOT', 'warn'),
+            'boot' => env('DW_V2_GUARDRAILS_BOOT', 'warn'),
         ],
         'structural_limits' => [
             'pending_activity_count' => (int) Env::dw(

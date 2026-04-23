@@ -20,8 +20,8 @@ use Workflow\States\WorkflowPendingStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -384,7 +384,10 @@ final class ValidatedProviderWorkflowInstance extends WorkflowInstance
 
     public function runs(): HasMany
     {
-        return $this->hasMany(\Workflow\V2\Support\ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_instance_id');
+        return $this->hasMany(
+            \Workflow\V2\Support\ConfiguredV2Models::resolve('run_model', WorkflowRun::class),
+            'workflow_instance_id'
+        );
     }
 
     public function commands(): HasMany

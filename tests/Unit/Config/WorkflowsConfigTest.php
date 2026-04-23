@@ -9,10 +9,10 @@ use Tests\TestCase;
 final class WorkflowsConfigTest extends TestCase
 {
     /**
-        * Environment names that can influence config defaults in tests.
-        * This includes retired names we explicitly clear so ambient alpha-era
-        * exports do not leak into assertions that are meant to prove the final
-        * released contract.
+     * Environment names that can influence config defaults in tests.
+     * This includes retired names we explicitly clear so ambient alpha-era
+     * exports do not leak into assertions that are meant to prove the final
+     * released contract.
      *
      * @var list<string>
      */
@@ -144,9 +144,9 @@ final class WorkflowsConfigTest extends TestCase
     /**
      * A fresh installation must be able to boot with no v2 environment
      * variables set. The compatibility markers and history-export signing
-    * keys default to null ("no marker required" / "unsigned"), the namespace
-    * defaults to null ("no namespace isolation"), and the remaining v2 keys
-    * keep their shipped defaults.
+     * keys default to null ("no marker required" / "unsigned"), the namespace
+     * defaults to null ("no namespace isolation"), and the remaining v2 keys
+     * keep their shipped defaults.
      */
     public function testV2SectionBootsWithoutEnvironmentOverrides(): void
     {
