@@ -57,6 +57,11 @@ final class WorkflowMakeCommandTest extends TestCase
         $this->assertStringContainsString("#[Type('test-workflow')]", $contents);
         $this->assertStringContainsString('public function handle(): mixed', $contents);
         $this->assertStringContainsString('return null;', $contents);
+        $this->assertStringContainsString('use function Workflow\\V2\\activity;', $contents);
+        $this->assertStringContainsString('use function Workflow\\V2\\now;', $contents);
+        $this->assertStringContainsString('use function Workflow\\V2\\timer;', $contents);
+        $this->assertStringContainsString('$result = activity(MyActivity::class, $input);', $contents);
+        $this->assertStringContainsString('timer(\'5 seconds\');', $contents);
         $this->assertStringNotContainsString('Generator', $contents);
         $this->assertStringNotContainsString('yield', $contents);
         $this->assertStringNotContainsString('use Workflow\\Workflow;', $contents);

@@ -12,18 +12,25 @@ class {{ class }} extends Workflow
 {
     public function handle(): mixed
     {
-        // Example:
+        // Example (helper-style is the primary authoring API):
         //
-        //     $startedAt = Workflow::now();
-        //     $result = Workflow::activity(MyActivity::class, $input);
-        //     Workflow::timer('5 seconds');
-        //     Workflow::upsertMemo(['stage' => 'done']);
+        //     use function Workflow\V2\activity;
+        //     use function Workflow\V2\now;
+        //     use function Workflow\V2\timer;
+        //     use function Workflow\V2\upsertMemo;
+        //
+        //     $startedAt = now();
+        //     $result = activity(MyActivity::class, $input);
+        //     timer('5 seconds');
+        //     upsertMemo(['stage' => 'done']);
         //
         //     return $result;
         //
-        // Determinism: prefer Workflow::now() over Laravel's now() inside a
-        // workflow body. Workflow::now() advances with history events during
+        // Determinism: prefer Workflow\V2\now() over Laravel's now() inside a
+        // workflow body. Workflow\V2\now() advances with history events during
         // replay, so the same workflow run always observes the same timeline.
+        // The static facade (Workflow::activity(), Workflow::now(), ...) is an
+        // equivalent alternative for teams that prefer Temporal-style calls.
         return null;
     }
 }
