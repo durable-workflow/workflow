@@ -9,10 +9,10 @@ use Tests\TestCase;
 final class WorkflowsConfigTest extends TestCase
 {
     /**
-     * Every env var read by src/config/workflows.php. Both the DW_*
-     * primary and WORKFLOW_* legacy names are cleared before assertions
-     * that depend on defaults, so tests are not sensitive to what the
-     * ambient test environment happens to export.
+        * Environment names that can influence config defaults in tests.
+        * This includes retired names we explicitly clear so ambient alpha-era
+        * exports do not leak into assertions that are meant to prove the final
+        * released contract.
      *
      * @var list<string>
      */
@@ -144,9 +144,9 @@ final class WorkflowsConfigTest extends TestCase
     /**
      * A fresh installation must be able to boot with no v2 environment
      * variables set. The compatibility markers and history-export signing
-     * keys default to null ("no marker required" / "unsigned"), the namespace
-     * defaults to null ("no namespace isolation"), and every other v2 key
-     * ships with a working fallback.
+    * keys default to null ("no marker required" / "unsigned"), the namespace
+    * defaults to null ("no namespace isolation"), and the remaining v2 keys
+    * keep their shipped defaults.
      */
     public function testV2SectionBootsWithoutEnvironmentOverrides(): void
     {
@@ -166,6 +166,48 @@ final class WorkflowsConfigTest extends TestCase
             // Defaults that must still be active regardless of env vars.
             $this->assertSame(30, $config['v2']['compatibility']['heartbeat_ttl_seconds']);
             $this->assertSame('queue', $config['v2']['task_dispatch_mode']);
+            $this->assertSame('warn', $config['v2']['guardrails']['boot']);
+        } finally {
+            $this->restoreEnv($previous);
+        }
+    }
+
+    public function testGuardrailsBootReadsDwNameOnly(): void
+    {
+        $keys = ['DW_V2_GUARDRAILS_BOOT', 'WORKFLOW_V2_GUARDRAILS_BOOT'];
+        $previous = $this->snapshotEnv($keys);
+        $this->clearEnv($keys);
+
+        putenv('DW_V2_GUARDRAILS_BOOT=throw');
+        $_ENV['DW_V2_GUARDRAILS_BOOT'] = 'throw';
+        $_SERVER['DW_V2_GUARDRAILS_BOOT'] = 'throw';
+
+        putenv('WORKFLOW_V2_GUARDRAILS_BOOT=silent');
+        $_ENV['WORKFLOW_V2_GUARDRAILS_BOOT'] = 'silent';
+        $_SERVER['WORKFLOW_V2_GUARDRAILS_BOOT'] = 'silent';
+
+        try {
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+
+            $this->assertSame('throw', $config['v2']['guardrails']['boot']);
+        } finally {
+            $this->restoreEnv($previous);
+        }
+    }
+
+    public function testGuardrailsBootIgnoresLegacyWorkflowV2Name(): void
+    {
+        $keys = ['DW_V2_GUARDRAILS_BOOT', 'WORKFLOW_V2_GUARDRAILS_BOOT'];
+        $previous = $this->snapshotEnv($keys);
+        $this->clearEnv($keys);
+
+        putenv('WORKFLOW_V2_GUARDRAILS_BOOT=throw');
+        $_ENV['WORKFLOW_V2_GUARDRAILS_BOOT'] = 'throw';
+        $_SERVER['WORKFLOW_V2_GUARDRAILS_BOOT'] = 'throw';
+
+        try {
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+
             $this->assertSame('warn', $config['v2']['guardrails']['boot']);
         } finally {
             $this->restoreEnv($previous);
