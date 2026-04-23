@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
@@ -206,6 +207,7 @@ final class RunLineageView
                     ? ChildRunHistory::HISTORY_AUTHORITY_TYPED
                     : ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK,
                 diagnosticOnly: ! $hasTypedHistory,
+                parentClosePolicy: self::parentClosePolicyForChild($run, $childRunId, $link),
             );
 
             $seen[$key] = true;
@@ -250,6 +252,9 @@ final class RunLineageView
                 createdAt: $link->created_at,
                 historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK,
                 diagnosticOnly: true,
+                parentClosePolicy: $link->link_type === 'child_workflow'
+                    ? self::parentClosePolicyForChild($run, $link->child_workflow_run_id, $link)
+                    : null,
             );
 
             $seen[$key] = true;
@@ -335,6 +340,12 @@ final class RunLineageView
     }
 
     /**
+     * @param array{
+     *     parent_close_policy: ?string,
+     *     parent_close_policy_outcome: ?string,
+     *     parent_close_policy_reason: ?string,
+     *     parent_close_policy_error: ?string
+     * }|null $parentClosePolicy
      * @return array<string, mixed>
      */
     private static function entry(
@@ -351,6 +362,7 @@ final class RunLineageView
         array $metadata = [],
         string $historyAuthority = ChildRunHistory::HISTORY_AUTHORITY_TYPED,
         bool $diagnosticOnly = false,
+        ?array $parentClosePolicy = null,
     ): array {
         $summary = $relatedRun?->summary;
         $status = self::stringValue($metadata['status'] ?? null)
@@ -384,7 +396,93 @@ final class RunLineageView
             'created_at' => self::timestamp($createdAt),
             'history_authority' => $historyAuthority,
             'diagnostic_only' => $diagnosticOnly,
+            'parent_close_policy' => $parentClosePolicy['parent_close_policy'] ?? null,
+            'parent_close_policy_outcome' => $parentClosePolicy['parent_close_policy_outcome'] ?? null,
+            'parent_close_policy_reason' => $parentClosePolicy['parent_close_policy_reason'] ?? null,
+            'parent_close_policy_error' => $parentClosePolicy['parent_close_policy_error'] ?? null,
         ];
+    }
+
+    /**
+     * Derive parent-close-policy disposition for a child of the given parent run.
+     *
+     * Reads the snapshotted policy from the link row and the parent's history
+     * for any ParentClosePolicyApplied/Failed event addressed to this child run,
+     * so operator surfaces can distinguish "closed by parent-close policy"
+     * from "closed independently" or "open under abandon".
+     *
+     * @return array{
+     *     parent_close_policy: ?string,
+     *     parent_close_policy_outcome: ?string,
+     *     parent_close_policy_reason: ?string,
+     *     parent_close_policy_error: ?string
+     * }|null
+     */
+    private static function parentClosePolicyForChild(
+        WorkflowRun $parentRun,
+        ?string $childRunId,
+        ?WorkflowLink $link,
+    ): ?array {
+        $policy = self::normalizePolicy($link?->parent_close_policy);
+        $event = $childRunId === null
+            ? null
+            : self::latestParentClosePolicyEventForChild($parentRun, $childRunId);
+
+        if ($policy === null && $event === null) {
+            return null;
+        }
+
+        $eventPayload = is_array($event?->payload) ? $event->payload : [];
+        $outcome = match ($event?->event_type) {
+            HistoryEventType::ParentClosePolicyApplied => 'applied',
+            HistoryEventType::ParentClosePolicyFailed => 'failed',
+            default => null,
+        };
+        $eventPolicy = self::normalizePolicy(self::stringValue($eventPayload['policy'] ?? null));
+        $reason = self::stringValue($eventPayload['reason'] ?? null);
+        $error = self::stringValue($eventPayload['error'] ?? null);
+
+        return [
+            'parent_close_policy' => $eventPolicy ?? $policy,
+            'parent_close_policy_outcome' => $outcome,
+            'parent_close_policy_reason' => $reason,
+            'parent_close_policy_error' => $error,
+        ];
+    }
+
+    private static function latestParentClosePolicyEventForChild(
+        WorkflowRun $parentRun,
+        string $childRunId,
+    ): ?WorkflowHistoryEvent {
+        $parentRun->loadMissing('historyEvents');
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $parentRun->historyEvents
+            ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->event_type,
+                [
+                    HistoryEventType::ParentClosePolicyApplied,
+                    HistoryEventType::ParentClosePolicyFailed,
+                ],
+                true,
+            ) && self::stringValue(
+                is_array($event->payload) ? ($event->payload['child_run_id'] ?? null) : null
+            ) === $childRunId)
+            ->sortBy(static fn (WorkflowHistoryEvent $event): int => $event->sequence ?? PHP_INT_MAX)
+            ->last();
+
+        return $event instanceof WorkflowHistoryEvent ? $event : null;
+    }
+
+    private static function normalizePolicy(mixed $value): ?string
+    {
+        $string = self::stringValue($value);
+
+        if ($string === null) {
+            return null;
+        }
+
+        return ParentClosePolicy::tryFrom($string)?->value;
     }
 
     /**
