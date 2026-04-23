@@ -429,7 +429,10 @@ final class HistoryExportTest extends TestCase
         $this->assertSame($activity->id, $bundle['activities'][0]['id']);
         $this->assertSame($activity->id, $bundle['activities'][0]['idempotency_key']);
         $this->assertTrue($bundle['activities'][0]['diagnostic_only']);
-        $this->assertSame($activity->retry_policy, $bundle['activities'][0]['retry_policy']);
+        // retry_policy is JSON-cast and key order is not preserved across
+        // DB engines (MySQL 8 sorts JSON object keys by length). The contract
+        // is value equality, not insertion order.
+        $this->assertEquals($activity->retry_policy, $bundle['activities'][0]['retry_policy']);
         $this->assertSame($attempt->id, $bundle['activities'][0]['attempts'][0]['id']);
         $this->assertSame($childCallId, $bundle['links']['children'][0]['child_call_id']);
 
