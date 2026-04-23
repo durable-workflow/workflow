@@ -17,6 +17,7 @@ use Workflow\Models\StoredWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -77,6 +78,23 @@ final class WorkflowServiceProviderTest extends TestCase
         (new WorkflowServiceProvider($this->app))->boot();
 
         $this->assertTrue(true);
+    }
+
+    public function testOperatorObservabilityRepositoryBindingDefersToAppBinding(): void
+    {
+        // The customization matrix documents OperatorObservabilityRepository
+        // as a user-replaceable container binding. When an application binds
+        // its own implementation before the package service provider runs
+        // (e.g. from an app service provider loaded earlier, or via test
+        // setup), the package must not overwrite that binding.
+        $custom = $this->createMock(OperatorObservabilityRepository::class);
+
+        $this->app->offsetUnset(OperatorObservabilityRepository::class);
+        $this->app->singleton(OperatorObservabilityRepository::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(OperatorObservabilityRepository::class));
     }
 
     public function testProviderMergesV2DefaultsIntoLegacyPublishedConfig(): void

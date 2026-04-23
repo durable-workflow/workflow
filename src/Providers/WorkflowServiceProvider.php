@@ -52,7 +52,7 @@ final class WorkflowServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/workflows.php', 'workflows');
 
-        $this->app->singleton(
+        $this->app->singletonIf(
             OperatorObservabilityRepository::class,
             DefaultOperatorObservabilityRepository::class,
         );
