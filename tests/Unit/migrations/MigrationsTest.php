@@ -128,6 +128,46 @@ final class MigrationsTest extends TestCase
         $this->assertFalse(Schema::hasTable('workflow_run_lineage_entries'));
     }
 
+    /**
+     * @dataProvider sqliteRollbackCommandProvider
+     */
+    public function testSqlitePackageMigrationsSupportRollbackCommands(string $command): void
+    {
+        $databasePath = tempnam(sys_get_temp_dir(), 'workflow-sqlite-migrations-');
+
+        $this->assertIsString($databasePath);
+
+        $connection = 'workflow_test_sqlite';
+        config()->set("database.connections.{$connection}", [
+            'driver' => 'sqlite',
+            'database' => $databasePath,
+            'prefix' => '',
+            'foreign_key_constraints' => true,
+        ]);
+
+        try {
+            $this->artisan('migrate:fresh', [
+                '--database' => $connection,
+                '--path' => dirname(__DIR__, 3) . '/src/migrations',
+                '--realpath' => true,
+            ])->assertExitCode(0);
+
+            $this->assertSqliteWorkflowTablesExist($connection);
+
+            $this->artisan($command, [
+                '--database' => $connection,
+                '--path' => dirname(__DIR__, 3) . '/src/migrations',
+                '--realpath' => true,
+            ])->assertExitCode(0);
+
+            $this->assertSqliteWorkflowTablesMissing($connection);
+        } finally {
+            if (is_file($databasePath)) {
+                @unlink($databasePath);
+            }
+        }
+    }
+
     public function testTimerProjectionRowsDefaultToCurrentSchemaVersion(): void
     {
         /** @var WorkflowRunTimerEntry $entry */
@@ -181,5 +221,69 @@ final class MigrationsTest extends TestCase
         }
 
         $this->fail("Unable to determine {$table}.{$column} length for {$driver}.");
+    }
+
+    /**
+     * @return list<array{string}>
+     */
+    public static function sqliteRollbackCommandProvider(): array
+    {
+        return [
+            ['migrate:rollback'],
+            ['migrate:reset'],
+        ];
+    }
+
+    private function assertSqliteWorkflowTablesExist(string $connection): void
+    {
+        foreach (self::sqliteWorkflowTables() as $table) {
+            $this->assertTrue(Schema::connection($connection)->hasTable($table), "Expected SQLite table [{$table}] to exist.");
+        }
+    }
+
+    private function assertSqliteWorkflowTablesMissing(string $connection): void
+    {
+        foreach (self::sqliteWorkflowTables() as $table) {
+            $this->assertFalse(Schema::connection($connection)->hasTable($table), "Expected SQLite table [{$table}] to be dropped.");
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function sqliteWorkflowTables(): array
+    {
+        return [
+            'workflows',
+            'workflow_logs',
+            'workflow_signals',
+            'workflow_timers',
+            'workflow_exceptions',
+            'workflow_relationships',
+            'workflow_instances',
+            'workflow_runs',
+            'workflow_run_timers',
+            'workflow_tasks',
+            'activity_executions',
+            'workflow_failures',
+            'workflow_run_summaries',
+            'workflow_history_events',
+            'workflow_commands',
+            'workflow_links',
+            'activity_attempts',
+            'workflow_worker_compatibility_heartbeats',
+            'workflow_updates',
+            'workflow_signal_records',
+            'workflow_run_waits',
+            'workflow_run_timeline_entries',
+            'workflow_run_lineage_entries',
+            'workflow_run_timer_entries',
+            'workflow_schedules',
+            'workflow_messages',
+            'workflow_memos',
+            'workflow_search_attributes',
+            'workflow_child_calls',
+            'workflow_schedule_history_events',
+        ];
     }
 }
