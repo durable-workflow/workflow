@@ -27,10 +27,6 @@ return new class() extends Migration {
 
     public function up(): void
     {
-        if (Schema::hasTable(self::TABLE)) {
-            return;
-        }
-
         Schema::create(self::TABLE, static function (Blueprint $table): void {
             $table->string('id', 26)
                 ->primary();
