@@ -65,6 +65,54 @@ final class V2ParentClosePolicyTest extends TestCase
 
         $this->assertNotNull($scheduledEvent);
         $this->assertSame('request_cancel', $scheduledEvent->payload['parent_close_policy']);
+
+        $startedEvent = $parentRun->historyEvents
+            ->first(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted
+            );
+
+        $this->assertNotNull($startedEvent);
+        $this->assertSame(
+            'request_cancel',
+            $startedEvent->payload['parent_close_policy'] ?? null,
+            'ChildRunStarted history payload should carry the per-child parent_close_policy override.',
+        );
+    }
+
+    public function testChildRunStartedCarriesParentClosePolicyAcrossContinueAsNew(): void
+    {
+        $workflow = WorkflowStub::make(
+            TestParentWithClosePolicyContinuingChildWorkflow::class,
+            'policy-history-survives-continue',
+        );
+        $workflow->start('request_cancel', 5);
+
+        $this->drainReadyTasks(maxIterations: 6);
+
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'policy-history-survives-continue')
+            ->first();
+
+        $startedEvents = $parentRun->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted
+            )
+            ->values();
+
+        // Original ChildRunStarted plus at least one re-emission for a continued child run.
+        $this->assertGreaterThanOrEqual(
+            2,
+            $startedEvents->count(),
+            'Expected the continue-as-new child to emit additional ChildRunStarted events.',
+        );
+
+        foreach ($startedEvents as $event) {
+            $this->assertSame(
+                'request_cancel',
+                $event->payload['parent_close_policy'] ?? null,
+                'Every ChildRunStarted history event should carry the per-child parent_close_policy override.',
+            );
+        }
     }
 
     public function testDefaultPolicyIsAbandon(): void

@@ -377,6 +377,7 @@ final class HistoryEventPayloadContract
             'child_workflow_type',
             'child_run_number',
             'child_status',
+            'parent_close_policy',
             'retry_policy',
             'timeout_policy',
             'execution_timeout_seconds',

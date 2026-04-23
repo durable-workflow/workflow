@@ -1660,6 +1660,7 @@ final class WorkflowExecutor
             'child_workflow_class' => $childRun->workflow_class,
             'child_workflow_type' => $childRun->workflow_type,
             'child_run_number' => $childRun->run_number,
+            'parent_close_policy' => $parentClosePolicy->value,
         ], $parallelMetadata ?? []), $task);
 
         WorkflowHistoryEvent::record($childRun, HistoryEventType::StartAccepted, [
@@ -2410,6 +2411,7 @@ final class WorkflowExecutor
                 'child_workflow_class' => $continuedRun->workflow_class,
                 'child_workflow_type' => $continuedRun->workflow_type,
                 'child_run_number' => $continuedRun->run_number,
+                'parent_close_policy' => $continuedChildLink->parent_close_policy,
             ], $parallelMetadata), static fn ($value): bool => $value !== null));
         }
 
@@ -3290,6 +3292,7 @@ final class WorkflowExecutor
             'child_workflow_class' => $retryRun->workflow_class,
             'child_workflow_type' => $retryRun->workflow_type,
             'child_run_number' => $retryRun->run_number,
+            'parent_close_policy' => $parentClosePolicy,
             'retry_attempt' => $attemptCount + 1,
             'retry_of_child_workflow_run_id' => $failedChildRun->id,
             'retry_backoff_seconds' => $backoffSeconds,
