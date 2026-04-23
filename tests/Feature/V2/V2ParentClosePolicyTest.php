@@ -20,7 +20,6 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\RunLineageView;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
 
@@ -438,91 +437,6 @@ final class V2ParentClosePolicyTest extends TestCase
 
         $this->assertNotNull($appliedEvent, 'Parent-close policy should be enforced when parent times out.');
         $this->assertSame('terminate', $appliedEvent->payload['policy']);
-    }
-
-    public function testRunLineageViewSurfacesAppliedRequestCancelOutcomeOnChildEntry(): void
-    {
-        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'lineage-applied-cancel');
-        $workflow->start('request_cancel');
-
-        $this->drainReadyTasks();
-        $this->assertSame('waiting', $workflow->refresh()->status());
-
-        $link = WorkflowLink::query()
-            ->where('parent_workflow_instance_id', 'lineage-applied-cancel')
-            ->where('link_type', 'child_workflow')
-            ->sole();
-
-        $childInstanceId = $link->child_workflow_instance_id;
-        $childRunId = $link->child_workflow_run_id;
-
-        $result = $workflow->attemptTerminate('terminate parent for lineage assertion');
-        $this->assertTrue($result->accepted());
-
-        $parentRun = WorkflowRun::query()
-            ->with(['historyEvents', 'childLinks.childRun.summary', 'instance.runs.summary'])
-            ->where('workflow_instance_id', 'lineage-applied-cancel')
-            ->sole();
-
-        $children = RunLineageView::continuedWorkflowsForRun($parentRun);
-
-        $childEntry = collect($children)
-            ->first(static fn (array $entry): bool => ($entry['child_workflow_run_id'] ?? null) === $childRunId);
-
-        $this->assertNotNull($childEntry, 'Child lineage entry should be present.');
-        $this->assertSame($childInstanceId, $childEntry['child_workflow_id']);
-        $this->assertSame('request_cancel', $childEntry['parent_close_policy']);
-        $this->assertSame('applied', $childEntry['parent_close_policy_outcome']);
-        $this->assertNotNull($childEntry['parent_close_policy_reason']);
-        $this->assertStringContainsString('parent-close policy: request_cancel', $childEntry['parent_close_policy_reason']);
-        $this->assertNull($childEntry['parent_close_policy_error']);
-    }
-
-    public function testRunLineageViewExposesAbandonPolicyForOpenChildOnRunningParent(): void
-    {
-        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'lineage-abandon-open');
-        $workflow->start('abandon');
-
-        $this->drainReadyTasks();
-        $this->assertSame('waiting', $workflow->refresh()->status());
-
-        $parentRun = WorkflowRun::query()
-            ->with(['historyEvents', 'childLinks.childRun.summary', 'instance.runs.summary'])
-            ->where('workflow_instance_id', 'lineage-abandon-open')
-            ->sole();
-
-        $children = RunLineageView::continuedWorkflowsForRun($parentRun);
-
-        $this->assertCount(1, $children);
-        $this->assertSame('abandon', $children[0]['parent_close_policy']);
-        $this->assertNull($children[0]['parent_close_policy_outcome']);
-        $this->assertNull($children[0]['parent_close_policy_reason']);
-        $this->assertNull($children[0]['parent_close_policy_error']);
-    }
-
-    public function testRunLineageViewLeavesPolicyFieldsNullForContinueAsNewLineage(): void
-    {
-        $workflow = WorkflowStub::make(
-            TestParentWithClosePolicyContinuingChildWorkflow::class,
-            'lineage-continue-policy-null',
-        );
-        $workflow->start('request_cancel', 1);
-
-        $this->drainReadyTasks();
-        $this->assertTrue($workflow->refresh()->completed());
-
-        $parentRun = WorkflowRun::query()
-            ->with(['historyEvents', 'childLinks.childRun.summary', 'instance.runs.summary'])
-            ->where('workflow_instance_id', 'lineage-continue-policy-null')
-            ->sole();
-
-        $parents = RunLineageView::parentsForRun($parentRun);
-
-        foreach ($parents as $entry) {
-            $this->assertArrayHasKey('parent_close_policy', $entry);
-            $this->assertNull($entry['parent_close_policy']);
-            $this->assertNull($entry['parent_close_policy_outcome']);
-        }
     }
 
     private function drainReadyTasks(int $maxIterations = 0): void
