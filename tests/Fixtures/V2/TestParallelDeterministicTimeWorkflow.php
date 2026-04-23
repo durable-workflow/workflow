@@ -6,20 +6,22 @@ namespace Tests\Fixtures\V2;
 
 use function Workflow\V2\activity;
 use function Workflow\V2\all;
+use function Workflow\V2\now;
+
 use Workflow\V2\Workflow;
 
 final class TestParallelDeterministicTimeWorkflow extends Workflow
 {
     public function handle(string $firstName, string $secondName): array
     {
-        $timeAtStart = Workflow::now();
+        $timeAtStart = now();
 
         $results = all([
             static fn () => activity(TestGreetingActivity::class, $firstName),
             static fn () => activity(TestGreetingActivity::class, $secondName),
         ]);
 
-        $timeAfterParallel = Workflow::now();
+        $timeAfterParallel = now();
 
         return [
             'results' => $results,
