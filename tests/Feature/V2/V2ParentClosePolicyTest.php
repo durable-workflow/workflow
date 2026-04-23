@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ParentClosePolicyEnforcer;
 use Workflow\V2\Support\RunLineageView;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
@@ -438,6 +439,151 @@ final class V2ParentClosePolicyTest extends TestCase
 
         $this->assertNotNull($appliedEvent, 'Parent-close policy should be enforced when parent times out.');
         $this->assertSame('terminate', $appliedEvent->payload['policy']);
+    }
+
+    public function testEnforcerCancelsOpenChildrenOfFailedParentRun(): void
+    {
+        // The executor's failRun path marks a run Failed and then calls
+        // ParentClosePolicyEnforcer::enforce. Drive the enforcer directly
+        // against a Failed parent to prove the failure exit applies policy
+        // to open children (failed path is otherwise only reachable through
+        // a fiber terminal-throw, which cannot naturally leave children open
+        // in straight-line v2).
+        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'enforce-on-failure');
+        $workflow->start('request_cancel');
+
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_instance_id', 'enforce-on-failure')
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $childInstanceId = $link->child_workflow_instance_id;
+        $childStub = WorkflowStub::load($childInstanceId);
+        $this->assertContains($childStub->status(), ['waiting', 'running', 'pending']);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'enforce-on-failure')
+            ->firstOrFail();
+
+        // Mimic the terminal state the executor persists in failRun before
+        // calling the enforcer.
+        $parentRun->forceFill([
+            'status' => RunStatus::Failed,
+            'closed_reason' => 'failed',
+            'closed_at' => Carbon::now(),
+        ])->save();
+
+        $applied = ParentClosePolicyEnforcer::enforce($parentRun->fresh());
+
+        $this->assertSame([$childInstanceId], $applied);
+
+        $childStub->refresh();
+        $this->assertSame('cancelled', $childStub->status());
+
+        $appliedEvent = $parentRun->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->first();
+
+        $this->assertNotNull($appliedEvent, 'Parent-close policy should be enforced when parent fails.');
+        $this->assertSame('request_cancel', $appliedEvent->payload['policy']);
+        $this->assertSame($childInstanceId, $appliedEvent->payload['child_instance_id']);
+    }
+
+    public function testEnforcerTerminatesOpenChildrenOfFailedParentRun(): void
+    {
+        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'enforce-terminate-on-failure');
+        $workflow->start('terminate');
+
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_instance_id', 'enforce-terminate-on-failure')
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $childInstanceId = $link->child_workflow_instance_id;
+        $childStub = WorkflowStub::load($childInstanceId);
+        $this->assertContains($childStub->status(), ['waiting', 'running', 'pending']);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'enforce-terminate-on-failure')
+            ->firstOrFail();
+
+        $parentRun->forceFill([
+            'status' => RunStatus::Failed,
+            'closed_reason' => 'failed',
+            'closed_at' => Carbon::now(),
+        ])->save();
+
+        $applied = ParentClosePolicyEnforcer::enforce($parentRun->fresh());
+
+        $this->assertSame([$childInstanceId], $applied);
+
+        $childStub->refresh();
+        $this->assertSame('terminated', $childStub->status());
+
+        $appliedEvent = $parentRun->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->first();
+
+        $this->assertNotNull($appliedEvent);
+        $this->assertSame('terminate', $appliedEvent->payload['policy']);
+    }
+
+    public function testEnforcerLeavesChildrenRunningForCompletedParentWithAbandonPolicy(): void
+    {
+        // The executor also calls the enforcer from its WorkflowCompleted
+        // path; a straight-line parent cannot naturally complete with open
+        // children, so drive the enforcer against a Completed parent
+        // directly. Abandon must stay a no-op with no applied history event.
+        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'enforce-abandon-on-completion');
+        $workflow->start('abandon');
+
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_instance_id', 'enforce-abandon-on-completion')
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $childInstanceId = $link->child_workflow_instance_id;
+        $childStub = WorkflowStub::load($childInstanceId);
+        $childStatusBefore = $childStub->status();
+        $this->assertContains($childStatusBefore, ['waiting', 'running', 'pending']);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'enforce-abandon-on-completion')
+            ->firstOrFail();
+
+        $parentRun->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_reason' => 'completed',
+            'closed_at' => Carbon::now(),
+        ])->save();
+
+        $applied = ParentClosePolicyEnforcer::enforce($parentRun->fresh());
+
+        $this->assertSame([], $applied);
+
+        $childStub->refresh();
+        $this->assertContains($childStub->status(), ['waiting', 'running', 'pending']);
+
+        $appliedEvent = $parentRun->historyEvents()
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->first();
+
+        $this->assertNull($appliedEvent, 'Abandon policy should record no applied history event.');
     }
 
     public function testRunLineageViewSurfacesAppliedRequestCancelOutcomeOnChildEntry(): void
