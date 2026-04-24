@@ -148,9 +148,9 @@ final class RolloutSafetyDocumentationTest extends TestCase
     private const REQUIRED_HEALTH_CHECK_NAMES = [
         'backend_capabilities',
         'run_summary_projection',
-        'selected_run_projection',
+        'selected_run_projections',
         'history_retention_invariant',
-        'command_contract',
+        'command_contract_snapshots',
         'task_transport',
         'durable_resume_paths',
         'worker_compatibility',

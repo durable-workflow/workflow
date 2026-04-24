@@ -411,16 +411,19 @@ entry per named check. The following names are frozen:
 
 - `backend_capabilities`
 - `run_summary_projection`
-- `selected_run_projection`
+- `selected_run_projections`
 - `history_retention_invariant`
-- `command_contract`
+- `command_contract_snapshots`
 - `task_transport`
 - `durable_resume_paths`
 - `worker_compatibility`
 
 Each check carries `status`, `message`, and `data`. Adding a new
 check is allowed; renaming or removing one is a protocol-level
-change.
+change. The canonical check names above match the strings emitted by
+`Workflow\V2\Support\HealthCheck::snapshot()` verbatim, and a runtime
+pinning test in the workflow package asserts the match so doc/code
+drift fails loudly.
 
 ### Queue visibility
 
@@ -465,7 +468,7 @@ are authoritative and how they surface.
   `durable_resume_paths` health check.
 - **Stale projection.** A projection behind the authoritative
   history surfaces through the `run_summary_projection` and
-  `selected_run_projection` checks on `HealthCheck::snapshot()`.
+  `selected_run_projections` checks on `HealthCheck::snapshot()`.
 
 Guarantees:
 

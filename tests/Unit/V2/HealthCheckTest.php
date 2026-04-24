@@ -708,4 +708,76 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(HealthCheck::CATEGORY_ACCELERATION, $wake['category']);
         $this->assertArrayHasKey('backend', $wake['data']);
     }
+
+    public function testEveryFrozenRolloutSafetyCheckNameAppearsInRuntimeSnapshot(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $documentPath = dirname(__DIR__, 3) . '/docs/architecture/rollout-safety.md';
+        $contents = file_get_contents($documentPath);
+        $this->assertIsString($contents, 'Rollout safety contract document must be readable.');
+
+        $frozenSection = $this->extractFrozenHealthCheckNamesSection($contents);
+        $frozenNames = $this->extractBulletLiterals($frozenSection);
+
+        $this->assertNotEmpty(
+            $frozenNames,
+            'Rollout safety contract must enumerate frozen health check names as bullet literals under ### Frozen health check names.',
+        );
+
+        $snapshot = HealthCheck::snapshot();
+        $runtimeNames = array_column($snapshot['checks'], 'name');
+
+        foreach ($frozenNames as $name) {
+            $this->assertContains(
+                $name,
+                $runtimeNames,
+                sprintf(
+                    'Rollout safety contract froze health check %s, but HealthCheck::snapshot() did not emit it. Contract and runtime must agree.',
+                    $name,
+                ),
+            );
+        }
+    }
+
+    private function extractFrozenHealthCheckNamesSection(string $contents): string
+    {
+        $marker = '### Frozen health check names';
+        $start = strpos($contents, $marker);
+        $this->assertNotFalse(
+            $start,
+            'Rollout safety contract must contain the ### Frozen health check names heading.'
+        );
+
+        $after = substr($contents, $start + strlen($marker));
+        $nextHeading = strpos($after, "\n### ");
+        $endOfSection = strpos($after, "\n## ");
+
+        $cuts = array_filter([$nextHeading, $endOfSection], static fn ($offset) => $offset !== false);
+        $cut = $cuts === [] ? strlen($after) : min($cuts);
+
+        return substr($after, 0, $cut);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function extractBulletLiterals(string $section): array
+    {
+        $names = [];
+
+        foreach (preg_split('/\r?\n/', $section) ?: [] as $line) {
+            if (preg_match('/^- `([a-z_]+)`\s*$/', $line, $matches) === 1) {
+                $names[] = $matches[1];
+            }
+        }
+
+        return $names;
+    }
 }
