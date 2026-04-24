@@ -29,6 +29,10 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->commands([ActivityMakeCommand::class, WorkflowMakeCommand::class]);
 
         Event::listen(Looping::class, static function (Looping $event): void {
+            if (! config('workflows.watchdog.enabled', true)) {
+                return;
+            }
+
             Watchdog::wake($event->connectionName, $event->queue);
         });
     }

@@ -21,6 +21,10 @@ return [
 
     'prune_age' => '1 month',
 
+    'watchdog' => [
+        'enabled' => env('WORKFLOW_WATCHDOG_ENABLED', true),
+    ],
+
     'webhooks_route' => env('WORKFLOW_WEBHOOKS_ROUTE', 'webhooks'),
 
     'webhook_auth' => [
