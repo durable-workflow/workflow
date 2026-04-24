@@ -420,6 +420,7 @@ entry per named check. The following names are frozen:
 - `task_transport`
 - `durable_resume_paths`
 - `worker_compatibility`
+- `scheduler_role`
 
 Each check carries `status`, `message`, and `data`. Adding a new
 check is allowed; renaming or removing one is a protocol-level

@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -15,6 +16,7 @@ use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -744,6 +746,131 @@ final class HealthCheckTest extends TestCase
                 ),
             );
         }
+    }
+
+    public function testSnapshotReportsSchedulerRoleOkWhenNoSchedulesAreOverdue(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $now = Carbon::now();
+
+        $this->createSchedule('sched-future', ScheduleStatus::Active, $now->copy()->addMinute());
+        $this->createSchedule('sched-never-fired', ScheduleStatus::Active, null);
+        $this->createSchedule('sched-paused', ScheduleStatus::Paused, null);
+
+        $snapshot = HealthCheck::snapshot();
+        $scheduler = collect($snapshot['checks'])->firstWhere('name', 'scheduler_role');
+
+        $this->assertNotNull($scheduler, 'HealthCheck must expose a scheduler_role check.');
+        $this->assertSame('ok', $scheduler['status']);
+        $this->assertSame(HealthCheck::CATEGORY_CORRECTNESS, $scheduler['category']);
+        $this->assertSame(2, $scheduler['data']['active']);
+        $this->assertSame(1, $scheduler['data']['paused']);
+        $this->assertSame(0, $scheduler['data']['missed']);
+        $this->assertNull($scheduler['data']['oldest_overdue_at']);
+        $this->assertSame(0, $scheduler['data']['max_overdue_ms']);
+        $this->assertSame(0, $scheduler['data']['fires_total']);
+        $this->assertSame(0, $scheduler['data']['failures_total']);
+    }
+
+    public function testSnapshotWarnsWhenSchedulerRoleIsLaggingMissedFires(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $now = Carbon::now();
+
+        $this->createSchedule(
+            'sched-missed-oldest',
+            ScheduleStatus::Active,
+            $now->copy()
+                ->subMinutes(12),
+            firesCount: 3,
+            failuresCount: 1,
+        );
+        $this->createSchedule(
+            'sched-missed-recent',
+            ScheduleStatus::Active,
+            $now->copy()
+                ->subSeconds(30),
+            firesCount: 1,
+            failuresCount: 0,
+        );
+        $this->createSchedule('sched-future', ScheduleStatus::Active, $now->copy()->addMinute());
+        $this->createSchedule('sched-deleted', ScheduleStatus::Deleted, null);
+
+        $snapshot = HealthCheck::snapshot();
+        $scheduler = collect($snapshot['checks'])->firstWhere('name', 'scheduler_role');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertTrue($snapshot['healthy']);
+        $this->assertSame(200, HealthCheck::httpStatus($snapshot));
+        $this->assertNotNull($scheduler);
+        $this->assertSame('warning', $scheduler['status']);
+        $this->assertSame(HealthCheck::CATEGORY_CORRECTNESS, $scheduler['category']);
+        $this->assertStringContainsString('scheduler tick', $scheduler['message']);
+        $this->assertSame(3, $scheduler['data']['active']);
+        $this->assertSame(0, $scheduler['data']['paused']);
+        $this->assertSame(2, $scheduler['data']['missed']);
+        $this->assertSame('2026-04-09T11:48:00.000000Z', $scheduler['data']['oldest_overdue_at']);
+        $this->assertSame(12 * 60 * 1000, $scheduler['data']['max_overdue_ms']);
+        $this->assertSame(4, $scheduler['data']['fires_total']);
+        $this->assertSame(1, $scheduler['data']['failures_total']);
+    }
+
+    private function createSchedule(
+        string $scheduleId,
+        ScheduleStatus $status,
+        ?Carbon $nextFireAt,
+        int $firesCount = 0,
+        int $failuresCount = 0,
+    ): WorkflowSchedule {
+        /** @var WorkflowSchedule $schedule */
+        $schedule = WorkflowSchedule::query()->create([
+            'schedule_id' => $scheduleId,
+            'namespace' => null,
+            'spec' => [
+                'cron_expressions' => ['0 * * * *'],
+                'timezone' => 'UTC',
+            ],
+            'action' => [
+                'workflow_type' => 'test-scheduled-workflow',
+                'workflow_class' => 'App\\TestWorkflow',
+            ],
+            'status' => $status->value,
+            'overlap_policy' => 'skip',
+            'jitter_seconds' => 0,
+            'fires_count' => $firesCount,
+            'failures_count' => $failuresCount,
+            'next_fire_at' => $nextFireAt,
+            'deleted_at' => $status === ScheduleStatus::Deleted ? Carbon::now() : null,
+            'paused_at' => $status === ScheduleStatus::Paused ? Carbon::now() : null,
+        ]);
+
+        return $schedule;
     }
 
     private function extractFrozenHealthCheckNamesSection(string $contents): string

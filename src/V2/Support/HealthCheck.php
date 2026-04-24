@@ -30,6 +30,7 @@ final class HealthCheck
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
             self::durableResumePathCheck($metrics['backlog'] ?? [], $metrics['repair'] ?? []),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
+            self::schedulerRoleCheck($metrics['schedules'] ?? []),
             self::longPollWakeAccelerationCheck(),
         ];
         $status = self::status($checks);
@@ -300,6 +301,48 @@ final class HealthCheck
                 'active_worker_scopes' => self::integer($workers['active_worker_scopes'] ?? 0),
                 'active_workers_supporting_required' => $supportingWorkers,
             ],
+        );
+    }
+
+    /**
+     * Scheduler-role health: surfaces scheduler lag through the
+     * `schedules.missed` / `schedules.max_overdue_ms` metrics so operators
+     * can tell whether the scheduler tick is keeping up with active
+     * schedules without reading `workflow_schedules` directly.
+     *
+     * @param array<string, mixed> $schedules
+     * @return array<string, mixed>
+     */
+    private static function schedulerRoleCheck(array $schedules): array
+    {
+        $active = self::integer($schedules['active'] ?? 0);
+        $paused = self::integer($schedules['paused'] ?? 0);
+        $missed = self::integer($schedules['missed'] ?? 0);
+        $maxOverdueMs = self::integer($schedules['max_overdue_ms'] ?? 0);
+        $firesTotal = self::integer($schedules['fires_total'] ?? 0);
+        $failuresTotal = self::integer($schedules['failures_total'] ?? 0);
+        $oldestOverdueAt = is_string($schedules['oldest_overdue_at'] ?? null)
+            ? $schedules['oldest_overdue_at']
+            : null;
+
+        $data = [
+            'active' => $active,
+            'paused' => $paused,
+            'missed' => $missed,
+            'oldest_overdue_at' => $oldestOverdueAt,
+            'max_overdue_ms' => $maxOverdueMs,
+            'fires_total' => $firesTotal,
+            'failures_total' => $failuresTotal,
+        ];
+
+        return self::check(
+            'scheduler_role',
+            $missed === 0 ? 'ok' : 'warning',
+            $missed === 0
+                ? 'The scheduler tick is caught up to every active schedule in the namespace.'
+                : 'One or more active schedules are past their next_fire_at; the scheduler tick has not yet caught up.',
+            self::CATEGORY_CORRECTNESS,
+            $data,
         );
     }
 

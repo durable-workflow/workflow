@@ -161,6 +161,7 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'task_transport',
         'durable_resume_paths',
         'worker_compatibility',
+        'scheduler_role',
     ];
 
     private const REQUIRED_WATERLINE_SURFACES = [
