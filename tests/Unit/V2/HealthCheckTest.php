@@ -621,9 +621,12 @@ final class HealthCheckTest extends TestCase
     public function testSnapshotClassifiesEveryCheckAsCorrectnessOrAcceleration(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
 
         $snapshot = HealthCheck::snapshot();
 
@@ -666,10 +669,14 @@ final class HealthCheckTest extends TestCase
     public function testLongPollWakeAccelerationCheckNeverEscalatesAboveWarning(): void
     {
         config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('cache.default', 'file');
-        config()->set('cache.stores.file.driver', 'file');
-        config()->set('workflows.v2.long_poll.multi_node', true);
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'file');
+        config()
+            ->set('cache.stores.file.driver', 'file');
+        config()
+            ->set('workflows.v2.long_poll.multi_node', true);
 
         $snapshot = HealthCheck::snapshot();
         $wake = collect($snapshot['checks'])->firstWhere('name', 'long_poll_wake_acceleration');
@@ -688,8 +695,10 @@ final class HealthCheckTest extends TestCase
     public function testLongPollWakeAccelerationReportsOkWhenBackendIsCapable(): void
     {
         config()->set('cache.default', 'array');
-        config()->set('cache.stores.array.driver', 'array');
-        config()->set('workflows.v2.long_poll.multi_node', false);
+        config()
+            ->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('workflows.v2.long_poll.multi_node', false);
 
         $snapshot = HealthCheck::snapshot();
         $wake = collect($snapshot['checks'])->firstWhere('name', 'long_poll_wake_acceleration');
