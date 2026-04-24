@@ -383,7 +383,8 @@ final class WorkflowServiceProviderTest extends TestCase
         Queue::fake();
         Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
 
-        config()->set('workflows.v2.matching_role.queue_wake_enabled', false);
+        config()
+            ->set('workflows.v2.matching_role.queue_wake_enabled', false);
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'provider-v2-execution-only-inst',
