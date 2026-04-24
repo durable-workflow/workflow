@@ -272,6 +272,17 @@ final class HealthCheck
             ? $workers['required_compatibility']
             : null;
         $supportingWorkers = self::integer($workers['active_workers_supporting_required'] ?? 0);
+        $activeWorkers = self::integer($workers['active_workers'] ?? 0);
+        $activeWorkerScopes = self::integer($workers['active_worker_scopes'] ?? 0);
+        $validationMode = self::fleetValidationMode();
+
+        $data = [
+            'required_compatibility' => $required,
+            'active_workers' => $activeWorkers,
+            'active_worker_scopes' => $activeWorkerScopes,
+            'active_workers_supporting_required' => $supportingWorkers,
+            'validation_mode' => $validationMode,
+        ];
 
         if ($required === null || $supportingWorkers > 0) {
             return self::check(
@@ -281,27 +292,36 @@ final class HealthCheck
                     ? 'No current v2 compatibility marker is required.'
                     : 'At least one active worker heartbeat advertises the current v2 compatibility marker.',
                 self::CATEGORY_CORRECTNESS,
-                [
-                    'required_compatibility' => $required,
-                    'active_workers' => self::integer($workers['active_workers'] ?? 0),
-                    'active_worker_scopes' => self::integer($workers['active_worker_scopes'] ?? 0),
-                    'active_workers_supporting_required' => $supportingWorkers,
-                ],
+                $data,
             );
         }
 
-        return self::check(
-            'worker_compatibility',
-            'warning',
-            'No active worker heartbeat advertises the current v2 compatibility marker.',
-            self::CATEGORY_CORRECTNESS,
-            [
-                'required_compatibility' => $required,
-                'active_workers' => self::integer($workers['active_workers'] ?? 0),
-                'active_worker_scopes' => self::integer($workers['active_worker_scopes'] ?? 0),
-                'active_workers_supporting_required' => $supportingWorkers,
-            ],
-        );
+        $status = $validationMode === 'fail' ? 'error' : 'warning';
+
+        $message = $validationMode === 'fail'
+            ? 'No active worker heartbeat advertises the current v2 compatibility marker; fleet validation mode is fail-closed.'
+            : 'No active worker heartbeat advertises the current v2 compatibility marker.';
+
+        return self::check('worker_compatibility', $status, $message, self::CATEGORY_CORRECTNESS, $data);
+    }
+
+    /**
+     * Resolve the fleet admission posture from configuration. Mirrors the
+     * validation_mode dial used by the long-poll cache validator: any value
+     * other than the explicit `fail` sentinel reports a warning so a
+     * misconfigured value does not silently escalate readiness to 503.
+     */
+    private static function fleetValidationMode(): string
+    {
+        $value = config('workflows.v2.fleet.validation_mode', 'warn');
+
+        if (! is_string($value)) {
+            return 'warn';
+        }
+
+        $normalized = strtolower(trim($value));
+
+        return $normalized === 'fail' ? 'fail' : 'warn';
     }
 
     /**

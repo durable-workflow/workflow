@@ -106,6 +106,7 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'DW_V2_MULTI_NODE',
         'DW_V2_VALIDATE_CACHE_BACKEND',
         'DW_V2_CACHE_VALIDATION_MODE',
+        'DW_V2_FLEET_VALIDATION_MODE',
         'DW_V2_TASK_DISPATCH_MODE',
         'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',
         'DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS',

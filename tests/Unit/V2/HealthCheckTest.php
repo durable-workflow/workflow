@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class HealthCheckTest extends TestCase
 {
@@ -711,6 +712,115 @@ final class HealthCheckTest extends TestCase
         $this->assertArrayHasKey('backend', $wake['data']);
     }
 
+    public function testWorkerCompatibilityCheckIsOkWhenNoMarkerIsRequired(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('workflows.v2.compatibility.current', null);
+
+        $snapshot = HealthCheck::snapshot();
+        $check = collect($snapshot['checks'])->firstWhere('name', 'worker_compatibility');
+
+        $this->assertNotNull($check);
+        $this->assertSame('ok', $check['status']);
+        $this->assertNull($check['data']['required_compatibility']);
+        $this->assertSame('warn', $check['data']['validation_mode']);
+    }
+
+    public function testWorkerCompatibilityCheckWarnsByDefaultWhenNoSupportingWorkerIsLive(): void
+    {
+        $this->configureFleetCheck();
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+
+        WorkerCompatibilityFleet::clear();
+
+        $snapshot = HealthCheck::snapshot();
+        $check = collect($snapshot['checks'])->firstWhere('name', 'worker_compatibility');
+
+        $this->assertNotNull($check);
+        $this->assertSame('warning', $check['status']);
+        $this->assertSame('build-a', $check['data']['required_compatibility']);
+        $this->assertSame(0, $check['data']['active_workers_supporting_required']);
+        $this->assertSame('warn', $check['data']['validation_mode']);
+    }
+
+    public function testWorkerCompatibilityCheckIsOkWhenAtLeastOneWorkerSupportsTheRequiredMarker(): void
+    {
+        $this->configureFleetCheck();
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityFleet::recordForNamespace(
+            'fleet-check-namespace',
+            ['build-a'],
+            'redis',
+            'default',
+            'worker-a',
+        );
+
+        $snapshot = HealthCheck::snapshot();
+        $check = collect($snapshot['checks'])->firstWhere('name', 'worker_compatibility');
+
+        $this->assertNotNull($check);
+        $this->assertSame('ok', $check['status']);
+        $this->assertGreaterThan(0, $check['data']['active_workers_supporting_required']);
+    }
+
+    public function testWorkerCompatibilityCheckEscalatesToErrorInFailMode(): void
+    {
+        $this->configureFleetCheck();
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityFleet::recordForNamespace(
+            'fleet-check-namespace',
+            ['build-b'],
+            'redis',
+            'default',
+            'worker-b',
+        );
+
+        $snapshot = HealthCheck::snapshot();
+        $check = collect($snapshot['checks'])->firstWhere('name', 'worker_compatibility');
+
+        $this->assertNotNull($check);
+        $this->assertSame('error', $check['status']);
+        $this->assertSame('fail', $check['data']['validation_mode']);
+        $this->assertGreaterThan(0, $check['data']['active_workers']);
+        $this->assertSame(0, $check['data']['active_workers_supporting_required']);
+        $this->assertSame('error', $snapshot['status']);
+        $this->assertSame(503, HealthCheck::httpStatus($snapshot));
+    }
+
+    public function testWorkerCompatibilityCheckTreatsUnknownValidationModeAsWarn(): void
+    {
+        $this->configureFleetCheck();
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'something-else');
+
+        WorkerCompatibilityFleet::clear();
+
+        $snapshot = HealthCheck::snapshot();
+        $check = collect($snapshot['checks'])->firstWhere('name', 'worker_compatibility');
+
+        $this->assertNotNull($check);
+        $this->assertSame('warning', $check['status']);
+        $this->assertSame('warn', $check['data']['validation_mode']);
+    }
+
     public function testEveryFrozenRolloutSafetyCheckNameAppearsInRuntimeSnapshot(): void
     {
         config()->set('queue.default', 'redis');
@@ -871,6 +981,25 @@ final class HealthCheckTest extends TestCase
         ]);
 
         return $schedule;
+    }
+
+    private function configureFleetCheck(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'fleet-check-namespace');
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'warn');
+
+        $this->beforeApplicationDestroyed(static function (): void {
+            WorkerCompatibilityFleet::clear();
+        });
     }
 
     private function extractFrozenHealthCheckNamesSection(string $contents): string

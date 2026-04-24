@@ -257,8 +257,29 @@ return [
                 true
             ),
 
-            // How to handle validation failures: '\''fail'\'' (throw exception), '\''warn'\'' (log warning), '\''silent'\'' (no action)
+            // How to handle validation failures: 'fail' (throw exception), 'warn' (log warning), 'silent' (no action)
             'validation_mode' => Env::dw('DW_V2_CACHE_VALIDATION_MODE', 'WORKFLOW_V2_CACHE_VALIDATION_MODE', 'warn'),
+        ],
+
+        // Worker-compatibility fleet admission posture. The
+        // `worker_compatibility` health check always surfaces when the
+        // required compatibility marker has no supporting live worker, but
+        // the severity it reports — and therefore whether the readiness
+        // contract returns 503 — is governed by this mode.
+        //
+        // - `warn` (default): the check reports `warning` so operators see
+        //   the gap without the readiness probe blocking traffic. This is
+        //   the rollout-discipline posture today.
+        // - `fail`: the check reports `error` so the readiness contract
+        //   returns 503 until at least one active worker advertises the
+        //   required compatibility marker. This is the fail-closed posture
+        //   that step 6 of the rollout-safety migration path tightens to.
+        'fleet' => [
+            'validation_mode' => Env::dw(
+                'DW_V2_FLEET_VALIDATION_MODE',
+                'WORKFLOW_V2_FLEET_VALIDATION_MODE',
+                'warn'
+            ),
         ],
     ],
 

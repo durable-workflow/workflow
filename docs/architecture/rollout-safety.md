@@ -207,7 +207,11 @@ Guarantees:
   `OperatorMetrics::snapshot()` under `workers.required_compatibility`
   and `HealthCheck::snapshot()` under the `worker_compatibility`
   check. This is the canonical "the fleet cannot take this work"
-  signal.
+  signal. The check reports `warning` by default and escalates to
+  `error` when `DW_V2_FLEET_VALIDATION_MODE=fail` so the readiness
+  contract returns 503 in fail-closed deployments. The check's
+  `data.validation_mode` echoes the loaded posture so operators
+  can confirm which mode is active without re-reading the env.
 - Operators see mixed-build state explicitly through
   `workers.active_worker_scopes` (how many distinct
   namespace/queue/compatibility tuples are live) and through the
@@ -554,6 +558,7 @@ change only in a major version bump.
 | `DW_V2_MULTI_NODE` | Declares multi-node intent; enables cache validation gates and mixed-build signal collection. |
 | `DW_V2_VALIDATE_CACHE_BACKEND` | Enables the Phase 5 cache validation gate at boot. |
 | `DW_V2_CACHE_VALIDATION_MODE` | Validation strictness (`warn` or `fail`); `fail` is the fail-closed mode. |
+| `DW_V2_FLEET_VALIDATION_MODE` | Worker-compatibility fleet admission posture (`warn` or `fail`); `fail` escalates the `worker_compatibility` health check from `warning` to `error` so the readiness contract returns 503 until at least one active worker advertises the required compatibility marker. |
 | `DW_V2_TASK_DISPATCH_MODE` | Task delivery mode (`queue` or `poll`). |
 | `DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS` | Ready-task redispatch grace period. |
 | `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` | Minimum interval between repair passes. |
@@ -599,8 +604,11 @@ tighter fail-closed posture can adopt each step independently.
    `DW_V2_TASK_REPAIR_*` to match the production latency budget;
    the defaults are conservative.
 6. **Tighten to fail mode.** Switch
-   `DW_V2_CACHE_VALIDATION_MODE=fail`, and if the replay-safety
-   guardrail is green, switch `DW_V2_GUARDRAILS_BOOT=throw` in
+   `DW_V2_CACHE_VALIDATION_MODE=fail`, set
+   `DW_V2_FLEET_VALIDATION_MODE=fail` so the readiness contract
+   refuses traffic when no active worker advertises the required
+   compatibility marker, and if the replay-safety guardrail is
+   green, switch `DW_V2_GUARDRAILS_BOOT=throw` in
    CI. Production may stay on `warn` if that matches the
    operator's risk posture.
 
