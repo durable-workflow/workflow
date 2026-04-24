@@ -49,27 +49,17 @@ final class V2OperatorMetricsTest extends TestCase
         WorkerCompatibilityFleet::clear();
         Schema::dropIfExists('workflow_worker_compatibility_heartbeats');
 
-        try {
-            WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
+        WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
 
-            $snapshot = OperatorMetrics::snapshot();
+        $snapshot = OperatorMetrics::snapshot();
 
-            $this->assertSame(1, $snapshot['workers']['active_workers']);
-            $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
-            $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
-            $this->assertCount(1, $snapshot['workers']['fleet']);
-            $this->assertSame('worker-a', $snapshot['workers']['fleet'][0]['worker_id']);
-            $this->assertSame('cache', $snapshot['workers']['fleet'][0]['source']);
-            $this->assertTrue($snapshot['workers']['fleet'][0]['supports_required']);
-        } finally {
-            // Restore the heartbeat table so the next test in the same PHPUnit
-            // process does not race Testbench's per-test migrate:fresh when the
-            // Schema::dropIfExists above leaves it missing.
-            $migration = require __DIR__ . '/../../../src/migrations/2026_04_08_000126_create_worker_compatibility_heartbeats_table.php';
-            if (! Schema::hasTable('workflow_worker_compatibility_heartbeats')) {
-                $migration->up();
-            }
-        }
+        $this->assertSame(1, $snapshot['workers']['active_workers']);
+        $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
+        $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+        $this->assertCount(1, $snapshot['workers']['fleet']);
+        $this->assertSame('worker-a', $snapshot['workers']['fleet'][0]['worker_id']);
+        $this->assertSame('cache', $snapshot['workers']['fleet'][0]['source']);
+        $this->assertTrue($snapshot['workers']['fleet'][0]['supports_required']);
     }
 
     public function testSnapshotSummarizesDurableBacklogRepairCompatibilityAndWorkerFleet(): void
