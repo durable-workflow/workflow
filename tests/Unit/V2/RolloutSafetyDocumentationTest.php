@@ -361,17 +361,6 @@ final class RolloutSafetyDocumentationTest extends TestCase
         );
     }
 
-    public function testContractDocumentFreezesDispatchOverdueAgeRow(): void
-    {
-        $contents = $this->documentContents();
-
-        $this->assertMatchesRegularExpression(
-            '/\|\s*`tasks`\s*\|[^|]*`oldest_dispatch_overdue_since`[^|]*`max_dispatch_overdue_age_ms`/',
-            $contents,
-            'Rollout safety contract must pin the tasks dispatch-overdue age row so operators can read wake-latency ("how long has the oldest ready-but-unclaimed task been waiting for a working dispatch wake?") from OperatorMetrics::snapshot() without walking workflow_tasks.',
-        );
-    }
-
     public function testContractDocumentFreezesHealthCheckNames(): void
     {
         $contents = $this->documentContents();

@@ -411,7 +411,6 @@ change.
 | `tasks` | `dispatch_overdue`, `lease_expired` | lease and dispatch timing |
 | `tasks` | `oldest_lease_expired_at`, `max_lease_expired_age_ms` | earliest `lease_expires_at` among leased tasks whose lease has expired at snapshot time and the largest expired-lease age in milliseconds, mirroring the `backlog.oldest_compatibility_blocked_started_at` / `max_compatibility_blocked_age_ms` shape so operators can answer "how long has the worst leased task been expired without redelivery?" (the primary stuck-lease duplicate-risk age indicator) from the metric alone |
 | `tasks` | `oldest_ready_due_at`, `max_ready_due_age_ms` | earliest "ready since" timestamp among ready-due tasks (the effective `COALESCE(available_at, created_at)` — `available_at` when the task was delayed, otherwise the creation time that made it immediately actionable) and the largest ready-age in milliseconds, mirroring the `oldest_lease_expired_at` / `max_lease_expired_age_ms` shape so operators can read queue latency ("how long has the oldest actionable task been waiting to dispatch?") from the metric alone without walking `workflow_tasks` |
-| `tasks` | `oldest_dispatch_overdue_since`, `max_dispatch_overdue_age_ms` | earliest `COALESCE(last_dispatched_at, created_at)` among dispatch-overdue tasks — the timestamp the worst-case ready-but-unclaimed task has been waiting for a successful dispatch wake since (either its last attempted dispatch that didn't stick or its creation time if it was never dispatched) — and the largest age in milliseconds, mirroring the `oldest_ready_due_at` / `max_ready_due_age_ms` shape so operators can read wake-latency ("how long has the oldest ready-but-unclaimed task been waiting for a working dispatch wake?") from the metric alone without walking `workflow_tasks` |
 | `tasks` | `unhealthy` | sum of transport failure and lease expiry counts (the primary duplicate-risk indicator) |
 | `backlog` | `runnable_tasks`, `delayed_tasks`, `leased_tasks` | authoritative backlog counts |
 | `backlog` | `unhealthy_tasks`, `repair_needed_runs`, `claim_failed_runs`, `compatibility_blocked_runs` | stuck/blocked roll-ups |
@@ -487,16 +486,8 @@ are authoritative and how they surface.
   authority for the redelivery decision.
 - **Ready but unclaimed.** A ready task that has sat past the
   repair window without being claimed is counted under
-  `tasks.dispatch_overdue`, its worst-case waiting-for-dispatch
-  timestamp is surfaced through
-  `tasks.oldest_dispatch_overdue_since` and
-  `tasks.max_dispatch_overdue_age_ms`, and both keys are forwarded on
-  the `task_transport` health check (`dispatch_overdue_tasks`,
-  `oldest_dispatch_overdue_since`, `max_dispatch_overdue_age_ms`).
-  `TaskRepairPolicy::readyTaskNeedsRedispatch()` is the authority for
-  the redispatch decision; the age data is observability so operators
-  can tell the difference between "dispatch wake is sporadically
-  slow" and "dispatch wake has stalled on this task for minutes".
+  `tasks.dispatch_overdue` and considered by
+  `TaskRepairPolicy::readyTaskNeedsRedispatch()`.
 - **Repair-needed runs.** Runs whose projected state shows
   `liveness_state = repair_needed` are counted under
   `runs.repair_needed` and surface through the

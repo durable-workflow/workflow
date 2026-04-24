@@ -233,13 +233,6 @@ final class V2OperatorMetricsTest extends TestCase
             $snapshot['tasks']['oldest_ready_due_at'],
         );
         $this->assertSame(10 * 1000, $snapshot['tasks']['max_ready_due_age_ms']);
-        $this->assertSame(
-            Carbon::parse('2026-04-09 12:00:00')
-                ->subSeconds(10)
-                ->toJSON(),
-            $snapshot['tasks']['oldest_dispatch_overdue_since'],
-        );
-        $this->assertSame(10 * 1000, $snapshot['tasks']['max_dispatch_overdue_age_ms']);
         $this->assertSame(4, $snapshot['tasks']['unhealthy']);
         $this->assertSame(4, $snapshot['backlog']['runnable_tasks']);
         $this->assertSame(1, $snapshot['backlog']['delayed_tasks']);
@@ -358,14 +351,6 @@ final class V2OperatorMetricsTest extends TestCase
             $taskTransport['data']['oldest_ready_due_at'],
         );
         $this->assertSame(10 * 1000, $taskTransport['data']['max_ready_due_age_ms']);
-        $this->assertSame(1, $taskTransport['data']['dispatch_overdue_tasks']);
-        $this->assertSame(
-            Carbon::parse('2026-04-09 12:00:00')
-                ->subSeconds(10)
-                ->toJSON(),
-            $taskTransport['data']['oldest_dispatch_overdue_since'],
-        );
-        $this->assertSame(10 * 1000, $taskTransport['data']['max_dispatch_overdue_age_ms']);
     }
 
     public function testSnapshotCountsStaleRunSummaryProjectionRows(): void
@@ -1033,117 +1018,6 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(2, $resumePaths['data']['waiting_runs']);
         $this->assertSame($expectedOldestWaitAt, $resumePaths['data']['oldest_wait_started_at']);
         $this->assertSame(7 * 60 * 1000, $resumePaths['data']['max_wait_age_ms']);
-    }
-
-    public function testSnapshotSurfacesDispatchOverdueAgeFromEarliestEffectiveDispatchMoment(): void
-    {
-        Carbon::setTestNow('2026-04-09 12:00:00');
-        $this->beforeApplicationDestroyed(static function (): void {
-            Carbon::setTestNow();
-        });
-
-        $now = Carbon::now();
-
-        $run = $this->createRunWithSummary(
-            instanceId: 'dispatch-overdue-age-instance',
-            runId: '01JDISPATCHOVDRUN0000000001',
-            status: 'running',
-            statusBucket: 'running',
-            livenessState: 'running',
-        );
-
-        // Worst-case: ready task whose last successful dispatch was 90s ago.
-        $this->createTask($run, '01JDISPATCHOVDTASK000000001', TaskStatus::Ready->value, [
-            'available_at' => $now->copy()
-                ->subSeconds(120),
-            'last_dispatched_at' => $now->copy()
-                ->subSeconds(90),
-            'created_at' => $now->copy()
-                ->subSeconds(150),
-        ]);
-
-        // Never-dispatched ready task created well past the cutoff — counted
-        // as overdue but its effective age (created_at = 30s ago) is newer
-        // than the 90s task above, so it must not win the "oldest since".
-        $this->createTask($run, '01JDISPATCHOVDTASK000000002', TaskStatus::Ready->value, [
-            'available_at' => $now->copy()
-                ->subSeconds(30),
-            'created_at' => $now->copy()
-                ->subSeconds(30),
-        ]);
-
-        // Ready task dispatched well within the cutoff — healthy, NOT overdue.
-        $this->createTask($run, '01JDISPATCHOVDTASK000000003', TaskStatus::Ready->value, [
-            'available_at' => $now->copy()
-                ->subSecond(),
-            'last_dispatched_at' => $now->copy()
-                ->subSecond(),
-            'created_at' => $now->copy()
-                ->subSecond(),
-        ]);
-
-        // Dispatch-failed ready task — applyDispatchHealthy excludes it from
-        // the overdue set even though its created_at is well past cutoff.
-        $this->createTask($run, '01JDISPATCHOVDTASK000000004', TaskStatus::Ready->value, [
-            'available_at' => $now->copy()
-                ->subSeconds(120),
-            'last_dispatch_attempt_at' => $now->copy()
-                ->subSeconds(30),
-            'last_dispatch_error' => 'Queue transport unavailable.',
-            'created_at' => $now->copy()
-                ->subSeconds(120),
-        ]);
-
-        $snapshot = OperatorMetrics::snapshot($now);
-
-        $expectedOldestDispatchOverdueSince = $now->copy()
-            ->subSeconds(90)
-            ->toJSON();
-
-        $this->assertSame(2, $snapshot['tasks']['dispatch_overdue']);
-        $this->assertSame($expectedOldestDispatchOverdueSince, $snapshot['tasks']['oldest_dispatch_overdue_since']);
-        $this->assertSame(90 * 1000, $snapshot['tasks']['max_dispatch_overdue_age_ms']);
-
-        $healthSnapshot = HealthCheck::snapshot($now);
-        $taskTransport = collect($healthSnapshot['checks'])->firstWhere('name', 'task_transport');
-        $this->assertNotNull($taskTransport);
-        $this->assertSame(2, $taskTransport['data']['dispatch_overdue_tasks']);
-        $this->assertSame($expectedOldestDispatchOverdueSince, $taskTransport['data']['oldest_dispatch_overdue_since']);
-        $this->assertSame(90 * 1000, $taskTransport['data']['max_dispatch_overdue_age_ms']);
-    }
-
-    public function testSnapshotReportsDispatchOverdueAgeAsZeroWhenNoTasksAreOverdue(): void
-    {
-        Carbon::setTestNow('2026-04-09 12:00:00');
-        $this->beforeApplicationDestroyed(static function (): void {
-            Carbon::setTestNow();
-        });
-
-        $now = Carbon::now();
-
-        $run = $this->createRunWithSummary(
-            instanceId: 'dispatch-overdue-none-instance',
-            runId: '01JDISPATCHNONERUN0000000001',
-            status: 'running',
-            statusBucket: 'running',
-            livenessState: 'running',
-        );
-
-        // Fresh ready task — dispatched within the cutoff, not overdue.
-        $this->createTask($run, '01JDISPATCHNONETASK000000001', TaskStatus::Ready->value, [
-            'available_at' => $now->copy()
-                ->subSecond(),
-            'last_dispatched_at' => $now->copy()
-                ->subSecond(),
-            'created_at' => $now->copy()
-                ->subSecond(),
-        ]);
-
-        $snapshot = OperatorMetrics::snapshot($now);
-
-        $this->assertSame(0, $snapshot['tasks']['dispatch_overdue']);
-        $this->assertNull($snapshot['tasks']['oldest_dispatch_overdue_since']);
-        $this->assertSame(0, $snapshot['tasks']['max_dispatch_overdue_age_ms']);
     }
 
     public function testSnapshotReportsRunWaitAgeAsZeroWhenNoRunsAreWaiting(): void
