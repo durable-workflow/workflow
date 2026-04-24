@@ -109,7 +109,10 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         Event::listen(Looping::class, static function (Looping $event): void {
             Watchdog::wake($event->connectionName, $event->queue);
-            TaskWatchdog::wake($event->connectionName, $event->queue);
+
+            if (config('workflows.v2.matching_role.queue_wake_enabled', true)) {
+                TaskWatchdog::wake($event->connectionName, $event->queue);
+            }
         });
     }
 

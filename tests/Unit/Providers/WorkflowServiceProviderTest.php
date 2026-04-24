@@ -378,6 +378,68 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertNotNull($task->last_dispatched_at);
     }
 
+    public function testLoopingEventSkipsTaskWatchdogWakeWhenMatchingRoleDisabled(): void
+    {
+        Queue::fake();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        config()->set('workflows.v2.matching_role.queue_wake_enabled', false);
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'provider-v2-execution-only-inst',
+            'workflow_class' => TestSimpleWorkflow::class,
+            'workflow_type' => TestSimpleWorkflow::class,
+            'run_count' => 1,
+            'reserved_at' => now()
+                ->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestSimpleWorkflow::class,
+            'workflow_type' => TestSimpleWorkflow::class,
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serialize([]),
+            'connection' => 'redis',
+            'queue' => 'default',
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSeconds(20),
+            'last_dispatched_at' => now()
+                ->subSeconds(20),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
+
+        Queue::assertNotPushed(RunWorkflowTask::class);
+
+        $task->refresh();
+
+        $this->assertSame(0, $task->repair_count);
+        $this->assertFalse(Cache::has(TaskWatchdog::LOOP_THROTTLE_KEY));
+    }
+
     private function deletePublishedWorkflowMigrations(): void
     {
         $sourceFiles = glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [];

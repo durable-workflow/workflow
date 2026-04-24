@@ -207,6 +207,24 @@ return [
         ],
         'task_dispatch_mode' => Env::dw('DW_V2_TASK_DISPATCH_MODE', 'WORKFLOW_V2_TASK_DISPATCH_MODE', 'queue'),
 
+        // Matching role configuration. The matching role is defined by
+        // docs/architecture/task-matching.md. By default every Laravel queue
+        // worker also runs the repair / broad-poll pass on every Looping
+        // event, which is how the in-worker library shape of the matching
+        // role runs today. Setting queue_wake_enabled to false disables the
+        // on-poll wake so this node never runs the broad repair sweep,
+        // leaving the sweep to a dedicated process invoking
+        // `php artisan workflow:v2:repair-pass`. This is how an operator
+        // opts a fleet into the "dedicated matching role shape" without
+        // otherwise changing task execution.
+        'matching_role' => [
+            'queue_wake_enabled' => (bool) Env::dw(
+                'DW_V2_MATCHING_ROLE_QUEUE_WAKE',
+                'WORKFLOW_V2_MATCHING_ROLE_QUEUE_WAKE',
+                true
+            ),
+        ],
+
         'task_repair' => [
             'redispatch_after_seconds' => (int) Env::dw(
                 'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',

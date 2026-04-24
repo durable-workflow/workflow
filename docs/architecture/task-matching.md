@@ -144,11 +144,23 @@ the future:
   `POST /api/worker/workflow-tasks/poll` and
   `POST /api/worker/activity-tasks/poll` on the standalone server,
   which delegates to the same bridge classes.
-- **Dedicated matching role shape** — a future deployment may
-  concentrate the matching role into a separate process or service
-  that owns ready-task discovery and claim assignment for the
-  cluster. The HTTP and library shapes above MUST continue to work
-  against such a deployment.
+- **Dedicated matching role shape** — a deployment may concentrate
+  the matching role into a separate process or service that owns
+  ready-task discovery and claim assignment for the cluster. The
+  HTTP and library shapes above MUST continue to work against such
+  a deployment.
+
+Operators opt a fleet into the dedicated matching role shape by
+running `php artisan workflow:v2:repair-pass` in a dedicated process
+and disabling the in-worker broad-poll wake on execution nodes with
+`workflows.v2.matching_role.queue_wake_enabled = false` (env
+`DW_V2_MATCHING_ROLE_QUEUE_WAKE=0`). Disabling the wake suppresses
+the `TaskWatchdog::wake()` call the `Illuminate\Queue\Events\Looping`
+listener in `WorkflowServiceProvider` makes on every queue-worker
+poll, so execution-only nodes stop broad-polling the durable task
+table; claim-time fencing stays authoritative on those nodes through
+the bridge classes. The default remains `true` so existing
+single-role deployments are unchanged.
 
 ## Ready-task discovery
 

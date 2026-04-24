@@ -85,6 +85,8 @@ final class TaskMatchingDocumentationTest extends TestCase
         'workflows.v2.task_dispatch_mode',
         'DW_V2_TASK_DISPATCH_MODE',
         'workflows.v2.compatibility.namespace',
+        'workflows.v2.matching_role.queue_wake_enabled',
+        'DW_V2_MATCHING_ROLE_QUEUE_WAKE',
     ];
 
     private const REQUIRED_REFERENCED_CLASSES = [
