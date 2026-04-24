@@ -55,6 +55,35 @@ final class OperatorMetrics
             'structural_limits' => StructuralLimits::snapshot(),
             'update_wait' => UpdateWaitPolicy::snapshot(),
             'repair_policy' => TaskRepairPolicy::snapshot(),
+            'matching_role' => self::matchingRoleSnapshot(),
+        ];
+    }
+
+    /**
+     * Process-local view of the matching-role deployment shape on this node.
+     *
+     * `queue_wake_enabled` reports `workflows.v2.matching_role.queue_wake_enabled`
+     * exactly as the queue-worker Looping listener in WorkflowServiceProvider
+     * consumes it. `shape` reports `in_worker` when the in-worker broad-poll
+     * wake is active on this process and `dedicated` when the process has
+     * opted out and the broad sweep is expected to run as
+     * `php artisan workflow:v2:repair-pass` instead. `task_dispatch_mode`
+     * reports the configured dispatch mode (`queue` or `poll`).
+     *
+     * @return array{queue_wake_enabled: bool, shape: string, task_dispatch_mode: string}
+     */
+    private static function matchingRoleSnapshot(): array
+    {
+        $queueWakeEnabled = (bool) config('workflows.v2.matching_role.queue_wake_enabled', true);
+        $dispatchModeConfig = config('workflows.v2.task_dispatch_mode', 'queue');
+        $dispatchMode = is_string($dispatchModeConfig) && $dispatchModeConfig !== ''
+            ? $dispatchModeConfig
+            : 'queue';
+
+        return [
+            'queue_wake_enabled' => $queueWakeEnabled,
+            'shape' => $queueWakeEnabled ? 'in_worker' : 'dedicated',
+            'task_dispatch_mode' => $dispatchMode,
         ];
     }
 

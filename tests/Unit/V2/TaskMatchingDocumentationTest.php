@@ -386,6 +386,33 @@ final class TaskMatchingDocumentationTest extends TestCase
         );
     }
 
+    public function testContractDocumentExposesMatchingRoleShapeOnOperatorSnapshot(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (['`matching_role`', '`queue_wake_enabled`', '`shape`', '`task_dispatch_mode`'] as $field) {
+            $this->assertStringContainsString(
+                $field,
+                $contents,
+                sprintf(
+                    'Task matching contract must name the %s field on the operator metrics snapshot so the matching-role deployment shape is observable per node.',
+                    $field,
+                ),
+            );
+        }
+
+        foreach (['`in_worker`', '`dedicated`'] as $shapeValue) {
+            $this->assertStringContainsString(
+                $shapeValue,
+                $contents,
+                sprintf(
+                    'Task matching contract must name the %s matching-role shape value so operators can interpret the snapshot.',
+                    $shapeValue,
+                ),
+            );
+        }
+    }
+
     private function documentContents(): string
     {
         $path = dirname(__DIR__, 3) . '/' . self::DOCUMENT;

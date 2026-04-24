@@ -931,6 +931,43 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(2, $snapshot['schedules']['failures_total']);
     }
 
+    public function testSnapshotReportsInWorkerMatchingRoleShapeByDefault(): void
+    {
+        config()->set('workflows.v2.matching_role.queue_wake_enabled', true);
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'queue');
+
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertArrayHasKey('matching_role', $snapshot);
+        $this->assertSame(
+            [
+                'queue_wake_enabled' => true,
+                'shape' => 'in_worker',
+                'task_dispatch_mode' => 'queue',
+            ],
+            $snapshot['matching_role'],
+        );
+    }
+
+    public function testSnapshotReportsDedicatedMatchingRoleShapeWhenQueueWakeIsDisabled(): void
+    {
+        config()->set('workflows.v2.matching_role.queue_wake_enabled', false);
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertSame(
+            [
+                'queue_wake_enabled' => false,
+                'shape' => 'dedicated',
+                'task_dispatch_mode' => 'poll',
+            ],
+            $snapshot['matching_role'],
+        );
+    }
+
     public function testSnapshotSurfacesSchedulerRoleHealthWhenNoSchedulesAreOverdue(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');
