@@ -212,6 +212,18 @@ Guarantees:
   contract returns 503 in fail-closed deployments. The check's
   `data.validation_mode` echoes the loaded posture so operators
   can confirm which mode is active without re-reading the env.
+- Under `DW_V2_FLEET_VALIDATION_MODE=fail`, `TaskDispatcher` also
+  blocks queue dispatch when the task's required compatibility
+  marker has no supporting live worker in the task's
+  connection/queue scope and the fleet has at least one active
+  worker there. The task stays `Ready` with a
+  `last_dispatch_error` that begins `Dispatch blocked under fail
+  validation mode.`, and `repair_available_at` defers the retry
+  through `TaskRepairPolicy::repairAvailableAtAfterFailure` so the
+  watchdog redispatches once a compatible worker heartbeats.
+  Scopes with no heartbeats yet and runs without a required
+  marker fall back to normal dispatch so the first worker
+  heartbeat never races an incoming dispatch.
 - Operators see mixed-build state explicitly through
   `workers.active_worker_scopes` (how many distinct
   namespace/queue/compatibility tuples are live) and through the
@@ -558,7 +570,7 @@ change only in a major version bump.
 | `DW_V2_MULTI_NODE` | Declares multi-node intent; enables cache validation gates and mixed-build signal collection. |
 | `DW_V2_VALIDATE_CACHE_BACKEND` | Enables the Phase 5 cache validation gate at boot. |
 | `DW_V2_CACHE_VALIDATION_MODE` | Validation strictness (`warn` or `fail`); `fail` is the fail-closed mode. |
-| `DW_V2_FLEET_VALIDATION_MODE` | Worker-compatibility fleet admission posture (`warn` or `fail`); `fail` escalates the `worker_compatibility` health check from `warning` to `error` so the readiness contract returns 503 until at least one active worker advertises the required compatibility marker. |
+| `DW_V2_FLEET_VALIDATION_MODE` | Worker-compatibility fleet admission posture (`warn` or `fail`); `fail` escalates the `worker_compatibility` health check from `warning` to `error` so the readiness contract returns 503, and blocks queue dispatch so ready tasks stay retained under `repair_available_at` until a compatible worker heartbeats, both only when the required compatibility marker has no supporting live worker. |
 | `DW_V2_TASK_DISPATCH_MODE` | Task delivery mode (`queue` or `poll`). |
 | `DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS` | Ready-task redispatch grace period. |
 | `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` | Minimum interval between repair passes. |

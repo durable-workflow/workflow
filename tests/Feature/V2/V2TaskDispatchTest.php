@@ -35,6 +35,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class V2TaskDispatchTest extends TestCase
 {
@@ -618,6 +619,236 @@ final class V2TaskDispatchTest extends TestCase
         ]);
 
         TaskDispatcher::dispatch($task);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+    }
+
+    public function testDispatchBlocksUnderFailValidationModeWhenFleetLacksRequiredMarker(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-b');
+
+        $this->beforeApplicationDestroyed(static function (): void {
+            WorkerCompatibilityFleet::clear();
+        });
+
+        $this->mock(BusDispatcher::class, static function (MockInterface $mock): void {
+            $mock->shouldNotReceive('dispatch');
+        });
+
+        $run = $this->createWaitingRun('01J00000000000000000000020');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        $task->refresh();
+
+        $this->assertSame(TaskStatus::Ready, $task->status);
+        $this->assertNotNull($task->last_dispatch_attempt_at);
+        $this->assertNull($task->last_dispatched_at);
+        $this->assertNotNull($task->last_dispatch_error);
+        $this->assertStringContainsString(
+            'Dispatch blocked under fail validation mode',
+            (string) $task->last_dispatch_error
+        );
+        $this->assertStringContainsString('build-a', (string) $task->last_dispatch_error);
+        $this->assertNotNull($task->repair_available_at);
+    }
+
+    public function testDispatchProceedsUnderWarnValidationModeEvenWhenFleetLacksRequiredMarker(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'warn');
+
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-b');
+
+        $this->beforeApplicationDestroyed(static function (): void {
+            WorkerCompatibilityFleet::clear();
+        });
+
+        Queue::fake();
+
+        $run = $this->createWaitingRun('01J00000000000000000000021');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        $task->refresh();
+
+        $this->assertNotNull($task->last_dispatched_at);
+        $this->assertNull($task->last_dispatch_error);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+    }
+
+    public function testDispatchProceedsUnderFailValidationModeWhenFleetHasSupportingWorker(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityFleet::record(['build-a', 'build-b'], 'redis', 'default', 'worker-a');
+
+        $this->beforeApplicationDestroyed(static function (): void {
+            WorkerCompatibilityFleet::clear();
+        });
+
+        Queue::fake();
+
+        $run = $this->createWaitingRun('01J00000000000000000000022');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        $task->refresh();
+
+        $this->assertNotNull($task->last_dispatched_at);
+        $this->assertNull($task->last_dispatch_error);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+    }
+
+    public function testDispatchProceedsUnderFailValidationModeWhenFleetIsEmptyInScope(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::clear();
+
+        $this->beforeApplicationDestroyed(static function (): void {
+            WorkerCompatibilityFleet::clear();
+        });
+
+        Queue::fake();
+
+        $run = $this->createWaitingRun('01J00000000000000000000023');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        $task->refresh();
+
+        $this->assertNotNull($task->last_dispatched_at);
+        $this->assertNull($task->last_dispatch_error);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+    }
+
+    public function testDispatchProceedsUnderFailValidationModeWhenNoMarkerIsRequired(): void
+    {
+        config()->set('workflows.v2.compatibility.current', null);
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-b');
+
+        $this->beforeApplicationDestroyed(static function (): void {
+            WorkerCompatibilityFleet::clear();
+        });
+
+        Queue::fake();
+
+        $run = $this->createWaitingRun('01J00000000000000000000024');
+        $run->forceFill([
+            'compatibility' => null,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => null,
+        ]);
+
+        TaskDispatcher::dispatch($task);
+
+        $task->refresh();
+
+        $this->assertNotNull($task->last_dispatched_at);
+        $this->assertNull($task->last_dispatch_error);
 
         Queue::assertPushed(
             RunWorkflowTask::class,

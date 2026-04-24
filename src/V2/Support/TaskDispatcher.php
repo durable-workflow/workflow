@@ -61,6 +61,14 @@ final class TaskDispatcher
         try {
             self::ensureBackendSupportsDispatch($task);
 
+            $fleetBlockReason = self::fleetBlockReason($task);
+
+            if ($fleetBlockReason !== null) {
+                self::markDispatchFailure($task, $attemptedAt, $fleetBlockReason);
+
+                return;
+            }
+
             app(BusDispatcher::class)->dispatch($job);
             self::markDispatched($task, $attemptedAt);
         } catch (Throwable $throwable) {
@@ -82,6 +90,39 @@ final class TaskDispatcher
         if (! BackendCapabilities::isSupported($snapshot)) {
             throw new UnsupportedBackendCapabilitiesException($snapshot);
         }
+    }
+
+    private static function fleetBlockReason(WorkflowTask $task): ?string
+    {
+        if (config('workflows.v2.fleet.validation_mode') !== 'fail') {
+            return null;
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($task->workflow_run_id);
+
+        $required = TaskCompatibility::resolve($task, $run);
+
+        if ($required === null) {
+            return null;
+        }
+
+        $connection = $task->connection ?? $run?->connection;
+        $queue = $task->queue ?? $run?->queue;
+
+        if (WorkerCompatibilityFleet::activeWorkerCount($connection, $queue) === 0) {
+            return null;
+        }
+
+        if (WorkerCompatibilityFleet::supports($required, $connection, $queue)) {
+            return null;
+        }
+
+        $reason = WorkerCompatibilityFleet::mismatchReason($required, $connection, $queue);
+
+        return $reason === null
+            ? 'Dispatch blocked: no compatible worker in fleet.'
+            : 'Dispatch blocked under fail validation mode. ' . $reason;
     }
 
     private static function makeJob(WorkflowTask $task): object

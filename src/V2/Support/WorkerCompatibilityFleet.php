@@ -207,6 +207,11 @@ final class WorkerCompatibilityFleet
         self::forgetSnapshotCache();
     }
 
+    public static function activeWorkerCount(?string $connection = null, ?string $queue = null): int
+    {
+        return count(self::matchingSnapshots(self::scopeNamespace(), $connection, $queue));
+    }
+
     public static function supports(?string $required, ?string $connection = null, ?string $queue = null): bool
     {
         $required = self::normalizeValue($required);
