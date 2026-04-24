@@ -86,8 +86,6 @@ final class TaskWatchdog
             return self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
         }
 
-        WorkerCompatibilityFleet::heartbeat($connection, $queue);
-
         if ($respectThrottle) {
             if (! Cache::add(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds())) {
                 return self::emptyReport(
@@ -102,6 +100,8 @@ final class TaskWatchdog
         } else {
             Cache::put(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds());
         }
+
+        WorkerCompatibilityFleet::heartbeat($connection, $queue);
 
         $existingTaskCandidateIds = TaskRepairCandidates::taskIds(runIds: $runIds, instanceId: $instanceId);
         $missingRunIds = TaskRepairCandidates::runIds(runIds: $runIds, instanceId: $instanceId);
