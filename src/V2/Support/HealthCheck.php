@@ -434,7 +434,12 @@ final class HealthCheck
     private static function resolveCacheRepository(): ?CacheRepository
     {
         try {
-            return App::make(CacheRepository::class);
+            // Resolve through the CacheManager so the check reflects the
+            // currently configured default store. The cache.store container
+            // singleton is bound on first access and does not reflect later
+            // changes to cache.default, which drifts from the advertised
+            // backend when operators reconfigure cache at runtime.
+            return App::make('cache')->store();
         } catch (\Throwable) {
             return null;
         }
