@@ -237,15 +237,15 @@ final class WorkerCompatibilityDocumentationTest extends TestCase
     {
         $contents = $this->documentContents();
 
-        $this->assertStringContainsString(
-            '#581',
+        $this->assertMatchesRegularExpression(
+            '/(dedicated task[- ]matching|task[- ]matching service)[\s\S]{0,200}Phase 3|Phase 3[\s\S]{0,200}(dedicated task[- ]matching|task[- ]matching service)/i',
             $contents,
-            'Worker compatibility contract must explicitly defer dedicated task matching (#581).',
+            'Worker compatibility contract must explicitly defer dedicated task matching to Phase 3.',
         );
-        $this->assertStringContainsString(
-            '#582',
+        $this->assertMatchesRegularExpression(
+            '/(control[- ]plane[\/ ]data[- ]plane|control[- ]plane.{0,40}split)[\s\S]{0,200}Phase 4|Phase 4[\s\S]{0,200}(control[- ]plane[\/ ]data[- ]plane|control[- ]plane.{0,40}split)/i',
             $contents,
-            'Worker compatibility contract must explicitly defer control-plane/data-plane split (#582).',
+            'Worker compatibility contract must explicitly defer control-plane/data-plane split to Phase 4.',
         );
     }
 

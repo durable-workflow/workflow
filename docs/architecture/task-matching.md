@@ -55,14 +55,14 @@ The contract covers:
 
 It does not cover:
 
-- the control-plane/data-plane role split described by Phase 4 (#582).
+- the control-plane/data-plane role split described by Phase 4.
   The split will move matching onto a dedicated control-plane role,
   but must preserve the discovery, claim, and wake guarantees below.
-- the scheduler cache independence work described by Phase 5 (#583).
+- the scheduler cache independence work described by Phase 5.
   Cache independence will replace the shared-cache wake backend with
   a stronger primitive but must preserve the snapshot/changed contract
   named here.
-- the rollout safety enforcement work described by Phase 6 (#584).
+- the rollout safety enforcement work described by Phase 6.
 - host-level queue infrastructure choices such as which Laravel queue
   driver to deploy, how to size queue workers, or whether to run a
   dedicated supervisor process. Those are deployment concerns that
@@ -327,7 +327,7 @@ Guarantees:
   Redis, a database cache, or another backend reachable from every
   server node. File or in-memory backends do not coordinate
   signals across nodes and break the multi-node guarantee. This
-  is the explicit Phase 5 (#583) seam.
+  is the explicit Phase 5 seam.
 
 Wake notification is observability of new work, not an assignment.
 A signalled channel does not promise a specific task to the
@@ -370,7 +370,7 @@ What the contract intentionally does not partition on:
 - The matching role does not implement queue-level priorities. A
   host that needs priority traffic must run priority queues.
 
-These intentional non-guarantees are how Phase 4 (#582) and later
+These intentional non-guarantees are how Phase 4 and later
 phases keep room to introduce a real matching service without
 re-litigating the partition primitives.
 
@@ -386,7 +386,7 @@ an explicit per-worker quota:
   `max_concurrent_activity_tasks` at registration time so operator
   surfaces can show the planned capacity. The matching role does
   not enforce these limits at claim time today; that enforcement
-  is explicitly part of the Phase 6 (#584) rollout-safety work.
+  is explicitly part of the Phase 6 rollout-safety work.
 - Long lease expiry (5 minutes for workflow tasks) is the
   fail-stop boundary for an unresponsive worker. Operators sizing
   rollout windows MUST treat this as the upper bound on how long
@@ -453,7 +453,7 @@ the claim transaction:
 
 These couplings are correct as semantics — every claim must be
 immediately visible to operators and immediately reflected in
-history. They are the seam where Phase 4 (#582) will split the
+history. They are the seam where Phase 4 will split the
 control-plane and execution-plane roles. The contract guarantees:
 
 - Visibility (`RunSummaryProjector`) and lifecycle dispatch
@@ -499,16 +499,16 @@ The following are explicitly deferred to later roadmap phases and
 must not be assumed:
 
 - Per-worker concurrency caps are advertised but not enforced at
-  claim time. Enforcement belongs to Phase 6 (#584) rollout
+  claim time. Enforcement belongs to Phase 6 rollout
   safety, where it can land alongside the broader coordination
   health story.
 - A dedicated out-of-process matching service is not provided. The
   in-worker library shape and the in-server HTTP shape are the
   two supported deployment shapes today; a future Phase 4 service
   shape will preserve the contract above without breaking either.
-- Cache independence for wake notification is deferred to Phase 5
-  (#583). The current cache-backed wake store is the explicit
-  seam Phase 5 will replace.
+- Cache independence for wake notification is deferred to Phase 5.
+  The current cache-backed wake store is the explicit seam Phase 5
+  will replace.
 - Priority queues, weighted fair scheduling, and per-tenant
   isolation primitives are intentionally not part of this
   contract. They are policy choices a host implements through
@@ -523,6 +523,6 @@ A change to any named guarantee in this document is a protocol-level
 change for the purposes of `docs/api-stability.md` and downstream
 SDKs. Reviewers should treat unmotivated changes to the language
 above as breaking changes and require explicit cross-SDK
-coordination before merge. The Phase 3 roadmap (#581) owns updates
-to this contract; Phase 4 (#582), Phase 5 (#583), and Phase 6
-(#584) must extend the contract rather than silently redefine it.
+coordination before merge. The Phase 3 roadmap owns updates to
+this contract; Phase 4, Phase 5, and Phase 6 must extend the
+contract rather than silently redefine it.

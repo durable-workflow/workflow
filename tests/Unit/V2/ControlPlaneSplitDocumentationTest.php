@@ -332,14 +332,11 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
     {
         $contents = $this->documentContents();
 
-        foreach (['#583', '#584'] as $issueRef) {
+        foreach (['Phase 5', 'Phase 6'] as $phase) {
             $this->assertStringContainsString(
-                $issueRef,
+                $phase,
                 $contents,
-                sprintf(
-                    'Control-plane split contract must explicitly defer follow-on roadmap issue %s.',
-                    $issueRef
-                ),
+                sprintf('Control-plane split contract must explicitly defer follow-on work to %s.', $phase),
             );
         }
     }
@@ -359,9 +356,9 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
             'Control-plane split contract must cite the Phase 2 worker-compatibility contract as its foundation.',
         );
         $this->assertStringContainsString(
-            '#581',
+            'docs/architecture/task-matching.md',
             $contents,
-            'Control-plane split contract must cite the Phase 3 task-matching roadmap (#581) as its foundation.',
+            'Control-plane split contract must cite the Phase 3 task-matching contract as its foundation.',
         );
     }
 

@@ -39,14 +39,14 @@ The contract covers:
 
 It does not cover:
 
-- the dedicated task-matching service described by the Phase 3 roadmap
-  (#581). The Phase 3 surface will replace broad database polling with
-  explicit match/dispatch, but must preserve the compatibility
+- the dedicated task-matching service described by the Phase 3
+  roadmap. The Phase 3 surface will replace broad database polling
+  with explicit match/dispatch, but must preserve the compatibility
   guarantees below.
-- the control-plane/data-plane role split described by Phase 4 (#582).
+- the control-plane/data-plane role split described by Phase 4.
   The split will move compatibility heartbeating onto the control plane
   but must preserve the observable state named here.
-- the scheduler independence work described by Phase 5 (#583).
+- the scheduler independence work described by Phase 5.
 - host-level deployment orchestration such as container image selection
   or rolling-restart choreography. Those are deployment concerns that
   consume this contract; they do not define it.
@@ -309,7 +309,7 @@ not be assumed:
   frozen separately in `Workflow\V2\Support\WorkerProtocolVersion` and
   is independent of the compatibility marker.
 - Managed-mode or hosted-mode topology (control-plane / data-plane
-  split) is outside this contract. See Phase 4 (#582).
+  split) is outside this contract. See Phase 4.
 
 ## Test strategy alignment
 
@@ -333,5 +333,5 @@ A change to any named guarantee in this document is a protocol-level
 change for the purposes of `docs/api-stability.md` and downstream
 SDKs. Reviewers should treat unmotivated changes to the language above
 as breaking changes and require explicit cross-SDK coordination before
-merge. The Phase 2 roadmap (#580) owns updates to this contract;
+merge. The Phase 2 roadmap owns updates to this contract;
 Phases 3–5 must extend the contract rather than silently redefine it.

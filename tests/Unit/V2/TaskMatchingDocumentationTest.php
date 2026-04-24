@@ -326,11 +326,11 @@ final class TaskMatchingDocumentationTest extends TestCase
     {
         $contents = $this->documentContents();
 
-        foreach (['#582', '#583', '#584'] as $issueRef) {
+        foreach (['Phase 4', 'Phase 5', 'Phase 6'] as $phase) {
             $this->assertStringContainsString(
-                $issueRef,
+                $phase,
                 $contents,
-                sprintf('Task matching contract must explicitly defer follow-on roadmap issue %s.', $issueRef),
+                sprintf('Task matching contract must explicitly defer follow-on work to %s.', $phase),
             );
         }
     }

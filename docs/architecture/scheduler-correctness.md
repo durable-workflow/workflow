@@ -25,7 +25,7 @@ retries, redelivery, compatibility, and the `snapshot()`/`changed()`
 wake primitives keep the language they have there; this document
 adds the language for what those primitives are allowed to be
 responsible for and what remains the job of durable dispatch state.
-The Phase 4 control-plane and execution-plane role split (#582)
+The Phase 4 control-plane and execution-plane role split
 preserves every guarantee here unchanged; the split is a topology
 change, not a correctness change.
 
@@ -59,7 +59,7 @@ The contract covers:
 
 It does not cover:
 
-- the rollout safety enforcement work described by Phase 6 (#584).
+- the rollout safety enforcement work described by Phase 6.
   Phase 6 owns scheduler leader election and coordinated rollout
   across role replicas; this contract names what each node is
   allowed to observe but does not arbitrate which replica is
@@ -262,7 +262,7 @@ acceleration-layer cooperation.
 - When the scheduler role is deployed as multiple replicas, the
   per-schedule row lock taken by `ScheduleManager::triggerDetailed()`
   is the correctness seam, not a cache-held leader key. Phase 6
-  (#584) will harden leader coordination with explicit health;
+  will harden leader coordination with explicit health;
   this contract requires that the scheduler-role surface NOT
   depend on cache coherence for deduplicated firing.
 
@@ -489,12 +489,12 @@ Guarantees:
 The following are explicitly deferred to later roadmap phases and
 must not be assumed:
 
-- **Scheduler leader election across replicas** — Phase 6 (#584)
+- **Scheduler leader election across replicas** — Phase 6
   owns the leader coordination contract. Pre-Phase-6 deployments
   that run multiple scheduler replicas MUST rely on the
   per-schedule row lock as the only correctness seam.
 - **Rollout-safety enforcement across protocol-version steps** —
-  Phase 6 (#584) owns the rollout-safety seam. This contract does
+  Phase 6 owns the rollout-safety seam. This contract does
   not freeze how a mixed-version cluster coordinates schedule
   leadership during a rollout.
 - **A notifier-backed implementation of `LongPollWakeStore`
@@ -516,6 +516,6 @@ A change to any named guarantee in this document is a
 protocol-level change for the purposes of `docs/api-stability.md`
 and downstream SDKs. Reviewers should treat unmotivated changes
 to the language above as breaking changes and require explicit
-cross-SDK coordination before merge. The Phase 5 roadmap (#583)
-owns updates to this contract; Phase 6 (#584) must extend the
+cross-SDK coordination before merge. The Phase 5 roadmap
+owns updates to this contract; Phase 6 must extend the
 contract rather than silently redefine it.

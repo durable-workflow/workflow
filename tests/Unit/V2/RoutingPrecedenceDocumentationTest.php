@@ -113,7 +113,7 @@ final class RoutingPrecedenceDocumentationTest extends TestCase
         'docs/architecture/rollout-safety.md',
     ];
 
-    private const REQUIRED_ROADMAP_REFS = ['#78', '#578', '#581', '#582', '#583', '#72', '#83'];
+    private const REQUIRED_ROADMAP_PHASES = ['Phase 1', 'Phase 2', 'Phase 3', 'Phase 4', 'Phase 5'];
 
     public function testContractDocumentExistsAndDeclaresFrozenSections(): void
     {
@@ -215,15 +215,15 @@ final class RoutingPrecedenceDocumentationTest extends TestCase
         }
     }
 
-    public function testContractDocumentCitesRoadmapIssues(): void
+    public function testContractDocumentCitesAdjacentRoadmapPhases(): void
     {
         $contents = $this->documentContents();
 
-        foreach (self::REQUIRED_ROADMAP_REFS as $issue) {
+        foreach (self::REQUIRED_ROADMAP_PHASES as $phase) {
             $this->assertStringContainsString(
-                $issue,
+                $phase,
                 $contents,
-                sprintf('Routing precedence contract must cite roadmap issue %s.', $issue),
+                sprintf('Routing precedence contract must cite %s so the adjacent phases are explicit.', $phase),
             );
         }
     }

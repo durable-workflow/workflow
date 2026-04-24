@@ -50,13 +50,13 @@ The contract covers:
 
 It does not cover:
 
-- the dedicated task-matching service described by the Phase 3 roadmap
-  (#581). That surface consumes the snapped `connection` and `queue`
-  values frozen here; it does not re-resolve them.
-- the control-plane/data-plane role split described by Phase 4 (#582).
+- the dedicated task-matching service described by the Phase 3
+  roadmap. That surface consumes the snapped `connection` and
+  `queue` values frozen here; it does not re-resolve them.
+- the control-plane/data-plane role split described by Phase 4.
   The split moves which role writes the snapshots but does not change
   the precedence rules named here.
-- cache-backed wake propagation described by Phase 5 (#583). Wake
+- cache-backed wake propagation described by Phase 5. Wake
   signals are eligibility announcements, not routing decisions.
 - host-level queue topology (priorities, sharding schemes, managed
   lanes). Those are operator choices that consume the snapshot; they
@@ -487,13 +487,13 @@ follow-on phase:
   semantics for degraded queues; adding one is a protocol change.
 - **Cross-namespace routing.** Namespaces partition the poll surface
   and are not part of the routing decision. Cross-namespace calls are
-  tracked separately in #72.
+  out of scope for this contract.
 - **Webhook and command-ingress routing.** Command-plane ingress
   routing is tracked in `docs/architecture/control-plane-split.md`
-  (Phase 4) and in the webhook/command taxonomy (#83). Ingress
+  (Phase 4) and in the webhook/command taxonomy. Ingress
   routing is not the same as task routing and does not share
   resolution rules.
-- **Dedicated matching service partitioning.** Phase 3 (#581) may
+- **Dedicated matching service partitioning.** Phase 3 may
   introduce additional partition metadata on the matching side. When
   it does, the matching service will consume `(connection, queue,
   compatibility, namespace)` exactly as frozen in
@@ -549,11 +549,10 @@ roadmap issues rather than redefining them here:
   `docs/architecture/task-matching.md`.
 - retry-time rerouting and degraded-queue drainage, which require a
   new contract extension.
-- cross-namespace routing, tracked in #72.
+- cross-namespace routing, which is out of scope for this contract.
 
 See `docs/architecture/execution-guarantees.md`,
 `docs/architecture/worker-compatibility.md`,
 `docs/architecture/task-matching.md`, and
 `docs/architecture/rollout-safety.md` for the adjacent frozen
-contracts this document builds on. Roadmap context is in
-#78 and #578.
+contracts this document builds on.

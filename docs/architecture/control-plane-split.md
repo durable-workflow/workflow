@@ -18,7 +18,7 @@ This contract builds on the semantics frozen in
 `docs/architecture/execution-guarantees.md` (Phase 1), the routing
 guarantees frozen in `docs/architecture/worker-compatibility.md`
 (Phase 2), and the matching and dispatch guarantees frozen by the
-Phase 3 roadmap (#581). Duplicate execution, retries, redelivery,
+Phase 3 roadmap. Duplicate execution, retries, redelivery,
 compatibility, and task matching keep the language they have there;
 this document adds the language for which role owns which durable
 responsibility and how those roles combine into deployment topologies.
@@ -45,10 +45,10 @@ The contract covers:
 
 It does not cover:
 
-- the scheduler cache independence work described by Phase 5 (#583).
+- the scheduler cache independence work described by Phase 5.
   Phase 5 will replace the shared-cache wake backend with a stronger
   primitive but must preserve the role boundaries named here.
-- the rollout safety enforcement work described by Phase 6 (#584).
+- the rollout safety enforcement work described by Phase 6.
 - host-level infrastructure choices such as reverse proxy selection,
   service mesh, TLS termination, Kubernetes vs Nomad vs bare Docker,
   or database placement. Those are deployment concerns that consume
@@ -249,7 +249,7 @@ Guarantees:
   policies, compatibility pinning, or namespace checks.
 - Schedule evaluation is deduplicated per trigger so a restart or
   split-leader scenario does not produce duplicate starts. Phase 6
-  (#584) will harden this with explicit coordination health; this
+  will harden this with explicit coordination health; this
   contract requires that the scheduler-role surface NOT create a
   new race the Phase 6 work must paper over.
 
@@ -368,7 +368,7 @@ to load without adding identical uniform nodes.
   serialise on the run id they are projecting.
 - **Scheduler role** scales with active schedule count. It is
   horizontally scalable with per-schedule leader election; Phase 6
-  (#584) will freeze the leader-election contract, and topologies
+  will freeze the leader-election contract, and topologies
   before that should run a single scheduler replica.
 - **Execution plane** scales with workflow-task and activity-task
   rate. It is horizontally scalable and is the primary surface
@@ -602,9 +602,9 @@ must not be assumed:
   routing primitive, not a role boundary.
 - Multi-region active/active topology. Cross-region coordination
   is a future roadmap topic and is not covered.
-- Replacement of the shared wake backend. That is Phase 5 (#583).
+- Replacement of the shared wake backend. That is Phase 5.
 - Rollout-safety enforcement and scheduler leader election. That
-  is Phase 6 (#584).
+  is Phase 6.
 
 ## Changing this contract
 
@@ -612,6 +612,6 @@ A change to any named guarantee in this document is a protocol-level
 change for the purposes of `docs/api-stability.md` and downstream
 SDKs. Reviewers should treat unmotivated changes to the language
 above as breaking changes and require explicit cross-SDK
-coordination before merge. The Phase 4 roadmap (#582) owns updates
-to this contract; Phase 5 (#583) and Phase 6 (#584) must extend the
+coordination before merge. The Phase 4 roadmap owns updates
+to this contract; Phase 5 and Phase 6 must extend the
 contract rather than silently redefine it.

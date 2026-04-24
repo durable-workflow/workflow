@@ -56,6 +56,24 @@ for pattern in "${file_patterns[@]}"; do
   done < <(git grep -n -I -e "$pattern" -- "${pathspec[@]}" || true)
 done
 
+# Bare cross-tracker issue references like "#NNN" in customer-facing
+# architecture docs and their pinning tests will auto-link to the public
+# workflow repo on github.com, exposing internal roadmap numbering and
+# producing broken cross-links. Architecture contracts must reason in
+# product-facing names (Phase numbers, contract titles) rather than
+# private tracker numbers.
+issue_link_pathspec=(
+  'docs/'
+  'tests/Unit/V2/*DocumentationTest.php'
+  ':!.git'
+)
+
+while IFS=: read -r file line _; do
+  [[ -n "${file:-}" ]] || continue
+  printf 'public-boundary: forbidden cross-tracker issue reference at %s:%s\n' "$file" "$line" >&2
+  status=1
+done < <(git grep -n -I -E '#[0-9]{2,4}([^0-9]|$)' -- "${issue_link_pathspec[@]}" || true)
+
 if [[ -n "${PUBLIC_BOUNDARY_GIT_RANGE:-}" ]]; then
   read -r -a rev_args <<< "$PUBLIC_BOUNDARY_GIT_RANGE"
 else

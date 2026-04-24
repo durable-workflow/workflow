@@ -64,10 +64,10 @@ The contract covers:
 
 It does not cover:
 
-- the Phase 4 role split itself; Phase 4 (#582) froze the roles, and
+- the Phase 4 role split itself; Phase 4 froze the roles, and
   Phase 6 names the health and rollout surfaces that apply across
   them.
-- the Phase 5 cache independence substrate; Phase 5 (#583) froze
+- the Phase 5 cache independence substrate; Phase 5 froze
   which layer is correctness and which is acceleration, and Phase 6
   inherits that split. Rollout safety MUST NOT reintroduce cache as
   a correctness dependency.
@@ -185,7 +185,7 @@ Guarantees:
 
 ### Mixed-build safety
 
-Phase 2 (#580) already freezes the worker-compatibility marker
+Phase 2 already freezes the worker-compatibility marker
 contract (`DW_V2_CURRENT_COMPATIBILITY`, `DW_V2_SUPPORTED_COMPATIBILITIES`),
 the single-step compatibility rule across the fleet, and
 `Workflow\V2\Support\TaskCompatibility` / `WorkerCompatibility`. Phase 6
@@ -228,7 +228,7 @@ Guarantees:
 
 ### Protocol version coordination
 
-Phase 4 (#582) names three protocol-version surfaces (worker
+Phase 4 names three protocol-version surfaces (worker
 protocol, control-plane protocol, internal role-to-role). Phase 6
 adds the rollout-safety enforcement:
 
@@ -649,7 +649,7 @@ MUST NOT be assumed:
   splitters, Helm chart overlays). Those are deployment tooling
   concerns that consume this contract.
 - Replacement of the shared cache acceleration layer with a
-  stronger primitive. That seam is part of Phase 5 (#583).
+  stronger primitive. That seam is part of Phase 5.
 - Any change to the Phase 4 role split. Phase 6 must be
   implementable inside each role as defined; it does not move
   authority between roles.
@@ -660,9 +660,9 @@ A change to any named guarantee in this document is a
 protocol-level change for the purposes of `docs/api-stability.md`
 and downstream SDKs. Reviewers should treat unmotivated changes to
 the language above as breaking changes and require explicit
-cross-SDK coordination before merge. The Phase 6 roadmap (#584)
+cross-SDK coordination before merge. The Phase 6 roadmap
 owns updates to this contract; any follow-on architecture phase
 must extend the contract rather than silently redefine it. The
-Phase 1 (#579), Phase 2 (#580), Phase 3 (#581), Phase 4 (#582),
-and Phase 5 (#583) contracts remain the foundation this document
+Phase 1, Phase 2, Phase 3, Phase 4,
+and Phase 5 contracts remain the foundation this document
 builds on.

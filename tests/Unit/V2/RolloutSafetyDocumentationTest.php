@@ -526,14 +526,11 @@ final class RolloutSafetyDocumentationTest extends TestCase
             $contents,
             'Rollout safety contract must cite the Phase 5 scheduler-correctness contract as its foundation.',
         );
-        foreach (['#579', '#580', '#581', '#582', '#583', '#584'] as $issueRef) {
+        foreach (['Phase 1', 'Phase 2', 'Phase 3', 'Phase 4', 'Phase 5', 'Phase 6'] as $phase) {
             $this->assertStringContainsString(
-                $issueRef,
+                $phase,
                 $contents,
-                sprintf(
-                    'Rollout safety contract must cite roadmap issue %s so the phase lineage is explicit.',
-                    $issueRef
-                ),
+                sprintf('Rollout safety contract must cite %s so the phase lineage is explicit.', $phase),
             );
         }
     }

@@ -361,10 +361,10 @@ final class SchedulerCorrectnessDocumentationTest extends TestCase
     {
         $contents = $this->documentContents();
 
-        $this->assertStringContainsString(
-            '#584',
+        $this->assertMatchesRegularExpression(
+            '/Phase 6[\s\S]{0,200}rollout-safety/i',
             $contents,
-            'Scheduler correctness contract must explicitly defer scheduler leader election to Phase 6 (#584).',
+            'Scheduler correctness contract must explicitly defer scheduler leader election to the Phase 6 rollout-safety work.',
         );
         $this->assertMatchesRegularExpression(
             '/Scheduler leader election across replicas/i',
@@ -392,10 +392,10 @@ final class SchedulerCorrectnessDocumentationTest extends TestCase
             $contents,
             'Scheduler correctness contract must cite the Phase 3 task-matching contract as its foundation.',
         );
-        $this->assertStringContainsString(
-            '#582',
+        $this->assertMatchesRegularExpression(
+            '/Phase 4[^\n]{0,200}role split/i',
             $contents,
-            'Scheduler correctness contract must cite the Phase 4 role split roadmap issue (#582).',
+            'Scheduler correctness contract must cite the Phase 4 control-plane and execution-plane role split as its foundation.',
         );
     }
 

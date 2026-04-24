@@ -897,10 +897,10 @@ A change to any guarantee named here MUST ship alongside:
 5. An entry in the repository's public release notes that calls
    out the protocol impact.
 
-This contract builds on Phase 1 (#579) execution guarantees,
-Phase 2 (#580) worker compatibility, Phase 3 (#581) task matching,
-Phase 4 (#582) control-plane split, Phase 5 (#583) scheduler
-correctness, and Phase 6 (#584) rollout safety. Removing a
+This contract builds on Phase 1 execution guarantees,
+Phase 2 worker compatibility, Phase 3 task matching,
+Phase 4 control-plane split, Phase 5 scheduler
+correctness, and Phase 6 rollout safety. Removing a
 citation from that lineage without adding the explicit
 re-derivation is a contract violation. Any future extension
 (stuck-detector strategy changes, sweeper replacement, heartbeat
