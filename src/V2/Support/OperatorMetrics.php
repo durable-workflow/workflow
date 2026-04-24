@@ -12,6 +12,7 @@ use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
@@ -23,6 +24,7 @@ use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 
@@ -47,6 +49,7 @@ final class OperatorMetrics
             'history' => self::historyMetrics($namespace),
             'command_contracts' => self::commandContractMetrics($namespace),
             'projections' => self::projectionMetrics($namespace),
+            'schedules' => self::scheduleMetrics($now, $namespace),
             'workers' => self::workerMetrics(),
             'backend' => BackendCapabilities::snapshot($now),
             'structural_limits' => StructuralLimits::snapshot(),
@@ -158,6 +161,72 @@ final class OperatorMetrics
             'max_pending_ms' => $oldestPendingStartAt === null
                 ? 0
                 : (int) $oldestPendingStartAt->diffInMilliseconds($now),
+        ];
+    }
+
+    /**
+     * @return array{
+     *     active: int,
+     *     paused: int,
+     *     missed: int,
+     *     oldest_overdue_at: string|null,
+     *     max_overdue_ms: int,
+     *     fires_total: int,
+     *     failures_total: int,
+     * }
+     */
+    private static function scheduleMetrics(CarbonInterface $now, ?string $namespace): array
+    {
+        $active = self::scheduleQuery($namespace)
+            ->where('status', ScheduleStatus::Active->value)
+            ->count();
+
+        $paused = self::scheduleQuery($namespace)
+            ->where('status', ScheduleStatus::Paused->value)
+            ->count();
+
+        $missedQuery = self::scheduleQuery($namespace)
+            ->where('status', ScheduleStatus::Active->value)
+            ->whereNotNull('next_fire_at')
+            ->where('next_fire_at', '<=', $now);
+
+        $missed = $missedQuery->count();
+
+        $oldestOverdueAt = $missed === 0
+            ? null
+            : self::scheduleQuery($namespace)
+                ->where('status', ScheduleStatus::Active->value)
+                ->whereNotNull('next_fire_at')
+                ->where('next_fire_at', '<=', $now)
+                ->min('next_fire_at');
+
+        $oldestOverdue = self::jsonTimestamp($oldestOverdueAt);
+
+        $maxOverdueMs = 0;
+
+        if ($oldestOverdue !== null && $oldestOverdueAt !== null) {
+            $oldest = $oldestOverdueAt instanceof CarbonInterface
+                ? $oldestOverdueAt
+                : \Illuminate\Support\Carbon::parse((string) $oldestOverdueAt);
+            $maxOverdueMs = max(0, (int) $oldest->diffInMilliseconds($now));
+        }
+
+        $firesTotal = (int) self::scheduleQuery($namespace)
+            ->where('status', ScheduleStatus::Active->value)
+            ->sum('fires_count');
+
+        $failuresTotal = (int) self::scheduleQuery($namespace)
+            ->where('status', ScheduleStatus::Active->value)
+            ->sum('failures_count');
+
+        return [
+            'active' => $active,
+            'paused' => $paused,
+            'missed' => $missed,
+            'oldest_overdue_at' => $oldestOverdue,
+            'max_overdue_ms' => $maxOverdueMs,
+            'fires_total' => $firesTotal,
+            'failures_total' => $failuresTotal,
         ];
     }
 
@@ -805,6 +874,18 @@ final class OperatorMetrics
         return $query;
     }
 
+    private static function scheduleQuery(?string $namespace)
+    {
+        $model = self::scheduleModel();
+        $query = $model::query();
+
+        if ($namespace !== null) {
+            $query->where((new $model())->getTable() . '.namespace', $namespace);
+        }
+
+        return $query;
+    }
+
     private static function scopedRunModelQuery(string $model, ?string $namespace)
     {
         $query = $model::query();
@@ -898,6 +979,17 @@ final class OperatorMetrics
     {
         /** @var class-string<WorkflowTask> $model */
         $model = config('workflows.v2.task_model', WorkflowTask::class);
+
+        return $model;
+    }
+
+    /**
+     * @return class-string<WorkflowSchedule>
+     */
+    private static function scheduleModel(): string
+    {
+        /** @var class-string<WorkflowSchedule> $model */
+        $model = config('workflows.v2.schedule_model', WorkflowSchedule::class);
 
         return $model;
     }

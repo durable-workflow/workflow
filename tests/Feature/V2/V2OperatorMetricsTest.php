@@ -11,6 +11,7 @@ use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowCommand;
@@ -21,6 +22,7 @@ use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\OperatorMetrics;
@@ -823,6 +825,117 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $scopes->get('sync:default:any')['selected_existing_task_candidates']);
         $this->assertSame(1, $scopes->get('sync:default:any')['selected_missing_task_candidates']);
         $this->assertFalse($scopes->get('sync:default:any')['scan_limited_by_global_policy']);
+    }
+
+    public function testSnapshotSurfacesSchedulerRoleHealth(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        // Namespace 'alpha' — used by the snapshot under test.
+        $this->createSchedule('sched-active-a', 'alpha', ScheduleStatus::Active, $now->copy()->addHour(), 5, 0);
+        $this->createSchedule(
+            'sched-missed-oldest-a',
+            'alpha',
+            ScheduleStatus::Active,
+            $now->copy()
+                ->subMinutes(12),
+            3,
+            2,
+        );
+        $this->createSchedule(
+            'sched-missed-recent-a',
+            'alpha',
+            ScheduleStatus::Active,
+            $now->copy()
+                ->subSeconds(30),
+            1,
+            0,
+        );
+        $this->createSchedule('sched-paused-a', 'alpha', ScheduleStatus::Paused, null, 0, 0);
+        $this->createSchedule('sched-deleted-a', 'alpha', ScheduleStatus::Deleted, null, 7, 9);
+
+        // Noise in a different namespace to prove namespace scoping.
+        $this->createSchedule(
+            'sched-missed-foreign',
+            'beta',
+            ScheduleStatus::Active,
+            $now->copy()
+                ->subMinutes(30),
+            99,
+            99,
+        );
+
+        $snapshot = OperatorMetrics::snapshot($now, 'alpha');
+
+        $this->assertArrayHasKey('schedules', $snapshot);
+        $this->assertSame(3, $snapshot['schedules']['active']);
+        $this->assertSame(1, $snapshot['schedules']['paused']);
+        $this->assertSame(2, $snapshot['schedules']['missed']);
+        $this->assertSame('2026-04-09T11:48:00.000000Z', $snapshot['schedules']['oldest_overdue_at']);
+        $this->assertSame(12 * 60 * 1000, $snapshot['schedules']['max_overdue_ms']);
+        $this->assertSame(9, $snapshot['schedules']['fires_total']);
+        $this->assertSame(2, $snapshot['schedules']['failures_total']);
+    }
+
+    public function testSnapshotSurfacesSchedulerRoleHealthWhenNoSchedulesAreOverdue(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $this->createSchedule('sched-future', 'alpha', ScheduleStatus::Active, $now->copy()->addMinute(), 0, 0);
+        $this->createSchedule('sched-never-fired', 'alpha', ScheduleStatus::Active, null, 0, 0);
+
+        $snapshot = OperatorMetrics::snapshot($now, 'alpha');
+
+        $this->assertSame(2, $snapshot['schedules']['active']);
+        $this->assertSame(0, $snapshot['schedules']['paused']);
+        $this->assertSame(0, $snapshot['schedules']['missed']);
+        $this->assertNull($snapshot['schedules']['oldest_overdue_at']);
+        $this->assertSame(0, $snapshot['schedules']['max_overdue_ms']);
+        $this->assertSame(0, $snapshot['schedules']['fires_total']);
+        $this->assertSame(0, $snapshot['schedules']['failures_total']);
+    }
+
+    private function createSchedule(
+        string $scheduleId,
+        string $namespace,
+        ScheduleStatus $status,
+        ?Carbon $nextFireAt,
+        int $firesCount,
+        int $failuresCount,
+    ): WorkflowSchedule {
+        /** @var WorkflowSchedule $schedule */
+        $schedule = WorkflowSchedule::query()->create([
+            'schedule_id' => $scheduleId,
+            'namespace' => $namespace,
+            'spec' => [
+                'cron_expressions' => ['0 * * * *'],
+                'timezone' => 'UTC',
+            ],
+            'action' => [
+                'workflow_type' => 'test-scheduled-workflow',
+                'workflow_class' => 'App\\TestWorkflow',
+            ],
+            'status' => $status->value,
+            'overlap_policy' => 'skip',
+            'jitter_seconds' => 0,
+            'fires_count' => $firesCount,
+            'failures_count' => $failuresCount,
+            'next_fire_at' => $nextFireAt,
+            'deleted_at' => $status === ScheduleStatus::Deleted ? Carbon::now() : null,
+            'paused_at' => $status === ScheduleStatus::Paused ? Carbon::now() : null,
+        ]);
+
+        return $schedule;
     }
 
     private function createRunWithSummary(

@@ -140,6 +140,10 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'active_worker_scopes',
         'active_workers_supporting_required',
         'fleet',
+        'oldest_overdue_at',
+        'max_overdue_ms',
+        'fires_total',
+        'failures_total',
         'redispatch_after_seconds',
         'loop_throttle_seconds',
         'scan_limit',
@@ -289,6 +293,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
                 ),
             );
         }
+    }
+
+    public function testContractDocumentFreezesSchedulerRoleHealthRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`schedules`\s*\|[^|]*`active`[^|]*`paused`[^|]*`missed`[^|]*`oldest_overdue_at`[^|]*`max_overdue_ms`[^|]*`fires_total`[^|]*`failures_total`/',
+            $contents,
+            'Rollout safety contract must pin the schedules metric row so scheduler-role health keys stay legible through OperatorMetrics::snapshot().',
+        );
     }
 
     public function testContractDocumentFreezesHealthCheckNames(): void
