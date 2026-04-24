@@ -409,6 +409,7 @@ change.
 | `tasks` | `dispatch_failed`, `claim_failed` | transport failure counts |
 | `tasks` | `dispatch_overdue`, `lease_expired` | lease and dispatch timing |
 | `tasks` | `oldest_lease_expired_at`, `max_lease_expired_age_ms` | earliest `lease_expires_at` among leased tasks whose lease has expired at snapshot time and the largest expired-lease age in milliseconds, mirroring the `backlog.oldest_compatibility_blocked_started_at` / `max_compatibility_blocked_age_ms` shape so operators can answer "how long has the worst leased task been expired without redelivery?" (the primary stuck-lease duplicate-risk age indicator) from the metric alone |
+| `tasks` | `oldest_ready_due_at`, `max_ready_due_age_ms` | earliest "ready since" timestamp among ready-due tasks (the effective `COALESCE(available_at, created_at)` — `available_at` when the task was delayed, otherwise the creation time that made it immediately actionable) and the largest ready-age in milliseconds, mirroring the `oldest_lease_expired_at` / `max_lease_expired_age_ms` shape so operators can read queue latency ("how long has the oldest actionable task been waiting to dispatch?") from the metric alone without walking `workflow_tasks` |
 | `tasks` | `unhealthy` | sum of transport failure and lease expiry counts (the primary duplicate-risk indicator) |
 | `backlog` | `runnable_tasks`, `delayed_tasks`, `leased_tasks` | authoritative backlog counts |
 | `backlog` | `unhealthy_tasks`, `repair_needed_runs`, `claim_failed_runs`, `compatibility_blocked_runs` | stuck/blocked roll-ups |

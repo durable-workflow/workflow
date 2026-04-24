@@ -226,6 +226,11 @@ final class HealthCheck
                     ? $tasks['oldest_lease_expired_at']
                     : null,
                 'max_lease_expired_age_ms' => self::integer($tasks['max_lease_expired_age_ms'] ?? 0),
+                'ready_due_tasks' => self::integer($tasks['ready_due'] ?? 0),
+                'oldest_ready_due_at' => is_string($tasks['oldest_ready_due_at'] ?? null)
+                    ? $tasks['oldest_ready_due_at']
+                    : null,
+                'max_ready_due_age_ms' => self::integer($tasks['max_ready_due_age_ms'] ?? 0),
                 'repair_needed_runs' => self::integer($backlog['repair_needed_runs'] ?? 0),
                 'claim_failed_runs' => self::integer($backlog['claim_failed_runs'] ?? 0),
                 'compatibility_blocked_runs' => self::integer($backlog['compatibility_blocked_runs'] ?? 0),

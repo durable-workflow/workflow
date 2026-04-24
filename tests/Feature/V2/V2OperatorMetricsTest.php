@@ -218,6 +218,13 @@ final class V2OperatorMetricsTest extends TestCase
             $snapshot['tasks']['oldest_lease_expired_at'],
         );
         $this->assertSame(60 * 1000, $snapshot['tasks']['max_lease_expired_age_ms']);
+        $this->assertSame(
+            Carbon::parse('2026-04-09 12:00:00')
+                ->subSeconds(10)
+                ->toJSON(),
+            $snapshot['tasks']['oldest_ready_due_at'],
+        );
+        $this->assertSame(10 * 1000, $snapshot['tasks']['max_ready_due_age_ms']);
         $this->assertSame(4, $snapshot['tasks']['unhealthy']);
         $this->assertSame(4, $snapshot['backlog']['runnable_tasks']);
         $this->assertSame(1, $snapshot['backlog']['delayed_tasks']);
@@ -328,6 +335,14 @@ final class V2OperatorMetricsTest extends TestCase
             $taskTransport['data']['oldest_lease_expired_at'],
         );
         $this->assertSame(60 * 1000, $taskTransport['data']['max_lease_expired_age_ms']);
+        $this->assertSame(4, $taskTransport['data']['ready_due_tasks']);
+        $this->assertSame(
+            Carbon::parse('2026-04-09 12:00:00')
+                ->subSeconds(10)
+                ->toJSON(),
+            $taskTransport['data']['oldest_ready_due_at'],
+        );
+        $this->assertSame(10 * 1000, $taskTransport['data']['max_ready_due_age_ms']);
     }
 
     public function testSnapshotCountsStaleRunSummaryProjectionRows(): void

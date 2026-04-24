@@ -84,6 +84,7 @@ final class OperatorMetrics
     private static function taskMetrics(CarbonInterface $now, ?string $namespace): array
     {
         $oldestLeaseExpiredAt = self::oldestLeaseExpiredAt($now, $namespace);
+        $oldestReadyDueAt = self::oldestReadyDueAt($now, $namespace);
 
         return [
             'open' => self::openTasks($namespace),
@@ -99,6 +100,10 @@ final class OperatorMetrics
             'max_lease_expired_age_ms' => $oldestLeaseExpiredAt === null
                 ? 0
                 : (int) $oldestLeaseExpiredAt->diffInMilliseconds($now),
+            'oldest_ready_due_at' => $oldestReadyDueAt?->toJSON(),
+            'max_ready_due_age_ms' => $oldestReadyDueAt === null
+                ? 0
+                : (int) $oldestReadyDueAt->diffInMilliseconds($now),
             'unhealthy' => self::dispatchFailedTasks($namespace)
                 + self::claimFailedTasks($namespace)
                 + self::dispatchOverdueTasks($now, $namespace)
@@ -821,6 +826,35 @@ final class OperatorMetrics
         }
 
         return $task->lease_expires_at;
+    }
+
+    /**
+     * Earliest "ready since" timestamp across ready-due tasks — the effective
+     * moment a task became eligible for dispatch, taking `available_at` when
+     * present and falling back to `created_at` for tasks that were ready
+     * immediately on creation. Rollout-safety surfaces this alongside
+     * `tasks.ready_due` so operators can read queue latency ("how long has
+     * the oldest actionable task been waiting to dispatch?") from the
+     * metric alone, mirroring the existing `oldest_lease_expired_at` /
+     * `max_lease_expired_age_ms` shape.
+     */
+    private static function oldestReadyDueAt(CarbonInterface $now, ?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowTask|null $task */
+        $task = self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->where('status', TaskStatus::Ready->value)
+            ->where(static function ($query) use ($now): void {
+                $query->whereNull('available_at')
+                    ->orWhere('available_at', '<=', $now);
+            })
+            ->orderByRaw('COALESCE(available_at, created_at) asc')
+            ->first();
+
+        if (! $task instanceof WorkflowTask) {
+            return null;
+        }
+
+        return $task->available_at ?? $task->created_at;
     }
 
     private static function dispatchFailedTasks(?string $namespace): int
