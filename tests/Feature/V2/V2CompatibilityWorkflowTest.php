@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -1065,6 +1066,173 @@ final class V2CompatibilityWorkflowTest extends TestCase
             'Workflow task lease expired and is waiting for a compatible worker.',
             $detail['tasks'][0]['summary'],
         );
+    }
+
+    public function testRolloutLifecyclePreservesLongRunningRunsAcrossAdditiveRolloutDrainAndRollback(): void
+    {
+        config()->set('workflows.v2.compatibility.namespace', 'sample-app');
+
+        // Phase 0 — steady state. Fleet advertises only build-old.
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-old');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-old']);
+
+        Queue::fake();
+
+        $oldWorkflow = WorkflowStub::make(TestGreetingWorkflow::class, 'rollout-old-run');
+        $oldWorkflow->start('Old');
+
+        /** @var WorkflowRun $oldRun */
+        $oldRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'rollout-old-run')
+            ->sole();
+        /** @var WorkflowTask $oldTask */
+        $oldTask = WorkflowTask::query()
+            ->where('workflow_run_id', $oldRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole();
+
+        $this->assertSame('build-old', $oldRun->compatibility);
+        $this->assertSame('build-old', $oldTask->compatibility);
+
+        // Phase 1 — additive rollout. Starter flips to build-new; fleet
+        // advertises both markers. The in-flight build-old run is unchanged
+        // and still routable; newly-started runs stamp build-new.
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-new');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-old', 'build-new']);
+
+        WorkerCompatibilityFleet::record(['build-old', 'build-new'], 'redis', 'default', 'worker-rollout');
+
+        $newWorkflow = WorkflowStub::make(TestGreetingWorkflow::class, 'rollout-new-run');
+        $newWorkflow->start('New');
+
+        /** @var WorkflowRun $newRun */
+        $newRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'rollout-new-run')
+            ->sole();
+
+        $this->assertSame('build-new', $newRun->compatibility);
+        $this->assertSame('build-old', $oldRun->fresh()->compatibility);
+
+        $oldDetails = WorkerCompatibilityFleet::detailsForNamespace(
+            'sample-app',
+            'build-old',
+            'redis',
+            'default',
+        );
+        $this->assertCount(1, $oldDetails);
+        $this->assertTrue($oldDetails[0]['supports_required']);
+
+        $newDetails = WorkerCompatibilityFleet::detailsForNamespace(
+            'sample-app',
+            'build-new',
+            'redis',
+            'default',
+        );
+        $this->assertCount(1, $newDetails);
+        $this->assertTrue($newDetails[0]['supports_required']);
+
+        $this->assertSame(TaskStatus::Ready, $oldTask->fresh()?->status);
+        $bridge = app(WorkflowTaskBridge::class);
+        $rolloutClaim = $bridge->claimStatus($oldTask->id, 'worker-rollout');
+        $this->assertTrue(
+            $rolloutClaim['claimed'],
+            'Mixed-fleet worker advertising both markers must claim the old-marker task.',
+        );
+        $this->assertSame('worker-rollout', $rolloutClaim['lease_owner']);
+        $this->assertSame('build-old', $rolloutClaim['compatibility']);
+
+        $oldTask->refresh();
+        $oldTask->forceFill([
+            'status' => TaskStatus::Ready,
+            'leased_at' => null,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+            'attempt_count' => 0,
+            'last_claim_failed_at' => null,
+            'last_claim_error' => null,
+        ])->save();
+
+        // Phase 2 — drain complete. The old fleet has been retired; only
+        // build-new workers heartbeat and only build-new is supported. The
+        // still-pinned build-old run is observable as "no compatible worker"
+        // via supports_required=false, and a claim attempt from a build-new-only
+        // worker leaves the task Ready without burning an attempt.
+        WorkerCompatibilityFleet::clear();
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-new']);
+        WorkerCompatibilityFleet::record(['build-new'], 'redis', 'default', 'worker-new-only');
+
+        $drainedOldDetails = WorkerCompatibilityFleet::detailsForNamespace(
+            'sample-app',
+            'build-old',
+            'redis',
+            'default',
+        );
+        $this->assertCount(1, $drainedOldDetails);
+        $this->assertFalse(
+            $drainedOldDetails[0]['supports_required'],
+            'Removing the old marker from every live heartbeat must surface as supports_required=false.',
+        );
+
+        $drainClaim = $bridge->claimStatus($oldTask->id, 'worker-new-only');
+        $this->assertFalse(
+            $drainClaim['claimed'],
+            'A build-new-only worker must reject the build-old task at claim.',
+        );
+        $this->assertSame('compatibility_blocked', $drainClaim['reason']);
+        $drainedTask = $oldTask->fresh();
+        $this->assertSame(TaskStatus::Ready, $drainedTask?->status);
+        $this->assertNull($drainedTask?->leased_at);
+
+        // Phase 3 — rollback. Re-advertise build-old on the live fleet and
+        // flip the starter back to build-old. The in-flight build-old task is
+        // routable again, and newly-started runs stamp build-old (the
+        // inverse of the rollout). No in-flight run is silently retargeted.
+        WorkerCompatibilityFleet::record(['build-old', 'build-new'], 'redis', 'default', 'worker-rolled-back');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-old');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-old', 'build-new']);
+
+        $rolledBackOldDetails = WorkerCompatibilityFleet::detailsForNamespace(
+            'sample-app',
+            'build-old',
+            'redis',
+            'default',
+        );
+        $this->assertNotEmpty($rolledBackOldDetails);
+        $this->assertTrue(
+            collect($rolledBackOldDetails)
+                ->contains(static fn (array $snapshot): bool => $snapshot['supports_required'] === true),
+            'A rollback that re-advertises the old marker must restore supports_required=true on the pinned run.',
+        );
+
+        $rollbackClaim = $bridge->claimStatus($oldTask->id, 'worker-rolled-back');
+        $this->assertTrue(
+            $rollbackClaim['claimed'],
+            'A rollback that re-advertises the old marker must let the pinned task be claimed again.',
+        );
+        $this->assertSame('worker-rolled-back', $rollbackClaim['lease_owner']);
+        $rolledBackTask = $oldTask->fresh();
+        $this->assertSame(TaskStatus::Leased, $rolledBackTask?->status);
+
+        $postRollbackWorkflow = WorkflowStub::make(TestGreetingWorkflow::class, 'rollout-post-rollback-run');
+        $postRollbackWorkflow->start('Rollback');
+
+        /** @var WorkflowRun $postRollbackRun */
+        $postRollbackRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'rollout-post-rollback-run')
+            ->sole();
+        $this->assertSame('build-old', $postRollbackRun->compatibility);
+
+        // The build-new run started before the rollback keeps its original
+        // marker — compatibility stamping is once-per-run at Start and is
+        // not retroactively rewritten by a starter flip.
+        $this->assertSame('build-new', $newRun->fresh()->compatibility);
     }
 
     private function drainReadyTasks(): void
