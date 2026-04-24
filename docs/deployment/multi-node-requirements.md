@@ -2,7 +2,9 @@
 
 ## Overview
 
-This document outlines the requirements for deploying the workflow v2 engine across multiple server nodes. Multi-node deployments enable horizontal scaling, high availability, and geographic distribution.
+This document outlines the requirements and recommendations for deploying the workflow v2 engine across multiple server nodes. Multi-node deployments enable horizontal scaling, high availability, and geographic distribution.
+
+The v2 engine separates **correctness substrate** from **acceleration layer**. The shared workflow database is the correctness substrate; every multi-node guarantee in this document depends on it. Shared cache and the wake-notification layer are acceleration: they shorten discovery latency without affecting which tasks are eligible or who claims them. A deployment whose acceleration backend is degraded continues to make correct progress, bounded by the durable poll and repair cadence. See [`docs/architecture/scheduler-correctness.md`](../architecture/scheduler-correctness.md) for the full contract, including the reversible migration path that lets a deployment move between cache-coordinated wake notification and a stronger acceleration primitive (Redis pub/sub, PostgreSQL `LISTEN/NOTIFY`, NATS) without a cutover.
 
 ## Prerequisites
 
@@ -32,15 +34,18 @@ For high-throughput deployments, use connection pooling:
 - PgBouncer (PostgreSQL)
 - RDS Proxy (AWS)
 
-### Shared Cache Backend
+### Shared Cache Backend (Acceleration Layer)
 
-All nodes must connect to the same cache instance for long-poll wake signal coordination.
+A multi-node deployment runs **correctly** without a shared cache backend — discovery latency simply rises to the durable long-poll and task-repair cadence. Configuring a shared cache backend recovers the sub-second discovery latency that wake signals provide and is strongly recommended for production.
 
-**Required Cache Backends:**
+**Acceleration backends supported for multi-node:**
 - ✅ Redis 6.0+ (recommended)
 - ✅ Database cache (MySQL/PostgreSQL)
 - ✅ Memcached 1.6+
-- ❌ File cache (single-node only)
+- ❌ File cache — wake signals do not propagate across nodes
+- ❌ Array cache — process-local; signals are lost on restart
+
+The `file` and `array` cache stores cannot carry the multi-node acceleration layer because they cannot propagate wake signals between nodes. Pollers fall back to long-poll timeout when the acceleration layer is absent or unable to propagate; the durable substrate continues to govern correctness.
 
 **Redis Configuration:**
 
@@ -61,11 +66,15 @@ CACHE_DRIVER=database
 # DB_* credentials same as above
 ```
 
-**Why Shared Cache Required:**
+**Why a Shared Cache Backend Is Recommended:**
 
-Wake signals must propagate across nodes. When Node A creates a task, Node B's poller must be notified immediately. File-based cache is per-node and cannot propagate signals.
+When Node A creates a task, Node B's pollers can observe the wake signal and re-probe immediately rather than waiting for the long-poll timeout. File cache is per-node, so wake signals never reach other nodes — discovery still occurs on the next poll, just with higher latency. The system never silently loses work in this state; the `backend_capabilities` health check surfaces a warning so operators can detect and repair the acceleration layer.
 
-See [Long-Poll Coordination](../long-poll-coordination.md) for technical details.
+See [Long-Poll Coordination](../long-poll-coordination.md) for the wake-signal protocol details and [Scheduler Correctness](../architecture/scheduler-correctness.md) for the bounded discovery latency contract that holds even with the acceleration layer absent.
+
+**Boot-time validation:**
+
+Set `DW_V2_MULTI_NODE=true` (env) or `workflows.v2.long_poll.multi_node=true` (config) to enable boot-time validation that the configured cache backend can carry the acceleration layer. Tune behaviour with `DW_V2_VALIDATE_CACHE_BACKEND` (default `true`) and `DW_V2_CACHE_VALIDATION_MODE` (`fail`, `warn`, or `silent`; default `warn`). Validation failures surface through the `backend_capabilities` health check; they do not affect correctness.
 
 ## Node Configuration
 
@@ -254,7 +263,9 @@ GROUP BY queue;
 
 **Fix:** Ensure workers running on all nodes.
 
-### Symptom: Workers Not Receiving Tasks from Other Nodes
+### Symptom: Workers on Other Nodes Pick Up Tasks Only After Long-Poll Timeout
+
+This is the wake-acceleration layer reporting degradation. Tasks still flow — pollers fall back to the configured long-poll timeout (default 30 seconds) and the durable task-repair loop continues to redeliver work — but the sub-second latency that wake signals provide is lost. Correctness is unaffected.
 
 **Check:** Cache backend coordination
 ```bash
@@ -269,7 +280,9 @@ php artisan tinker
 >>> $store->changed($before); // Should return true
 ```
 
-**Fix:** Verify shared cache configuration. Check network connectivity between nodes and cache backend.
+**Fix:** Verify the shared cache configuration. Check network connectivity between nodes and cache backend. Inspect the `backend_capabilities` and `long_poll_wake_acceleration` health checks for explicit wake-layer status (acceleration-layer issues escalate to `warning`, never `error`).
+
+If workers receive **no** tasks at all (not just delayed tasks), the symptom is durable-substrate failure, not acceleration degradation; investigate `workflow_tasks` repair, claim fencing, and worker compatibility instead.
 
 ### Symptom: Duplicate Task Execution
 

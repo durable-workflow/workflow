@@ -2,7 +2,9 @@
 
 ## Overview
 
-The workflow v2 engine uses cache-backed long-poll coordination to deliver workflow tasks, activity tasks, and history events to workers with minimal latency. This document describes the coordination architecture, deployment requirements, and performance characteristics.
+The workflow v2 engine uses cache-backed long-poll coordination to deliver workflow tasks, activity tasks, and history events to workers with minimal latency. This document describes the coordination architecture, deployment recommendations, and performance characteristics.
+
+Long-poll coordination is the **acceleration layer** in the v2 architecture. Discovery, claim, lease expiry, and schedule fire evaluation are governed by durable rows in `workflow_tasks`, `workflow_runs`, `workflow_instances`, `activity_executions`, `activity_attempts`, and `workflow_schedules` — never by cache state. The cache-backed wake store described here exists to shorten the time between a task becoming eligible and a compatible worker claiming it; it is not part of the correctness boundary. See [`docs/architecture/scheduler-correctness.md`](architecture/scheduler-correctness.md) for the complete correctness vs. acceleration contract, the bounded discovery latency guarantees that hold without acceleration, and the reversible migration path from cache-coordinated wake notification to a stronger acceleration primitive.
 
 ## Architecture
 
@@ -78,16 +80,18 @@ interface LongPollWakeStore
 
 ## Multi-Node Deployment
 
-### Requirements
+### Acceleration backend recommendations
 
-**Cache Backend:**
+A multi-node deployment runs correctly without any wake-acceleration backend at all. Pollers fall back to their configured long-poll timeout (default 30 seconds, max 60 seconds) and the durable task-repair loop continues to redeliver work. To recover the sub-second discovery latency that wake signals provide, every node should publish to the same wake-store backend.
+
+**Acceleration backends supported for multi-node:**
 - ✅ Redis (recommended for production)
 - ✅ Database cache (MySQL, PostgreSQL)
 - ✅ Memcached
-- ❌ File cache (single-node only)
+- ❌ File cache — wake signals do not propagate across nodes
+- ❌ Array cache — process-local; signals are lost on restart
 
-**Why Shared Cache Required:**
-Wake signals must propagate across all server nodes. File-based cache is per-node, so signals triggered on Node A do not reach pollers on Node B.
+The `file` and `array` backends are not classified as supported for the multi-node acceleration layer because they cannot propagate wake signals between nodes. They do not break correctness — they simply turn the wake layer into a no-op across nodes, so pollers wait out the long-poll timeout instead of receiving immediate notification.
 
 **Configuration:**
 
@@ -104,7 +108,7 @@ Laravel `config/cache.php`:
 ],
 ```
 
-Ensure all nodes share the same Redis/database instance.
+Point every node at the same Redis (or database) instance so a wake signal published by one node is observed by every other node's pollers.
 
 ### Single-Node Deployment
 
@@ -114,6 +118,10 @@ File cache is acceptable for single-node deployments:
 ```
 
 Wake signals propagate within the node. No cross-node coordination needed.
+
+### Bounded discovery latency without acceleration
+
+If the wake-acceleration backend is delayed, partitioned, or entirely absent, discovery latency rises but no work is lost. The upper bound is the configured poll timeout (default `WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT` of 30 seconds), the `workflows.v2.task_repair.redispatch_after_seconds` cadence (default 3 seconds), and the `workflows.v2.task_repair.loop_throttle_seconds` cadence (default 5 seconds). Lease expiry and redelivery use `workflow_tasks.lease_expires_at` directly and never read cache. See the [scheduler correctness contract](architecture/scheduler-correctness.md) for the full set of guarantees that hold when the cache backend is unreachable.
 
 ### Observer Registration
 
@@ -176,7 +184,9 @@ WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
 
 ## Troubleshooting
 
-### Symptom: Workers Not Receiving Tasks
+### Symptom: Workers Receiving Tasks With High Latency
+
+If workers see tasks only when the long-poll timeout expires (default 30 seconds) instead of within sub-second range, the wake-acceleration layer is degraded. Tasks still flow — the system has fallen back to durable poll cadence, which preserves correctness but loses the latency win that wake signals provide.
 
 **Check cache backend:**
 ```bash
@@ -184,12 +194,14 @@ php artisan tinker
 >>> cache()->getStore()
 ```
 
-If `Illuminate\Cache\FileStore` → file cache (single-node only)
+If `Illuminate\Cache\FileStore` → file cache cannot propagate wake signals across nodes (single-node deployments are unaffected).
 
 **Fix for multi-node:**
-1. Configure shared cache backend (Redis recommended)
-2. Restart all nodes
-3. Verify: `cache()->put('test', 'value'); cache()->get('test')`
+1. Configure a shared cache backend (Redis recommended) so every node observes the same wake signals.
+2. Restart all nodes.
+3. Verify: `cache()->put('test', 'value'); cache()->get('test')`.
+
+If workers receive **no** tasks at all (not just delayed tasks), the problem is not the cache backend — investigate the durable substrate (`workflow_tasks`, repair loop, worker compatibility) per the scheduler correctness contract.
 
 ### Symptom: High Poll Latency
 

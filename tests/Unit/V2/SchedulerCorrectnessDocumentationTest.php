@@ -505,12 +505,86 @@ final class SchedulerCorrectnessDocumentationTest extends TestCase
         );
     }
 
+    /**
+     * @return iterable<string, array{0: string}>
+     */
+    public static function operatorFacingDocsProvider(): iterable
+    {
+        yield 'long-poll-coordination' => ['docs/long-poll-coordination.md'];
+        yield 'multi-node-requirements' => ['docs/deployment/multi-node-requirements.md'];
+    }
+
+    /**
+     * @dataProvider operatorFacingDocsProvider
+     */
+    public function testOperatorFacingDocLinksToSchedulerCorrectnessContract(string $relative): void
+    {
+        $contents = $this->fileContents($relative);
+
+        $this->assertMatchesRegularExpression(
+            '/architecture\/scheduler-correctness\.md/i',
+            $contents,
+            sprintf(
+                'Operator-facing doc %s must cross-link to architecture/scheduler-correctness.md so the cache-as-acceleration contract has a single source of truth.',
+                $relative,
+            ),
+        );
+    }
+
+    /**
+     * @dataProvider operatorFacingDocsProvider
+     */
+    public function testOperatorFacingDocDoesNotClaimSharedCacheIsRequiredForCorrectness(string $relative): void
+    {
+        $contents = $this->fileContents($relative);
+
+        $this->assertDoesNotMatchRegularExpression(
+            '/(?:^|\s)(?:Why\s+)?Shared\s+Cache\s+Required(?:\s|:|$)/i',
+            $contents,
+            sprintf(
+                'Operator-facing doc %s must not frame shared cache as required for correctness; it is the acceleration layer per the scheduler correctness contract.',
+                $relative,
+            ),
+        );
+
+        $this->assertDoesNotMatchRegularExpression(
+            '/All nodes must connect to the same cache instance/i',
+            $contents,
+            sprintf(
+                'Operator-facing doc %s must not claim every node MUST share a cache backend; degraded acceleration is correct by contract, just slower.',
+                $relative,
+            ),
+        );
+    }
+
+    /**
+     * @dataProvider operatorFacingDocsProvider
+     */
+    public function testOperatorFacingDocClassifiesCacheAsAccelerationLayer(string $relative): void
+    {
+        $contents = $this->fileContents($relative);
+
+        $this->assertMatchesRegularExpression(
+            '/acceleration(?:\s+layer|\s+backend|s)?/i',
+            $contents,
+            sprintf(
+                'Operator-facing doc %s must explicitly classify the wake/cache layer as acceleration so operators read it consistently with the scheduler correctness contract.',
+                $relative,
+            ),
+        );
+    }
+
     private function documentContents(): string
     {
-        $path = dirname(__DIR__, 3) . '/' . self::DOCUMENT;
+        return $this->fileContents(self::DOCUMENT);
+    }
+
+    private function fileContents(string $relative): string
+    {
+        $path = dirname(__DIR__, 3) . '/' . $relative;
         $contents = file_get_contents($path);
 
-        $this->assertIsString($contents, sprintf('Could not read %s.', self::DOCUMENT));
+        $this->assertIsString($contents, sprintf('Could not read %s.', $relative));
 
         return $contents;
     }
