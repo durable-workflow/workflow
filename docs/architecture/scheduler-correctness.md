@@ -434,9 +434,14 @@ through the following surfaces.
   correctness healthy?"
 - `Workflow\V2\Support\HealthCheck::snapshot()` — reports
   `backend_capabilities`, `task_transport`, `durable_resume_paths`,
-  and `worker_compatibility` check status. Acceleration-layer
-  issues appear here as `warning`; correctness-substrate issues
-  appear as `error`.
+  `worker_compatibility`, and `long_poll_wake_acceleration` check
+  status. Each check carries an explicit `category` field whose
+  value is either `correctness` or `acceleration`. The snapshot
+  also exposes a `categories` map with a rolled-up `status` per
+  category so a single response answers the two operator
+  questions below without re-aggregating the check list.
+  Acceleration-layer issues appear as `warning`;
+  correctness-substrate issues appear as `error`.
 - `Workflow\V2\Support\OperatorQueueVisibility::forNamespace()`
   and `::forQueue()` — per-partition depth and claim state
   derived from `workflow_tasks`.
@@ -458,6 +463,14 @@ Guarantees:
 - Operators MUST be able to answer "is work being discovered?"
   and "is the acceleration layer propagating?" as separate
   questions, from separate metrics.
+- Every `HealthCheck::snapshot()` check entry MUST carry a
+  `category` of `correctness` or `acceleration`. The
+  `long_poll_wake_acceleration` check is the acceleration-layer
+  surface and MUST NOT raise its status above `warning` even
+  when the configured backend is unreachable, because the
+  acceleration layer is optional by contract. Correctness
+  checks remain free to report `error` when the durable
+  substrate is broken.
 
 ## Test strategy alignment
 

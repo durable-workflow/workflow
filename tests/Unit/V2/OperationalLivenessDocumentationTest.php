@@ -191,6 +191,7 @@ final class OperationalLivenessDocumentationTest extends TestCase
         'task_transport',
         'durable_resume_paths',
         'worker_compatibility',
+        'long_poll_wake_acceleration',
     ];
 
     private const REQUIRED_MIGRATIONS = [

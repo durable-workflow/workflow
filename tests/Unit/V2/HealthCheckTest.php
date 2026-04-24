@@ -617,4 +617,86 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(1, $projection['data']['schema_outdated']);
         $this->assertSame(RunSummaryProjector::SCHEMA_VERSION, $projection['data']['projection_schema_version']);
     }
+
+    public function testSnapshotClassifiesEveryCheckAsCorrectnessOrAcceleration(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+
+        $snapshot = HealthCheck::snapshot();
+
+        $this->assertNotEmpty($snapshot['checks']);
+        $allowed = [HealthCheck::CATEGORY_CORRECTNESS, HealthCheck::CATEGORY_ACCELERATION];
+
+        foreach ($snapshot['checks'] as $check) {
+            $this->assertArrayHasKey('category', $check, sprintf(
+                'HealthCheck entry %s must expose a category field so operators can separate correctness from acceleration.',
+                $check['name'] ?? 'unknown',
+            ));
+            $this->assertContains($check['category'], $allowed, sprintf(
+                'HealthCheck entry %s has invalid category %s; must be correctness or acceleration.',
+                $check['name'] ?? 'unknown',
+                (string) ($check['category'] ?? ''),
+            ));
+        }
+
+        $this->assertArrayHasKey('categories', $snapshot);
+        $this->assertArrayHasKey('correctness', $snapshot['categories']);
+        $this->assertArrayHasKey('acceleration', $snapshot['categories']);
+
+        $correctnessChecks = collect($snapshot['checks'])
+            ->where('category', HealthCheck::CATEGORY_CORRECTNESS)
+            ->count();
+        $accelerationChecks = collect($snapshot['checks'])
+            ->where('category', HealthCheck::CATEGORY_ACCELERATION)
+            ->count();
+
+        $this->assertSame($correctnessChecks, $snapshot['categories']['correctness']['check_count']);
+        $this->assertSame($accelerationChecks, $snapshot['categories']['acceleration']['check_count']);
+        $this->assertGreaterThan(0, $correctnessChecks);
+        $this->assertGreaterThan(0, $accelerationChecks);
+
+        $wake = collect($snapshot['checks'])->firstWhere('name', 'long_poll_wake_acceleration');
+        $this->assertNotNull($wake, 'HealthCheck must expose a long_poll_wake_acceleration check.');
+        $this->assertSame(HealthCheck::CATEGORY_ACCELERATION, $wake['category']);
+    }
+
+    public function testLongPollWakeAccelerationCheckNeverEscalatesAboveWarning(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'file');
+        config()->set('cache.stores.file.driver', 'file');
+        config()->set('workflows.v2.long_poll.multi_node', true);
+
+        $snapshot = HealthCheck::snapshot();
+        $wake = collect($snapshot['checks'])->firstWhere('name', 'long_poll_wake_acceleration');
+
+        $this->assertNotNull($wake);
+        $this->assertContains(
+            $wake['status'],
+            ['ok', 'warning'],
+            'Acceleration-layer check must never escalate to error; correctness remains independent of the acceleration layer.',
+        );
+        $this->assertSame('warning', $wake['status']);
+        $this->assertFalse($wake['data']['safe']);
+        $this->assertNotNull($wake['data']['reason']);
+    }
+
+    public function testLongPollWakeAccelerationReportsOkWhenBackendIsCapable(): void
+    {
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+        config()->set('workflows.v2.long_poll.multi_node', false);
+
+        $snapshot = HealthCheck::snapshot();
+        $wake = collect($snapshot['checks'])->firstWhere('name', 'long_poll_wake_acceleration');
+
+        $this->assertNotNull($wake);
+        $this->assertSame('ok', $wake['status']);
+        $this->assertSame(HealthCheck::CATEGORY_ACCELERATION, $wake['category']);
+        $this->assertArrayHasKey('backend', $wake['data']);
+    }
 }

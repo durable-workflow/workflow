@@ -660,7 +660,7 @@ liveness (sub-keys under the named groups):
   surfaced as metrics so a dashboard can read them without reading
   config.
 
-The eight frozen health check names under `HealthCheck::snapshot()`:
+The nine frozen health check names under `HealthCheck::snapshot()`:
 
 - `backend_capabilities`
 - `run_summary_projection`
@@ -670,6 +670,14 @@ The eight frozen health check names under `HealthCheck::snapshot()`:
 - `task_transport`
 - `durable_resume_paths`
 - `worker_compatibility`
+- `long_poll_wake_acceleration`
+
+Every check entry also carries a `category` of `correctness` or
+`acceleration`. `long_poll_wake_acceleration` is the only entry
+whose `category` is `acceleration`; it reports wake-layer
+reachability and the acceleration contract (see
+`docs/architecture/scheduler-correctness.md`) forbids it from
+escalating above `warning`.
 
 Rules:
 

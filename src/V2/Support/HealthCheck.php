@@ -5,9 +5,15 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Support\Facades\App;
 
 final class HealthCheck
 {
+    public const CATEGORY_CORRECTNESS = 'correctness';
+
+    public const CATEGORY_ACCELERATION = 'acceleration';
+
     /**
      * @return array<string, mixed>
      */
@@ -24,6 +30,7 @@ final class HealthCheck
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
             self::durableResumePathCheck($metrics['backlog'] ?? [], $metrics['repair'] ?? []),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
+            self::longPollWakeAccelerationCheck(),
         ];
         $status = self::status($checks);
 
@@ -32,6 +39,7 @@ final class HealthCheck
             'status' => $status,
             'healthy' => $status !== 'error',
             'checks' => $checks,
+            'categories' => self::categorySummary($checks),
             'operator_metrics' => $metrics,
             'structural_limits' => StructuralLimits::snapshot(),
         ];
@@ -60,6 +68,7 @@ final class HealthCheck
             $supported
                 ? 'The configured database, queue, and cache backends satisfy the v2 capability contract.'
                 : 'One or more configured v2 backend capabilities are unsupported.',
+            self::CATEGORY_CORRECTNESS,
             [
                 'issue_count' => count($issues),
                 'issues' => $issues,
@@ -81,6 +90,7 @@ final class HealthCheck
             $needsRebuild === 0
                 ? 'Run-summary projections are aligned with durable v2 runs.'
                 : 'Run-summary projections are missing, stale, schema-outdated, or orphaned; rebuild them before trusting Waterline lists.',
+            self::CATEGORY_CORRECTNESS,
             [
                 'needs_rebuild' => $needsRebuild,
                 'missing' => self::integer($projection['missing'] ?? 0),
@@ -120,6 +130,7 @@ final class HealthCheck
             $needsRebuild === 0
                 ? 'Selected-run wait, timeline, timer, and lineage projections are aligned with durable v2 detail.'
                 : 'Selected-run wait, timeline, timer, or lineage projections need rebuild before trusting Waterline detail.',
+            self::CATEGORY_CORRECTNESS,
             [
                 'needs_rebuild' => $needsRebuild,
                 'run_waits_needs_rebuild' => $waitNeedsRebuild,
@@ -160,6 +171,7 @@ final class HealthCheck
             $orphaned === 0
                 ? 'Workflow history events all reference retained workflow runs.'
                 : 'Workflow history events exist without retained workflow runs; retention cleanup must reconcile them.',
+            self::CATEGORY_CORRECTNESS,
             [
                 'history_orphan_total' => $orphaned,
                 'events' => self::integer($history['events'] ?? 0),
@@ -181,6 +193,7 @@ final class HealthCheck
             $needed === 0
                 ? 'WorkflowStarted command-contract snapshots are complete.'
                 : 'Some WorkflowStarted command-contract snapshots need backfill before operators can trust command forms.',
+            self::CATEGORY_CORRECTNESS,
             [
                 'backfill_needed_runs' => $needed,
                 'backfill_available_runs' => self::integer($metrics['backfill_available_runs'] ?? 0),
@@ -204,6 +217,7 @@ final class HealthCheck
             $unhealthyTasks === 0
                 ? 'No unhealthy durable task transport state is currently projected.'
                 : 'One or more durable tasks have unhealthy transport, claim, dispatch, or lease state.',
+            self::CATEGORY_CORRECTNESS,
             [
                 'unhealthy_tasks' => $unhealthyTasks,
                 'repair_needed_runs' => self::integer($backlog['repair_needed_runs'] ?? 0),
@@ -228,6 +242,7 @@ final class HealthCheck
             $repairNeededRuns === 0
                 ? 'Every open v2 run has a projected durable resume path.'
                 : 'One or more open v2 runs are missing their durable next-resume source and need repair.',
+            self::CATEGORY_CORRECTNESS,
             [
                 'repair_needed_runs' => $repairNeededRuns,
                 'missing_task_candidates' => self::integer($repair['missing_task_candidates'] ?? 0),
@@ -258,6 +273,7 @@ final class HealthCheck
                 $required === null
                     ? 'No current v2 compatibility marker is required.'
                     : 'At least one active worker heartbeat advertises the current v2 compatibility marker.',
+                self::CATEGORY_CORRECTNESS,
                 [
                     'required_compatibility' => $required,
                     'active_workers' => self::integer($workers['active_workers'] ?? 0),
@@ -271,6 +287,7 @@ final class HealthCheck
             'worker_compatibility',
             'warning',
             'No active worker heartbeat advertises the current v2 compatibility marker.',
+            self::CATEGORY_CORRECTNESS,
             [
                 'required_compatibility' => $required,
                 'active_workers' => self::integer($workers['active_workers'] ?? 0),
@@ -278,6 +295,112 @@ final class HealthCheck
                 'active_workers_supporting_required' => $supportingWorkers,
             ],
         );
+    }
+
+    /**
+     * Acceleration-layer health for the long-poll wake surface.
+     *
+     * The wake layer is optional by contract: correctness continues even
+     * when this check reports `warning`. The check exists so operators
+     * can answer "is the acceleration layer propagating?" as a separate
+     * question from "is work being discovered?".
+     *
+     * @return array<string, mixed>
+     */
+    private static function longPollWakeAccelerationCheck(): array
+    {
+        $multiNode = (bool) config('workflows.v2.long_poll.multi_node', false);
+        $data = [
+            'multi_node' => $multiNode,
+            'backend' => null,
+            'capable' => null,
+            'safe' => null,
+            'reason' => null,
+        ];
+
+        $cache = self::resolveCacheRepository();
+
+        if ($cache === null) {
+            return self::check(
+                'long_poll_wake_acceleration',
+                'warning',
+                'Cache repository is not resolvable; wake acceleration may be disabled. Durable discovery continues via bounded polling.',
+                self::CATEGORY_ACCELERATION,
+                $data,
+            );
+        }
+
+        $validator = new LongPollCacheValidator();
+        $capability = $validator->validateMultiNodeCapable($cache);
+        $safety = $validator->checkMultiNodeSafety($cache, $multiNode);
+
+        $data['backend'] = is_string($capability['backend'] ?? null) ? $capability['backend'] : null;
+        $data['capable'] = (bool) ($capability['capable'] ?? false);
+        $data['safe'] = (bool) ($safety['safe'] ?? true);
+        $data['reason'] = is_string($safety['message'] ?? null)
+            ? $safety['message']
+            : (is_string($capability['reason'] ?? null) ? $capability['reason'] : null);
+
+        if ($data['safe'] === true) {
+            return self::check(
+                'long_poll_wake_acceleration',
+                'ok',
+                $multiNode
+                    ? 'Wake acceleration backend is multi-node capable; dispatch discovery benefits from sub-second signalling.'
+                    : 'Wake acceleration backend is configured; dispatch discovery benefits from sub-second signalling.',
+                self::CATEGORY_ACCELERATION,
+                $data,
+            );
+        }
+
+        return self::check(
+            'long_poll_wake_acceleration',
+            'warning',
+            $data['reason'] ?? 'Wake acceleration layer is degraded; durable discovery continues via bounded polling.',
+            self::CATEGORY_ACCELERATION,
+            $data,
+        );
+    }
+
+    private static function resolveCacheRepository(): ?CacheRepository
+    {
+        try {
+            return App::make(CacheRepository::class);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Summarize check status per category so operators can answer
+     * "is work being discovered?" (correctness) and "is the
+     * acceleration layer propagating?" (acceleration) as separate
+     * questions without re-aggregating the check list.
+     *
+     * @param list<array<string, mixed>> $checks
+     * @return array<string, array<string, mixed>>
+     */
+    private static function categorySummary(array $checks): array
+    {
+        $categories = [
+            self::CATEGORY_CORRECTNESS => [],
+            self::CATEGORY_ACCELERATION => [],
+        ];
+
+        foreach ($checks as $check) {
+            $category = $check['category'] ?? self::CATEGORY_CORRECTNESS;
+            $categories[$category][] = $check;
+        }
+
+        $summaries = [];
+        foreach ($categories as $name => $entries) {
+            $summaries[$name] = [
+                'status' => self::status($entries),
+                'check_count' => count($entries),
+            ];
+        }
+
+        return $summaries;
     }
 
     /**
@@ -302,11 +425,12 @@ final class HealthCheck
      * @param array<string, mixed> $data
      * @return array<string, mixed>
      */
-    private static function check(string $name, string $status, string $message, array $data): array
+    private static function check(string $name, string $status, string $message, string $category, array $data): array
     {
         return [
             'name' => $name,
             'status' => $status,
+            'category' => $category,
             'message' => $message,
             'data' => $data,
         ];

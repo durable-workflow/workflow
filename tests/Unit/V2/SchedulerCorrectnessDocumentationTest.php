@@ -357,6 +357,42 @@ final class SchedulerCorrectnessDocumentationTest extends TestCase
         );
     }
 
+    public function testContractDocumentNamesHealthCheckCategoryField(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/`category` field[^.]*(correctness|acceleration)/i',
+            $contents,
+            'Scheduler correctness contract must name the `category` field HealthCheck exposes on every check entry.',
+        );
+        $this->assertStringContainsString(
+            '`correctness`',
+            $contents,
+            'Scheduler correctness contract must enumerate `correctness` as a valid health-check category value.',
+        );
+        $this->assertStringContainsString(
+            '`acceleration`',
+            $contents,
+            'Scheduler correctness contract must enumerate `acceleration` as a valid health-check category value.',
+        );
+        $this->assertStringContainsString(
+            'long_poll_wake_acceleration',
+            $contents,
+            'Scheduler correctness contract must name `long_poll_wake_acceleration` as the acceleration-layer health check.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/acceleration layer is optional/i',
+            $contents,
+            'Scheduler correctness contract must state that the acceleration layer is optional.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/MUST NOT raise its status above `warning`/i',
+            $contents,
+            'Scheduler correctness contract must forbid the acceleration-layer check from escalating to error.',
+        );
+    }
+
     public function testContractDocumentDefersPhaseSixExplicitly(): void
     {
         $contents = $this->documentContents();
