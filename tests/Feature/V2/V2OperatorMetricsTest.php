@@ -202,6 +202,14 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['runs']['repair_needed']);
         $this->assertSame(1, $snapshot['runs']['claim_failed']);
         $this->assertSame(1, $snapshot['runs']['compatibility_blocked']);
+        $this->assertSame(1, $snapshot['runs']['waiting']);
+        $this->assertSame(
+            Carbon::parse('2026-04-09 12:00:00')
+                ->subMinutes(4)
+                ->toJSON(),
+            $snapshot['runs']['oldest_wait_started_at'],
+        );
+        $this->assertSame(4 * 60 * 1000, $snapshot['runs']['max_wait_age_ms']);
         $this->assertSame(7, $snapshot['tasks']['open']);
         $this->assertSame(5, $snapshot['tasks']['ready']);
         $this->assertSame(4, $snapshot['tasks']['ready_due']);
@@ -929,6 +937,111 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(12 * 60 * 1000, $snapshot['schedules']['max_overdue_ms']);
         $this->assertSame(9, $snapshot['schedules']['fires_total']);
         $this->assertSame(2, $snapshot['schedules']['failures_total']);
+    }
+
+    public function testSnapshotSurfacesRunWaitAgeForEveryRunningWaitNotJustCompatibilityBlocked(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        // Signal-wait run parked the longest — earliest wait_started_at wins.
+        $signalWait = $this->createRunWithSummary(
+            instanceId: 'wait-age-instance-signal',
+            runId: '01JWAITSIGNALRUN0000000001',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_waiting_for_signal',
+        );
+        WorkflowRunSummary::query()
+            ->whereKey($signalWait->id)
+            ->update([
+                'wait_started_at' => $now->copy()
+                    ->subMinutes(7),
+            ]);
+
+        // Compatibility-blocked wait — counted under runs.waiting too.
+        $compatibilityWait = $this->createRunWithSummary(
+            instanceId: 'wait-age-instance-compat',
+            runId: '01JWAITCOMPATRUN0000000002',
+            status: 'waiting',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_waiting_for_compatible_worker',
+        );
+        WorkflowRunSummary::query()
+            ->whereKey($compatibilityWait->id)
+            ->update([
+                'wait_started_at' => $now->copy()
+                    ->subMinutes(2),
+            ]);
+
+        // Running run that is actively executing — must not count.
+        $this->createRunWithSummary(
+            instanceId: 'wait-age-instance-active',
+            runId: '01JWAITACTIVERUN0000000003',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Closed run that previously had a wait — must not count.
+        $closedWait = $this->createRunWithSummary(
+            instanceId: 'wait-age-instance-closed',
+            runId: '01JWAITCLOSEDRUN0000000004',
+            status: 'completed',
+            statusBucket: 'completed',
+            livenessState: 'closed',
+        );
+        WorkflowRunSummary::query()
+            ->whereKey($closedWait->id)
+            ->update([
+                'wait_started_at' => $now->copy()
+                    ->subHours(2),
+            ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $expectedOldestWaitAt = $now->copy()
+            ->subMinutes(7)
+            ->toJSON();
+
+        $this->assertSame(2, $snapshot['runs']['waiting']);
+        $this->assertSame($expectedOldestWaitAt, $snapshot['runs']['oldest_wait_started_at']);
+        $this->assertSame(7 * 60 * 1000, $snapshot['runs']['max_wait_age_ms']);
+
+        $healthSnapshot = HealthCheck::snapshot($now);
+        $resumePaths = collect($healthSnapshot['checks'])->firstWhere('name', 'durable_resume_paths');
+        $this->assertNotNull($resumePaths);
+        $this->assertSame(2, $resumePaths['data']['waiting_runs']);
+        $this->assertSame($expectedOldestWaitAt, $resumePaths['data']['oldest_wait_started_at']);
+        $this->assertSame(7 * 60 * 1000, $resumePaths['data']['max_wait_age_ms']);
+    }
+
+    public function testSnapshotReportsRunWaitAgeAsZeroWhenNoRunsAreWaiting(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $this->createRunWithSummary(
+            instanceId: 'no-wait-instance-active',
+            runId: '01JWAITNONERUN00000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(0, $snapshot['runs']['waiting']);
+        $this->assertNull($snapshot['runs']['oldest_wait_started_at']);
+        $this->assertSame(0, $snapshot['runs']['max_wait_age_ms']);
     }
 
     public function testSnapshotReportsInWorkerMatchingRoleShapeByDefault(): void

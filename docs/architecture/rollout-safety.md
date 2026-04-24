@@ -405,6 +405,7 @@ change.
 | `runs` | `repair_needed` | open runs with `liveness_state = repair_needed` |
 | `runs` | `claim_failed` | runs whose most recent task claim failed |
 | `runs` | `compatibility_blocked` | runs blocked by compatibility mismatch |
+| `runs` | `waiting`, `oldest_wait_started_at`, `max_wait_age_ms` | running runs currently parked at a durable resume point (`status_bucket = 'running'` and `wait_started_at IS NOT NULL`), the earliest `wait_started_at` among them, and the largest wait age in milliseconds. Mirrors the `backlog.oldest_compatibility_blocked_started_at` / `max_compatibility_blocked_age_ms` and `tasks.oldest_lease_expired_at` / `max_lease_expired_age_ms` shapes so operators can answer "how long has the worst-case run been waiting at a signal, update, timer, or compatible-worker arrival?" from the metric alone. The signal is unconditional and includes compatibility-blocked waits; consumers that want the non-compatibility share can subtract `runs.compatibility_blocked` and `backlog.oldest_compatibility_blocked_started_at`. |
 | `tasks` | `ready`, `ready_due`, `delayed`, `leased` | queue depth by phase |
 | `tasks` | `dispatch_failed`, `claim_failed` | transport failure counts |
 | `tasks` | `dispatch_overdue`, `lease_expired` | lease and dispatch timing |
@@ -494,6 +495,18 @@ are authoritative and how they surface.
 - **Stale projection.** A projection behind the authoritative
   history surfaces through the `run_summary_projection` and
   `selected_run_projections` checks on `HealthCheck::snapshot()`.
+- **Long-parked wait.** A running run whose projector has recorded
+  a `wait_started_at` is counted under `runs.waiting`, and its
+  worst-case wait age is surfaced through `runs.oldest_wait_started_at`
+  and `runs.max_wait_age_ms`, both forwarded on the
+  `durable_resume_paths` health check (`waiting_runs`,
+  `oldest_wait_started_at`, `max_wait_age_ms`). The signal includes
+  every kind of wait — signal, update, timer, and compatibility-blocked
+  wait — because each is a durable resume point the system is
+  parked on. The check itself escalates only on `repair_needed_runs`;
+  the wait-age data is observability so operators can decide whether
+  the worst-case wait reflects healthy long-running work or a lost
+  signal/update that the application must resend.
 
 Guarantees:
 

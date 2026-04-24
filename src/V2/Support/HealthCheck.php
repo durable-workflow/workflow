@@ -28,7 +28,11 @@ final class HealthCheck
             self::historyRetentionInvariantCheck($metrics['history'] ?? []),
             self::commandContractCheck($metrics['command_contracts'] ?? []),
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
-            self::durableResumePathCheck($metrics['backlog'] ?? [], $metrics['repair'] ?? []),
+            self::durableResumePathCheck(
+                $metrics['backlog'] ?? [],
+                $metrics['repair'] ?? [],
+                $metrics['runs'] ?? [],
+            ),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
             self::schedulerRoleCheck($metrics['schedules'] ?? []),
             self::longPollWakeAccelerationCheck(),
@@ -247,9 +251,10 @@ final class HealthCheck
     /**
      * @param array<string, mixed> $backlog
      * @param array<string, mixed> $repair
+     * @param array<string, mixed> $runs
      * @return array<string, mixed>
      */
-    private static function durableResumePathCheck(array $backlog, array $repair): array
+    private static function durableResumePathCheck(array $backlog, array $repair, array $runs): array
     {
         $repairNeededRuns = self::integer($backlog['repair_needed_runs'] ?? 0);
 
@@ -268,6 +273,11 @@ final class HealthCheck
                     ? $repair['oldest_missing_run_started_at']
                     : null,
                 'max_missing_run_age_ms' => self::integer($repair['max_missing_run_age_ms'] ?? 0),
+                'waiting_runs' => self::integer($runs['waiting'] ?? 0),
+                'oldest_wait_started_at' => is_string($runs['oldest_wait_started_at'] ?? null)
+                    ? $runs['oldest_wait_started_at']
+                    : null,
+                'max_wait_age_ms' => self::integer($runs['max_wait_age_ms'] ?? 0),
             ],
         );
     }

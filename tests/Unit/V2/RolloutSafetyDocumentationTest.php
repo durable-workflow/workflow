@@ -138,6 +138,9 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'compatibility_blocked_runs',
         'oldest_compatibility_blocked_started_at',
         'max_compatibility_blocked_age_ms',
+        'waiting',
+        'oldest_wait_started_at',
+        'max_wait_age_ms',
         'missing_task_candidates',
         'selected_missing_task_candidates',
         'oldest_missing_run_started_at',
@@ -344,6 +347,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`tasks`\s*\|[^|]*`oldest_ready_due_at`[^|]*`max_ready_due_age_ms`/',
             $contents,
             'Rollout safety contract must pin the tasks ready-due age row so operators can read queue latency ("how long has the oldest actionable task been waiting to dispatch?") from OperatorMetrics::snapshot() without walking workflow_tasks.',
+        );
+    }
+
+    public function testContractDocumentFreezesRunWaitAgeRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`runs`\s*\|[^|]*`waiting`[^|]*`oldest_wait_started_at`[^|]*`max_wait_age_ms`/',
+            $contents,
+            'Rollout safety contract must pin the runs wait-age row so operators can read "how long has the worst-case run been waiting at a durable resume point?" from OperatorMetrics::snapshot() without scanning workflow_run_summaries.',
         );
     }
 

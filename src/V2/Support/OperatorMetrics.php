@@ -40,7 +40,7 @@ final class OperatorMetrics
 
         return [
             'generated_at' => $now->toJSON(),
-            'runs' => self::runMetrics($namespace),
+            'runs' => self::runMetrics($now, $namespace),
             'tasks' => self::taskMetrics($now, $namespace),
             'activities' => self::activityMetrics($namespace),
             'backlog' => self::backlogMetrics($now, $namespace),
@@ -88,10 +88,12 @@ final class OperatorMetrics
     }
 
     /**
-     * @return array<string, int>
+     * @return array<string, int|string|null>
      */
-    private static function runMetrics(?string $namespace): array
+    private static function runMetrics(CarbonInterface $now, ?string $namespace): array
     {
+        $oldestWaitStartedAt = self::oldestRunWaitStartedAt($namespace);
+
         return [
             'total' => self::summaryQuery($namespace)->count(),
             'current' => self::summaryQuery($namespace)->where('is_current_run', true)->count(),
@@ -104,6 +106,11 @@ final class OperatorMetrics
             'repair_needed' => self::summaryQuery($namespace)->where('liveness_state', 'repair_needed')->count(),
             'claim_failed' => self::claimFailedRuns($namespace),
             'compatibility_blocked' => self::compatibilityBlockedRuns($namespace),
+            'waiting' => self::waitingRuns($namespace),
+            'oldest_wait_started_at' => $oldestWaitStartedAt?->toJSON(),
+            'max_wait_age_ms' => $oldestWaitStartedAt === null
+                ? 0
+                : (int) $oldestWaitStartedAt->diffInMilliseconds($now),
         ];
     }
 
@@ -709,6 +716,50 @@ final class OperatorMetrics
         return self::summaryQuery($namespace)
             ->where('liveness_state', 'like', '%_task_claim_failed')
             ->count();
+    }
+
+    /**
+     * Open runs that are currently parked at a wait point — running runs whose
+     * `RunSummaryProjector` has recorded a `wait_started_at` because they are
+     * blocked on a signal, update, timer, or compatible-worker arrival.
+     *
+     * Counted unconditionally so the worst-case wait age is legible regardless
+     * of what kind of wait it is; consumers that want to exclude
+     * compatibility-blocked waits can subtract `runs.compatibility_blocked`.
+     */
+    private static function waitingRuns(?string $namespace): int
+    {
+        return self::summaryQuery($namespace)
+            ->where('status_bucket', 'running')
+            ->whereNotNull('wait_started_at')
+            ->count();
+    }
+
+    /**
+     * Earliest `wait_started_at` timestamp across runs currently parked at a
+     * wait point. Rollout-safety surfaces this alongside `runs.waiting` so
+     * operators can answer "how long has the worst-case run been waiting at
+     * a durable resume point?" from the metric alone, mirroring the existing
+     * `backlog.oldest_compatibility_blocked_started_at` and
+     * `tasks.oldest_lease_expired_at` shapes. The signal includes
+     * compatibility-blocked waits because they too are durable-resume points
+     * the system is waiting on; consumers that need to isolate the
+     * non-compatibility share can use `backlog.oldest_compatibility_blocked_started_at`.
+     */
+    private static function oldestRunWaitStartedAt(?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowRunSummary|null $summary */
+        $summary = self::summaryQuery($namespace)
+            ->where('status_bucket', 'running')
+            ->whereNotNull('wait_started_at')
+            ->orderBy('wait_started_at')
+            ->first();
+
+        if (! $summary instanceof WorkflowRunSummary) {
+            return null;
+        }
+
+        return $summary->wait_started_at;
     }
 
     private static function retryingActivities(?string $namespace): int

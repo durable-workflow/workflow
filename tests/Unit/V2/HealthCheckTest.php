@@ -559,6 +559,9 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(1, $resumePaths['data']['selected_missing_task_candidates']);
         $this->assertSame('2026-04-09T11:55:00.000000Z', $resumePaths['data']['oldest_missing_run_started_at']);
         $this->assertSame(300000, $resumePaths['data']['max_missing_run_age_ms']);
+        $this->assertSame(1, $resumePaths['data']['waiting_runs']);
+        $this->assertSame('2026-04-09T11:55:00.000000Z', $resumePaths['data']['oldest_wait_started_at']);
+        $this->assertSame(300000, $resumePaths['data']['max_wait_age_ms']);
     }
 
     public function testSnapshotWarnsWhenRunSummaryProjectionSchemaIsOutdated(): void
