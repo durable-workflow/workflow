@@ -170,6 +170,7 @@ final class OperatorMetrics
         $snapshots = WorkerCompatibilityFleet::details($required);
         $workerIds = [];
         $supportingWorkerIds = [];
+        $fleet = [];
 
         foreach ($snapshots as $snapshot) {
             $workerId = is_string($snapshot['worker_id'] ?? null)
@@ -185,6 +186,8 @@ final class OperatorMetrics
             if (($snapshot['supports_required'] ?? false) === true) {
                 $supportingWorkerIds[$workerId] = true;
             }
+
+            $fleet[] = self::fleetEntry($snapshot);
         }
 
         return [
@@ -193,7 +196,45 @@ final class OperatorMetrics
             'active_workers' => count($workerIds),
             'active_worker_scopes' => count($snapshots),
             'active_workers_supporting_required' => count($supportingWorkerIds),
+            'fleet' => $fleet,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     * @return array<string, mixed>
+     */
+    private static function fleetEntry(array $snapshot): array
+    {
+        $recordedAt = $snapshot['recorded_at'] ?? null;
+        $expiresAt = $snapshot['expires_at'] ?? null;
+
+        $supported = is_array($snapshot['supported'] ?? null)
+            ? array_values(array_filter($snapshot['supported'], static fn ($value): bool => is_string($value)))
+            : [];
+
+        return [
+            'worker_id' => (string) ($snapshot['worker_id'] ?? ''),
+            'namespace' => self::stringOrNull($snapshot['namespace'] ?? null),
+            'host' => self::stringOrNull($snapshot['host'] ?? null),
+            'process_id' => self::stringOrNull($snapshot['process_id'] ?? null),
+            'connection' => self::stringOrNull($snapshot['connection'] ?? null),
+            'queue' => self::stringOrNull($snapshot['queue'] ?? null),
+            'supported' => $supported,
+            'supports_required' => ($snapshot['supports_required'] ?? false) === true,
+            'recorded_at' => $recordedAt instanceof CarbonInterface ? $recordedAt->toJSON() : self::stringOrNull(
+                $recordedAt
+            ),
+            'expires_at' => $expiresAt instanceof CarbonInterface ? $expiresAt->toJSON() : self::stringOrNull(
+                $expiresAt
+            ),
+            'source' => is_string($snapshot['source'] ?? null) ? $snapshot['source'] : '',
+        ];
+    }
+
+    private static function stringOrNull(mixed $value): ?string
+    {
+        return is_string($value) ? $value : null;
     }
 
     /**

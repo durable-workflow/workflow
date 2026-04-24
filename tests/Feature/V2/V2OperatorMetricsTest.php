@@ -54,6 +54,10 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['workers']['active_workers']);
         $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
         $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+        $this->assertCount(1, $snapshot['workers']['fleet']);
+        $this->assertSame('worker-a', $snapshot['workers']['fleet'][0]['worker_id']);
+        $this->assertSame('cache', $snapshot['workers']['fleet'][0]['source']);
+        $this->assertTrue($snapshot['workers']['fleet'][0]['supports_required']);
     }
 
     public function testSnapshotSummarizesDurableBacklogRepairCompatibilityAndWorkerFleet(): void
@@ -259,6 +263,20 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(2, $snapshot['workers']['active_workers']);
         $this->assertSame(2, $snapshot['workers']['active_worker_scopes']);
         $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+        $this->assertIsArray($snapshot['workers']['fleet']);
+        $this->assertCount(2, $snapshot['workers']['fleet']);
+        $fleetByWorker = collect($snapshot['workers']['fleet'])->keyBy('worker_id');
+        $this->assertSame('metrics-test', $fleetByWorker['worker-a']['namespace']);
+        $this->assertSame('redis', $fleetByWorker['worker-a']['connection']);
+        $this->assertSame('default', $fleetByWorker['worker-a']['queue']);
+        $this->assertSame(['build-a'], $fleetByWorker['worker-a']['supported']);
+        $this->assertTrue($fleetByWorker['worker-a']['supports_required']);
+        $this->assertSame('2026-04-09T12:00:00.000000Z', $fleetByWorker['worker-a']['recorded_at']);
+        $this->assertIsString($fleetByWorker['worker-a']['expires_at']);
+        $this->assertSame('database', $fleetByWorker['worker-a']['source']);
+        $this->assertSame('imports', $fleetByWorker['worker-b']['queue']);
+        $this->assertSame(['build-b'], $fleetByWorker['worker-b']['supported']);
+        $this->assertFalse($fleetByWorker['worker-b']['supports_required']);
         $this->assertTrue($snapshot['backend']['supported']);
         $this->assertSame('redis', $snapshot['backend']['queue']['connection']);
         $this->assertSame('redis', $snapshot['backend']['queue']['driver']);

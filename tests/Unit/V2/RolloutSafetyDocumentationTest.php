@@ -139,6 +139,7 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'active_workers',
         'active_worker_scopes',
         'active_workers_supporting_required',
+        'fleet',
         'redispatch_after_seconds',
         'loop_throttle_seconds',
         'scan_limit',

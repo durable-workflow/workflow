@@ -397,6 +397,7 @@ change.
 | `backlog` | `unhealthy_tasks`, `repair_needed_runs`, `claim_failed_runs`, `compatibility_blocked_runs` | stuck/blocked roll-ups |
 | `repair` | `missing_task_candidates`, `selected_missing_task_candidates`, `oldest_missing_run_started_at`, `max_missing_run_age_ms` | stuck-run detectors per `TaskRepairCandidates` |
 | `workers` | `required_compatibility`, `active_workers`, `active_worker_scopes`, `active_workers_supporting_required` | routing-health signals per `WorkerCompatibilityFleet` |
+| `workers` | `fleet` | per-scope fleet entries (`worker_id`, `namespace`, `connection`, `queue`, `supported`, `supports_required`, `recorded_at`, `expires_at`, `source`, `host`, `process_id`) so mixed-build state is legible to Waterline and other consumers without reinferring it from the summary counts |
 | `backend` | `issues`, `severity` | admission check roll-up from `BackendCapabilities` |
 | `structural_limits` | per-limit snapshot | payload/memo/history size gates |
 | `repair_policy` | `redispatch_after_seconds`, `loop_throttle_seconds`, `scan_limit`, `failure_backoff_max_seconds` | tuning knobs consulted by `TaskRepair` |
