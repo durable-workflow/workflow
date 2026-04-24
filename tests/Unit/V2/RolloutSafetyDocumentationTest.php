@@ -124,6 +124,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'dispatch_failed',
         'dispatch_overdue',
         'lease_expired',
+        'oldest_lease_expired_at',
+        'max_lease_expired_age_ms',
         'unhealthy',
         'runnable_tasks',
         'delayed_tasks',
@@ -318,6 +320,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`backlog`\s*\|[^|]*`oldest_compatibility_blocked_started_at`[^|]*`max_compatibility_blocked_age_ms`/',
             $contents,
             'Rollout safety contract must pin the backlog compatibility-blocked age row so operators can read "how stale is the worst mixed-build block?" from OperatorMetrics::snapshot() without a bespoke scan.',
+        );
+    }
+
+    public function testContractDocumentFreezesLeaseExpiredAgeRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`tasks`\s*\|[^|]*`oldest_lease_expired_at`[^|]*`max_lease_expired_age_ms`/',
+            $contents,
+            'Rollout safety contract must pin the tasks lease-expired age row so operators can read "how long has the worst leased task been expired without redelivery?" from OperatorMetrics::snapshot() without a bespoke scan.',
         );
     }
 

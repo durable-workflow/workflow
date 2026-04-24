@@ -79,10 +79,12 @@ final class OperatorMetrics
     }
 
     /**
-     * @return array<string, int>
+     * @return array<string, int|string|null>
      */
     private static function taskMetrics(CarbonInterface $now, ?string $namespace): array
     {
+        $oldestLeaseExpiredAt = self::oldestLeaseExpiredAt($now, $namespace);
+
         return [
             'open' => self::openTasks($namespace),
             'ready' => self::readyTasks($namespace),
@@ -93,6 +95,10 @@ final class OperatorMetrics
             'claim_failed' => self::claimFailedTasks($namespace),
             'dispatch_overdue' => self::dispatchOverdueTasks($now, $namespace),
             'lease_expired' => self::leaseExpiredTasks($now, $namespace),
+            'oldest_lease_expired_at' => $oldestLeaseExpiredAt?->toJSON(),
+            'max_lease_expired_age_ms' => $oldestLeaseExpiredAt === null
+                ? 0
+                : (int) $oldestLeaseExpiredAt->diffInMilliseconds($now),
             'unhealthy' => self::dispatchFailedTasks($namespace)
                 + self::claimFailedTasks($namespace)
                 + self::dispatchOverdueTasks($now, $namespace)
@@ -790,6 +796,31 @@ final class OperatorMetrics
             ->whereNotNull('lease_expires_at')
             ->where('lease_expires_at', '<=', $now)
             ->count();
+    }
+
+    /**
+     * Oldest `lease_expires_at` across leased tasks whose lease has already
+     * expired at snapshot time. Rollout-safety surfaces this alongside
+     * `tasks.lease_expired` so operators can answer "how long has the worst
+     * leased task been expired without redelivery?" from the metric alone,
+     * mirroring the existing `backlog.oldest_compatibility_blocked_started_at`
+     * and `repair.oldest_missing_run_started_at` shapes.
+     */
+    private static function oldestLeaseExpiredAt(CarbonInterface $now, ?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowTask|null $task */
+        $task = self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->where('status', TaskStatus::Leased->value)
+            ->whereNotNull('lease_expires_at')
+            ->where('lease_expires_at', '<=', $now)
+            ->orderBy('lease_expires_at')
+            ->first();
+
+        if (! $task instanceof WorkflowTask) {
+            return null;
+        }
+
+        return $task->lease_expires_at;
     }
 
     private static function dispatchFailedTasks(?string $namespace): int

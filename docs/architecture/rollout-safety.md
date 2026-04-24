@@ -408,6 +408,7 @@ change.
 | `tasks` | `ready`, `ready_due`, `delayed`, `leased` | queue depth by phase |
 | `tasks` | `dispatch_failed`, `claim_failed` | transport failure counts |
 | `tasks` | `dispatch_overdue`, `lease_expired` | lease and dispatch timing |
+| `tasks` | `oldest_lease_expired_at`, `max_lease_expired_age_ms` | earliest `lease_expires_at` among leased tasks whose lease has expired at snapshot time and the largest expired-lease age in milliseconds, mirroring the `backlog.oldest_compatibility_blocked_started_at` / `max_compatibility_blocked_age_ms` shape so operators can answer "how long has the worst leased task been expired without redelivery?" (the primary stuck-lease duplicate-risk age indicator) from the metric alone |
 | `tasks` | `unhealthy` | sum of transport failure and lease expiry counts (the primary duplicate-risk indicator) |
 | `backlog` | `runnable_tasks`, `delayed_tasks`, `leased_tasks` | authoritative backlog counts |
 | `backlog` | `unhealthy_tasks`, `repair_needed_runs`, `claim_failed_runs`, `compatibility_blocked_runs` | stuck/blocked roll-ups |
@@ -476,7 +477,10 @@ are authoritative and how they surface.
   `repair_needed_runs > 0`.
 - **Lease expired without redelivery.** A leased task whose
   `lease_expires_at` is in the past is counted under
-  `tasks.lease_expired`. `TaskRepair::leaseExpired()` is the
+  `tasks.lease_expired` and its worst-case expiry age is surfaced
+  through `tasks.oldest_lease_expired_at` and
+  `tasks.max_lease_expired_age_ms`, both forwarded on the
+  `task_transport` health check. `TaskRepair::leaseExpired()` is the
   authority for the redelivery decision.
 - **Ready but unclaimed.** A ready task that has sat past the
   repair window without being claimed is counted under

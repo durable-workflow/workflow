@@ -25,6 +25,7 @@ use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskRepairCandidates;
@@ -210,6 +211,13 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['tasks']['claim_failed']);
         $this->assertSame(1, $snapshot['tasks']['dispatch_overdue']);
         $this->assertSame(1, $snapshot['tasks']['lease_expired']);
+        $this->assertSame(
+            Carbon::parse('2026-04-09 12:00:00')
+                ->subMinute()
+                ->toJSON(),
+            $snapshot['tasks']['oldest_lease_expired_at'],
+        );
+        $this->assertSame(60 * 1000, $snapshot['tasks']['max_lease_expired_age_ms']);
         $this->assertSame(4, $snapshot['tasks']['unhealthy']);
         $this->assertSame(4, $snapshot['backlog']['runnable_tasks']);
         $this->assertSame(1, $snapshot['backlog']['delayed_tasks']);
@@ -307,6 +315,19 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame('exponential_by_repair_count', $snapshot['repair_policy']['failure_backoff_strategy']);
         $this->assertFalse(TaskRepairPolicy::dispatchOverdue($claimFailedTask->fresh()));
         $this->assertTrue(TaskRepairPolicy::readyTaskNeedsRedispatch($claimFailedTask->fresh()));
+
+        $healthSnapshot = HealthCheck::snapshot();
+        $taskTransport = collect($healthSnapshot['checks'])->firstWhere('name', 'task_transport');
+        $this->assertNotNull($taskTransport);
+        $this->assertSame(4, $taskTransport['data']['unhealthy_tasks']);
+        $this->assertSame(1, $taskTransport['data']['lease_expired_tasks']);
+        $this->assertSame(
+            Carbon::parse('2026-04-09 12:00:00')
+                ->subMinute()
+                ->toJSON(),
+            $taskTransport['data']['oldest_lease_expired_at'],
+        );
+        $this->assertSame(60 * 1000, $taskTransport['data']['max_lease_expired_age_ms']);
     }
 
     public function testSnapshotCountsStaleRunSummaryProjectionRows(): void
