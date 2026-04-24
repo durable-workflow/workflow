@@ -121,6 +121,7 @@ final class OperatorMetrics
     {
         $oldestLeaseExpiredAt = self::oldestLeaseExpiredAt($now, $namespace);
         $oldestReadyDueAt = self::oldestReadyDueAt($now, $namespace);
+        $oldestDispatchOverdueSince = self::oldestDispatchOverdueSince($now, $namespace);
 
         return [
             'open' => self::openTasks($namespace),
@@ -140,6 +141,10 @@ final class OperatorMetrics
             'max_ready_due_age_ms' => $oldestReadyDueAt === null
                 ? 0
                 : (int) $oldestReadyDueAt->diffInMilliseconds($now),
+            'oldest_dispatch_overdue_since' => $oldestDispatchOverdueSince?->toJSON(),
+            'max_dispatch_overdue_age_ms' => $oldestDispatchOverdueSince === null
+                ? 0
+                : (int) $oldestDispatchOverdueSince->diffInMilliseconds($now),
             'unhealthy' => self::dispatchFailedTasks($namespace)
                 + self::claimFailedTasks($namespace)
                 + self::dispatchOverdueTasks($now, $namespace)
@@ -949,6 +954,36 @@ final class OperatorMetrics
 
     private static function dispatchOverdueTasks(CarbonInterface $now, ?string $namespace): int
     {
+        return self::dispatchOverdueQuery($now, $namespace)->count();
+    }
+
+    /**
+     * Earliest "waiting-for-dispatch" moment among dispatch-overdue tasks —
+     * the effective `COALESCE(last_dispatched_at, created_at)`, which is the
+     * timestamp the task has been waiting for a successful dispatch since
+     * (either the last attempted dispatch that didn't stick, or the task's
+     * creation time for tasks that were never dispatched at all). Rollout-safety
+     * surfaces this alongside `tasks.dispatch_overdue` so operators can read
+     * wake-latency ("how long has the oldest ready-but-unclaimed task been
+     * waiting for a working dispatch wake?") from the metric alone, mirroring
+     * the existing `oldest_ready_due_at` / `max_ready_due_age_ms` shape.
+     */
+    private static function oldestDispatchOverdueSince(CarbonInterface $now, ?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowTask|null $task */
+        $task = self::dispatchOverdueQuery($now, $namespace)
+            ->orderByRaw('COALESCE(last_dispatched_at, created_at) asc')
+            ->first();
+
+        if (! $task instanceof WorkflowTask) {
+            return null;
+        }
+
+        return $task->last_dispatched_at ?? $task->created_at;
+    }
+
+    private static function dispatchOverdueQuery(CarbonInterface $now, ?string $namespace)
+    {
         $cutoff = $now->copy()
             ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
 
@@ -972,8 +1007,7 @@ final class OperatorMetrics
                     $neverDispatched->whereNull('last_dispatched_at')
                         ->where('created_at', '<=', $cutoff);
                 });
-            })
-            ->count();
+            });
     }
 
     private static function dispatchFailedQuery(?string $namespace)

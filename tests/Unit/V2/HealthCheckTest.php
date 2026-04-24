@@ -552,6 +552,9 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(200, HealthCheck::httpStatus($snapshot));
         $this->assertSame('ok', $taskTransport['status']);
         $this->assertSame(0, $taskTransport['data']['unhealthy_tasks']);
+        $this->assertSame(0, $taskTransport['data']['dispatch_overdue_tasks']);
+        $this->assertNull($taskTransport['data']['oldest_dispatch_overdue_since']);
+        $this->assertSame(0, $taskTransport['data']['max_dispatch_overdue_age_ms']);
         $this->assertSame(1, $taskTransport['data']['repair_needed_runs']);
         $this->assertSame('warning', $resumePaths['status']);
         $this->assertSame(1, $resumePaths['data']['repair_needed_runs']);
