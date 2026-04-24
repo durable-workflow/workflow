@@ -223,6 +223,12 @@ final class HealthCheck
                 'repair_needed_runs' => self::integer($backlog['repair_needed_runs'] ?? 0),
                 'claim_failed_runs' => self::integer($backlog['claim_failed_runs'] ?? 0),
                 'compatibility_blocked_runs' => self::integer($backlog['compatibility_blocked_runs'] ?? 0),
+                'oldest_compatibility_blocked_started_at' => is_string(
+                    $backlog['oldest_compatibility_blocked_started_at'] ?? null
+                )
+                    ? $backlog['oldest_compatibility_blocked_started_at']
+                    : null,
+                'max_compatibility_blocked_age_ms' => self::integer($backlog['max_compatibility_blocked_age_ms'] ?? 0),
             ],
         );
     }

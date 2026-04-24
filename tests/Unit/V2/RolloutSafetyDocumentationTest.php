@@ -131,6 +131,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'repair_needed_runs',
         'claim_failed_runs',
         'compatibility_blocked_runs',
+        'oldest_compatibility_blocked_started_at',
+        'max_compatibility_blocked_age_ms',
         'missing_task_candidates',
         'selected_missing_task_candidates',
         'oldest_missing_run_started_at',
@@ -303,6 +305,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`schedules`\s*\|[^|]*`active`[^|]*`paused`[^|]*`missed`[^|]*`oldest_overdue_at`[^|]*`max_overdue_ms`[^|]*`fires_total`[^|]*`failures_total`/',
             $contents,
             'Rollout safety contract must pin the schedules metric row so scheduler-role health keys stay legible through OperatorMetrics::snapshot().',
+        );
+    }
+
+    public function testContractDocumentFreezesCompatibilityBlockedAgeRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`backlog`\s*\|[^|]*`oldest_compatibility_blocked_started_at`[^|]*`max_compatibility_blocked_age_ms`/',
+            $contents,
+            'Rollout safety contract must pin the backlog compatibility-blocked age row so operators can read "how stale is the worst mixed-build block?" from OperatorMetrics::snapshot() without a bespoke scan.',
         );
     }
 

@@ -115,13 +115,19 @@ final class V2OperatorMetricsTest extends TestCase
             continueAsNewRecommended: true,
         );
         $this->createStartCommand($run, now()->subSeconds(30));
-        $this->createRunWithSummary(
+        $compatibilityBlockedRun = $this->createRunWithSummary(
             instanceId: 'metrics-instance-b',
             runId: '01JMETRICSFLOWRUN000000002',
             status: 'waiting',
             statusBucket: 'running',
             livenessState: 'workflow_task_waiting_for_compatible_worker',
         );
+        WorkflowRunSummary::query()
+            ->whereKey($compatibilityBlockedRun->id)
+            ->update([
+                'wait_started_at' => now()
+                    ->subMinutes(4),
+            ]);
         $this->createRunWithSummary(
             instanceId: 'metrics-instance-c',
             runId: '01JMETRICSFLOWRUN000000003',
@@ -212,6 +218,13 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(1, $snapshot['backlog']['repair_needed_runs']);
         $this->assertSame(1, $snapshot['backlog']['claim_failed_runs']);
         $this->assertSame(1, $snapshot['backlog']['compatibility_blocked_runs']);
+        $this->assertSame(
+            Carbon::parse('2026-04-09 12:00:00')
+                ->subMinutes(4)
+                ->toJSON(),
+            $snapshot['backlog']['oldest_compatibility_blocked_started_at'],
+        );
+        $this->assertSame(4 * 60 * 1000, $snapshot['backlog']['max_compatibility_blocked_age_ms']);
         $this->assertSame(4, $snapshot['repair']['existing_task_candidates']);
         $this->assertSame(1, $snapshot['repair']['missing_task_candidates']);
         $this->assertSame(5, $snapshot['repair']['total_candidates']);

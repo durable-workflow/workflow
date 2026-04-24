@@ -101,10 +101,12 @@ final class OperatorMetrics
     }
 
     /**
-     * @return array<string, int>
+     * @return array<string, int|string|null>
      */
     private static function backlogMetrics(CarbonInterface $now, ?string $namespace): array
     {
+        $oldestCompatibilityBlockedAt = self::oldestCompatibilityBlockedRunAt($namespace);
+
         return [
             'runnable_tasks' => self::readyDueTasks($now, $namespace),
             'delayed_tasks' => self::delayedTasks($now, $namespace),
@@ -119,6 +121,10 @@ final class OperatorMetrics
                 ->count(),
             'claim_failed_runs' => self::claimFailedRuns($namespace),
             'compatibility_blocked_runs' => self::compatibilityBlockedRuns($namespace),
+            'oldest_compatibility_blocked_started_at' => $oldestCompatibilityBlockedAt?->toJSON(),
+            'max_compatibility_blocked_age_ms' => $oldestCompatibilityBlockedAt === null
+                ? 0
+                : (int) $oldestCompatibilityBlockedAt->diffInMilliseconds($now),
         ];
     }
 
@@ -630,6 +636,32 @@ final class OperatorMetrics
         return self::summaryQuery($namespace)
             ->where('liveness_state', 'like', '%_task_waiting_for_compatible_worker')
             ->count();
+    }
+
+    /**
+     * Oldest wait start timestamp across runs whose liveness_state is the
+     * compatibility-blocked state. Rollout-safety surfaces this alongside
+     * `compatibility_blocked_runs` so operators can answer "how stale is
+     * the worst case?" from the metric alone, mirroring the existing
+     * `repair.oldest_missing_run_started_at` shape.
+     *
+     * Prefers `wait_started_at` (set by `RunSummaryProjector` when a run
+     * enters a task-waiting state) and falls back to `next_task_at` when
+     * the projection has not yet recorded a wait boundary.
+     */
+    private static function oldestCompatibilityBlockedRunAt(?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowRunSummary|null $summary */
+        $summary = self::summaryQuery($namespace)
+            ->where('liveness_state', 'like', '%_task_waiting_for_compatible_worker')
+            ->orderByRaw('COALESCE(wait_started_at, next_task_at) asc')
+            ->first();
+
+        if (! $summary instanceof WorkflowRunSummary) {
+            return null;
+        }
+
+        return $summary->wait_started_at ?? $summary->next_task_at;
     }
 
     private static function claimFailedRuns(?string $namespace): int
