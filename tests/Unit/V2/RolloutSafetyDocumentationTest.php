@@ -167,6 +167,10 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'max_overdue_ms',
         'fires_total',
         'failures_total',
+        'matching_role',
+        'queue_wake_enabled',
+        'shape',
+        'task_dispatch_mode',
         'redispatch_after_seconds',
         'loop_throttle_seconds',
         'scan_limit',
@@ -327,6 +331,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`schedules`\s*\|[^|]*`active`[^|]*`paused`[^|]*`missed`[^|]*`oldest_overdue_at`[^|]*`max_overdue_ms`[^|]*`fires_total`[^|]*`failures_total`/',
             $contents,
             'Rollout safety contract must pin the schedules metric row so scheduler-role health keys stay legible through OperatorMetrics::snapshot().',
+        );
+    }
+
+    public function testContractDocumentFreezesMatchingRoleShapeRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`matching_role`\s*\|[^|]*`queue_wake_enabled`[^|]*`shape`[^|]*`task_dispatch_mode`/',
+            $contents,
+            'Rollout safety contract must pin the matching_role metric row so operators can read the matching-role deployment shape (queue_wake_enabled, shape, task_dispatch_mode) on each node from OperatorMetrics::snapshot() without inspecting config files.',
         );
     }
 
