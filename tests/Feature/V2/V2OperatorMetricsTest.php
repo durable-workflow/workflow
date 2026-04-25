@@ -250,6 +250,13 @@ final class V2OperatorMetricsTest extends TestCase
         );
         $this->assertSame(10 * 1000, $snapshot['tasks']['max_claim_failed_age_ms']);
         $this->assertSame(4, $snapshot['tasks']['unhealthy']);
+        $this->assertSame(
+            Carbon::parse('2026-04-09 12:00:00')
+                ->subMinute()
+                ->toJSON(),
+            $snapshot['tasks']['oldest_unhealthy_at'],
+        );
+        $this->assertSame(60 * 1000, $snapshot['tasks']['max_unhealthy_age_ms']);
         $this->assertSame(4, $snapshot['backlog']['runnable_tasks']);
         $this->assertSame(1, $snapshot['backlog']['delayed_tasks']);
         $this->assertSame(2, $snapshot['backlog']['leased_tasks']);
@@ -1452,6 +1459,111 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $taskTransport['data']['dispatch_failed_tasks']);
         $this->assertNull($taskTransport['data']['oldest_dispatch_failed_at']);
         $this->assertSame(0, $taskTransport['data']['max_dispatch_failed_age_ms']);
+    }
+
+    public function testSnapshotSurfacesUnhealthyAgeRollupAsEarliestOfTheFourContributingPaths(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'unhealthy-age-rollup-instance',
+            runId: '01JUNHEALRUN00000000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Lease-expired task (-30s) — newer than the dispatch-failed worst case below.
+        $this->createTask($run, '01JUNHEALTASK0000000000001', TaskStatus::Leased->value, [
+            'leased_at' => $now->copy()
+                ->subSeconds(120),
+            'lease_owner' => 'worker-expired',
+            'lease_expires_at' => $now->copy()
+                ->subSeconds(30),
+            'created_at' => $now->copy()
+                ->subSeconds(120),
+        ]);
+
+        // Claim-failed task (-45s) — newer than the dispatch-failed worst case below.
+        $this->createTask($run, '01JUNHEALTASK0000000000002', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSecond(),
+            'connection' => 'sync',
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(60),
+            'last_claim_failed_at' => $now->copy()
+                ->subSeconds(45),
+            'last_claim_error' => 'Workflow v2 backend capabilities are unsupported: [queue_sync_unsupported] sync.',
+            'created_at' => $now->copy()
+                ->subSeconds(60),
+        ]);
+
+        // Dispatch-overdue task (-20s) — newer than the dispatch-failed worst case below.
+        $this->createTask($run, '01JUNHEALTASK0000000000003', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(20),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(20),
+            'created_at' => $now->copy()
+                ->subSeconds(20),
+        ]);
+
+        // Dispatch-failed task (-90s) — the worst case across all four paths.
+        $this->createTask($run, '01JUNHEALTASK0000000000004', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(120),
+            'last_dispatched_at' => null,
+            'last_dispatch_attempt_at' => $now->copy()
+                ->subSeconds(90),
+            'last_dispatch_error' => 'Connection refused while broadcasting workflow task wake.',
+            'created_at' => $now->copy()
+                ->subSeconds(150),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(4, $snapshot['tasks']['unhealthy']);
+        $this->assertSame($now->copy() ->subSeconds(90) ->toJSON(), $snapshot['tasks']['oldest_unhealthy_at']);
+        $this->assertSame(90 * 1000, $snapshot['tasks']['max_unhealthy_age_ms']);
+    }
+
+    public function testSnapshotReportsUnhealthyAgeRollupAsZeroWhenNoTasksAreUnhealthy(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'unhealthy-age-none-instance',
+            runId: '01JUNHEALNONRUN00000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Fresh healthy ready task — no transport failure, no expired lease.
+        $this->createTask($run, '01JUNHEALNONTASK0000000001', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSecond(),
+            'last_dispatched_at' => $now->copy()
+                ->subSecond(),
+            'created_at' => $now->copy()
+                ->subSecond(),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(0, $snapshot['tasks']['unhealthy']);
+        $this->assertNull($snapshot['tasks']['oldest_unhealthy_at']);
+        $this->assertSame(0, $snapshot['tasks']['max_unhealthy_age_ms']);
     }
 
     public function testSnapshotReportsRunWaitAgeAsZeroWhenNoRunsAreWaiting(): void

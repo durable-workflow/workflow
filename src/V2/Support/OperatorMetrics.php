@@ -124,6 +124,12 @@ final class OperatorMetrics
         $oldestDispatchOverdueSince = self::oldestDispatchOverdueSince($now, $namespace);
         $oldestClaimFailedAt = self::oldestClaimFailedAt($namespace);
         $oldestDispatchFailedAt = self::oldestDispatchFailedAt($namespace);
+        $oldestUnhealthyAt = self::earliestTimestamp([
+            $oldestDispatchFailedAt,
+            $oldestClaimFailedAt,
+            $oldestDispatchOverdueSince,
+            $oldestLeaseExpiredAt,
+        ]);
 
         return [
             'open' => self::openTasks($namespace),
@@ -159,6 +165,10 @@ final class OperatorMetrics
                 + self::claimFailedTasks($namespace)
                 + self::dispatchOverdueTasks($now, $namespace)
                 + self::leaseExpiredTasks($now, $namespace),
+            'oldest_unhealthy_at' => $oldestUnhealthyAt?->toJSON(),
+            'max_unhealthy_age_ms' => $oldestUnhealthyAt === null
+                ? 0
+                : (int) $oldestUnhealthyAt->diffInMilliseconds($now),
         ];
     }
 
@@ -378,6 +388,31 @@ final class OperatorMetrics
     private static function stringOrNull(mixed $value): ?string
     {
         return is_string($value) ? $value : null;
+    }
+
+    /**
+     * Returns the earliest non-null `CarbonInterface` from the given list,
+     * or `null` if every entry is `null`. Used to roll up multiple per-path
+     * "oldest at" timestamps into a single worst-case duplicate-risk age the
+     * rollout-safety contract pins on `OperatorMetrics::snapshot()`.
+     *
+     * @param  array<int, CarbonInterface|null>  $timestamps
+     */
+    private static function earliestTimestamp(array $timestamps): ?CarbonInterface
+    {
+        $earliest = null;
+
+        foreach ($timestamps as $timestamp) {
+            if ($timestamp === null) {
+                continue;
+            }
+
+            if ($earliest === null || $timestamp->lessThan($earliest)) {
+                $earliest = $timestamp;
+            }
+        }
+
+        return $earliest;
     }
 
     /**

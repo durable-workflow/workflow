@@ -135,6 +135,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'oldest_retrying_started_at',
         'max_retrying_age_ms',
         'unhealthy',
+        'oldest_unhealthy_at',
+        'max_unhealthy_age_ms',
         'runnable_tasks',
         'delayed_tasks',
         'leased_tasks',
@@ -430,6 +432,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`backend`\s*\|[^|]*`issues`[^|]*`severity`[^|]*\|[^|]*admission check roll-up from `BackendCapabilities`/',
             $contents,
             'Rollout safety contract must pin the backend admission roll-up row so operators can read the worst per-issue severity from a single key on OperatorMetrics::snapshot()[\'backend\'] without scanning the issues list themselves.',
+        );
+    }
+
+    public function testContractDocumentFreezesUnhealthyAgeRollupRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`tasks`\s*\|[^|]*`unhealthy`[^|]*`oldest_unhealthy_at`[^|]*`max_unhealthy_age_ms`/',
+            $contents,
+            'Rollout safety contract must pin the tasks unhealthy-age rollup row so operators can read "how stale is my worst-case duplicate-risk task overall?" from a single OperatorMetrics::snapshot() pair instead of taking a max over the four contributing per-path age fields.',
         );
     }
 
