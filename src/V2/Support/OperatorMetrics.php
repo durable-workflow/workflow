@@ -42,7 +42,7 @@ final class OperatorMetrics
             'generated_at' => $now->toJSON(),
             'runs' => self::runMetrics($now, $namespace),
             'tasks' => self::taskMetrics($now, $namespace),
-            'activities' => self::activityMetrics($namespace),
+            'activities' => self::activityMetrics($now, $namespace),
             'backlog' => self::backlogMetrics($now, $namespace),
             'repair' => $namespace === null ? TaskRepairCandidates::snapshot($now) : self::emptyRepairSnapshot(),
             'starts' => self::startMetrics($now, $namespace),
@@ -186,10 +186,12 @@ final class OperatorMetrics
     }
 
     /**
-     * @return array<string, int>
+     * @return array<string, int|string|null>
      */
-    private static function activityMetrics(?string $namespace): array
+    private static function activityMetrics(CarbonInterface $now, ?string $namespace): array
     {
+        $oldestRetryingStartedAt = self::oldestRetryingActivityStartedAt($namespace);
+
         return [
             'open' => self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
                 ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
@@ -201,6 +203,10 @@ final class OperatorMetrics
                 ->where('status', ActivityStatus::Running->value)
                 ->count(),
             'retrying' => self::retryingActivities($namespace),
+            'oldest_retrying_started_at' => $oldestRetryingStartedAt?->toJSON(),
+            'max_retrying_age_ms' => $oldestRetryingStartedAt === null
+                ? 0
+                : (int) $oldestRetryingStartedAt->diffInMilliseconds($now),
             'failed_attempts' => self::scopedRunModelQuery(self::activityAttemptModel(), $namespace)
                 ->where('status', ActivityAttemptStatus::Failed->value)
                 ->count(),
@@ -778,6 +784,34 @@ final class OperatorMetrics
             ->where('status', ActivityStatus::Pending->value)
             ->where('attempt_count', '>', 0)
             ->count();
+    }
+
+    /**
+     * Earliest `started_at` across activity executions currently in the
+     * retry window — Pending status with `attempt_count > 0`. Rollout-safety
+     * surfaces this alongside `activities.retrying` so operators can read
+     * "how long has the worst-case activity been chewing retries?" — the
+     * primary retry-rate age indicator on the activity path — from the
+     * metric alone, mirroring the `tasks.oldest_lease_expired_at` /
+     * `max_lease_expired_age_ms` shape on the task path. The retrying
+     * predicate matches `retryingActivities()` exactly so the two keys
+     * stay aligned.
+     */
+    private static function oldestRetryingActivityStartedAt(?string $namespace): ?CarbonInterface
+    {
+        /** @var ActivityExecution|null $execution */
+        $execution = self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
+            ->where('status', ActivityStatus::Pending->value)
+            ->where('attempt_count', '>', 0)
+            ->whereNotNull('started_at')
+            ->orderBy('started_at')
+            ->first();
+
+        if (! $execution instanceof ActivityExecution) {
+            return null;
+        }
+
+        return $execution->started_at;
     }
 
     private static function pendingStartRuns(?string $namespace): int

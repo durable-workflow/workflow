@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
@@ -14,6 +15,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -1320,6 +1322,125 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['runs']['max_wait_age_ms']);
     }
 
+    public function testSnapshotSurfacesRetryingActivityAgeFromOldestRetryingActivity(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'retrying-activity-instance',
+            runId: '01JRETRYACTRUN00000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Worst-case: Pending activity in retry backoff for 90s (started_at 90s ago, attempt_count = 2).
+        $this->createActivityExecution($run, '01JRETRYACTEXEC0000000001', [
+            'sequence' => 1,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 2,
+            'started_at' => $now->copy()
+                ->subSeconds(90),
+        ]);
+
+        // Newer Pending retry — attempt_count > 0, but started 30s ago, so it
+        // must not win the "oldest retrying since".
+        $this->createActivityExecution($run, '01JRETRYACTEXEC0000000002', [
+            'sequence' => 2,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 1,
+            'started_at' => $now->copy()
+                ->subSeconds(30),
+        ]);
+
+        // Pending first attempt — attempt_count = 0, NOT counted as retrying
+        // even though it has been waiting longer than 90s.
+        $this->createActivityExecution($run, '01JRETRYACTEXEC0000000003', [
+            'sequence' => 3,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'started_at' => $now->copy()
+                ->subSeconds(120),
+        ]);
+
+        // Running attempt — `retrying` predicate excludes Running so this is
+        // not counted, even with attempt_count > 0.
+        $this->createActivityExecution($run, '01JRETRYACTEXEC0000000004', [
+            'sequence' => 4,
+            'status' => ActivityStatus::Running->value,
+            'attempt_count' => 3,
+            'started_at' => $now->copy()
+                ->subSeconds(150),
+        ]);
+
+        // Closed activity — Completed executions are not retrying.
+        $this->createActivityExecution($run, '01JRETRYACTEXEC0000000005', [
+            'sequence' => 5,
+            'status' => ActivityStatus::Completed->value,
+            'attempt_count' => 4,
+            'started_at' => $now->copy()
+                ->subSeconds(300),
+            'closed_at' => $now->copy()
+                ->subSeconds(60),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $expectedOldestRetryingStartedAt = $now->copy()
+            ->subSeconds(90)
+            ->toJSON();
+
+        $this->assertSame(2, $snapshot['activities']['retrying']);
+        $this->assertSame($expectedOldestRetryingStartedAt, $snapshot['activities']['oldest_retrying_started_at']);
+        $this->assertSame(90 * 1000, $snapshot['activities']['max_retrying_age_ms']);
+    }
+
+    public function testSnapshotReportsRetryingActivityAgeAsZeroWhenNoActivitiesAreRetrying(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'retrying-none-instance',
+            runId: '01JRETRYNONERUN0000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Pending first attempt — attempt_count = 0, not retrying.
+        $this->createActivityExecution($run, '01JRETRYNONEEXEC000000001', [
+            'sequence' => 1,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'started_at' => null,
+        ]);
+
+        // Running attempt — `retrying` predicate excludes Running.
+        $this->createActivityExecution($run, '01JRETRYNONEEXEC000000002', [
+            'sequence' => 2,
+            'status' => ActivityStatus::Running->value,
+            'attempt_count' => 2,
+            'started_at' => $now->copy()
+                ->subSeconds(45),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(0, $snapshot['activities']['retrying']);
+        $this->assertNull($snapshot['activities']['oldest_retrying_started_at']);
+        $this->assertSame(0, $snapshot['activities']['max_retrying_age_ms']);
+    }
+
     public function testSnapshotReportsInWorkerMatchingRoleShapeByDefault(): void
     {
         config()->set('workflows.v2.matching_role.queue_wake_enabled', true);
@@ -1497,6 +1618,27 @@ final class V2OperatorMetricsTest extends TestCase
             'created_at' => $acceptedAt,
             'updated_at' => $acceptedAt,
         ]);
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    private function createActivityExecution(WorkflowRun $run, string $id, array $attributes = []): ActivityExecution
+    {
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->create(array_merge([
+            'id' => $id,
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => 'WorkflowActivityClass',
+            'activity_type' => 'workflow.activity.test',
+            'status' => ActivityStatus::Pending->value,
+            'connection' => 'redis',
+            'queue' => 'default',
+            'attempt_count' => 0,
+        ], $attributes));
+
+        return $execution;
     }
 
     /**
