@@ -130,6 +130,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'max_ready_due_age_ms',
         'oldest_claim_failed_at',
         'max_claim_failed_age_ms',
+        'oldest_dispatch_failed_at',
+        'max_dispatch_failed_age_ms',
         'oldest_retrying_started_at',
         'max_retrying_age_ms',
         'unhealthy',
@@ -384,6 +386,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`tasks`\s*\|[^|]*`oldest_claim_failed_at`[^|]*`max_claim_failed_age_ms`/',
             $contents,
             'Rollout safety contract must pin the tasks claim-failed age row so operators can read "how long has the worst-case task been sitting with an uncleared claim error?" — a lease-conflict and duplicate-risk indicator on the claim path — from OperatorMetrics::snapshot() without walking workflow_tasks.',
+        );
+    }
+
+    public function testContractDocumentFreezesDispatchFailedAgeRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`tasks`\s*\|[^|]*`oldest_dispatch_failed_at`[^|]*`max_dispatch_failed_age_ms`/',
+            $contents,
+            'Rollout safety contract must pin the tasks dispatch-failed age row so operators can read "how long has the worst-case task been sitting with an uncleared dispatch error?" — the primary transport-failure age indicator on the dispatch path — from OperatorMetrics::snapshot() without walking workflow_tasks.',
         );
     }
 

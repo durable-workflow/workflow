@@ -123,6 +123,7 @@ final class OperatorMetrics
         $oldestReadyDueAt = self::oldestReadyDueAt($now, $namespace);
         $oldestDispatchOverdueSince = self::oldestDispatchOverdueSince($now, $namespace);
         $oldestClaimFailedAt = self::oldestClaimFailedAt($namespace);
+        $oldestDispatchFailedAt = self::oldestDispatchFailedAt($namespace);
 
         return [
             'open' => self::openTasks($namespace),
@@ -150,6 +151,10 @@ final class OperatorMetrics
             'max_claim_failed_age_ms' => $oldestClaimFailedAt === null
                 ? 0
                 : (int) $oldestClaimFailedAt->diffInMilliseconds($now),
+            'oldest_dispatch_failed_at' => $oldestDispatchFailedAt?->toJSON(),
+            'max_dispatch_failed_age_ms' => $oldestDispatchFailedAt === null
+                ? 0
+                : (int) $oldestDispatchFailedAt->diffInMilliseconds($now),
             'unhealthy' => self::dispatchFailedTasks($namespace)
                 + self::claimFailedTasks($namespace)
                 + self::dispatchOverdueTasks($now, $namespace)
@@ -1044,6 +1049,32 @@ final class OperatorMetrics
         }
 
         return $task->last_claim_failed_at;
+    }
+
+    /**
+     * Earliest `last_dispatch_attempt_at` among tasks currently counted by
+     * `tasks.dispatch_failed` (Ready tasks whose most recent dispatch
+     * attempt recorded an uncleared `last_dispatch_error` that has not
+     * been superseded by a later successful dispatch). Rollout-safety
+     * surfaces this alongside `tasks.dispatch_failed` so operators can
+     * read "how long has the worst-case task been sitting with an
+     * uncleared dispatch error?" — the primary transport-failure age
+     * indicator on the dispatch path — from the metric alone, mirroring
+     * the existing `oldest_claim_failed_at` / `max_claim_failed_age_ms`
+     * shape for the claim path.
+     */
+    private static function oldestDispatchFailedAt(?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowTask|null $task */
+        $task = self::dispatchFailedQuery($namespace)
+            ->orderBy('last_dispatch_attempt_at')
+            ->first();
+
+        if (! $task instanceof WorkflowTask) {
+            return null;
+        }
+
+        return $task->last_dispatch_attempt_at;
     }
 
     private static function dispatchOverdueQuery(CarbonInterface $now, ?string $namespace)
