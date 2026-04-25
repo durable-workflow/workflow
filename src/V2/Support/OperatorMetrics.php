@@ -206,6 +206,7 @@ final class OperatorMetrics
     private static function activityMetrics(CarbonInterface $now, ?string $namespace): array
     {
         $oldestRetryingStartedAt = self::oldestRetryingActivityStartedAt($namespace);
+        $oldestTimeoutOverdueAt = self::oldestActivityTimeoutOverdueAt($now, $namespace);
 
         return [
             'open' => self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
@@ -222,6 +223,11 @@ final class OperatorMetrics
             'max_retrying_age_ms' => $oldestRetryingStartedAt === null
                 ? 0
                 : (int) $oldestRetryingStartedAt->diffInMilliseconds($now),
+            'timeout_overdue' => self::timeoutOverdueActivities($now, $namespace),
+            'oldest_timeout_overdue_at' => $oldestTimeoutOverdueAt?->toJSON(),
+            'max_timeout_overdue_age_ms' => $oldestTimeoutOverdueAt === null
+                ? 0
+                : (int) $oldestTimeoutOverdueAt->diffInMilliseconds($now),
             'failed_attempts' => self::scopedRunModelQuery(self::activityAttemptModel(), $namespace)
                 ->where('status', ActivityAttemptStatus::Failed->value)
                 ->count(),
@@ -854,6 +860,115 @@ final class OperatorMetrics
             ->where('status', ActivityStatus::Pending->value)
             ->where('attempt_count', '>', 0)
             ->count();
+    }
+
+    /**
+     * Open activity executions whose schedule-to-start, start-to-close,
+     * schedule-to-close, or heartbeat deadline has passed and is therefore
+     * waiting for `ActivityTimeoutEnforcer` to enforce the timeout.
+     *
+     * The predicate mirrors `ActivityTimeoutEnforcer::expiredExecutionIds()`
+     * exactly so the count is the operator-visible view of the same
+     * sweep backlog: a non-zero value means at least one activity has hit
+     * a deadline that the enforcement pass has not yet acted on. When the
+     * sweep is healthy this count returns to zero between passes; sustained
+     * non-zero readings indicate the activity-timeout sweep is lagging or
+     * stalled and that worker liveness via heartbeat or start-to-close has
+     * stopped on at least one execution. The signal is the activity-path
+     * counterpart of `tasks.lease_expired` — both surface stuck work that
+     * the corresponding sweep has not yet reclaimed.
+     */
+    private static function timeoutOverdueActivities(CarbonInterface $now, ?string $namespace): int
+    {
+        return self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
+            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
+            ->where(static function ($query) use ($now): void {
+                $query->where(static function ($schedule) use ($now): void {
+                    $schedule->where('status', ActivityStatus::Pending->value)
+                        ->whereNotNull('schedule_deadline_at')
+                        ->where('schedule_deadline_at', '<=', $now);
+                })->orWhere(static function ($close) use ($now): void {
+                    $close->where('status', ActivityStatus::Running->value)
+                        ->whereNotNull('close_deadline_at')
+                        ->where('close_deadline_at', '<=', $now);
+                })->orWhere(static function ($scheduleToClose) use ($now): void {
+                    $scheduleToClose->whereNotNull('schedule_to_close_deadline_at')
+                        ->where('schedule_to_close_deadline_at', '<=', $now);
+                })->orWhere(static function ($heartbeat) use ($now): void {
+                    $heartbeat->where('status', ActivityStatus::Running->value)
+                        ->whereNotNull('heartbeat_deadline_at')
+                        ->where('heartbeat_deadline_at', '<=', $now);
+                });
+            })
+            ->count();
+    }
+
+    /**
+     * Earliest deadline timestamp across activity executions whose
+     * schedule-to-start, start-to-close, schedule-to-close, or heartbeat
+     * deadline has already passed. Rollout-safety surfaces this alongside
+     * `activities.timeout_overdue` so operators can answer "how long has
+     * the worst-case activity been past a timeout deadline without
+     * enforcement?" — the primary stuck-activity duplicate-risk age
+     * indicator on the activity path — from the metric alone, mirroring
+     * the `tasks.oldest_lease_expired_at` / `max_lease_expired_age_ms`
+     * shape on the task path. The earliest expired deadline among the
+     * four enforcement-relevant deadline columns wins.
+     */
+    private static function oldestActivityTimeoutOverdueAt(CarbonInterface $now, ?string $namespace): ?CarbonInterface
+    {
+        return self::earliestTimestamp([
+            self::firstActivityDeadlineAt(
+                $namespace,
+                'schedule_deadline_at',
+                $now,
+                [ActivityStatus::Pending->value],
+            ),
+            self::firstActivityDeadlineAt($namespace, 'close_deadline_at', $now, [ActivityStatus::Running->value]),
+            self::firstActivityDeadlineAt(
+                $namespace,
+                'schedule_to_close_deadline_at',
+                $now,
+                [ActivityStatus::Pending->value, ActivityStatus::Running->value],
+            ),
+            self::firstActivityDeadlineAt(
+                $namespace,
+                'heartbeat_deadline_at',
+                $now,
+                [ActivityStatus::Running->value],
+            ),
+        ]);
+    }
+
+    /**
+     * Earliest expired deadline timestamp on $column among activity
+     * executions in one of $statuses, or null when none are expired. Used
+     * by `oldestActivityTimeoutOverdueAt()` to roll the four
+     * enforcement-relevant deadline columns into a single worst-case age.
+     *
+     * @param  list<string>  $statuses
+     */
+    private static function firstActivityDeadlineAt(
+        ?string $namespace,
+        string $column,
+        CarbonInterface $now,
+        array $statuses,
+    ): ?CarbonInterface {
+        /** @var ActivityExecution|null $execution */
+        $execution = self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
+            ->whereIn('status', $statuses)
+            ->whereNotNull($column)
+            ->where($column, '<=', $now)
+            ->orderBy($column)
+            ->first();
+
+        if (! $execution instanceof ActivityExecution) {
+            return null;
+        }
+
+        $value = $execution->getAttribute($column);
+
+        return $value instanceof CarbonInterface ? $value : null;
     }
 
     /**

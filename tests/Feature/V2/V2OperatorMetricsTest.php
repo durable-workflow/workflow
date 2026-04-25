@@ -1709,6 +1709,188 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['activities']['max_retrying_age_ms']);
     }
 
+    public function testSnapshotSurfacesActivityTimeoutOverdueAgeFromEarliestExpiredDeadline(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'timeout-overdue-instance',
+            runId: '01JTIMEOUTOVDRUN000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Worst-case: Pending activity whose schedule_deadline_at expired
+        // 240s ago — earliest expired deadline across the four enforcement
+        // columns, so it wins both the count and the oldest selection.
+        $this->createActivityExecution($run, '01JTIMEOUTOVDEXEC0000001', [
+            'sequence' => 1,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'started_at' => $now->copy()
+                ->subSeconds(300),
+            'schedule_deadline_at' => $now->copy()
+                ->subSeconds(240),
+        ]);
+
+        // Running activity whose start-to-close (close_deadline_at) expired
+        // 90s ago — counted, but a newer expiry than the worst-case above.
+        $this->createActivityExecution($run, '01JTIMEOUTOVDEXEC0000002', [
+            'sequence' => 2,
+            'status' => ActivityStatus::Running->value,
+            'attempt_count' => 1,
+            'started_at' => $now->copy()
+                ->subSeconds(180),
+            'close_deadline_at' => $now->copy()
+                ->subSeconds(90),
+        ]);
+
+        // Running activity whose heartbeat_deadline_at expired 60s ago —
+        // counted, but newer than 240s and 90s above.
+        $this->createActivityExecution($run, '01JTIMEOUTOVDEXEC0000003', [
+            'sequence' => 3,
+            'status' => ActivityStatus::Running->value,
+            'attempt_count' => 1,
+            'started_at' => $now->copy()
+                ->subSeconds(120),
+            'heartbeat_deadline_at' => $now->copy()
+                ->subSeconds(60),
+        ]);
+
+        // Pending activity whose schedule_to_close_deadline_at expired 30s
+        // ago — counted (schedule_to_close applies to both Pending and
+        // Running), still newer than the worst-case.
+        $this->createActivityExecution($run, '01JTIMEOUTOVDEXEC0000004', [
+            'sequence' => 4,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'started_at' => null,
+            'schedule_to_close_deadline_at' => $now->copy()
+                ->subSeconds(30),
+        ]);
+
+        // Running activity with deadlines that are all in the future — NOT
+        // counted; the enforcement sweep has nothing to do here.
+        $this->createActivityExecution($run, '01JTIMEOUTOVDEXEC0000005', [
+            'sequence' => 5,
+            'status' => ActivityStatus::Running->value,
+            'attempt_count' => 0,
+            'started_at' => $now->copy()
+                ->subSeconds(15),
+            'close_deadline_at' => $now->copy()
+                ->addSeconds(60),
+            'heartbeat_deadline_at' => $now->copy()
+                ->addSeconds(30),
+        ]);
+
+        // Closed activity whose deadlines are all in the past — Completed
+        // executions are not selected by the enforcer, so they are NOT
+        // counted even with deadlines well in the past.
+        $this->createActivityExecution($run, '01JTIMEOUTOVDEXEC0000006', [
+            'sequence' => 6,
+            'status' => ActivityStatus::Completed->value,
+            'attempt_count' => 1,
+            'started_at' => $now->copy()
+                ->subSeconds(420),
+            'close_deadline_at' => $now->copy()
+                ->subSeconds(360),
+            'closed_at' => $now->copy()
+                ->subSeconds(300),
+        ]);
+
+        // Running activity with a Pending-only deadline (schedule_deadline_at)
+        // expired in the past — schedule_deadline_at only counts when the
+        // status is Pending, so this row is NOT counted by the enforcer
+        // predicate even though the deadline column has an expired value.
+        $this->createActivityExecution($run, '01JTIMEOUTOVDEXEC0000007', [
+            'sequence' => 7,
+            'status' => ActivityStatus::Running->value,
+            'attempt_count' => 1,
+            'started_at' => $now->copy()
+                ->subSeconds(150),
+            'schedule_deadline_at' => $now->copy()
+                ->subSeconds(360),
+        ]);
+
+        // Pending activity with a Running-only deadline (heartbeat_deadline_at)
+        // expired in the past — heartbeat_deadline_at only counts when the
+        // status is Running, so this row is NOT counted by the enforcer
+        // predicate even though the deadline column has an expired value.
+        $this->createActivityExecution($run, '01JTIMEOUTOVDEXEC0000008', [
+            'sequence' => 8,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'started_at' => null,
+            'heartbeat_deadline_at' => $now->copy()
+                ->subSeconds(360),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $expectedOldestTimeoutOverdueAt = $now->copy()
+            ->subSeconds(240)
+            ->toJSON();
+
+        $this->assertSame(4, $snapshot['activities']['timeout_overdue']);
+        $this->assertSame($expectedOldestTimeoutOverdueAt, $snapshot['activities']['oldest_timeout_overdue_at']);
+        $this->assertSame(240 * 1000, $snapshot['activities']['max_timeout_overdue_age_ms']);
+    }
+
+    public function testSnapshotReportsActivityTimeoutOverdueAgeAsZeroWhenNoActivityIsOverdue(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'timeout-none-instance',
+            runId: '01JTIMEOUTNONERUN00000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Pending activity with no enforcement deadlines yet recorded —
+        // not counted; nothing to enforce.
+        $this->createActivityExecution($run, '01JTIMEOUTNONEEXEC000001', [
+            'sequence' => 1,
+            'status' => ActivityStatus::Pending->value,
+            'attempt_count' => 0,
+            'started_at' => null,
+        ]);
+
+        // Running activity with deadlines safely in the future — not
+        // counted; the enforcement sweep has nothing to do.
+        $this->createActivityExecution($run, '01JTIMEOUTNONEEXEC000002', [
+            'sequence' => 2,
+            'status' => ActivityStatus::Running->value,
+            'attempt_count' => 1,
+            'started_at' => $now->copy()
+                ->subSeconds(15),
+            'close_deadline_at' => $now->copy()
+                ->addSeconds(120),
+            'heartbeat_deadline_at' => $now->copy()
+                ->addSeconds(60),
+            'schedule_to_close_deadline_at' => $now->copy()
+                ->addSeconds(900),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(0, $snapshot['activities']['timeout_overdue']);
+        $this->assertNull($snapshot['activities']['oldest_timeout_overdue_at']);
+        $this->assertSame(0, $snapshot['activities']['max_timeout_overdue_age_ms']);
+    }
+
     public function testSnapshotSurfacesMissingRunSummaryProjectionAgeFromOldestMissingRun(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');

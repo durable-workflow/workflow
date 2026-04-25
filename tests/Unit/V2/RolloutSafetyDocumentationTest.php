@@ -134,6 +134,9 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'max_dispatch_failed_age_ms',
         'oldest_retrying_started_at',
         'max_retrying_age_ms',
+        'timeout_overdue',
+        'oldest_timeout_overdue_at',
+        'max_timeout_overdue_age_ms',
         'unhealthy',
         'oldest_unhealthy_at',
         'max_unhealthy_age_ms',
@@ -410,6 +413,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`activities`\s*\|[^|]*`retrying`[^|]*`oldest_retrying_started_at`[^|]*`max_retrying_age_ms`/',
             $contents,
             'Rollout safety contract must pin the activities retrying-age row so operators can read "how long has the worst-case activity been chewing retries?" from OperatorMetrics::snapshot() without walking activity_executions.',
+        );
+    }
+
+    public function testContractDocumentFreezesActivityTimeoutOverdueAgeRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`activities`\s*\|[^|]*`timeout_overdue`[^|]*`oldest_timeout_overdue_at`[^|]*`max_timeout_overdue_age_ms`/',
+            $contents,
+            'Rollout safety contract must pin the activities timeout-overdue age row so operators can read "how long has the worst-case activity been past a timeout deadline without enforcement?" — the primary stuck-activity duplicate-risk age indicator on the activity path — from OperatorMetrics::snapshot() without walking activity_executions.',
         );
     }
 
