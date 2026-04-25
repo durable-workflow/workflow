@@ -1701,10 +1701,7 @@ final class V2OperatorMetricsTest extends TestCase
             $expectedOldestMissingAt,
             $snapshot['projections']['run_summaries']['oldest_missing_run_started_at'],
         );
-        $this->assertSame(
-            240 * 1000,
-            $snapshot['projections']['run_summaries']['max_missing_run_age_ms'],
-        );
+        $this->assertSame(240 * 1000, $snapshot['projections']['run_summaries']['max_missing_run_age_ms']);
     }
 
     public function testSnapshotReportsMissingRunSummaryProjectionAgeAsZeroWhenNoRunsAreMissing(): void
