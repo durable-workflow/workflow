@@ -140,6 +140,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'unhealthy',
         'oldest_unhealthy_at',
         'max_unhealthy_age_ms',
+        'oldest_repair_needed_at',
+        'max_repair_needed_age_ms',
         'runnable_tasks',
         'delayed_tasks',
         'leased_tasks',
@@ -457,6 +459,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`tasks`\s*\|[^|]*`unhealthy`[^|]*`oldest_unhealthy_at`[^|]*`max_unhealthy_age_ms`/',
             $contents,
             'Rollout safety contract must pin the tasks unhealthy-age rollup row so operators can read "how stale is my worst-case duplicate-risk task overall?" from a single OperatorMetrics::snapshot() pair instead of taking a max over the four contributing per-path age fields.',
+        );
+    }
+
+    public function testContractDocumentFreezesRepairNeededRunAgeRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`runs`\s*\|[^|]*`oldest_repair_needed_at`[^|]*`max_repair_needed_age_ms`/',
+            $contents,
+            'Rollout safety contract must pin the runs repair-needed age row so operators can read "how long has the worst-case run been stuck without progress?" — the canonical stuck-workflow duplicate-risk age indicator paired with the durable_resume_paths health check — from OperatorMetrics::snapshot() without walking workflow_run_summaries.',
         );
     }
 

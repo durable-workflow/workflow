@@ -93,6 +93,7 @@ final class OperatorMetrics
     private static function runMetrics(CarbonInterface $now, ?string $namespace): array
     {
         $oldestWaitStartedAt = self::oldestRunWaitStartedAt($namespace);
+        $oldestRepairNeededAt = self::oldestRepairNeededRunAt($namespace);
 
         return [
             'total' => self::summaryQuery($namespace)->count(),
@@ -104,6 +105,10 @@ final class OperatorMetrics
             'terminated' => self::summaryQuery($namespace)->where('status', RunStatus::Terminated->value)->count(),
             'archived' => self::summaryQuery($namespace)->whereNotNull('archived_at')->count(),
             'repair_needed' => self::summaryQuery($namespace)->where('liveness_state', 'repair_needed')->count(),
+            'oldest_repair_needed_at' => $oldestRepairNeededAt?->toJSON(),
+            'max_repair_needed_age_ms' => $oldestRepairNeededAt === null
+                ? 0
+                : (int) $oldestRepairNeededAt->diffInMilliseconds($now),
             'claim_failed' => self::claimFailedRuns($namespace),
             'compatibility_blocked' => self::compatibilityBlockedRuns($namespace),
             'waiting' => self::waitingRuns($namespace),
@@ -808,6 +813,39 @@ final class OperatorMetrics
         return self::summaryQuery($namespace)
             ->where('liveness_state', 'like', '%_task_claim_failed')
             ->count();
+    }
+
+    /**
+     * Earliest "stuck since" timestamp across runs whose liveness_state is
+     * exactly `repair_needed`. Rollout-safety surfaces this alongside
+     * `runs.repair_needed` so operators can answer "how long has the
+     * worst-case run been stuck without progress?" from the metric alone,
+     * the canonical stuck-workflow age indicator paired with the
+     * `durable_resume_paths` health check.
+     *
+     * The summary's `updated_at` is sourced by `RunSummaryProjector` from
+     * `WorkflowRun::last_progress_at`, so it advances when the run made
+     * forward progress and stalls when the run stopped progressing. For
+     * runs already pinned at `repair_needed` it is therefore the closest
+     * available proxy for "when this run last made progress before being
+     * marked broken." The summary `updated_at` is preferred; the run's
+     * `started_at` is the fallback when the projection did not record a
+     * progress boundary (a fresh run that was projected straight into
+     * `repair_needed` without a prior progress write).
+     */
+    private static function oldestRepairNeededRunAt(?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowRunSummary|null $summary */
+        $summary = self::summaryQuery($namespace)
+            ->where('liveness_state', 'repair_needed')
+            ->orderByRaw('COALESCE(updated_at, started_at) asc')
+            ->first();
+
+        if (! $summary instanceof WorkflowRunSummary) {
+            return null;
+        }
+
+        return $summary->updated_at ?? $summary->started_at;
     }
 
     /**

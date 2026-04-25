@@ -1590,6 +1590,109 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['runs']['max_wait_age_ms']);
     }
 
+    public function testSnapshotSurfacesRepairNeededAgeFromOldestRepairNeededRun(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        // Worst-case: repair_needed run whose summary updated_at (sourced from
+        // last_progress_at) was 90s ago — the oldest stuck-since timestamp wins.
+        $stuckLongest = $this->createRunWithSummary(
+            instanceId: 'repair-needed-age-instance-stuck',
+            runId: '01JREPAIRSTKRUN0000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'repair_needed',
+        );
+        WorkflowRunSummary::query()
+            ->whereKey($stuckLongest->id)
+            ->update([
+                'updated_at' => $now->copy()
+                    ->subSeconds(90),
+            ]);
+
+        // Newer repair_needed run — must be counted, but its 30s-ago updated_at
+        // must not win "oldest repair-needed since".
+        $stuckRecent = $this->createRunWithSummary(
+            instanceId: 'repair-needed-age-instance-recent',
+            runId: '01JREPAIRRECRUN0000000002',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'repair_needed',
+        );
+        WorkflowRunSummary::query()
+            ->whereKey($stuckRecent->id)
+            ->update([
+                'updated_at' => $now->copy()
+                    ->subSeconds(30),
+            ]);
+
+        // Compatibility-blocked run — has a repair_needed-shaped liveness state
+        // (`workflow_task_waiting_for_compatible_worker`) but liveness_state is
+        // NOT exactly `repair_needed`, so it must not be counted under
+        // runs.repair_needed even though its updated_at would win the oldest age.
+        $compatibilityBlocked = $this->createRunWithSummary(
+            instanceId: 'repair-needed-age-instance-compat',
+            runId: '01JREPAIRCMPRUN0000000003',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'workflow_task_waiting_for_compatible_worker',
+        );
+        WorkflowRunSummary::query()
+            ->whereKey($compatibilityBlocked->id)
+            ->update([
+                'updated_at' => $now->copy()
+                    ->subHours(2),
+            ]);
+
+        // Healthy running run — must not be counted regardless of updated_at.
+        $this->createRunWithSummary(
+            instanceId: 'repair-needed-age-instance-running',
+            runId: '01JREPAIRRUNRUN0000000004',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $expectedOldestRepairNeededAt = $now->copy()
+            ->subSeconds(90)
+            ->toJSON();
+
+        $this->assertSame(2, $snapshot['runs']['repair_needed']);
+        $this->assertSame($expectedOldestRepairNeededAt, $snapshot['runs']['oldest_repair_needed_at']);
+        $this->assertSame(90 * 1000, $snapshot['runs']['max_repair_needed_age_ms']);
+    }
+
+    public function testSnapshotReportsRepairNeededAgeAsZeroWhenNoRunsAreRepairNeeded(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $this->createRunWithSummary(
+            instanceId: 'repair-needed-none-instance',
+            runId: '01JREPAIRNONRUN0000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(0, $snapshot['runs']['repair_needed']);
+        $this->assertNull($snapshot['runs']['oldest_repair_needed_at']);
+        $this->assertSame(0, $snapshot['runs']['max_repair_needed_age_ms']);
+    }
+
     public function testSnapshotSurfacesRetryingActivityAgeFromOldestRetryingActivity(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');
