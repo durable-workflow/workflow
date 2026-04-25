@@ -237,36 +237,23 @@ class WorkflowRunSummary extends Model
 
 All tests pass with proper database transactions and cleanup.
 
-## v2 Visibility Metadata Contract
+## Migration Strategy
 
-The `workflow_memos` table is the authoritative storage for memo
-values in v2. Every detail/describe/list view that returns memos
-binds to this table or to a projection that derives from it. The
-`workflow_runs.memo` JSON column is not part of the v2 contract: it
-is a transitional artifact left over from earlier v2-alpha development
-snapshots and will be removed before the v2.0 stable release.
+### Forward Migration (v1 → v2)
 
-There is no v2-alpha to v2 backwards-compatibility contract. v2 has
-never been released, so different v2 development snapshots are not a
-mixed fleet — they are iterations of an unreleased product. Operators
-upgrading from v1 follow the documented v1-to-v2 migration path; there
-is no separate v2-alpha cutover surface to preserve.
+1. **Phase 0**: Deploy table and model (d061e5d)
+2. **Phase 1**: Dual-write to both JSON blob and typed table (4433d9e)
+3. **Phase 2**: Dual-read from typed table with JSON fallback (c50954b)
+4. **Phase 3**: Backfill existing JSON blobs to typed table (future)
+5. **Phase 4**: Remove JSON blob column (breaking change for v2.0)
 
-Required cleanup before v2.0 stable (tracked in issue #622):
+### Backward Compatibility
 
-- runtime stops dual-writing the JSON column from `WorkflowExecutor`
-- runtime stops dual-reading the JSON column as a fallback in
-  `WorkflowRunSummary::getMemos()` and other projections
-- the `workflow_runs.memo` column is dropped from the
-  `create_workflow_runs_table` migration
-- this document and `docs/search-attributes-architecture.md` describe
-  the finalized typed-table contract with no transition phases or
-  alpha fallbacks
-
-Until that cleanup lands, the runtime continues to write the JSON
-column for backwards compatibility with already-running v2-alpha
-clusters in development environments. The runtime-side cleanup is a
-mechanical removal once issue #622 is scheduled.
+For v2 alpha/beta releases:
+- Keep `workflow_runs.memo` JSON column
+- Dual-write to both during transition
+- Waterline can read from either via getMemos()
+- Full cutover at v2.0 stable
 
 ## Waterline Integration
 
@@ -331,6 +318,7 @@ This separation ensures:
 ✅ Memos support JSON-friendly values with explicit size/count limits  
 ✅ Continue-as-new inheritance is explicit and tracked  
 ✅ Memos are excluded from filtering by contract  
+✅ Dual-write enables gradual migration  
 ✅ Projection layer exposes memos for detail views  
 ✅ Structural limit violations fail through typed exceptions  
 
