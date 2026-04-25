@@ -1,4 +1,4 @@
-# TD-S002: Cross-Node Long-Poll Coordination Implementation Plan
+Cross-Node Long-Poll Coordination
 
 ## Problem Statement
 
