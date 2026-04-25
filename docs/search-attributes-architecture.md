@@ -307,23 +307,37 @@ class WorkflowSearchAttribute extends Model
 
 All tests pass with proper database transactions and cleanup.
 
-## Migration Strategy
+## v2 Visibility Metadata Contract
 
-### Forward Migration (v1 → v2)
+The `workflow_search_attributes` table is the authoritative storage for
+search attribute values in v2. Every read path that filters, sorts, or
+displays search attributes binds to this table or to a projection that
+derives from it. The `workflow_runs.search_attributes` JSON column is
+not part of the v2 contract: it is a transitional artifact left over
+from earlier v2-alpha development snapshots and will be removed before
+the v2.0 stable release.
 
-1. **Phase 0**: Deploy table and model (this commit)
-2. **Phase 1**: Dual-write to both JSON blob and typed table
-3. **Phase 2**: Backfill existing JSON blobs to typed table
-4. **Phase 3**: Switch reads to typed table
-5. **Phase 4**: Remove JSON blob column (breaking change for v2.0)
+There is no v2-alpha to v2 backwards-compatibility contract. v2 has
+never been released, so different v2 development snapshots are not a
+mixed fleet — they are iterations of an unreleased product. Operators
+upgrading from v1 follow the documented v1-to-v2 migration path; there
+is no separate v2-alpha cutover surface to preserve.
 
-### Backward Compatibility
+Required cleanup before v2.0 stable (tracked in issue #622):
 
-For v2 alpha/beta releases:
-- Keep `workflow_runs.search_attributes` JSON column
-- Dual-write to both during transition
-- Waterline can read from either
-- Full cutover at v2.0 stable
+- runtime stops dual-writing the JSON column from `WorkflowExecutor`
+- runtime stops dual-reading the JSON column as a fallback in
+  `WorkflowRunSummary` and other projections
+- the `workflow_runs.search_attributes` column is dropped from the
+  `create_workflow_runs_table` migration
+- this document and `docs/workflow-memos-architecture.md` describe the
+  finalized typed-table contract with no transition phases or alpha
+  fallbacks
+
+Until that cleanup lands, the runtime continues to write the JSON
+column for backwards compatibility with already-running v2-alpha
+clusters in development environments. The runtime-side cleanup is a
+mechanical removal once issue #622 is scheduled.
 
 ## Waterline Integration
 
