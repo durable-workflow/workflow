@@ -122,6 +122,7 @@ final class OperatorMetrics
         $oldestLeaseExpiredAt = self::oldestLeaseExpiredAt($now, $namespace);
         $oldestReadyDueAt = self::oldestReadyDueAt($now, $namespace);
         $oldestDispatchOverdueSince = self::oldestDispatchOverdueSince($now, $namespace);
+        $oldestClaimFailedAt = self::oldestClaimFailedAt($namespace);
 
         return [
             'open' => self::openTasks($namespace),
@@ -145,6 +146,10 @@ final class OperatorMetrics
             'max_dispatch_overdue_age_ms' => $oldestDispatchOverdueSince === null
                 ? 0
                 : (int) $oldestDispatchOverdueSince->diffInMilliseconds($now),
+            'oldest_claim_failed_at' => $oldestClaimFailedAt?->toJSON(),
+            'max_claim_failed_age_ms' => $oldestClaimFailedAt === null
+                ? 0
+                : (int) $oldestClaimFailedAt->diffInMilliseconds($now),
             'unhealthy' => self::dispatchFailedTasks($namespace)
                 + self::claimFailedTasks($namespace)
                 + self::dispatchOverdueTasks($now, $namespace)
@@ -980,6 +985,31 @@ final class OperatorMetrics
         }
 
         return $task->last_dispatched_at ?? $task->created_at;
+    }
+
+    /**
+     * Earliest `last_claim_failed_at` among tasks currently counted by
+     * `tasks.claim_failed` (Ready tasks whose most recent claim attempt
+     * recorded an uncleared `last_claim_error`). Rollout-safety surfaces
+     * this alongside `tasks.claim_failed` so operators can read "how long
+     * has the worst-case task been sitting with an uncleared claim error?"
+     * — the primary lease-conflict and duplicate-risk age indicator for
+     * the claim path — from the metric alone, mirroring the existing
+     * `oldest_dispatch_overdue_since` / `max_dispatch_overdue_age_ms` shape
+     * for the dispatch path.
+     */
+    private static function oldestClaimFailedAt(?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowTask|null $task */
+        $task = self::claimFailedQuery($namespace)
+            ->orderBy('last_claim_failed_at')
+            ->first();
+
+        if (! $task instanceof WorkflowTask) {
+            return null;
+        }
+
+        return $task->last_claim_failed_at;
     }
 
     private static function dispatchOverdueQuery(CarbonInterface $now, ?string $namespace)

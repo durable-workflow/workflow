@@ -412,6 +412,7 @@ change.
 | `tasks` | `oldest_lease_expired_at`, `max_lease_expired_age_ms` | earliest `lease_expires_at` among leased tasks whose lease has expired at snapshot time and the largest expired-lease age in milliseconds, mirroring the `backlog.oldest_compatibility_blocked_started_at` / `max_compatibility_blocked_age_ms` shape so operators can answer "how long has the worst leased task been expired without redelivery?" (the primary stuck-lease duplicate-risk age indicator) from the metric alone |
 | `tasks` | `oldest_ready_due_at`, `max_ready_due_age_ms` | earliest "ready since" timestamp among ready-due tasks (the effective `COALESCE(available_at, created_at)` — `available_at` when the task was delayed, otherwise the creation time that made it immediately actionable) and the largest ready-age in milliseconds, mirroring the `oldest_lease_expired_at` / `max_lease_expired_age_ms` shape so operators can read queue latency ("how long has the oldest actionable task been waiting to dispatch?") from the metric alone without walking `workflow_tasks` |
 | `tasks` | `oldest_dispatch_overdue_since`, `max_dispatch_overdue_age_ms` | earliest `COALESCE(last_dispatched_at, created_at)` among dispatch-overdue tasks — the timestamp the worst-case ready-but-unclaimed task has been waiting for a successful dispatch wake since (either its last attempted dispatch that didn't stick or its creation time if it was never dispatched) — and the largest age in milliseconds, mirroring the `oldest_ready_due_at` / `max_ready_due_age_ms` shape so operators can read wake-latency ("how long has the oldest ready-but-unclaimed task been waiting for a working dispatch wake?") from the metric alone without walking `workflow_tasks` |
+| `tasks` | `oldest_claim_failed_at`, `max_claim_failed_age_ms` | earliest `last_claim_failed_at` among claim-failed tasks (Ready tasks whose most recent claim attempt recorded an uncleared `last_claim_error`) and the largest claim-failed age in milliseconds, mirroring the `oldest_dispatch_overdue_since` / `max_dispatch_overdue_age_ms` shape for the dispatch path so operators can read "how long has the worst-case task been sitting with an uncleared claim error?" — the primary lease-conflict and duplicate-risk age indicator for the claim path — from the metric alone without walking `workflow_tasks` |
 | `tasks` | `unhealthy` | sum of transport failure and lease expiry counts (the primary duplicate-risk indicator) |
 | `backlog` | `runnable_tasks`, `delayed_tasks`, `leased_tasks` | authoritative backlog counts |
 | `backlog` | `unhealthy_tasks`, `repair_needed_runs`, `claim_failed_runs`, `compatibility_blocked_runs` | stuck/blocked roll-ups |
@@ -497,6 +498,18 @@ are authoritative and how they surface.
   the redispatch decision; the age data is observability so operators
   can tell the difference between "dispatch wake is sporadically
   slow" and "dispatch wake has stalled on this task for minutes".
+- **Claim failed without clearing.** A ready task whose most recent
+  claim attempt recorded an uncleared `last_claim_error` is counted
+  under `tasks.claim_failed`, its worst-case claim-failed timestamp
+  is surfaced through `tasks.oldest_claim_failed_at` and
+  `tasks.max_claim_failed_age_ms`, and all three keys are forwarded
+  on the `task_transport` health check (`claim_failed_tasks`,
+  `oldest_claim_failed_at`, `max_claim_failed_age_ms`). The age data
+  is observability so operators can tell the difference between "one
+  worker briefly rejected a claim" and "the whole fleet has been
+  rejecting this task for minutes" — a lease-conflict and
+  duplicate-risk indicator on the claim path that mirrors the
+  dispatch-path `dispatch_overdue` age signal.
 - **Repair-needed runs.** Runs whose projected state shows
   `liveness_state = repair_needed` are counted under
   `runs.repair_needed` and surface through the

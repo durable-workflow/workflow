@@ -240,6 +240,11 @@ final class HealthCheck
                     ? $tasks['oldest_dispatch_overdue_since']
                     : null,
                 'max_dispatch_overdue_age_ms' => self::integer($tasks['max_dispatch_overdue_age_ms'] ?? 0),
+                'claim_failed_tasks' => self::integer($tasks['claim_failed'] ?? 0),
+                'oldest_claim_failed_at' => is_string($tasks['oldest_claim_failed_at'] ?? null)
+                    ? $tasks['oldest_claim_failed_at']
+                    : null,
+                'max_claim_failed_age_ms' => self::integer($tasks['max_claim_failed_age_ms'] ?? 0),
                 'repair_needed_runs' => self::integer($backlog['repair_needed_runs'] ?? 0),
                 'claim_failed_runs' => self::integer($backlog['claim_failed_runs'] ?? 0),
                 'compatibility_blocked_runs' => self::integer($backlog['compatibility_blocked_runs'] ?? 0),

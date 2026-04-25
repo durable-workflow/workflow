@@ -240,6 +240,13 @@ final class V2OperatorMetricsTest extends TestCase
             $snapshot['tasks']['oldest_dispatch_overdue_since'],
         );
         $this->assertSame(10 * 1000, $snapshot['tasks']['max_dispatch_overdue_age_ms']);
+        $this->assertSame(
+            Carbon::parse('2026-04-09 12:00:00')
+                ->subSeconds(10)
+                ->toJSON(),
+            $snapshot['tasks']['oldest_claim_failed_at'],
+        );
+        $this->assertSame(10 * 1000, $snapshot['tasks']['max_claim_failed_age_ms']);
         $this->assertSame(4, $snapshot['tasks']['unhealthy']);
         $this->assertSame(4, $snapshot['backlog']['runnable_tasks']);
         $this->assertSame(1, $snapshot['backlog']['delayed_tasks']);
@@ -1144,6 +1151,149 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['tasks']['dispatch_overdue']);
         $this->assertNull($snapshot['tasks']['oldest_dispatch_overdue_since']);
         $this->assertSame(0, $snapshot['tasks']['max_dispatch_overdue_age_ms']);
+    }
+
+    public function testSnapshotSurfacesClaimFailedAgeFromOldestClaimFailure(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'claim-failed-age-instance',
+            runId: '01JCLMFAILRUN0000000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Worst-case: ready task whose last claim failed 90s ago with an
+        // uncleared error.
+        $this->createTask($run, '01JCLMFAILTASK000000000001', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(120),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(100),
+            'last_claim_failed_at' => $now->copy()
+                ->subSeconds(90),
+            'last_claim_error' => 'Workflow v2 backend capabilities are unsupported: [queue_sync_unsupported] sync.',
+            'created_at' => $now->copy()
+                ->subSeconds(150),
+        ]);
+
+        // Newer claim failure — counted but must not win the "oldest at".
+        $this->createTask($run, '01JCLMFAILTASK000000000002', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(30),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(20),
+            'last_claim_failed_at' => $now->copy()
+                ->subSeconds(15),
+            'last_claim_error' => 'No compatible worker available for required build id.',
+            'created_at' => $now->copy()
+                ->subSeconds(30),
+        ]);
+
+        // Healthy ready task — not counted, and its created_at must not win.
+        $this->createTask($run, '01JCLMFAILTASK000000000003', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSecond(),
+            'last_dispatched_at' => $now->copy()
+                ->subSecond(),
+            'created_at' => $now->copy()
+                ->subSeconds(200),
+        ]);
+
+        // Claim error cleared (empty string) — excluded by applyClaimHealthy.
+        $this->createTask($run, '01JCLMFAILTASK000000000004', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(60),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(50),
+            'last_claim_failed_at' => $now->copy()
+                ->subSeconds(300),
+            'last_claim_error' => '',
+            'created_at' => $now->copy()
+                ->subSeconds(60),
+        ]);
+
+        // Leased task with an older last_claim_failed_at — excluded because
+        // the claim-failed query requires status=Ready.
+        $this->createTask($run, '01JCLMFAILTASK000000000005', TaskStatus::Leased->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(60),
+            'leased_at' => $now->copy()
+                ->subSeconds(5),
+            'lease_owner' => 'worker-leased',
+            'lease_expires_at' => $now->copy()
+                ->addSeconds(10),
+            'last_claim_failed_at' => $now->copy()
+                ->subSeconds(400),
+            'last_claim_error' => 'Previous claim attempt failed before lease grant.',
+            'created_at' => $now->copy()
+                ->subSeconds(60),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $expectedOldestClaimFailedAt = $now->copy()
+            ->subSeconds(90)
+            ->toJSON();
+
+        $this->assertSame(2, $snapshot['tasks']['claim_failed']);
+        $this->assertSame($expectedOldestClaimFailedAt, $snapshot['tasks']['oldest_claim_failed_at']);
+        $this->assertSame(90 * 1000, $snapshot['tasks']['max_claim_failed_age_ms']);
+
+        $healthSnapshot = HealthCheck::snapshot($now);
+        $taskTransport = collect($healthSnapshot['checks'])->firstWhere('name', 'task_transport');
+        $this->assertNotNull($taskTransport);
+        $this->assertSame(2, $taskTransport['data']['claim_failed_tasks']);
+        $this->assertSame($expectedOldestClaimFailedAt, $taskTransport['data']['oldest_claim_failed_at']);
+        $this->assertSame(90 * 1000, $taskTransport['data']['max_claim_failed_age_ms']);
+    }
+
+    public function testSnapshotReportsClaimFailedAgeAsZeroWhenNoTasksFailedToClaim(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'claim-failed-none-instance',
+            runId: '01JCLMFNONRUN0000000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Fresh healthy ready task — never failed to claim.
+        $this->createTask($run, '01JCLMFNONTASK000000000001', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSecond(),
+            'last_dispatched_at' => $now->copy()
+                ->subSecond(),
+            'created_at' => $now->copy()
+                ->subSecond(),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(0, $snapshot['tasks']['claim_failed']);
+        $this->assertNull($snapshot['tasks']['oldest_claim_failed_at']);
+        $this->assertSame(0, $snapshot['tasks']['max_claim_failed_age_ms']);
+
+        $healthSnapshot = HealthCheck::snapshot($now);
+        $taskTransport = collect($healthSnapshot['checks'])->firstWhere('name', 'task_transport');
+        $this->assertNotNull($taskTransport);
+        $this->assertSame(0, $taskTransport['data']['claim_failed_tasks']);
+        $this->assertNull($taskTransport['data']['oldest_claim_failed_at']);
+        $this->assertSame(0, $taskTransport['data']['max_claim_failed_age_ms']);
     }
 
     public function testSnapshotReportsRunWaitAgeAsZeroWhenNoRunsAreWaiting(): void
