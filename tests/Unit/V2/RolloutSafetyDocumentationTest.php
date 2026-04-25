@@ -422,6 +422,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
         );
     }
 
+    public function testContractDocumentFreezesBackendSeverityRollupRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`backend`\s*\|[^|]*`issues`[^|]*`severity`[^|]*\|[^|]*admission check roll-up from `BackendCapabilities`/',
+            $contents,
+            'Rollout safety contract must pin the backend admission roll-up row so operators can read the worst per-issue severity from a single key on OperatorMetrics::snapshot()[\'backend\'] without scanning the issues list themselves.',
+        );
+    }
+
     public function testContractDocumentFreezesHealthCheckNames(): void
     {
         $contents = $this->documentContents();

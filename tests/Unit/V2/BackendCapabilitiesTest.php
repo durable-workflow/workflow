@@ -355,4 +355,88 @@ final class BackendCapabilitiesTest extends TestCase
         // the unsupported value is being ignored.
         $this->assertStringContainsString('falls back to "avro"', $codecIssue['message']);
     }
+
+    public function testSnapshotIncludesSeverityRollupOfOkWhenAdmissionIsClean(): void
+    {
+        $originalDatabaseDefault = config('database.default');
+
+        try {
+            config()->set('database.default', 'pgsql');
+            config()
+                ->set('database.connections.pgsql.driver', 'pgsql');
+            config()
+                ->set('queue.default', 'redis');
+            config()
+                ->set('queue.connections.redis.driver', 'redis');
+            config()
+                ->set('cache.default', 'array');
+            config()
+                ->set('cache.stores.array.driver', 'array');
+
+            $snapshot = BackendCapabilities::snapshot();
+
+            $this->assertSame([], $snapshot['issues']);
+            $this->assertSame('ok', $snapshot['severity']);
+            $this->assertTrue($snapshot['supported']);
+        } finally {
+            config()->set('database.default', $originalDatabaseDefault);
+        }
+    }
+
+    public function testSnapshotSeverityRollupReportsWarningWhenOnlyWarningIssuesPresent(): void
+    {
+        // Establish a clean baseline so the only issue surfaced by the
+        // snapshot is the legacy-codec warning we are pinning here. The
+        // default test environment uses the sync queue driver, which would
+        // otherwise add an error-severity issue and shadow the rollup we
+        // want to assert.
+        $originalDatabaseDefault = config('database.default');
+
+        try {
+            config()->set('database.default', 'pgsql');
+            config()
+                ->set('database.connections.pgsql.driver', 'pgsql');
+            config()
+                ->set('queue.default', 'redis');
+            config()
+                ->set('queue.connections.redis.driver', 'redis');
+            config()
+                ->set('cache.default', 'array');
+            config()
+                ->set('cache.stores.array.driver', 'array');
+            config()
+                ->set('workflows.serializer', \Workflow\Serializers\Y::class);
+
+            $snapshot = BackendCapabilities::snapshot();
+
+            $codecIssue = collect($snapshot['issues'])->firstWhere('code', 'codec_legacy_php_only');
+            $this->assertNotNull($codecIssue);
+            $this->assertSame('warning', $codecIssue['severity']);
+
+            $errorIssue = collect($snapshot['issues'])->firstWhere('severity', 'error');
+            $this->assertNull(
+                $errorIssue,
+                'This test pins the warning-only path; an error-severity issue here means the codec setup unexpectedly broke another component.',
+            );
+
+            $this->assertSame('warning', $snapshot['severity']);
+        } finally {
+            config()->set('database.default', $originalDatabaseDefault);
+        }
+    }
+
+    public function testSnapshotSeverityRollupReportsErrorWhenAnyIssueIsErrorSeverity(): void
+    {
+        config()->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = BackendCapabilities::snapshot();
+
+        $errorIssue = collect($snapshot['issues'])->firstWhere('severity', 'error');
+        $this->assertNotNull($errorIssue);
+
+        $this->assertSame('error', $snapshot['severity']);
+        $this->assertFalse($snapshot['supported']);
+    }
 }

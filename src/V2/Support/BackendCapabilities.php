@@ -44,6 +44,7 @@ final class BackendCapabilities
             'cache' => $cache,
             'codec' => $codec,
             'structural_limits' => $limits,
+            'severity' => self::severityRollup($issues),
             'issues' => $issues,
         ];
     }
@@ -344,6 +345,41 @@ final class BackendCapabilities
         }
 
         return false;
+    }
+
+    /**
+     * Rolls up the worst per-issue severity into a single admission verdict
+     * the rollout-safety contract pins on `OperatorMetrics::snapshot()['backend']['severity']`.
+     * Order: `error` (boot must fail in `fail`/`throw` mode) > `warning`
+     * (boot may continue with a logged gap) > `info` (operator-visible note,
+     * no admission concern) > `ok` (no issues at all).
+     *
+     * @param  array<int, mixed>  $issues
+     */
+    private static function severityRollup(array $issues): string
+    {
+        $rank = 0;
+
+        foreach ($issues as $issue) {
+            if (! is_array($issue)) {
+                continue;
+            }
+
+            $severity = $issue['severity'] ?? null;
+            $rank = max($rank, match ($severity) {
+                'error' => 3,
+                'warning' => 2,
+                'info' => 1,
+                default => 0,
+            });
+        }
+
+        return match ($rank) {
+            3 => 'error',
+            2 => 'warning',
+            1 => 'info',
+            default => 'ok',
+        };
     }
 
     /**

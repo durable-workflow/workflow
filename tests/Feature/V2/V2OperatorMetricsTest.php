@@ -336,6 +336,7 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame('redis', $snapshot['backend']['queue']['driver']);
         $this->assertSame('array', $snapshot['backend']['cache']['store']);
         $this->assertSame([], $snapshot['backend']['issues']);
+        $this->assertSame('ok', $snapshot['backend']['severity']);
         $this->assertSame(9, $snapshot['update_wait']['completion_timeout_seconds']);
         $this->assertSame(25, $snapshot['update_wait']['poll_interval_milliseconds']);
         $this->assertSame(7, $snapshot['repair_policy']['redispatch_after_seconds']);
@@ -1726,6 +1727,20 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['projections']['run_summaries']['missing']);
         $this->assertNull($snapshot['projections']['run_summaries']['oldest_missing_run_started_at']);
         $this->assertSame(0, $snapshot['projections']['run_summaries']['max_missing_run_age_ms']);
+    }
+
+    public function testSnapshotSurfacesBackendSeverityRollupAsErrorWhenAdmissionIsUnsupported(): void
+    {
+        config()->set('queue.default', 'sync');
+        config()
+            ->set('queue.connections.sync.driver', 'sync');
+
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertFalse($snapshot['backend']['supported']);
+        $this->assertSame('error', $snapshot['backend']['severity']);
+        $this->assertNotEmpty($snapshot['backend']['issues']);
+        $this->assertContains('error', array_column($snapshot['backend']['issues'], 'severity'));
     }
 
     public function testSnapshotReportsInWorkerMatchingRoleShapeByDefault(): void
