@@ -48,7 +48,7 @@ final class OperatorMetrics
             'starts' => self::startMetrics($now, $namespace),
             'history' => self::historyMetrics($namespace),
             'command_contracts' => self::commandContractMetrics($namespace),
-            'projections' => self::projectionMetrics($namespace),
+            'projections' => self::projectionMetrics($now, $namespace),
             'schedules' => self::scheduleMetrics($now, $namespace),
             'workers' => self::workerMetrics(),
             'backend' => BackendCapabilities::snapshot($now),
@@ -446,21 +446,51 @@ final class OperatorMetrics
     /**
      * @return array<string, array<string, int|string|null>>
      */
-    private static function projectionMetrics(?string $namespace): array
+    private static function projectionMetrics(CarbonInterface $now, ?string $namespace): array
     {
         $runSummaries = RunSummaryProjectionDrift::metrics($namespace);
+        $oldestMissingRunStartedAt = self::oldestMissingRunSummaryStartedAt($namespace);
 
         return [
             'run_summaries' => [
                 ...$runSummaries,
                 'oldest_updated_at' => self::jsonTimestamp(self::summaryQuery($namespace)->min('updated_at')),
                 'newest_updated_at' => self::jsonTimestamp(self::summaryQuery($namespace)->max('updated_at')),
+                'oldest_missing_run_started_at' => $oldestMissingRunStartedAt?->toJSON(),
+                'max_missing_run_age_ms' => $oldestMissingRunStartedAt === null
+                    ? 0
+                    : (int) $oldestMissingRunStartedAt->diffInMilliseconds($now),
             ],
             'run_waits' => self::runWaitProjectionMetrics($namespace),
             'run_timeline_entries' => self::runTimelineProjectionMetrics($namespace),
             'run_timer_entries' => self::runTimerProjectionMetrics($namespace),
             'run_lineage_entries' => self::runLineageProjectionMetrics($namespace),
         ];
+    }
+
+    /**
+     * Earliest `COALESCE(workflow_runs.started_at, workflow_runs.created_at)`
+     * among runs whose id is not present in `workflow_run_summaries`.
+     * Mirrors the `repair.oldest_missing_run_started_at` shape so
+     * rollout-safety consumers can read "how long has the worst-case run
+     * been without a run-summary projection?" — the primary projection-lag
+     * age indicator on the run-summary path — from the metric alone without
+     * walking `workflow_runs`. Falls back to `created_at` when the run has
+     * not yet recorded a `started_at` so not-yet-started runs still report
+     * the backlog age they contribute to the projection lag.
+     */
+    private static function oldestMissingRunSummaryStartedAt(?string $namespace): ?CarbonInterface
+    {
+        /** @var WorkflowRun|null $run */
+        $run = RunSummaryProjectionDrift::missingRunQuery($namespace)
+            ->orderByRaw('COALESCE(started_at, created_at) asc')
+            ->first();
+
+        if (! $run instanceof WorkflowRun) {
+            return null;
+        }
+
+        return $run->started_at ?? $run->created_at;
     }
 
     /**

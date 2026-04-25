@@ -1596,6 +1596,141 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['activities']['max_retrying_age_ms']);
     }
 
+    public function testSnapshotSurfacesMissingRunSummaryProjectionAgeFromOldestMissingRun(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        // Worst-case: run with a summary already exists (not counted). Its
+        // started_at must NOT win the "oldest missing run" selection even
+        // though it is the oldest started_at overall.
+        $this->createRunWithSummary(
+            instanceId: 'missing-summary-healthy-i',
+            runId: '01JMISSUMHEALTHYRUN000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Missing-summary run A — started 180s ago, created 200s ago.
+        // Oldest started_at among missing runs — wins the selection.
+        $oldestMissingInstance = WorkflowInstance::query()->create([
+            'id' => 'missing-summary-oldest-i',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        WorkflowRun::query()->create([
+            'id' => '01JMISSUMOLDESTRUN000001',
+            'workflow_instance_id' => $oldestMissingInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'running',
+            'started_at' => $now->copy()
+                ->subSeconds(180),
+            'created_at' => $now->copy()
+                ->subSeconds(200),
+            'updated_at' => $now->copy()
+                ->subSeconds(180),
+        ]);
+
+        // Missing-summary run B — started 30s ago, counted but must not
+        // win the "oldest at" selection.
+        $newerMissingInstance = WorkflowInstance::query()->create([
+            'id' => 'missing-summary-newer-i',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        WorkflowRun::query()->create([
+            'id' => '01JMISSUMNEWERRUN000001',
+            'workflow_instance_id' => $newerMissingInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'running',
+            'started_at' => $now->copy()
+                ->subSeconds(30),
+            'created_at' => $now->copy()
+                ->subSeconds(30),
+            'updated_at' => $now->copy()
+                ->subSeconds(30),
+        ]);
+
+        // Missing-summary run C — started_at NULL, created 240s ago.
+        // Falls back to created_at for the age signal, but the 180s started
+        // A is still the oldest because 180s < 240s is false... wait: 240s
+        // IS older than 180s, so C must win the selection via the
+        // COALESCE(started_at, created_at) fallback.
+        $nullStartedInstance = WorkflowInstance::query()->create([
+            'id' => 'missing-summary-null-started-i',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        WorkflowRun::query()->create([
+            'id' => '01JMISSUMNULLRUN00000001',
+            'workflow_instance_id' => $nullStartedInstance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'pending',
+            'started_at' => null,
+            'created_at' => $now->copy()
+                ->subSeconds(240),
+            'updated_at' => $now->copy()
+                ->subSeconds(240),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $expectedOldestMissingAt = $now->copy()
+            ->subSeconds(240)
+            ->toJSON();
+
+        $this->assertSame(3, $snapshot['projections']['run_summaries']['missing']);
+        $this->assertSame(
+            $expectedOldestMissingAt,
+            $snapshot['projections']['run_summaries']['oldest_missing_run_started_at'],
+        );
+        $this->assertSame(
+            240 * 1000,
+            $snapshot['projections']['run_summaries']['max_missing_run_age_ms'],
+        );
+    }
+
+    public function testSnapshotReportsMissingRunSummaryProjectionAgeAsZeroWhenNoRunsAreMissing(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $this->createRunWithSummary(
+            instanceId: 'no-missing-summary-i',
+            runId: '01JNOMISSUMRUN0000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(0, $snapshot['projections']['run_summaries']['missing']);
+        $this->assertNull($snapshot['projections']['run_summaries']['oldest_missing_run_started_at']);
+        $this->assertSame(0, $snapshot['projections']['run_summaries']['max_missing_run_age_ms']);
+    }
+
     public function testSnapshotReportsInWorkerMatchingRoleShapeByDefault(): void
     {
         config()->set('workflows.v2.matching_role.queue_wake_enabled', true);

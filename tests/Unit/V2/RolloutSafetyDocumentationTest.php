@@ -411,6 +411,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
         );
     }
 
+    public function testContractDocumentFreezesRunSummaryProjectionMissingRunAgeRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`projections\.run_summaries`\s*\|[^|]*`oldest_missing_run_started_at`[^|]*`max_missing_run_age_ms`/',
+            $contents,
+            'Rollout safety contract must pin the run-summary projection missing-run age row so operators can read "how long has the worst-case run been without a run-summary projection?" — the primary projection-lag age indicator on the run-summary path — from OperatorMetrics::snapshot() without walking workflow_runs.',
+        );
+    }
+
     public function testContractDocumentFreezesHealthCheckNames(): void
     {
         $contents = $this->documentContents();
