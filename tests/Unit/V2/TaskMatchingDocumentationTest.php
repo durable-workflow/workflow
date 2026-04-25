@@ -386,6 +386,28 @@ final class TaskMatchingDocumentationTest extends TestCase
         );
     }
 
+    public function testContractDocumentNamesTheDedicatedMatchingRoleDaemonLoop(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach ([
+            'workflow:v2:repair-pass --loop',
+            '--sleep-seconds',
+            'SIGTERM',
+            'SIGINT',
+            'TaskRepairPolicy::loopThrottleSeconds()',
+        ] as $token) {
+            $this->assertStringContainsString(
+                $token,
+                $contents,
+                sprintf(
+                    'Task matching contract must name %s so operators know how to deploy the dedicated matching-role daemon and how it coordinates with cooperating processes.',
+                    $token,
+                ),
+            );
+        }
+    }
+
     public function testContractDocumentExposesMatchingRoleShapeOnOperatorSnapshot(): void
     {
         $contents = $this->documentContents();

@@ -151,16 +151,28 @@ the future:
   a deployment.
 
 Operators opt a fleet into the dedicated matching role shape by
-running `php artisan workflow:v2:repair-pass` in a dedicated process
-and disabling the in-worker broad-poll wake on execution nodes with
-`workflows.v2.matching_role.queue_wake_enabled = false` (env
-`DW_V2_MATCHING_ROLE_QUEUE_WAKE=0`). Disabling the wake suppresses
-the `TaskWatchdog::wake()` call the `Illuminate\Queue\Events\Looping`
-listener in `WorkflowServiceProvider` makes on every queue-worker
-poll, so execution-only nodes stop broad-polling the durable task
-table; claim-time fencing stays authoritative on those nodes through
-the bridge classes. The default remains `true` so existing
-single-role deployments are unchanged.
+running `php artisan workflow:v2:repair-pass --loop` in a dedicated
+process and disabling the in-worker broad-poll wake on execution
+nodes with `workflows.v2.matching_role.queue_wake_enabled = false`
+(env `DW_V2_MATCHING_ROLE_QUEUE_WAKE=0`). Disabling the wake
+suppresses the `TaskWatchdog::wake()` call the
+`Illuminate\Queue\Events\Looping` listener in
+`WorkflowServiceProvider` makes on every queue-worker poll, so
+execution-only nodes stop broad-polling the durable task table;
+claim-time fencing stays authoritative on those nodes through the
+bridge classes. The default remains `true` so existing single-role
+deployments are unchanged.
+
+The `--loop` daemon mode runs the repair pass on a configurable
+cadence and respects the watchdog loop throttle on every iteration,
+so cooperating matching-role processes coexist without duplicating
+broad-poll work — only one process inside the throttle window does
+the sweep and the rest exit early as `throttled`. The cadence
+defaults to `TaskRepairPolicy::loopThrottleSeconds()` (5 seconds)
+and is overridable with `--sleep-seconds=N`. The daemon traps
+`SIGTERM`/`SIGINT` for graceful shutdown so process supervisors
+(systemd, supervisord, Docker) can drain it cleanly between
+deployments.
 
 ## Ready-task discovery
 

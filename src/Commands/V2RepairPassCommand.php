@@ -7,6 +7,7 @@ namespace Workflow\Commands;
 use Illuminate\Console\Command;
 use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
+use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\TaskWatchdog;
 
 #[AsCommand(name: 'workflow:v2:repair-pass')]
@@ -18,16 +19,50 @@ class V2RepairPassCommand extends Command
         {--connection= : Record the repair pass heartbeat against a queue connection scope}
         {--queue= : Record the repair pass heartbeat against a queue scope}
         {--respect-throttle : Respect the queue-loop repair throttle instead of forcing a repair pass}
-        {--json : Output the repair pass report as JSON}';
+        {--loop : Run the repair pass on a loop as a dedicated matching-role daemon until interrupted}
+        {--sleep-seconds= : Seconds to sleep between loop iterations (defaults to the configured loop throttle)}
+        {--max-iterations= : Stop after this many loop iterations instead of running until interrupted}
+        {--json : Output each repair pass report as JSON}';
 
-    protected $description = 'Run one Workflow v2 repair sweep using the current repair candidate scan and backoff policy, optionally limited to selected runs';
+    protected $description = 'Run one Workflow v2 repair sweep, or run a dedicated matching-role daemon loop with --loop, using the current repair candidate scan and backoff policy';
+
+    /**
+     * Set to true when a SIGTERM/SIGINT is observed so the loop exits at the
+     * next iteration boundary instead of mid-sleep.
+     */
+    private bool $shouldStop = false;
 
     public function handle(): int
+    {
+        if ((bool) $this->option('loop')) {
+            return $this->runLoop();
+        }
+
+        return $this->runOnce(respectThrottleOverride: null);
+    }
+
+    /**
+     * Sleep between loop iterations. Extracted so tests can override the
+     * sleep without slowing the suite.
+     */
+    protected function sleepBetweenIterations(int $sleepSeconds): void
+    {
+        if ($sleepSeconds <= 0) {
+            return;
+        }
+
+        sleep($sleepSeconds);
+    }
+
+    /**
+     * Run a single repair pass and emit the report.
+     */
+    private function runOnce(?bool $respectThrottleOverride): int
     {
         $report = TaskWatchdog::runPass(
             $this->stringOption('connection'),
             $this->stringOption('queue'),
-            respectThrottle: (bool) $this->option('respect-throttle'),
+            respectThrottle: $respectThrottleOverride ?? (bool) $this->option('respect-throttle'),
             runIds: $this->runIds(),
             instanceId: $this->stringOption('instance-id'),
         );
@@ -48,6 +83,69 @@ class V2RepairPassCommand extends Command
             && $report['missing_run_failures'] === []
             ? self::SUCCESS
             : self::FAILURE;
+    }
+
+    /**
+     * Run the dedicated matching-role daemon loop. Each iteration is a
+     * full repair pass that respects the loop throttle so cooperating
+     * matching-role processes do not duplicate work, followed by a
+     * configurable sleep before the next iteration.
+     *
+     * The loop exits cleanly on SIGTERM/SIGINT (when the runtime supports
+     * pcntl signal handling) or after --max-iterations iterations, which
+     * tests use to drive the daemon deterministically.
+     */
+    private function runLoop(): int
+    {
+        $maxIterationsOption = $this->option('max-iterations');
+        $maxIterations = is_string($maxIterationsOption) && $maxIterationsOption !== ''
+            ? max(1, (int) $maxIterationsOption)
+            : null;
+
+        $sleepSeconds = $this->resolveSleepSeconds();
+
+        // SIGTERM/SIGINT are PCNTL-extension constants; the closure form keeps
+        // the signal list out of bytecode when the runtime lacks pcntl, so the
+        // command still loops cleanly on environments without signal support.
+        $this->trap(static fn (): array => [SIGTERM, SIGINT], function (): void {
+            $this->shouldStop = true;
+        },);
+
+        $exitCode = self::SUCCESS;
+        $iteration = 0;
+
+        while (! $this->shouldStop) {
+            $iteration++;
+
+            $iterationExit = $this->runOnce(respectThrottleOverride: true);
+
+            if ($iterationExit !== self::SUCCESS) {
+                $exitCode = $iterationExit;
+            }
+
+            if ($maxIterations !== null && $iteration >= $maxIterations) {
+                break;
+            }
+
+            if ($this->shouldStop) {
+                break;
+            }
+
+            $this->sleepBetweenIterations($sleepSeconds);
+        }
+
+        return $exitCode;
+    }
+
+    private function resolveSleepSeconds(): int
+    {
+        $option = $this->option('sleep-seconds');
+
+        if (is_string($option) && $option !== '') {
+            return max(0, (int) $option);
+        }
+
+        return TaskRepairPolicy::loopThrottleSeconds();
     }
 
     /**

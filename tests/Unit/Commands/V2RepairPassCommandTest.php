@@ -280,6 +280,81 @@ final class V2RepairPassCommandTest extends TestCase
         Queue::assertPushed(RunWorkflowTask::class, 1);
     }
 
+    public function testLoopModeRunsTheRequestedNumberOfIterationsAndForcesThrottleAcrossIterations(): void
+    {
+        Queue::fake();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        $task = $this->createOverdueWorkflowTask('repair-pass-loop-throttle');
+
+        $firstIteration = [
+            'connection' => null,
+            'queue' => null,
+            'run_ids' => [],
+            'instance_id' => null,
+            'respect_throttle' => true,
+            'throttled' => false,
+            'selected_existing_task_candidates' => 1,
+            'selected_missing_task_candidates' => 0,
+            'selected_total_candidates' => 1,
+            'repaired_existing_tasks' => 1,
+            'repaired_missing_tasks' => 0,
+            'dispatched_tasks' => 1,
+            'existing_task_failures' => [],
+            'missing_run_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
+        ];
+
+        $secondIteration = [
+            'connection' => null,
+            'queue' => null,
+            'run_ids' => [],
+            'instance_id' => null,
+            'respect_throttle' => true,
+            'throttled' => true,
+            'selected_existing_task_candidates' => 0,
+            'selected_missing_task_candidates' => 0,
+            'selected_total_candidates' => 0,
+            'repaired_existing_tasks' => 0,
+            'repaired_missing_tasks' => 0,
+            'dispatched_tasks' => 0,
+            'existing_task_failures' => [],
+            'missing_run_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
+        ];
+
+        $this->artisan('workflow:v2:repair-pass', [
+            '--loop' => true,
+            '--max-iterations' => '2',
+            '--sleep-seconds' => '0',
+            '--json' => true,
+        ])
+            ->expectsOutput(json_encode($firstIteration, JSON_UNESCAPED_SLASHES))
+            ->expectsOutput(json_encode($secondIteration, JSON_UNESCAPED_SLASHES))
+            ->assertSuccessful();
+
+        $task->refresh();
+
+        $this->assertSame(1, $task->repair_count);
+        $this->assertNotNull($task->last_dispatched_at);
+
+        Queue::assertPushed(
+            RunWorkflowTask::class,
+            static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
+        );
+        Queue::assertPushed(RunWorkflowTask::class, 1);
+    }
+
     public function testItFailsRepairPassWhenMissingTaskRepairThrows(): void
     {
         Queue::fake();
