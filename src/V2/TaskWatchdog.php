@@ -225,7 +225,15 @@ final class TaskWatchdog
 
                 TaskCompatibility::sync($task, $run);
 
-                return TaskRepair::recoverExistingTask($task, $run);
+                $task = TaskRepair::recoverExistingTask($task, $run);
+
+                if (! $task instanceof WorkflowTask) {
+                    self::historyProjectionRole()->projectRun(
+                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                    );
+                }
+
+                return $task;
             });
 
             if ($task instanceof WorkflowTask) {
@@ -273,9 +281,11 @@ final class TaskWatchdog
 
                 $task = TaskRepair::repairRun($run, $summary);
 
-                self::historyProjectionRole()->projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                );
+                if (! $task instanceof WorkflowTask) {
+                    self::historyProjectionRole()->projectRun(
+                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                    );
+                }
 
                 return $task;
             });
@@ -461,10 +471,6 @@ final class TaskWatchdog
                     'compatibility' => $run->compatibility,
                     'repair_count' => 1,
                 ]);
-
-                self::historyProjectionRole()->projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                );
 
                 return $task;
             });
