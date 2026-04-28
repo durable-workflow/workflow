@@ -486,10 +486,11 @@ each step independently.
    `workflow:v2:repair-pass`. The history/projection role now
    crosses the matching seam through `DefaultHistoryProjectionRole`,
    so a future out-of-process adapter can replace that binding
-   without patching the claim paths. The scheduler role now crosses
-   `workflow:v2:schedule-tick` through `DefaultSchedulerRole`, so a
-   future out-of-process adapter can replace that binding without
-   patching the command entrypoint.
+   without patching the claim paths or the
+   `workflow:v2:rebuild-projections` maintenance command. The
+   scheduler role now crosses `workflow:v2:schedule-tick` through
+   `DefaultSchedulerRole`, so a future out-of-process adapter can
+   replace that binding without patching the command entrypoint.
 3. **Introduce the dedicated matching shape.** The Phase 3
    contract already allows a dedicated matching role; Phase 4
    provides the deployment guidance for running it as a separate

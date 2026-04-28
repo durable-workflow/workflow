@@ -9,8 +9,10 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -19,12 +21,96 @@ use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\RunSummaryProjector;
 
 final class V2RebuildProjectionsCommandTest extends TestCase
 {
+    public function testItUsesTheHistoryProjectionRoleBindingForRebuilds(): void
+    {
+        [, $run] = $this->createCompletedRun('projection-command-history-role');
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            /**
+             * @var list<string>
+             */
+            public array $projectedRunIds = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->projectedRunIds[] = $run->id;
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--run-id' => [$run->id],
+        ])
+            ->expectsOutput('Rebuilt 1 run-summary projection row(s).')
+            ->assertSuccessful();
+
+        $this->assertSame([$run->id], $customRole->projectedRunIds);
+        $this->assertDatabaseHas('workflow_run_summaries', [
+            'id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'status' => RunStatus::Completed->value,
+        ]);
+    }
+
+    public function testItReportsHistoryProjectionRoleFailures(): void
+    {
+        [, $run] = $this->createCompletedRun('projection-command-history-role-failure');
+
+        $failingRole = new class() implements HistoryProjectionRole {
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                throw new \RuntimeException('projection seam exploded');
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                throw new \RuntimeException('unused');
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $failingRole);
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--run-id' => [$run->id],
+        ])
+            ->expectsOutput('Rebuilt 0 run-summary projection row(s).')
+            ->expectsOutput(sprintf('Failed to rebuild run [%s]: projection seam exploded', $run->id))
+            ->assertFailed();
+
+        $this->assertDatabaseMissing('workflow_run_summaries', [
+            'id' => $run->id,
+        ]);
+    }
+
     public function testItRebuildsMissingRunSummariesAndPrunesStaleRows(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');

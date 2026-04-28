@@ -136,6 +136,12 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         '**API ingress down**',
     ];
 
+    private const REQUIRED_ROLE_BOUND_COMMANDS = [
+        'workflow:v2:repair-pass',
+        'workflow:v2:rebuild-projections',
+        'workflow:v2:schedule-tick',
+    ];
+
     public function testContractDocumentExistsAndDeclaresFrozenSections(): void
     {
         $contents = $this->documentContents();
@@ -205,6 +211,22 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
                 sprintf(
                     'Control-plane split contract must name %s as the server-side role binding surface.',
                     $controller
+                ),
+            );
+        }
+    }
+
+    public function testContractDocumentNamesRoleBoundMaintenanceCommands(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_ROLE_BOUND_COMMANDS as $command) {
+            $this->assertStringContainsString(
+                $command,
+                $contents,
+                sprintf(
+                    'Control-plane split contract must name %s so the role-bound maintenance entrypoint stays explicit.',
+                    $command
                 ),
             );
         }

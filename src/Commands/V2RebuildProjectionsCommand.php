@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
@@ -16,7 +17,6 @@ use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\RunSummaryProjectionDrift;
-use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\SelectedRunProjectionDrift;
 
 #[AsCommand(name: 'workflow:v2:rebuild-projections')]
@@ -32,6 +32,12 @@ class V2RebuildProjectionsCommand extends Command
         {--json : Output the rebuild report as JSON}';
 
     protected $description = 'Rebuild Workflow v2 projection rows from durable runtime state';
+
+    public function __construct(
+        private readonly HistoryProjectionRole $historyProjectionRole,
+    ) {
+        parent::__construct();
+    }
 
     public function handle(): int
     {
@@ -63,14 +69,16 @@ class V2RebuildProjectionsCommand extends Command
             'failures' => [],
         ];
 
-        $runQuery->chunkById(100, static function ($runs) use (&$report, $dryRun): void {
+        $historyProjectionRole = $this->historyProjectionRole;
+
+        $runQuery->chunkById(100, static function ($runs) use (&$report, $dryRun, $historyProjectionRole): void {
             foreach ($runs as $run) {
                 try {
                     if ($dryRun) {
                         continue;
                     }
 
-                    RunSummaryProjector::project($run);
+                    $historyProjectionRole->projectRun($run);
                     $report['run_summaries_rebuilt']++;
                 } catch (Throwable $exception) {
                     $report['failures'][] = [
