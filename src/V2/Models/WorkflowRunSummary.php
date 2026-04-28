@@ -39,6 +39,7 @@ class WorkflowRunSummary extends Model
         'repair_attention' => 'bool',
         'task_problem' => 'bool',
         'visibility_labels' => 'array',
+        'memo' => 'array',
         'search_attributes' => 'array',
         'projection_schema_version' => 'integer',
         'history_event_count' => 'integer',
@@ -151,57 +152,71 @@ class WorkflowRunSummary extends Model
     }
 
     /**
-     * Get search attributes with dual-read fallback.
-     *
-     * Phase 1 dual-read: prefer typed table when available, fall back to JSON blob.
-     * This enables gradual migration without breaking existing Waterline queries.
+     * Get search attributes from the authoritative typed table.
      *
      * @return array<string, mixed> Key-value pairs
      */
     public function getTypedSearchAttributes(): array
     {
-        // Try typed table first (optimal for new runs)
-        if ($this->relationLoaded('searchAttributes')) {
-            $typed = $this->searchAttributes->mapWithKeys(static function (WorkflowSearchAttribute $attr) {
+        if (! $this->exists) {
+            return $this->decodeVisibilityArrayAttribute($this->attributes['search_attributes'] ?? null);
+        }
+
+        $this->loadMissing('searchAttributes');
+
+        /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowSearchAttribute> $searchAttributes */
+        $searchAttributes = $this->getRelation('searchAttributes');
+
+        return $searchAttributes
+            ->mapWithKeys(static function (WorkflowSearchAttribute $attr): array {
                 return [
                     $attr->key => $attr->getValue(),
                 ];
-            })->toArray();
-
-            if (! empty($typed)) {
-                return $typed;
-            }
-        }
-
-        // Fallback to JSON blob (for old runs or if typed storage failed)
-        return is_array($this->search_attributes) ? $this->search_attributes : [];
+            })
+            ->sortKeys()
+            ->toArray();
     }
 
     /**
-     * Get memos with dual-read fallback.
-     *
-     * Phase 1 dual-read: prefer typed table when available, fall back to JSON blob.
-     * Memos are returned-only metadata, excluded from filtering by contract.
+     * Get memos from the authoritative typed table.
      *
      * @return array<string, mixed> Key-value pairs
      */
     public function getMemos(): array
     {
-        // Try typed table first (optimal for new runs)
-        if ($this->relationLoaded('memos')) {
-            $typed = $this->memos->mapWithKeys(static function (WorkflowMemo $memo) {
+        if (! $this->exists) {
+            return $this->decodeVisibilityArrayAttribute($this->attributes['memo'] ?? null);
+        }
+
+        $this->loadMissing('memos');
+
+        /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowMemo> $memos */
+        $memos = $this->getRelation('memos');
+
+        return $memos
+            ->mapWithKeys(static function (WorkflowMemo $memo): array {
                 return [
                     $memo->key => $memo->getValue(),
                 ];
-            })->toArray();
+            })
+            ->sortKeys()
+            ->toArray();
+    }
 
-            if (! empty($typed)) {
-                return $typed;
-            }
-        }
+    /**
+     * @return array<string, mixed>
+     */
+    public function getSearchAttributesAttribute(mixed $value): array
+    {
+        return $this->getTypedSearchAttributes();
+    }
 
-        // Fallback to JSON blob (for old runs or if typed storage failed)
-        return is_array($this->memo) ? $this->memo : [];
+    /**
+     * @return array<string, mixed>
+     */
+    public function getMemoAttribute(mixed $value): array
+    {
+        return $this->getMemos();
     }
 
     /**
@@ -238,5 +253,23 @@ class WorkflowRunSummary extends Model
                 $q->where('value_string', $value);
             }
         });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeVisibilityArrayAttribute(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (! is_string($value) || $value === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+
+        return is_array($decoded) ? $decoded : [];
     }
 }

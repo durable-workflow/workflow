@@ -1611,6 +1611,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'last_history_sequence' => 0,
         ]);
 
+        $this->inheritTypedVisibilityMetadata($run, $childRun);
+
         $childInstance->forceFill([
             'current_run_id' => $childRun->id,
         ])->save();
@@ -1776,10 +1778,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array $command,
         int $sequence,
     ): int {
+        $call = new UpsertSearchAttributesCall($command['attributes']);
         $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
         $merged = $existing;
 
-        foreach ($command['attributes'] as $key => $value) {
+        foreach ($call->attributes as $key => $value) {
             if ($value === null) {
                 unset($merged[$key]);
 
@@ -1794,10 +1797,12 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $run->forceFill([
             'search_attributes' => $merged,
         ])->save();
+        app(SearchAttributeUpsertService::class)->upsert($run, $call, $sequence);
+        $run->unsetRelation('searchAttributes');
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SearchAttributesUpserted, [
             'sequence' => $sequence,
-            'attributes' => $command['attributes'],
+            'attributes' => $call->attributes,
             'merged' => $merged,
         ], $task);
 
@@ -1846,6 +1851,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
         ]);
+
+        $this->inheritTypedVisibilityMetadata($run, $continuedRun);
 
         $instance->forceFill([
             'current_run_id' => $continuedRun->id,
@@ -2034,6 +2041,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
         ]);
+
+        $this->inheritTypedVisibilityMetadata($failedChildRun, $retryRun);
 
         $childInstance->forceFill([
             'current_run_id' => $retryRun->id,
@@ -2986,7 +2995,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     {
         return $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run;
     }
-
     private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void
     {
         app(MemoUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);

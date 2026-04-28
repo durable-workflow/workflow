@@ -27,6 +27,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -1226,12 +1227,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testCompleteUpsertsSearchAttributesAndProjectsSummary(): void
     {
         $run = $this->createWaitingRun();
-        $run->forceFill([
-            'search_attributes' => [
-                'remove_me' => 'legacy',
-                'tenant' => 'acme',
-            ],
-        ])->save();
+        $this->createSearchAttribute($run, 'remove_me', 'legacy');
+        $this->createSearchAttribute($run, 'tenant', 'acme');
 
         /** @var WorkflowTask $task */
         $task = $this->createLeasedTask($run);
@@ -2666,5 +2663,18 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ])->save();
 
         return $run;
+    }
+
+    private function createSearchAttribute(WorkflowRun $run, string $key, mixed $value): void
+    {
+        $attribute = new WorkflowSearchAttribute([
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'key' => $key,
+        ]);
+        $attribute->setTypedValueWithInference($value);
+        $attribute->upserted_at_sequence = 0;
+        $attribute->inherited_from_parent = false;
+        $attribute->save();
     }
 }
