@@ -16,8 +16,18 @@ final class MatchingRoleSnapshot
      * opted out and the broad sweep is expected to run as
      * `php artisan workflow:v2:repair-pass` instead. `task_dispatch_mode`
      * reports the configured dispatch mode (`queue` or `poll`).
+     * `partition_primitives` freezes the matching-role routing axes that
+     * operators and downstream clients can reason about, while
+     * `backpressure_model` reports the durable admission boundary the
+     * engine enforces today.
      *
-     * @return array{queue_wake_enabled: bool, shape: string, task_dispatch_mode: string}
+     * @return array{
+     *     queue_wake_enabled: bool,
+     *     shape: string,
+     *     task_dispatch_mode: string,
+     *     partition_primitives: list<string>,
+     *     backpressure_model: string
+     * }
      */
     public static function current(): array
     {
@@ -31,6 +41,8 @@ final class MatchingRoleSnapshot
             'queue_wake_enabled' => $queueWakeEnabled,
             'shape' => $queueWakeEnabled ? 'in_worker' : 'dedicated',
             'task_dispatch_mode' => $dispatchMode,
+            'partition_primitives' => ['connection', 'queue', 'compatibility', 'namespace'],
+            'backpressure_model' => 'lease_ownership',
         ];
     }
 }

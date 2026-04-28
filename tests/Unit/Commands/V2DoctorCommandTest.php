@@ -41,7 +41,7 @@ final class V2DoctorCommandTest extends TestCase
             '--json' => true,
         ])
             ->expectsOutputToContain(
-                '"matching_role":{"queue_wake_enabled":false,"shape":"dedicated","task_dispatch_mode":"poll"}'
+                '"matching_role":{"queue_wake_enabled":false,"shape":"dedicated","task_dispatch_mode":"poll","partition_primitives":["connection","queue","compatibility","namespace"],"backpressure_model":"lease_ownership"}'
             )
             ->assertSuccessful();
     }

@@ -441,14 +441,20 @@ layer healthy" without reading task rows directly:
   `leased_tasks`, `retrying_activities`, `unhealthy_tasks`,
   `claim_failed_runs`, and `compatibility_blocked_runs`; a
   `workers` block with the Phase 2 compatibility roll-up; and a
-  `matching_role` block with `queue_wake_enabled`, `shape`, and
-  `task_dispatch_mode`. `shape` is `in_worker` when this process
+  `matching_role` block with `queue_wake_enabled`, `shape`,
+  `task_dispatch_mode`, `partition_primitives`, and
+  `backpressure_model`. `shape` is `in_worker` when this process
   still runs the in-worker broad-poll wake and `dedicated` when
   the process has opted out so the broad sweep runs under
-  `php artisan workflow:v2:repair-pass`. The snapshot reports the
-  configuration observed by the process serving the request; in
-  mixed-shape fleets, operators read one snapshot per node to see
-  the full deployment.
+  `php artisan workflow:v2:repair-pass`. `partition_primitives`
+  freezes the routing axes in order:
+  `connection`, `queue`, `compatibility`, `namespace`.
+  `backpressure_model` reports `lease_ownership`, meaning the durable
+  admission boundary is lease occupancy and lease expiry rather
+  than an engine-enforced per-worker quota. The snapshot reports
+  the configuration observed by the process serving the request;
+  in mixed-shape fleets, operators read one snapshot per node to
+  see the full deployment.
 - `Workflow\V2\Support\OperatorQueueVisibility::forNamespace()` /
   `::forQueue()` returns per-partition queue depth, leased depth,
   poller heartbeats, and stale-worker detection.

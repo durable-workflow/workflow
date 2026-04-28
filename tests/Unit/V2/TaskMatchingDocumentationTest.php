@@ -412,7 +412,14 @@ final class TaskMatchingDocumentationTest extends TestCase
     {
         $contents = $this->documentContents();
 
-        foreach (['`matching_role`', '`queue_wake_enabled`', '`shape`', '`task_dispatch_mode`'] as $field) {
+        foreach ([
+            '`matching_role`',
+            '`queue_wake_enabled`',
+            '`shape`',
+            '`task_dispatch_mode`',
+            '`partition_primitives`',
+            '`backpressure_model`',
+        ] as $field) {
             $this->assertStringContainsString(
                 $field,
                 $contents,
@@ -433,6 +440,12 @@ final class TaskMatchingDocumentationTest extends TestCase
                 ),
             );
         }
+
+        $this->assertStringContainsString(
+            '`lease_ownership`',
+            $contents,
+            'Task matching contract must name the lease_ownership backpressure model so operator surfaces can expose the durable admission boundary without paraphrasing it.',
+        );
     }
 
     private function documentContents(): string

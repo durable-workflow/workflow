@@ -2246,6 +2246,8 @@ final class V2OperatorMetricsTest extends TestCase
                 'queue_wake_enabled' => true,
                 'shape' => 'in_worker',
                 'task_dispatch_mode' => 'queue',
+                'partition_primitives' => ['connection', 'queue', 'compatibility', 'namespace'],
+                'backpressure_model' => 'lease_ownership',
             ],
             $snapshot['matching_role'],
         );
@@ -2264,6 +2266,8 @@ final class V2OperatorMetricsTest extends TestCase
                 'queue_wake_enabled' => false,
                 'shape' => 'dedicated',
                 'task_dispatch_mode' => 'poll',
+                'partition_primitives' => ['connection', 'queue', 'compatibility', 'namespace'],
+                'backpressure_model' => 'lease_ownership',
             ],
             $snapshot['matching_role'],
         );
