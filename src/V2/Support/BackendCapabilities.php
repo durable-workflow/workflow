@@ -175,19 +175,16 @@ final class BackendCapabilities
         if ($store === null || $driver === null) {
             $issues[] = self::issue(
                 'cache',
-                'warning',
+                'error',
                 'cache_store_missing',
-                'No cache store is configured. Wake acceleration, repair-loop throttles, and cache-backed fleet fallbacks may be degraded, but durable dispatch remains correct.',
+                'Workflow v2 requires a configured cache store for worker-loop throttles and compatibility heartbeat fallbacks.',
             );
         } elseif (! $lockSupported) {
             $issues[] = self::issue(
                 'cache',
-                'warning',
+                'error',
                 'cache_locks_unsupported',
-                sprintf(
-                    'The [%s] cache store does not advertise Laravel atomic lock support. Wake acceleration remains optional, but repair-loop throttles and cache-backed fleet fallbacks may be degraded.',
-                    $store,
-                ),
+                sprintf('The [%s] cache store does not advertise Laravel atomic lock support.', $store),
             );
         }
 

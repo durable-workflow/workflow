@@ -66,23 +66,15 @@ final class HealthCheck
     {
         $issues = is_array($backend['issues'] ?? null) ? $backend['issues'] : [];
         $supported = BackendCapabilities::isSupported($backend);
-        $severity = is_string($backend['severity'] ?? null) ? $backend['severity'] : ($supported ? 'ok' : 'error');
 
         return self::check(
             'backend_capabilities',
-            match ($severity) {
-                'error' => 'error',
-                'warning' => 'warning',
-                default => 'ok',
-            },
-            match ($severity) {
-                'error' => 'One or more configured v2 backend capabilities are unsupported.',
-                'warning' => 'One or more configured v2 backend capabilities are degraded but non-blocking.',
-                default => 'The configured database, queue, cache, and codec backends satisfy the v2 capability contract.',
-            },
+            $supported ? 'ok' : 'error',
+            $supported
+                ? 'The configured database, queue, and cache backends satisfy the v2 capability contract.'
+                : 'One or more configured v2 backend capabilities are unsupported.',
             self::CATEGORY_CORRECTNESS,
             [
-                'severity' => $severity,
                 'issue_count' => count($issues),
                 'issues' => $issues,
             ],

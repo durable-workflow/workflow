@@ -10,11 +10,11 @@ use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Str;
 
 /**
- * Validates cache backend configuration for long-poll wake acceleration in multi-node deployments.
+ * Validates cache backend configuration for long-poll coordination in multi-node deployments.
  *
- * Shared cache backends (Redis, database, Memcached) are required only for
- * cross-node wake propagation. Durable dispatch correctness does not depend on
- * this layer, but latency and rollout-safety diagnostics do.
+ * Multi-node deployments require shared cache backends (Redis, database, Memcached)
+ * for wake signal propagation. File-based cache is per-node and cannot coordinate
+ * across nodes.
  *
  * @see \Workflow\V2\Contracts\LongPollWakeStore
  */
@@ -53,7 +53,7 @@ class LongPollCacheValidator
     }
 
     /**
-     * Check if current configuration is safe for multi-node wake acceleration.
+     * Check if current configuration is safe for multi-node deployment.
      *
      * @return array{
      *     safe: bool,
@@ -82,7 +82,7 @@ class LongPollCacheValidator
         return [
             'safe' => false,
             'message' => sprintf(
-                'Multi-node wake acceleration is enabled (DW_V2_MULTI_NODE=true) but cache backend is "%s". %s',
+                'Multi-node deployment detected (DW_V2_MULTI_NODE=true) but cache backend is "%s". %s',
                 $validation['backend'],
                 $validation['reason']
             ),

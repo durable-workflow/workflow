@@ -67,7 +67,7 @@ final class ReadinessContract
                 'dispatch' => [
                     'authority' => BackendCapabilities::class . '::snapshot',
                     'readiness_key' => 'supported',
-                    'gate' => 'No database, queue, codec, or structural-limit issue has error severity; cache issues remain non-blocking warnings.',
+                    'gate' => 'No database, queue, cache, codec, or structural-limit issue has error severity.',
                     'unready_behavior' => 'Task dispatch does not claim unsupported durable work; operators see backend_capabilities errors.',
                 ],
                 'claim' => [
@@ -107,8 +107,6 @@ final class ReadinessContract
                 ],
                 'cache' => [
                     'required_capabilities' => ['atomic_locks'],
-                    'dispatch_blocking_severity' => 'warning',
-                    'role' => 'acceleration_only',
                 ],
                 'codec' => [
                     'default_for_new_v2_runs' => 'avro',
@@ -132,7 +130,7 @@ final class ReadinessContract
         $contract['effective_states'] = [
             'dispatch' => [
                 'state' => 'evaluated_by_backend_capabilities_snapshot',
-                'blocking_rule' => 'Any error-severity database, queue, codec, or structural-limit issue makes supported=false; cache diagnostics stay warning-only.',
+                'blocking_rule' => 'Any error-severity backend issue makes supported=false.',
             ],
             'claim' => [
                 'state' => 'evaluated_per_task_queue_connection',

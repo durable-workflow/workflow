@@ -4,10 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Cache\CacheManager;
-use Illuminate\Cache\Repository;
 use Illuminate\Support\Carbon;
-use Tests\Support\NonLockingCacheStore;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ScheduleStatus;
@@ -51,27 +48,6 @@ final class HealthCheckTest extends TestCase
             $snapshot['checks'][0]['data']['issues'],
             'code',
         ));
-    }
-
-    public function testSnapshotWarnsWhenCustomNoLockCacheStoreDegradesOnlyAcceleration(): void
-    {
-        config()->set('queue.default', 'redis');
-        config()
-            ->set('queue.connections.redis.driver', 'redis');
-        config()
-            ->set('workflows.serializer', 'avro');
-        $this->configureNonLockingCacheStore();
-
-        $snapshot = HealthCheck::snapshot();
-        $backend = collect($snapshot['checks'])->firstWhere('name', 'backend_capabilities');
-
-        $this->assertNotNull($backend);
-        $this->assertSame('warning', $backend['status']);
-        $this->assertSame('warning', $backend['data']['severity']);
-        $this->assertContains('cache_locks_unsupported', array_column($backend['data']['issues'], 'code'));
-        $this->assertSame('warning', $snapshot['status']);
-        $this->assertTrue($snapshot['healthy']);
-        $this->assertSame(200, HealthCheck::httpStatus($snapshot));
     }
 
     public function testSnapshotWarnsWhenRunSummaryProjectionNeedsRebuild(): void
@@ -1036,25 +1012,6 @@ final class HealthCheckTest extends TestCase
         $this->beforeApplicationDestroyed(static function (): void {
             WorkerCompatibilityFleet::clear();
         });
-    }
-
-    private function configureNonLockingCacheStore(): void
-    {
-        $driver = 'test-non-locking';
-        $store = 'test-non-locking';
-
-        $this->app['cache']->extend($driver, function (): Repository {
-            if (! $this instanceof CacheManager) {
-                throw new \RuntimeException('Unexpected cache manager binding.');
-            }
-
-            return new Repository(new NonLockingCacheStore());
-        });
-
-        config()
-            ->set("cache.stores.{$store}.driver", $driver);
-        config()
-            ->set('cache.default', $store);
     }
 
     private function extractFrozenHealthCheckNamesSection(string $contents): string
