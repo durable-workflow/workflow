@@ -225,13 +225,7 @@ final class TaskWatchdog
 
                 TaskCompatibility::sync($task, $run);
 
-                $task = TaskRepair::recoverExistingTask($task, $run);
-
-                self::historyProjectionRole()->projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                );
-
-                return $task;
+                return TaskRepair::recoverExistingTask($task, $run);
             });
 
             if ($task instanceof WorkflowTask) {
