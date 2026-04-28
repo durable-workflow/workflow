@@ -24,6 +24,7 @@ interface WorkflowTaskBridge
      * Each summary contains task_id, workflow_run_id, workflow_instance_id,
      * workflow_type, connection, queue, compatibility, and available_at.
      *
+     * @param  list<string>  $workflowTypes
      * @return list<array{
      *     task_id: string,
      *     workflow_run_id: string,
@@ -41,7 +42,8 @@ interface WorkflowTaskBridge
         ?string $queue,
         int $limit = 1,
         ?string $compatibility = null,
-        ?string $namespace = null
+        ?string $namespace = null,
+        array $workflowTypes = [],
     ): array;
 
     /**

@@ -62,7 +62,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ?string $queue,
         int $limit = 1,
         ?string $compatibility = null,
-        ?string $namespace = null
+        ?string $namespace = null,
+        array $workflowTypes = []
     ): array {
         // Use a 1-second ceiling on the availability cutoff so that tasks created
         // in the same request tick are reliably surfaced across all backends,
@@ -99,7 +100,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $tasks = $query->get();
 
-        return $tasks->map(static function (WorkflowTask $task) {
+        $results = $tasks->map(static function (WorkflowTask $task) {
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->find($task->workflow_run_id);
@@ -117,6 +118,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             ];
         })->values()
             ->all();
+
+        if ($workflowTypes !== []) {
+            $results = array_values(array_filter($results, static function (array $task) use ($workflowTypes): bool {
+                $type = $task['workflow_type'] ?? null;
+
+                return is_string($type) && $type !== '' && in_array($type, $workflowTypes, true);
+            }));
+        }
+
+        return $results;
     }
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array

@@ -37,8 +37,10 @@ final class WorkflowTaskBridge
         ?string $queue,
         int $limit = 1,
         ?string $compatibility = null,
+        ?string $namespace = null,
+        array $workflowTypes = [],
     ): array {
-        return self::resolve()->poll($connection, $queue, $limit, $compatibility);
+        return self::resolve()->poll($connection, $queue, $limit, $compatibility, $namespace, $workflowTypes);
     }
 
     /**

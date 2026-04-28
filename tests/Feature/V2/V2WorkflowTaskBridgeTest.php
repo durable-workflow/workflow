@@ -960,6 +960,46 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertCount(2, $results);
     }
 
+    public function testPollFiltersByWorkflowType(): void
+    {
+        $matchingRun = $this->createWaitingRun();
+        $otherRun = $this->createWaitingRun();
+
+        $otherRun->forceFill([
+            'workflow_type' => 'other-workflow-type',
+        ])->save();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $matchingRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $otherRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $results = $this->bridge->poll(null, null, 10, null, null, ['test-greeting-workflow']);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($matchingRun->id, $results[0]['workflow_run_id']);
+        $this->assertSame('test-greeting-workflow', $results[0]['workflow_type']);
+    }
+
     // --- complete() ---
 
     public function testCompleteWithWorkflowCompletionClosesRun(): void
