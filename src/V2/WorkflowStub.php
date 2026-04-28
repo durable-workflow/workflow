@@ -16,7 +16,6 @@ use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryExportRedactor;
-use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
@@ -57,6 +56,7 @@ use Workflow\V2\Support\ParentClosePolicyEnforcer;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunCommandContract;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\SignalWaits;
@@ -915,9 +915,8 @@ final class WorkflowStub
                         'rejection_reason' => $command->rejection_reason,
                     ], null, $command);
 
-                self::projectRun(
+                RunSummaryProjector::project(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                        ?? $run
                 );
 
                 return;
@@ -1088,9 +1087,8 @@ final class WorkflowStub
 
             LifecycleEventDispatcher::workflowStarted($run);
 
-            self::projectRun(
+            RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents'])
-                    ?? $run
             );
         });
 
@@ -1512,7 +1510,7 @@ final class WorkflowStub
                     ->get()
             );
 
-            $summary = self::projectRun($run);
+            $summary = RunSummaryProjector::project($run);
 
             if (in_array($summary->liveness_state, ['repair_needed', 'workflow_replay_blocked'], true)) {
                 $task = TaskRepair::repairRun($run, $summary);
@@ -1553,9 +1551,8 @@ final class WorkflowStub
                 'task_type' => $task?->task_type?->value,
             ], $task, $command);
 
-            self::projectRun(
+            RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
             );
         });
 
@@ -1720,9 +1717,8 @@ final class WorkflowStub
                 ], static fn (mixed $value): bool => $value !== null), null, $command);
             }
 
-            self::projectRun(
+            RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
             );
         });
 
@@ -1999,9 +1995,8 @@ final class WorkflowStub
                 ]);
             }
 
-            self::projectRun(
+            RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
             );
         });
 
@@ -2349,9 +2344,8 @@ final class WorkflowStub
                 ]);
             }
 
-            self::projectRun(
+            RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
             );
         });
 
@@ -2548,9 +2542,8 @@ final class WorkflowStub
                     ]);
                 }
 
-                self::projectRun(
+                RunSummaryProjector::project(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                        ?? $run
                 );
 
                 return;
@@ -2801,9 +2794,8 @@ final class WorkflowStub
 
             LifecycleEventDispatcher::workflowStarted($run);
 
-            self::projectRun(
+            RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
             );
         });
 
@@ -3080,9 +3072,8 @@ final class WorkflowStub
 
             $parentTasks = $this->createParentResumeTasks($run);
 
-            self::projectRun(
+            RunSummaryProjector::project(
                 $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
             );
         });
 
@@ -4276,7 +4267,7 @@ final class WorkflowStub
                         $childStatus
                     )
                 ) {
-                    self::projectRun(
+                    RunSummaryProjector::project(
                         $parentRun->fresh([
                             'instance',
                             'tasks',
@@ -4287,7 +4278,6 @@ final class WorkflowStub
                             'childLinks.childRun.instance.currentRun',
                             'childLinks.childRun.failures',
                         ])
-                            ?? $parentRun
                     );
 
                     continue;
@@ -4317,7 +4307,7 @@ final class WorkflowStub
                 'compatibility' => $parentRun->compatibility,
             ]);
 
-            self::projectRun(
+            RunSummaryProjector::project(
                 $parentRun->fresh([
                     'instance',
                     'tasks',
@@ -4328,7 +4318,6 @@ final class WorkflowStub
                     'childLinks.childRun.instance.currentRun',
                     'childLinks.childRun.failures',
                 ])
-                    ?? $parentRun
             );
 
             $tasks[] = $task;
@@ -4393,19 +4382,6 @@ final class WorkflowStub
     private static function taskQuery()
     {
         return ConfiguredV2Models::query('task_model', WorkflowTask::class);
-    }
-
-    private static function projectRun(WorkflowRun $run): WorkflowRunSummary
-    {
-        return self::historyProjectionRole()->projectRun($run);
-    }
-
-    private static function historyProjectionRole(): HistoryProjectionRole
-    {
-        /** @var HistoryProjectionRole $role */
-        $role = App::make(HistoryProjectionRole::class);
-
-        return $role;
     }
 
     /**

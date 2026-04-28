@@ -9,21 +9,14 @@ use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\TestCase;
-use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Enums\HistoryEventType;
-use Workflow\V2\Models\ActivityAttempt;
-use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
-use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\WorkflowStub;
 
 final class V2DuplicateStartPolicyTest extends TestCase
@@ -139,50 +132,6 @@ final class V2DuplicateStartPolicyTest extends TestCase
         $this->assertSame(CommandOutcome::ReturnedExistingActive->value, $result->outcome());
         $this->assertSame('dup-return-active', $result->instanceId());
         $this->assertSame($workflow->runId(), $result->runId());
-    }
-
-    public function testReturnExistingActiveUsesHistoryProjectionRoleBinding(): void
-    {
-        WorkflowStub::fake();
-
-        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'dup-return-active-history-role');
-        $workflow->start();
-
-        $this->assertSame('waiting', $workflow->refresh()->status());
-
-        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
-            public array $calls = [];
-
-            public function __construct(
-                private readonly DefaultHistoryProjectionRole $delegate,
-            ) {
-            }
-
-            public function projectRun(WorkflowRun $run): WorkflowRunSummary
-            {
-                $this->calls[] = ['projectRun', $run->id];
-
-                return $this->delegate->projectRun($run);
-            }
-
-            public function recordActivityStarted(
-                WorkflowRun $run,
-                ActivityExecution $execution,
-                ActivityAttempt $attempt,
-                WorkflowTask $task,
-            ): WorkflowRunSummary {
-                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
-            }
-        };
-
-        $this->app->instance(HistoryProjectionRole::class, $customRole);
-
-        $second = WorkflowStub::load('dup-return-active-history-role');
-        $result = $second->attemptStart(StartOptions::returnExistingActive());
-
-        $this->assertTrue($result->accepted());
-        $this->assertTrue($result->returnedExistingActive());
-        $this->assertSame([['projectRun', $workflow->runId()]], $customRole->calls);
     }
 
     public function testReturnExistingActiveRejectsWhenRunIsTerminal(): void
