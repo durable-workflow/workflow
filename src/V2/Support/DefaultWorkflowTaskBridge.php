@@ -65,6 +65,12 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ?string $namespace = null,
         array $workflowTypes = []
     ): array {
+        $requestedWorkflowTypes = self::nonEmptyStrings($workflowTypes);
+
+        if ($workflowTypes !== [] && $requestedWorkflowTypes === []) {
+            return [];
+        }
+
         // Use a 1-second ceiling on the availability cutoff so that tasks created
         // in the same request tick are reliably surfaced across all backends,
         // including SQLite where timestamp precision can vary.
@@ -98,9 +104,18 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $query->where('namespace', $namespace);
         }
 
+        if ($requestedWorkflowTypes !== []) {
+            $query->whereIn(
+                'workflow_run_id',
+                ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->select('id')
+                    ->whereIn('workflow_type', $requestedWorkflowTypes),
+            );
+        }
+
         $tasks = $query->get();
 
-        $results = $tasks->map(static function (WorkflowTask $task) {
+        return $tasks->map(static function (WorkflowTask $task) {
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->find($task->workflow_run_id);
@@ -118,16 +133,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             ];
         })->values()
             ->all();
-
-        if ($workflowTypes !== []) {
-            $results = array_values(array_filter($results, static function (array $task) use ($workflowTypes): bool {
-                $type = $task['workflow_type'] ?? null;
-
-                return is_string($type) && $type !== '' && in_array($type, $workflowTypes, true);
-            }));
-        }
-
-        return $results;
     }
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
@@ -2992,6 +2997,17 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function nonEmptyStrings(array $values): array
+    {
+        return array_values(array_filter(array_map(
+            static fn (mixed $value): ?string => self::nonEmptyString($value),
+            $values,
+        )));
     }
 
     private function historyProjectionRole(): HistoryProjectionRole

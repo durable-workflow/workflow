@@ -992,6 +992,63 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('test-greeting-workflow', $results[0]['workflow_type']);
     }
 
+    public function testPollFiltersByWorkflowTypeBeforeApplyingLimit(): void
+    {
+        $firstRun = $this->createWaitingRun();
+        $firstRun->forceFill([
+            'workflow_type' => 'other-workflow-one',
+        ])->save();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $firstRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinutes(3),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $secondRun = $this->createWaitingRun();
+        $secondRun->forceFill([
+            'workflow_type' => 'other-workflow-two',
+        ])->save();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $secondRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinutes(2),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $matchingRun = $this->createWaitingRun();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $matchingRun->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinute(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $results = $this->bridge->poll(null, null, 2, null, null, ['test-greeting-workflow']);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($matchingRun->id, $results[0]['workflow_run_id']);
+        $this->assertSame('test-greeting-workflow', $results[0]['workflow_type']);
+    }
+
     // --- complete() ---
 
     public function testCompleteWithWorkflowCompletionClosesRun(): void
