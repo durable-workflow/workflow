@@ -92,6 +92,61 @@ final class V2TaskDispatchTest extends TestCase
         $this->assertSame('workflow_task_ready', $summary->liveness_state);
     }
 
+    public function testTaskDispatchUsesHistoryProjectionRoleBindingWhenPublishSucceeds(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+
+        Queue::fake();
+
+        $run = $this->createWaitingRun('01J00000000000000000000001A');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        TaskDispatcher::dispatch($task);
+
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+    }
+
     public function testTaskDispatchFailureRecordsTransportFailureWithoutPretendingPublishSucceeded(): void
     {
         config()->set('workflows.v2.compatibility.current', 'build-a');
@@ -171,6 +226,70 @@ final class V2TaskDispatchTest extends TestCase
 
         $this->assertTrue($export['summary']['task_problem']);
         $this->assertSame('active', $export['summary']['task_problem_badge']['code']);
+    }
+
+    public function testTaskDispatchFailureUsesHistoryProjectionRoleBindingWhenRepairing(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+
+        $this->mock(BusDispatcher::class, static function (MockInterface $mock): void {
+            $mock->shouldReceive('dispatch')
+                ->once()
+                ->andThrow(new RuntimeException('Queue transport unavailable.'));
+        });
+
+        $run = $this->createWaitingRun('01J00000000000000000000002A');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSeconds(5),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        try {
+            TaskDispatcher::dispatch($task);
+            $this->fail('Expected dispatch to throw.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Queue transport unavailable.', $exception->getMessage());
+        }
+
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
 
     public function testTaskDispatchFailureRecordsUnsupportedQueueCapabilityWithoutRunningInline(): void
