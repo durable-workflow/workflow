@@ -20,6 +20,7 @@ use Workflow\States\WorkflowPendingStatus;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Contracts\SchedulerRole;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -121,6 +122,18 @@ final class WorkflowServiceProviderTest extends TestCase
         (new WorkflowServiceProvider($this->app))->register();
 
         $this->assertSame($custom, $this->app->make(MatchingRole::class));
+    }
+
+    public function testSchedulerRoleBindingDefersToAppBinding(): void
+    {
+        $custom = $this->createMock(SchedulerRole::class);
+
+        $this->app->offsetUnset(SchedulerRole::class);
+        $this->app->singleton(SchedulerRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(SchedulerRole::class));
     }
 
     public function testProviderMergesV2DefaultsIntoLegacyPublishedConfig(): void
@@ -226,6 +239,7 @@ final class WorkflowServiceProviderTest extends TestCase
             'workflow:v2:history-export',
             'workflow:v2:repair-pass',
             'workflow:v2:rebuild-projections',
+            'workflow:v2:schedule-tick',
         ];
 
         foreach ($expectedCommands as $command) {

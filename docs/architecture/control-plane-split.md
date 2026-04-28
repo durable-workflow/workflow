@@ -242,6 +242,15 @@ Authority:
   `Workflow\V2\Support\ScheduleManager` when invoked by an
   authenticated operator.
 
+Canonical implementation surface:
+
+- `Workflow\V2\Contracts\SchedulerRole` and
+  `Workflow\V2\Support\DefaultSchedulerRole` own the scheduler-role
+  tick entrypoint exposed by `workflow:v2:schedule-tick`.
+- `Workflow\V2\Support\ScheduleManager` and
+  `Workflow\V2\Contracts\ScheduleWorkflowStarter` remain the
+  schedule-lifecycle and scheduled-start boundary inside that role.
+
 Guarantees:
 
 - The scheduler is the **only** role authorised to fire scheduled
@@ -467,8 +476,9 @@ each step independently.
    an out-of-process adapter can replace the binding without
    patching the package. Today's bindings are
    `WorkflowControlPlane`, `OperatorObservabilityRepository`,
-   `MatchingRole`, `HistoryProjectionRole`, `WorkflowTaskBridge`,
-   `ActivityTaskBridge`, `LongPollWakeStore`, and the scheduler's
+   `MatchingRole`, `HistoryProjectionRole`, `SchedulerRole`,
+   `WorkflowTaskBridge`, `ActivityTaskBridge`,
+   `LongPollWakeStore`, and the scheduler's
    `ScheduleWorkflowStarter`. The matching role now crosses the
    queue-loop wake and dedicated daemon entrypoints through
    `DefaultMatchingRole`, so a future out-of-process adapter can
@@ -476,7 +486,10 @@ each step independently.
    `workflow:v2:repair-pass`. The history/projection role now
    crosses the matching seam through `DefaultHistoryProjectionRole`,
    so a future out-of-process adapter can replace that binding
-   without patching the claim paths.
+   without patching the claim paths. The scheduler role now crosses
+   `workflow:v2:schedule-tick` through `DefaultSchedulerRole`, so a
+   future out-of-process adapter can replace that binding without
+   patching the command entrypoint.
 3. **Introduce the dedicated matching shape.** The Phase 3
    contract already allows a dedicated matching role; Phase 4
    provides the deployment guidance for running it as a separate

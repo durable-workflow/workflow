@@ -72,6 +72,8 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         'OperatorObservabilityRepository',
         'OperatorMetrics',
         'OperatorQueueVisibility',
+        'SchedulerRole',
+        'DefaultSchedulerRole',
         'ScheduleManager',
         'ScheduleTriggerResult',
         'ScheduleStartResult',

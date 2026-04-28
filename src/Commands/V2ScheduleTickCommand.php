@@ -7,7 +7,7 @@ namespace Workflow\Commands;
 use Illuminate\Console\Command;
 use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
-use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\Contracts\SchedulerRole;
 
 #[AsCommand(name: 'workflow:v2:schedule-tick')]
 class V2ScheduleTickCommand extends Command
@@ -17,9 +17,15 @@ class V2ScheduleTickCommand extends Command
 
     protected $description = 'Evaluate all due workflow v2 schedules and trigger matching workflows';
 
+    public function __construct(
+        private readonly SchedulerRole $schedulerRole,
+    ) {
+        parent::__construct();
+    }
+
     public function handle(): int
     {
-        $results = ScheduleManager::tick();
+        $results = $this->schedulerRole->tick();
 
         if ((bool) $this->option('json')) {
             try {

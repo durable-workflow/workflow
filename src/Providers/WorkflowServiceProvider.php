@@ -24,6 +24,7 @@ use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\LongPollWakeStore;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Contracts\SchedulerRole;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -41,6 +42,7 @@ use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\DefaultMatchingRole;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
+use Workflow\V2\Support\DefaultSchedulerRole;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\LongPollCacheValidator;
@@ -69,6 +71,8 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->app->singleton(ActivityTaskBridge::class, DefaultActivityTaskBridge::class);
 
         $this->app->singleton(WorkflowControlPlane::class, DefaultWorkflowControlPlane::class);
+
+        $this->app->singletonIf(SchedulerRole::class, DefaultSchedulerRole::class);
 
         $this->app->singleton(ScheduleWorkflowStarter::class, PhpClassScheduleStarter::class);
 
