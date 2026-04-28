@@ -11,6 +11,7 @@ use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
@@ -130,10 +131,10 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                         'rejection_reason' => $command->rejection_reason,
                     ], null, $command);
 
-                RunSummaryProjector::project(
+                $this->projectRun(
                     $currentRun->fresh(
                         ['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']
-                    )
+                    ) ?? $currentRun
                 );
 
                 return;
@@ -289,8 +290,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'compatibility' => $run->compatibility,
                 ]);
 
-            RunSummaryProjector::project(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents'])
+            $this->projectRun(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']) ?? $run
             );
         });
 
@@ -988,6 +989,20 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     private function taskQuery(): \Illuminate\Database\Eloquent\Builder
     {
         return ConfiguredV2Models::query('task_model', WorkflowTask::class);
+    }
+
+    private function projectRun(WorkflowRun $run): void
+    {
+        $this->historyProjectionRole()
+            ->projectRun($run);
+    }
+
+    private function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
     }
 
     /**
