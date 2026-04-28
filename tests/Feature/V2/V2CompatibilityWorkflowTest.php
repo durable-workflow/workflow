@@ -9,15 +9,18 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentChildWorkflow;
+use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
@@ -37,6 +40,94 @@ final class V2CompatibilityWorkflowTest extends TestCase
         config()
             ->set('workflows.v2.compatibility.namespace', null);
         WorkerCompatibilityFleet::clear();
+    }
+
+    public function testStartFailsClosedWhenOnlyIncompatibleLiveWorkersExist(): void
+    {
+        Queue::fake();
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'compat-start-blocked');
+
+        try {
+            $workflow->start('Taylor');
+            $this->fail('Expected start to fail closed when no compatible live worker exists.');
+        } catch (WorkflowExecutionUnavailableException $exception) {
+            $this->assertSame('start', $exception->operation());
+            $this->assertSame('compat-start-blocked', $exception->targetName());
+            $this->assertSame('compatibility_blocked', $exception->blockedReason());
+            $this->assertSame(
+                'Workflow instance [compat-start-blocked] cannot start. Start blocked under fail validation mode. '
+                . 'No active worker heartbeat for queue [default] advertises compatibility [build-a]. '
+                . 'Active workers there advertise [build-b].',
+                $exception->getMessage(),
+            );
+        }
+
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'compat-start-blocked')
+            ->sole();
+
+        $this->assertSame('rejected_compatibility_blocked', $command->outcome?->value);
+        $this->assertSame('compatibility_blocked', $command->rejection_reason);
+        $this->assertSame('compatibility_blocked', $command->commandReason());
+        $this->assertSame(
+            'Workflow instance [compat-start-blocked] cannot start. Start blocked under fail validation mode. '
+            . 'No active worker heartbeat for queue [default] advertises compatibility [build-a]. '
+            . 'Active workers there advertise [build-b].',
+            $command->commandMessage(),
+        );
+        $this->assertNull($workflow->runId());
+        $this->assertSame(0, WorkflowRun::query()->count());
+    }
+
+    public function testAttemptSignalWithStartRejectsWhenOnlyIncompatibleLiveWorkersExist(): void
+    {
+        Queue::fake();
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
+
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'compat-signal-with-start-blocked');
+        $result = $workflow->attemptSignalWithStart('name-provided', ['Taylor']);
+
+        $this->assertTrue($result->rejected());
+        $this->assertSame('rejected_compatibility_blocked', $result->outcome());
+        $this->assertSame('compatibility_blocked', $result->rejectionReason());
+        $this->assertSame('compatibility_blocked', $result->reason());
+        $this->assertSame(
+            'Workflow instance [compat-signal-with-start-blocked] cannot start via signal-with-start [name-provided]. '
+            . 'Start blocked under fail validation mode. '
+            . 'No active worker heartbeat for queue [default] advertises compatibility [build-a]. '
+            . 'Active workers there advertise [build-b].',
+            $result->message(),
+        );
+        $this->assertNull($result->startCommandId());
+        $this->assertNull($workflow->runId());
+        $this->assertSame(0, WorkflowRun::query()->count());
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $result->commandId(),
+            'workflow_instance_id' => 'compat-signal-with-start-blocked',
+            'workflow_run_id' => null,
+            'command_type' => 'signal',
+            'status' => 'rejected',
+            'outcome' => 'rejected_compatibility_blocked',
+            'rejection_reason' => 'compatibility_blocked',
+        ]);
     }
 
     public function testStartAndContinueAsNewPreserveCompatibilityMarkerAcrossRunsAndTasks(): void

@@ -130,4 +130,9 @@ class CommandResult
     {
         return $this->command->commandReason();
     }
+
+    public function message(): ?string
+    {
+        return $this->command->commandMessage();
+    }
 }

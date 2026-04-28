@@ -30,6 +30,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\UpdateResult;
 use Workflow\V2\WorkflowStub;
+use Workflow\V2\Support\WorkflowStartGate;
 
 final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 {
@@ -154,6 +155,38 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 
             if ($resolvedClass !== null && $queue === null) {
                 $queue = $this->classPropertyDefault($resolvedClass, 'queue');
+            }
+
+            $startBlockedReason = WorkflowStartGate::blockedReason(
+                WorkerCompatibility::current(),
+                $connection,
+                $queue,
+            );
+
+            if ($startBlockedReason !== null) {
+                $blockedMessage = WorkflowStartGate::blockedMessage(
+                    sprintf('Workflow instance [%s] cannot start.', $instance->id),
+                    WorkerCompatibility::current(),
+                    $connection,
+                    $queue,
+                ) ?? sprintf('Workflow instance [%s] cannot start.', $instance->id);
+
+                $command = WorkflowCommand::record($instance, null, $this->commandAttributes($commandContext, [
+                    'command_type' => CommandType::Start->value,
+                    'target_scope' => 'instance',
+                    'status' => CommandStatus::Rejected->value,
+                    'outcome' => CommandOutcome::RejectedCompatibilityBlocked->value,
+                    'payload_codec' => CodecRegistry::defaultCodec(),
+                    'payload' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), array_filter([
+                        'reason' => $startBlockedReason,
+                        'message' => $blockedMessage,
+                        'arguments_blob' => is_string($arguments) ? $arguments : null,
+                    ], static fn (mixed $value): bool => $value !== null)),
+                    'rejection_reason' => $startBlockedReason,
+                    'rejected_at' => now(),
+                ]));
+
+                return;
             }
 
             if ($instance->workflow_class !== $workflowClass) {
@@ -316,6 +349,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             'outcome' => $command?->outcome?->value ?? 'unknown',
             'task_id' => $task instanceof WorkflowTask ? $task->id : null,
             'reason' => $accepted ? null : ($command?->rejection_reason ?? 'start_failed'),
+            'message' => $accepted ? null : $command?->commandMessage(),
         ];
     }
 

@@ -73,6 +73,7 @@ use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowExecutionGate;
 use Workflow\V2\Support\WorkflowInstanceId;
+use Workflow\V2\Support\WorkflowStartGate;
 use Workflow\V2\Support\WorkflowTaskPayload;
 use Workflow\WorkflowMetadata;
 
@@ -832,6 +833,16 @@ final class WorkflowStub
         $result = $this->attemptStart(...$arguments);
 
         if ($result->rejected()) {
+            if ($result->rejectionReason() === WorkflowStartGate::BLOCKED_COMPATIBILITY) {
+                throw new WorkflowExecutionUnavailableException(
+                    'start',
+                    $this->instance->id,
+                    WorkflowStartGate::BLOCKED_COMPATIBILITY,
+                    $result->message()
+                        ?? sprintf('Workflow instance [%s] cannot start.', $this->instance->id),
+                );
+            }
+
             throw new LogicException(sprintf('Workflow instance [%s] has already started.', $this->instance->id));
         }
 
@@ -925,6 +936,29 @@ final class WorkflowStub
                 : null;
             $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
             $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
+            $connection = RoutingResolver::workflowConnection($workflowClass, $metadata);
+            $queue = RoutingResolver::workflowQueue($workflowClass, $metadata);
+            $startBlockedReason = WorkflowStartGate::blockedReason(
+                WorkerCompatibility::current(),
+                $connection,
+                $queue,
+            );
+
+            if ($startBlockedReason !== null) {
+                $command = $this->rejectStartCommand(
+                    $instance,
+                    $metadata->arguments,
+                    $startBlockedReason,
+                    WorkflowStartGate::blockedMessage(
+                        sprintf('Workflow instance [%s] cannot start.', $instance->id),
+                        WorkerCompatibility::current(),
+                        $connection,
+                        $queue,
+                    ) ?? sprintf('Workflow instance [%s] cannot start.', $instance->id),
+                );
+
+                return;
+            }
 
             if ($instance->workflow_class !== $workflowClass) {
                 $instance->forceFill([
@@ -962,8 +996,8 @@ final class WorkflowStub
                     CodecRegistry::defaultCodec(),
                     $metadata->arguments
                 ),
-                'connection' => RoutingResolver::workflowConnection($workflowClass, $metadata),
-                'queue' => RoutingResolver::workflowQueue($workflowClass, $metadata),
+                'connection' => $connection,
+                'queue' => $queue,
                 'started_at' => $startedAt,
                 'last_progress_at' => $startedAt,
                 'last_history_sequence' => 0,
@@ -1082,6 +1116,20 @@ final class WorkflowStub
         $result = $this->attemptSignalWithStart($name, $signalArguments, ...$startArguments);
 
         if ($result->rejected()) {
+            if ($result->rejectionReason() === WorkflowStartGate::BLOCKED_COMPATIBILITY) {
+                throw new WorkflowExecutionUnavailableException(
+                    'signal_with_start',
+                    $name,
+                    WorkflowStartGate::BLOCKED_COMPATIBILITY,
+                    $result->message()
+                        ?? sprintf(
+                            'Workflow instance [%s] cannot start via signal-with-start [%s].',
+                            $this->instance->id,
+                            $name,
+                        ),
+                );
+            }
+
             throw new LogicException(sprintf(
                 'Workflow instance [%s] cannot receive signal-with-start [%s]: %s.',
                 $this->instance->id,
@@ -2551,6 +2599,41 @@ final class WorkflowStub
                 : null;
             $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
             $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
+            $connection = RoutingResolver::workflowConnection($workflowClass, $metadata);
+            $queue = RoutingResolver::workflowQueue($workflowClass, $metadata);
+            $startBlockedReason = WorkflowStartGate::blockedReason(
+                WorkerCompatibility::current(),
+                $connection,
+                $queue,
+            );
+
+            if ($startBlockedReason !== null) {
+                $signalCommand = $this->rejectSignalCommandForContext(
+                    $commandContext,
+                    $instance,
+                    null,
+                    $name,
+                    $signalArguments,
+                    $startBlockedReason,
+                    [],
+                    WorkflowStartGate::blockedMessage(
+                        sprintf(
+                            'Workflow instance [%s] cannot start via signal-with-start [%s].',
+                            $instance->id,
+                            $name,
+                        ),
+                        WorkerCompatibility::current(),
+                        $connection,
+                        $queue,
+                    ) ?? sprintf(
+                        'Workflow instance [%s] cannot start via signal-with-start [%s].',
+                        $instance->id,
+                        $name,
+                    ),
+                );
+
+                return;
+            }
 
             if ($instance->workflow_class !== $workflowClass) {
                 $instance->forceFill([
@@ -2585,8 +2668,8 @@ final class WorkflowStub
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => CodecRegistry::defaultCodec(),
                 'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), $metadata->arguments),
-                'connection' => RoutingResolver::workflowConnection($workflowClass, $metadata),
-                'queue' => RoutingResolver::workflowQueue($workflowClass, $metadata),
+                'connection' => $connection,
+                'queue' => $queue,
                 'started_at' => $startedAt,
                 'last_progress_at' => $startedAt,
                 'last_history_sequence' => 0,
@@ -3238,6 +3321,7 @@ final class WorkflowStub
             'unknown_update' => CommandOutcome::RejectedUnknownUpdate->value,
             'invalid_signal_arguments' => CommandOutcome::RejectedInvalidArguments->value,
             'invalid_update_arguments' => CommandOutcome::RejectedInvalidArguments->value,
+            WorkflowStartGate::BLOCKED_COMPATIBILITY => CommandOutcome::RejectedCompatibilityBlocked->value,
             UpdateCommandGate::BLOCKED_BY_PENDING_SIGNAL => CommandOutcome::RejectedPendingSignal->value,
             WorkflowExecutionGate::BLOCKED_WORKFLOW_DEFINITION_UNAVAILABLE => CommandOutcome::RejectedWorkflowDefinitionUnavailable->value,
             default => null,
@@ -3256,6 +3340,7 @@ final class WorkflowStub
         array $arguments,
         string $reason,
         array $validationErrors = [],
+        ?string $message = null,
     ): WorkflowCommand {
         /** @var WorkflowCommand $command */
         $command = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
@@ -3268,7 +3353,18 @@ final class WorkflowStub
                 'payload_codec' => $run?->payload_codec ?? CodecRegistry::defaultCodec(),
                 'rejection_reason' => $reason,
                 'rejected_at' => now(),
-                ...$this->signalCommandPayloadAttributes($name, $arguments, $validationErrors),
+                ...$this->signalCommandPayloadAttributes(
+                    $name,
+                    $arguments,
+                    $validationErrors,
+                    null,
+                    $message === null
+                        ? []
+                        : [
+                            'reason' => $reason,
+                            'message' => $message,
+                        ],
+                ),
             ],
         ));
 
@@ -3287,17 +3383,46 @@ final class WorkflowStub
         array $arguments,
         array $validationErrors = [],
         ?string $payloadCodec = null,
+        array $extraPayload = [],
     ): array {
         $codec = $payloadCodec ?? CodecRegistry::defaultCodec();
 
         return [
             'payload_codec' => $codec,
-            'payload' => Serializer::serializeWithCodec($codec, [
+            'payload' => Serializer::serializeWithCodec($codec, array_merge([
                 'name' => $name,
                 'arguments' => $arguments,
                 'validation_errors' => $validationErrors,
-            ]),
+            ], $extraPayload)),
         ];
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     */
+    private function rejectStartCommand(
+        WorkflowInstance $instance,
+        array $arguments,
+        string $reason,
+        string $message,
+    ): WorkflowCommand {
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::record($instance, null, $this->commandAttributes([
+            'command_type' => CommandType::Start->value,
+            'target_scope' => 'instance',
+            'status' => CommandStatus::Rejected->value,
+            'outcome' => $this->rejectionOutcome($reason),
+            'payload_codec' => CodecRegistry::defaultCodec(),
+            'payload' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), [
+                'arguments' => $arguments,
+                'reason' => $reason,
+                'message' => $message,
+            ]),
+            'rejection_reason' => $reason,
+            'rejected_at' => now(),
+        ]));
+
+        return $command;
     }
 
     /**

@@ -430,6 +430,19 @@ class WorkflowCommand extends Model
         return is_string($reason) && $reason !== '' ? $reason : null;
     }
 
+    public function commandMessage(): ?string
+    {
+        $payload = $this->payloadData();
+
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        $message = $payload['message'] ?? null;
+
+        return is_string($message) && $message !== '' ? $message : null;
+    }
+
     /**
      * @return array<string, mixed>|null
      */

@@ -32,6 +32,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowControlPlaneTest extends TestCase
@@ -211,6 +212,32 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertSame('Standalone Server', $command->commandContext()['caller']['label'] ?? null);
         $this->assertSame('default', $command->commandContext()['server']['namespace'] ?? null);
         $this->assertSame('start', $command->commandContext()['server']['command'] ?? null);
+    }
+
+    public function testStartFailsClosedWhenOnlyIncompatibleLiveWorkersExist(): void
+    {
+        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
+
+        $result = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-compat-blocked', [
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $this->assertFalse($result['started']);
+        $this->assertSame('ctrl-plane-compat-blocked', $result['workflow_instance_id']);
+        $this->assertNull($result['workflow_run_id']);
+        $this->assertSame('rejected_compatibility_blocked', $result['outcome']);
+        $this->assertSame('compatibility_blocked', $result['reason']);
+        $this->assertSame(
+            'Workflow instance [ctrl-plane-compat-blocked] cannot start. Start blocked under fail validation mode. '
+            . 'No active worker heartbeat for connection [redis] queue [default] advertises compatibility [build-a]. '
+            . 'Active workers there advertise [build-b].',
+            $result['message'],
+        );
+        $this->assertNull($result['task_id']);
+        $this->assertSame(0, WorkflowRun::query()->count());
     }
 
     public function testStartRejectsDuplicate(): void

@@ -14,6 +14,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
+use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
@@ -392,11 +393,20 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $overlapPolicy);
             }
 
-            $startResult = self::startRun(
-                $schedule,
-                effectiveOverlapPolicy: $overlapPolicy->value,
-                context: $context,
-            );
+            try {
+                $startResult = self::startRun(
+                    $schedule,
+                    effectiveOverlapPolicy: $overlapPolicy->value,
+                    context: $context,
+                );
+            } catch (WorkflowExecutionUnavailableException $exception) {
+                self::recordSkip($schedule, $exception->blockedReason(), $context);
+                $schedule->forceFill([
+                    'next_fire_at' => $schedule->computeNextFireAtWithJitter(),
+                ])->save();
+
+                return new ScheduleTriggerResult('skipped', null, null, $exception->blockedReason());
+            }
 
             return new ScheduleTriggerResult('triggered', $startResult->instanceId, $startResult->runId, null);
         });
@@ -441,6 +451,15 @@ final class ScheduleManager
                         'instance_id' => $instanceId,
                     ];
                 }
+            } catch (WorkflowExecutionUnavailableException $exception) {
+                $schedule->refresh();
+                self::recordSkip($schedule, $exception->blockedReason());
+                $results[] = [
+                    'schedule_id' => $schedule->schedule_id,
+                    'instance_id' => null,
+                    'outcome' => 'skipped',
+                    'reason' => $exception->blockedReason(),
+                ];
             } catch (\Throwable $e) {
                 $schedule->refresh();
                 $schedule->recordFailure($e->getMessage());
@@ -617,13 +636,19 @@ final class ScheduleManager
                 self::closeExistingRun($schedule, $effectivePolicy);
             }
 
-            return self::startRun(
-                $schedule,
-                occurrenceTime: $occurrenceTime,
-                outcome: 'backfilled',
-                effectiveOverlapPolicy: $effectivePolicy->value,
-                context: $context,
-            )->instanceId;
+            try {
+                return self::startRun(
+                    $schedule,
+                    occurrenceTime: $occurrenceTime,
+                    outcome: 'backfilled',
+                    effectiveOverlapPolicy: $effectivePolicy->value,
+                    context: $context,
+                )->instanceId;
+            } catch (WorkflowExecutionUnavailableException $exception) {
+                self::recordSkip($schedule, $exception->blockedReason(), $context);
+
+                return null;
+            }
         });
     }
 
@@ -642,6 +667,8 @@ final class ScheduleManager
 
         try {
             $result = $starter->start($schedule, $occurrenceTime, $outcome, $effectiveOverlapPolicy);
+        } catch (WorkflowExecutionUnavailableException $exception) {
+            throw $exception;
         } catch (\Throwable $e) {
             $schedule->recordFailure($e->getMessage());
             $schedule->save();

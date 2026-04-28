@@ -18,6 +18,7 @@ use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 use Workflow\V2\Support\ScheduleDescription;
 use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\WorkflowStub;
 
 final class V2ScheduleTest extends TestCase
@@ -191,6 +192,41 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame(1, (int) $schedule->fires_count);
         $this->assertNotNull($schedule->last_fired_at);
         $this->assertSame($instanceId, $schedule->latest_workflow_instance_id);
+    }
+
+    public function testTriggerDetailedSkipsCompatibilityBlockedStart(): void
+    {
+        WorkerCompatibilityFleet::clear();
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()->set('workflows.v2.compatibility.namespace', null);
+        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'trigger-compatibility-blocked',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            connection: 'redis',
+            queue: 'default',
+        );
+
+        $result = ScheduleManager::triggerDetailed($schedule);
+
+        $this->assertSame('skipped', $result->outcome);
+        $this->assertNull($result->instanceId);
+        $this->assertNull($result->runId);
+        $this->assertSame('compatibility_blocked', $result->reason);
+
+        $schedule->refresh();
+        $this->assertSame(0, (int) $schedule->fires_count);
+        $this->assertSame(0, (int) $schedule->failures_count);
+        $this->assertSame('compatibility_blocked', $schedule->last_skip_reason);
+        $this->assertSame(0, WorkflowRun::query()->count());
     }
 
     public function testTriggerPausedScheduleReturnsNull(): void
@@ -917,6 +953,45 @@ final class V2ScheduleTest extends TestCase
 
         $schedule->refresh();
         $this->assertSame(3, (int) $schedule->fires_count);
+    }
+
+    public function testBackfillSkipsCompatibilityBlockedStartWithoutRecordingFailure(): void
+    {
+        WorkerCompatibilityFleet::clear();
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()->set('workflows.v2.compatibility.namespace', null);
+        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
+
+        $schedule = ScheduleManager::create(
+            scheduleId: 'backfill-compatibility-blocked',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+            connection: 'redis',
+            queue: 'default',
+        );
+
+        $from = new \DateTimeImmutable('2026-04-14 00:00:00', new \DateTimeZone('UTC'));
+        $to = new \DateTimeImmutable('2026-04-14 01:00:00', new \DateTimeZone('UTC'));
+
+        $results = ScheduleManager::backfill($schedule, $from, $to);
+
+        $this->assertCount(1, $results);
+        $this->assertSame('backfill-compatibility-blocked', $results[0]['schedule_id']);
+        $this->assertNull($results[0]['instance_id']);
+        $this->assertArrayNotHasKey('error', $results[0]);
+
+        $schedule->refresh();
+        $this->assertSame(0, (int) $schedule->fires_count);
+        $this->assertSame(0, (int) $schedule->failures_count);
+        $this->assertSame('compatibility_blocked', $schedule->last_skip_reason);
+        $this->assertSame(0, WorkflowRun::query()->count());
     }
 
     public function testMultipleTriggersIncrementScheduleTriggeredEventCount(): void

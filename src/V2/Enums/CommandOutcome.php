@@ -25,6 +25,7 @@ enum CommandOutcome: string
     case RejectedUnknownSignal = 'rejected_unknown_signal';
     case RejectedUnknownUpdate = 'rejected_unknown_update';
     case RejectedInvalidArguments = 'rejected_invalid_arguments';
+    case RejectedCompatibilityBlocked = 'rejected_compatibility_blocked';
     case RejectedPendingSignal = 'rejected_pending_signal';
     case RejectedWorkflowDefinitionUnavailable = 'rejected_workflow_definition_unavailable';
 }
