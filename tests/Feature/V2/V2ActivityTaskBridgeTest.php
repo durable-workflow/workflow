@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -23,6 +24,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 
 final class V2ActivityTaskBridgeTest extends TestCase
 {
@@ -158,6 +160,48 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertSame('server-worker-1', $result['lease_owner']);
         $this->assertNotNull($result['lease_expires_at']);
         $this->assertNull($result['reason']);
+    }
+
+    public function testClaimStatusUsesHistoryProjectionRoleBinding(): void
+    {
+        [$run, $execution, $task] = $this->createActivityTask();
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): \Workflow\V2\Models\WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): \Workflow\V2\Models\WorkflowRunSummary {
+                $this->calls[] = ['recordActivityStarted', $run->id, $execution->id, $attempt->id, $task->id];
+
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        $result = $this->bridge->claimStatus($task->id, 'server-worker-1');
+
+        $this->assertTrue($result['claimed']);
+        $this->assertSame(
+            [['recordActivityStarted', $run->id, $execution->id, $result['activity_attempt_id'], $task->id]],
+            $customRole->calls,
+        );
     }
 
     public function testClaimStatusRejectsNonExistentTask(): void

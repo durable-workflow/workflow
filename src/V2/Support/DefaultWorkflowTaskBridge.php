@@ -10,6 +10,7 @@ use LogicException;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ChildCallStatus;
@@ -120,7 +121,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
     {
-        return DB::transaction(static function () use ($taskId, $leaseOwner): array {
+        $historyProjectionRole = $this->historyProjectionRole();
+
+        return DB::transaction(function () use ($taskId, $leaseOwner, $historyProjectionRole): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -158,7 +161,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                $historyProjectionRole->projectRun($this->projectionRun($run));
 
                 return self::claimRejected(
                     $taskId,
@@ -168,7 +171,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                $historyProjectionRole->projectRun($this->projectionRun($run));
 
                 $mismatch = TaskCompatibility::mismatchReason($task, $run);
 
@@ -193,7 +196,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'last_claim_error' => null,
             ])->save();
 
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            $historyProjectionRole->projectRun($this->projectionRun($run));
 
             return [
                 'claimed' => true,
@@ -2975,6 +2978,19 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    private function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
+    }
+
+    private function projectionRun(WorkflowRun $run): WorkflowRun
+    {
+        return $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run;
     }
 
     private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void

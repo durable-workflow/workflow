@@ -6,14 +6,13 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
-use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
-use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -100,13 +99,13 @@ final class ActivityTaskClaimer
             $backendError = TaskBackendCapabilities::recordClaimFailureIfUnsupported($task);
 
             if ($backendError !== null) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::historyProjectionRole()->projectRun(self::projectionRun($run));
 
                 return self::claimFailure('backend_unsupported', null, $backendError);
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::historyProjectionRole()->projectRun(self::projectionRun($run));
 
                 return self::claimFailure(
                     'compatibility_unsupported',
@@ -170,29 +169,7 @@ final class ActivityTaskClaimer
                 'lease_expires_at' => $task->lease_expires_at,
             ]);
 
-            $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($run, (int) $execution->sequence);
-            $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([
-                'activity_execution_id' => $execution->id,
-                'activity_attempt_id' => $attemptId,
-                'activity_class' => $execution->activity_class,
-                'activity_type' => $execution->activity_type,
-                'sequence' => $execution->sequence,
-                'attempt_number' => $attemptCount,
-                'activity' => ActivitySnapshot::fromExecution($execution),
-            ], $parallelMetadata ?? []), $task);
-
-            LifecycleEventDispatcher::activityStarted(
-                $run,
-                (string) $execution->id,
-                (string) ($execution->activity_type ?? $execution->activity_class),
-                (string) $execution->activity_class,
-                (int) $execution->sequence,
-                $attemptCount,
-            );
-
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            self::historyProjectionRole()->recordActivityStarted($run, $execution, $attempt, $task);
 
             return self::claimSuccess(new ActivityTaskClaim($task, $run, $execution, $attempt));
         });
@@ -247,6 +224,19 @@ final class ActivityTaskClaimer
         $remainingMilliseconds = max(1, $task->available_at->getTimestampMs() - now()->getTimestampMs());
 
         return (int) ceil($remainingMilliseconds / 1000);
+    }
+
+    private static function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
+    }
+
+    private static function projectionRun(WorkflowRun $run): WorkflowRun
+    {
+        return $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run;
     }
 
     private static function nonEmptyString(mixed $value): ?string
