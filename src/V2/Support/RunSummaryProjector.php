@@ -318,7 +318,6 @@ final class RunSummaryProjector
                 'namespace' => $run->namespace ?? $run->instance?->namespace,
                 'business_key' => $run->business_key ?? $run->instance?->business_key,
                 'visibility_labels' => $run->visibility_labels ?? $run->instance?->visibility_labels,
-                'search_attributes' => $run->search_attributes,
                 'compatibility' => $run->compatibility,
                 'declared_entry_mode' => $commandContract['entry_mode'],
                 'declared_contract_source' => $commandContract['source'],

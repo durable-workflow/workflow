@@ -190,7 +190,8 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_instances'));
         $this->assertTrue(Schema::hasTable('workflow_runs'));
         $this->assertTrue(Schema::hasTable('workflow_run_summaries'));
-        $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'memo'));
+        $this->assertFalse(Schema::hasColumn('workflow_run_summaries', 'memo'));
+        $this->assertFalse(Schema::hasColumn('workflow_run_summaries', 'search_attributes'));
         $this->assertTrue(Schema::hasTable('workflow_commands'));
     }
 
@@ -220,7 +221,8 @@ final class WorkflowServiceProviderTest extends TestCase
             $this->assertTrue(Schema::hasTable('workflow_instances'));
             $this->assertTrue(Schema::hasTable('workflow_runs'));
             $this->assertTrue(Schema::hasTable('workflow_run_summaries'));
-            $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'memo'));
+            $this->assertFalse(Schema::hasColumn('workflow_run_summaries', 'memo'));
+            $this->assertFalse(Schema::hasColumn('workflow_run_summaries', 'search_attributes'));
             $this->assertTrue(Schema::hasTable('workflow_schedules'));
             $this->assertTrue(Schema::hasTable('workflow_schedule_history_events'));
         } finally {

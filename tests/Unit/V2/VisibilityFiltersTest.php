@@ -728,7 +728,6 @@ final class VisibilityFiltersTest extends TestCase
             'engine_source' => 'v2',
             'class' => 'BillingWorkflow',
             'workflow_type' => 'billing.invoice-sync',
-            'search_attributes' => $searchAttributes,
             'status' => 'running',
             'status_bucket' => 'running',
         ]);

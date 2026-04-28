@@ -97,7 +97,7 @@ final class VisibilityMetadataContractDocumentationTest extends TestCase
     {
         $contents = $this->documentContents(self::SEARCH_ATTRIBUTES_DOCUMENT);
 
-        foreach (['WorkflowExecutor', 'WorkflowRunSummary', 'create_workflow_runs_table'] as $surface) {
+        foreach (['WorkflowExecutor', 'create_workflow_runs_table'] as $surface) {
             $this->assertStringContainsString(
                 $surface,
                 $contents,
@@ -113,11 +113,7 @@ final class VisibilityMetadataContractDocumentationTest extends TestCase
     {
         $contents = $this->documentContents(self::MEMOS_DOCUMENT);
 
-        foreach ([
-            'WorkflowExecutor',
-            'WorkflowRunSummary::getMemos()',
-            'create_workflow_runs_table',
-        ] as $surface) {
+        foreach (['WorkflowExecutor', 'create_workflow_runs_table'] as $surface) {
             $this->assertStringContainsString(
                 $surface,
                 $contents,

@@ -193,6 +193,8 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'task_problem'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'declared_entry_mode'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'declared_contract_source'));
+        $this->assertFalse(Schema::hasColumn('workflow_run_summaries', 'memo'));
+        $this->assertFalse(Schema::hasColumn('workflow_run_summaries', 'search_attributes'));
         $this->assertTrue(Schema::hasColumn('workflow_links', 'sequence'));
         $this->assertTrue(Schema::hasColumn('workflow_tasks', 'last_dispatch_attempt_at'));
         $this->assertTrue(Schema::hasColumn('workflow_tasks', 'last_dispatch_error'));

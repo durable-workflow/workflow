@@ -75,12 +75,6 @@ final class WorkflowRunVisibilityMetadataAccessorsTest extends TestCase
             'projection_schema_version' => 1,
             'class' => $run->workflow_class,
             'workflow_type' => $run->workflow_type,
-            'memo' => [
-                'legacy' => 'json',
-            ],
-            'search_attributes' => [
-                'legacy' => 'json',
-            ],
             'status' => $run->status->value,
             'status_bucket' => $statusBucket->value,
         ]);

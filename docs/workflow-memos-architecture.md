@@ -255,8 +255,6 @@ is no separate v2-alpha cutover surface to preserve.
 Required cleanup before v2.0 stable:
 
 - runtime stops dual-writing the JSON column from `WorkflowExecutor`
-- runtime stops dual-reading the JSON column as a fallback in
-  `WorkflowRunSummary::getMemos()` and other projections
 - the `workflow_runs.memo` column is dropped from the
   `create_workflow_runs_table` migration
 - this document and `docs/search-attributes-architecture.md` describe
