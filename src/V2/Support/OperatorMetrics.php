@@ -188,6 +188,8 @@ final class OperatorMetrics
             'runnable_tasks' => self::readyDueTasks($now, $namespace),
             'delayed_tasks' => self::delayedTasks($now, $namespace),
             'leased_tasks' => self::leasedTasks($namespace),
+            'tasks_added_last_minute' => self::tasksAddedLastMinute($now, $namespace),
+            'tasks_dispatched_last_minute' => self::tasksDispatchedLastMinute($now, $namespace),
             'retrying_activities' => self::retryingActivities($namespace),
             'unhealthy_tasks' => self::dispatchFailedTasks($namespace)
                 + self::claimFailedTasks($namespace)
@@ -1138,6 +1140,38 @@ final class OperatorMetrics
     {
         return self::scopedRunModelQuery(self::taskModel(), $namespace)
             ->where('status', TaskStatus::Leased->value)
+            ->count();
+    }
+
+    /**
+     * Distinct durable task rows created inside the trailing 60-second window.
+     * This is the best stable "tasks added" fact the durable model exposes
+     * without inventing a second transport-only counter stream.
+     */
+    private static function tasksAddedLastMinute(CarbonInterface $now, ?string $namespace): int
+    {
+        $windowStart = $now->copy()
+            ->subMinute();
+
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->where('created_at', '>=', $windowStart)
+            ->count();
+    }
+
+    /**
+     * Distinct durable task rows whose latest successful dispatch landed
+     * inside the trailing 60-second window. Repeated redispatches of the same
+     * durable task collapse to one row because `workflow_tasks` retains only
+     * the latest successful `last_dispatched_at`.
+     */
+    private static function tasksDispatchedLastMinute(CarbonInterface $now, ?string $namespace): int
+    {
+        $windowStart = $now->copy()
+            ->subMinute();
+
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->whereNotNull('last_dispatched_at')
+            ->where('last_dispatched_at', '>=', $windowStart)
             ->count();
     }
 

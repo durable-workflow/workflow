@@ -260,6 +260,8 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(4, $snapshot['backlog']['runnable_tasks']);
         $this->assertSame(1, $snapshot['backlog']['delayed_tasks']);
         $this->assertSame(2, $snapshot['backlog']['leased_tasks']);
+        $this->assertSame(6, $snapshot['backlog']['tasks_added_last_minute']);
+        $this->assertSame(2, $snapshot['backlog']['tasks_dispatched_last_minute']);
         $this->assertSame(4, $snapshot['backlog']['unhealthy_tasks']);
         $this->assertSame(1, $snapshot['backlog']['repair_needed_runs']);
         $this->assertSame(1, $snapshot['backlog']['claim_failed_runs']);

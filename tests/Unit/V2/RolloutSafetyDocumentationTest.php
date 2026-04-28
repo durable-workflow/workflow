@@ -145,6 +145,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'runnable_tasks',
         'delayed_tasks',
         'leased_tasks',
+        'tasks_added_last_minute',
+        'tasks_dispatched_last_minute',
         'unhealthy_tasks',
         'repair_needed_runs',
         'claim_failed_runs',
@@ -353,6 +355,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`backlog`\s*\|[^|]*`oldest_compatibility_blocked_started_at`[^|]*`max_compatibility_blocked_age_ms`/',
             $contents,
             'Rollout safety contract must pin the backlog compatibility-blocked age row so operators can read "how stale is the worst mixed-build block?" from OperatorMetrics::snapshot() without a bespoke scan.',
+        );
+    }
+
+    public function testContractDocumentFreezesBacklogRateRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`backlog`\s*\|[^|]*`tasks_added_last_minute`[^|]*`tasks_dispatched_last_minute`/',
+            $contents,
+            'Rollout safety contract must pin the backlog add/dispatch throughput row so operators can read recent queue flow from OperatorMetrics::snapshot() without inferring it from unrelated counters.',
         );
     }
 
