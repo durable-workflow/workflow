@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Commands;
 
-use Illuminate\Cache\CacheManager;
 use Illuminate\Cache\Repository;
 use Tests\Support\NonLockingCacheStore;
 use Tests\TestCase;
@@ -146,9 +145,8 @@ final class V2DoctorCommandTest extends TestCase
         $store = 'test-non-locking';
 
         $this->app['cache']->extend($driver, function (): Repository {
-            if (! $this instanceof CacheManager) {
-                throw new \RuntimeException('Unexpected cache manager binding.');
-            }
+            $manager = $this;
+            unset($manager);
 
             return new Repository(new NonLockingCacheStore());
         });

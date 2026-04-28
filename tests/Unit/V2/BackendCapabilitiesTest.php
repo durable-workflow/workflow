@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use Illuminate\Cache\CacheManager;
 use Illuminate\Cache\Repository;
 use Illuminate\Support\Carbon;
 use Tests\Support\NonLockingCacheStore;
@@ -483,9 +482,8 @@ final class BackendCapabilitiesTest extends TestCase
         $store = 'test-non-locking';
 
         $this->app['cache']->extend($driver, function (): Repository {
-            if (! $this instanceof CacheManager) {
-                throw new \RuntimeException('Unexpected cache manager binding.');
-            }
+            $manager = $this;
+            unset($manager);
 
             return new Repository(new NonLockingCacheStore());
         });
