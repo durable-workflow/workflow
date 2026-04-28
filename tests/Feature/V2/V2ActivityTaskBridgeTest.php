@@ -312,7 +312,10 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $claim = $this->bridge->claim($task->id, 'worker-1');
         $this->assertNotNull($claim);
 
-        $result = $this->bridge->complete($claim['activity_attempt_id'], 'Hello, World!');
+        $result = [];
+        $calls = $this->historyProjectionCallsDuring(function () use ($claim, &$result): void {
+            $result = $this->bridge->complete($claim['activity_attempt_id'], 'Hello, World!');
+        });
 
         $this->assertTrue($result['recorded']);
         $this->assertNull($result['reason']);
@@ -334,6 +337,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
             HistoryEventType::ActivityCompleted->value,
             $resumeTask->payload['workflow_event_type'] ?? null
         );
+        $this->assertSame([['projectRun', $run->id]], $calls);
     }
 
     public function testCompleteRejectsUnknownAttempt(): void
@@ -402,7 +406,10 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'status' => RunStatus::Cancelled->value,
         ])->save();
 
-        $result = $this->bridge->complete($claim['activity_attempt_id'], 'too late');
+        $result = [];
+        $calls = $this->historyProjectionCallsDuring(function () use ($claim, &$result): void {
+            $result = $this->bridge->complete($claim['activity_attempt_id'], 'too late');
+        });
 
         $this->assertFalse($result['recorded']);
         $this->assertSame('run_cancelled', $result['reason']);
@@ -423,6 +430,44 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'event_type' => HistoryEventType::ActivityCancelled->value,
         ]);
+        $this->assertSame([['projectRun', $run->id]], $calls);
+    }
+
+    public function testCompleteAfterClosedRunUsesHistoryProjectionRoleBinding(): void
+    {
+        [$run, $execution, $task] = $this->createActivityTask();
+
+        $claim = $this->bridge->claim($task->id, 'worker-1');
+        $this->assertNotNull($claim);
+
+        $closedAt = now()
+            ->subSecond();
+        $run->forceFill([
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'closed_at' => $closedAt,
+        ])->save();
+
+        $result = [];
+        $calls = $this->historyProjectionCallsDuring(function () use ($claim, &$result): void {
+            $result = $this->bridge->complete($claim['activity_attempt_id'], 'late completion');
+        });
+
+        $this->assertTrue($result['recorded']);
+        $this->assertNull($result['reason']);
+        $this->assertNull($result['next_task_id']);
+
+        /** @var ActivityExecution $execution */
+        $execution = $execution->fresh();
+        /** @var WorkflowTask $task */
+        $task = $task->fresh();
+        /** @var ActivityAttempt $attempt */
+        $attempt = ActivityAttempt::query()->findOrFail($claim['activity_attempt_id']);
+
+        $this->assertSame(ActivityStatus::Completed, $execution->status);
+        $this->assertSame(ActivityAttemptStatus::Completed, $attempt->status);
+        $this->assertSame(TaskStatus::Completed, $task->status);
+        $this->assertSame([['projectRun', $run->id]], $calls);
     }
 
     public function testFailAfterTerminatedRunClosesAttemptAndReportsIgnoredOutcome(): void
@@ -616,6 +661,47 @@ final class V2ActivityTaskBridgeTest extends TestCase
         ]);
 
         return [$run, $execution];
+    }
+
+    /**
+     * @param callable(): void $callback
+     * @return list<array<int, int|string>>
+     */
+    private function historyProjectionCallsDuring(callable $callback): array
+    {
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            /**
+             * @var list<array<int, int|string>>
+             */
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): \Workflow\V2\Models\WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): \Workflow\V2\Models\WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        $callback();
+
+        return $customRole->calls;
     }
 
     private function createWaitingRun(): WorkflowRun
