@@ -9,7 +9,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
-use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityAttempt;
@@ -33,7 +33,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
     {
         [, $run] = $this->createCompletedRun('projection-command-history-role');
 
-        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionMaintenanceRole {
             /**
              * @var list<string>
              */
@@ -59,9 +59,17 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             ): WorkflowRunSummary {
                 return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
             }
+
+            public function pruneStaleProjections(
+                array $runIds = [],
+                ?string $instanceId = null,
+                bool $dryRun = false
+            ): array {
+                return $this->delegate->pruneStaleProjections($runIds, $instanceId, $dryRun);
+            }
         };
 
-        $this->app->instance(HistoryProjectionRole::class, $customRole);
+        $this->app->instance(HistoryProjectionMaintenanceRole::class, $customRole);
 
         $this->artisan('workflow:v2:rebuild-projections', [
             '--run-id' => [$run->id],
@@ -81,7 +89,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
     {
         [, $run] = $this->createCompletedRun('projection-command-history-role-failure');
 
-        $failingRole = new class() implements HistoryProjectionRole {
+        $failingRole = new class() implements HistoryProjectionMaintenanceRole {
             public function projectRun(WorkflowRun $run): WorkflowRunSummary
             {
                 throw new \RuntimeException('projection seam exploded');
@@ -95,9 +103,17 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             ): WorkflowRunSummary {
                 throw new \RuntimeException('unused');
             }
+
+            public function pruneStaleProjections(
+                array $runIds = [],
+                ?string $instanceId = null,
+                bool $dryRun = false
+            ): array {
+                throw new \RuntimeException('unused');
+            }
         };
 
-        $this->app->instance(HistoryProjectionRole::class, $failingRole);
+        $this->app->instance(HistoryProjectionMaintenanceRole::class, $failingRole);
 
         $this->artisan('workflow:v2:rebuild-projections', [
             '--run-id' => [$run->id],
@@ -249,12 +265,39 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
     }
 
-    public function testItUsesHistoryProjectionRoleBindingForRebuilds(): void
+    public function testItUsesTheHistoryProjectionMaintenanceRoleBindingForPruneStale(): void
     {
-        [, $run] = $this->createCompletedRun('projection-command-history-role');
+        [$instance] = $this->createCompletedRun('projection-command-maintenance-role');
+        $staleRunId = (string) Str::ulid();
 
-        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
-            public array $calls = [];
+        WorkflowRunSummary::query()->create([
+            'id' => $staleRunId,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 99,
+            'is_current_run' => false,
+            'engine_source' => 'v2',
+            'class' => 'App\\Workflows\\DeletedWorkflow',
+            'workflow_type' => 'deleted.workflow',
+            'status' => RunStatus::Completed->value,
+            'status_bucket' => 'completed',
+            'closed_reason' => 'completed',
+            'started_at' => now()
+                ->subHour(),
+            'closed_at' => now()
+                ->subMinutes(50),
+            'duration_ms' => 600000,
+            'exception_count' => 0,
+            'created_at' => now()
+                ->subHour(),
+            'updated_at' => now()
+                ->subMinutes(50),
+        ]);
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionMaintenanceRole {
+            /**
+             * @var list<array{run_ids: list<string>, instance_id: ?string, dry_run: bool}>
+             */
+            public array $pruneCalls = [];
 
             public function __construct(
                 private readonly DefaultHistoryProjectionRole $delegate,
@@ -263,32 +306,47 @@ final class V2RebuildProjectionsCommandTest extends TestCase
 
             public function projectRun(WorkflowRun $run): WorkflowRunSummary
             {
-                $this->calls[] = ['projectRun', $run->id];
-
                 return $this->delegate->projectRun($run);
             }
 
             public function recordActivityStarted(
                 WorkflowRun $run,
-                \Workflow\V2\Models\ActivityExecution $execution,
-                \Workflow\V2\Models\ActivityAttempt $attempt,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
                 WorkflowTask $task,
             ): WorkflowRunSummary {
                 return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
             }
+
+            public function pruneStaleProjections(
+                array $runIds = [],
+                ?string $instanceId = null,
+                bool $dryRun = false
+            ): array {
+                $this->pruneCalls[] = [
+                    'run_ids' => $runIds,
+                    'instance_id' => $instanceId,
+                    'dry_run' => $dryRun,
+                ];
+
+                return $this->delegate->pruneStaleProjections($runIds, $instanceId, $dryRun);
+            }
         };
 
-        $this->app->instance(HistoryProjectionRole::class, $customRole);
+        $this->app->instance(HistoryProjectionMaintenanceRole::class, $customRole);
 
         $this->artisan('workflow:v2:rebuild-projections', [
-            '--run-id' => [$run->id],
-        ])->assertSuccessful();
+            '--instance-id' => $instance->id,
+            '--prune-stale' => true,
+        ])
+            ->expectsOutput('Pruned 1 stale run-summary projection row(s).')
+            ->assertSuccessful();
 
-        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
-        $this->assertDatabaseHas('workflow_run_summaries', [
-            'id' => $run->id,
-            'workflow_instance_id' => $run->workflow_instance_id,
-        ]);
+        $this->assertSame([[
+            'run_ids' => [],
+            'instance_id' => $instance->id,
+            'dry_run' => false,
+        ]], $customRole->pruneCalls);
     }
 
     public function testDryRunReportsMatchedRowsWithoutMutatingProjectionTables(): void

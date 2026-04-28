@@ -500,7 +500,8 @@ each step independently.
    an out-of-process adapter can replace the binding without
    patching the package. Today's bindings are
    `WorkflowControlPlane`, `OperatorObservabilityRepository`,
-   `MatchingRole`, `HistoryProjectionRole`, `SchedulerRole`,
+   `MatchingRole`, `HistoryProjectionRole`,
+   `HistoryProjectionMaintenanceRole`, `SchedulerRole`,
    `WorkflowTaskBridge`, `ActivityTaskBridge`,
    `LongPollWakeStore`, and the scheduler's
    `ScheduleWorkflowStarter`. The matching role now crosses the
@@ -508,9 +509,11 @@ each step independently.
    `DefaultMatchingRole`, so a future out-of-process adapter can
    replace that binding without patching `Looping` listeners or
    `workflow:v2:repair-pass`. The history/projection role now
-   crosses the matching seam through `DefaultHistoryProjectionRole`,
-   so a future out-of-process adapter can replace that binding
-   without patching the claim paths or the
+   crosses the matching seam through the
+   `HistoryProjectionRole` / `HistoryProjectionMaintenanceRole`
+   bindings backed by `DefaultHistoryProjectionRole`, so a future
+   out-of-process adapter can replace that binding without
+   patching the claim paths or the
    `workflow:v2:rebuild-projections` maintenance command. The
    scheduler role now crosses `workflow:v2:schedule-tick` through
    `DefaultSchedulerRole`, so a future out-of-process adapter can

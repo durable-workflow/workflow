@@ -17,6 +17,7 @@ use Workflow\Models\StoredWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
@@ -110,6 +111,31 @@ final class WorkflowServiceProviderTest extends TestCase
         (new WorkflowServiceProvider($this->app))->register();
 
         $this->assertSame($custom, $this->app->make(HistoryProjectionRole::class));
+    }
+
+    public function testHistoryProjectionMaintenanceRoleBindingDefersToAppBinding(): void
+    {
+        $custom = $this->createMock(HistoryProjectionMaintenanceRole::class);
+
+        $this->app->offsetUnset(HistoryProjectionMaintenanceRole::class);
+        $this->app->singleton(HistoryProjectionMaintenanceRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(HistoryProjectionMaintenanceRole::class));
+    }
+
+    public function testHistoryProjectionMaintenanceRoleDefaultsToHistoryProjectionRoleBinding(): void
+    {
+        $custom = $this->createMock(HistoryProjectionMaintenanceRole::class);
+
+        $this->app->offsetUnset(HistoryProjectionRole::class);
+        $this->app->offsetUnset(HistoryProjectionMaintenanceRole::class);
+        $this->app->singleton(HistoryProjectionRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(HistoryProjectionMaintenanceRole::class));
     }
 
     public function testMatchingRoleBindingDefersToAppBinding(): void

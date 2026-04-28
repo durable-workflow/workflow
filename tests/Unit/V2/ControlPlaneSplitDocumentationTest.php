@@ -66,6 +66,7 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         'MatchingRole',
         'DefaultMatchingRole',
         'HistoryProjectionRole',
+        'HistoryProjectionMaintenanceRole',
         'DefaultHistoryProjectionRole',
         'RunSummaryProjector',
         'DefaultOperatorObservabilityRepository',

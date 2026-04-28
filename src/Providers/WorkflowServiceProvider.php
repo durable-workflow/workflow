@@ -20,6 +20,7 @@ use Workflow\Commands\V2RepairPassCommand;
 use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\LongPollWakeStore;
 use Workflow\V2\Contracts\MatchingRole;
@@ -65,6 +66,26 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->app->singletonIf(MatchingRole::class, DefaultMatchingRole::class);
 
         $this->app->singletonIf(HistoryProjectionRole::class, DefaultHistoryProjectionRole::class);
+
+        if (! $this->app->bound(HistoryProjectionMaintenanceRole::class)) {
+            $this->app->singleton(
+                HistoryProjectionMaintenanceRole::class,
+                static function ($app): HistoryProjectionMaintenanceRole {
+                    $role = $app->make(HistoryProjectionRole::class);
+
+                    if (! $role instanceof HistoryProjectionMaintenanceRole) {
+                        throw new \RuntimeException(sprintf(
+                            'Configured %s [%s] must also implement %s to back workflow:v2:rebuild-projections.',
+                            HistoryProjectionRole::class,
+                            $role::class,
+                            HistoryProjectionMaintenanceRole::class,
+                        ));
+                    }
+
+                    return $role;
+                }
+            );
+        }
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
 
