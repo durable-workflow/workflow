@@ -11,6 +11,7 @@ use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -170,6 +171,103 @@ final class V2RepairPassCommandTest extends TestCase
             RunWorkflowTask::class,
             static fn (RunWorkflowTask $job): bool => $job->taskId === $task->id
         );
+    }
+
+    public function testItUsesTheMatchingRoleBindingForRepairPasses(): void
+    {
+        $fake = new class() implements MatchingRole {
+            /**
+             * @var array{connection: string|null, queue: string|null, respectThrottle: bool, runIds: list<string>, instanceId: string|null}|null
+             */
+            public ?array $lastRunPassArguments = null;
+
+            public function wake(?string $connection = null, ?string $queue = null): void
+            {
+            }
+
+            public function runPass(
+                ?string $connection = null,
+                ?string $queue = null,
+                bool $respectThrottle = false,
+                array $runIds = [],
+                ?string $instanceId = null,
+            ): array {
+                $this->lastRunPassArguments = [
+                    'connection' => $connection,
+                    'queue' => $queue,
+                    'respectThrottle' => $respectThrottle,
+                    'runIds' => $runIds,
+                    'instanceId' => $instanceId,
+                ];
+
+                return [
+                    'connection' => $connection,
+                    'queue' => $queue,
+                    'run_ids' => $runIds,
+                    'instance_id' => $instanceId,
+                    'respect_throttle' => $respectThrottle,
+                    'throttled' => false,
+                    'selected_existing_task_candidates' => 0,
+                    'selected_missing_task_candidates' => 0,
+                    'selected_total_candidates' => 0,
+                    'repaired_existing_tasks' => 0,
+                    'repaired_missing_tasks' => 0,
+                    'dispatched_tasks' => 0,
+                    'existing_task_failures' => [],
+                    'missing_run_failures' => [],
+                    'deadline_expired_candidates' => 0,
+                    'deadline_expired_tasks_created' => 0,
+                    'deadline_expired_failures' => [],
+                    'activity_timeout_candidates' => 0,
+                    'activity_timeouts_enforced' => 0,
+                    'activity_timeout_failures' => [],
+                ];
+            }
+        };
+
+        $this->app->instance(MatchingRole::class, $fake);
+
+        $expected = [
+            'connection' => 'redis',
+            'queue' => 'critical',
+            'run_ids' => ['run-a', 'run-b'],
+            'instance_id' => 'instance-42',
+            'respect_throttle' => true,
+            'throttled' => false,
+            'selected_existing_task_candidates' => 0,
+            'selected_missing_task_candidates' => 0,
+            'selected_total_candidates' => 0,
+            'repaired_existing_tasks' => 0,
+            'repaired_missing_tasks' => 0,
+            'dispatched_tasks' => 0,
+            'existing_task_failures' => [],
+            'missing_run_failures' => [],
+            'deadline_expired_candidates' => 0,
+            'deadline_expired_tasks_created' => 0,
+            'deadline_expired_failures' => [],
+            'activity_timeout_candidates' => 0,
+            'activity_timeouts_enforced' => 0,
+            'activity_timeout_failures' => [],
+        ];
+
+        $this->artisan('workflow:v2:repair-pass', [
+            '--connection' => 'redis',
+            '--queue' => 'critical',
+            '--run-id' => ['run-a', 'run-b'],
+            '--instance-id' => 'instance-42',
+            '--respect-throttle' => true,
+            '--json' => true,
+        ])
+            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
+            ->assertSuccessful();
+
+        $this->assertSame([
+            'connection' => 'redis',
+            'queue' => 'critical',
+            'respectThrottle' => true,
+            'runIds' => ['run-a', 'run-b'],
+            'instanceId' => 'instance-42',
+        ], $fake->lastRunPassArguments);
     }
 
     public function testRunIdScopeRepairsOnlyTheSelectedMissingTaskRun(): void

@@ -7,8 +7,8 @@ namespace Workflow\Commands;
 use Illuminate\Console\Command;
 use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Support\TaskRepairPolicy;
-use Workflow\V2\TaskWatchdog;
 
 #[AsCommand(name: 'workflow:v2:repair-pass')]
 class V2RepairPassCommand extends Command
@@ -31,6 +31,12 @@ class V2RepairPassCommand extends Command
      * next iteration boundary instead of mid-sleep.
      */
     private bool $shouldStop = false;
+
+    public function __construct(
+        private readonly MatchingRole $matchingRole,
+    ) {
+        parent::__construct();
+    }
 
     public function handle(): int
     {
@@ -59,7 +65,7 @@ class V2RepairPassCommand extends Command
      */
     private function runOnce(?bool $respectThrottleOverride): int
     {
-        $report = TaskWatchdog::runPass(
+        $report = $this->matchingRole->runPass(
             $this->stringOption('connection'),
             $this->stringOption('queue'),
             respectThrottle: $respectThrottleOverride ?? (bool) $this->option('respect-throttle'),

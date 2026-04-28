@@ -22,6 +22,7 @@ use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\LongPollWakeStore;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -38,6 +39,7 @@ use Workflow\V2\Support\CacheLongPollWakeStore;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
+use Workflow\V2\Support\DefaultMatchingRole;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
@@ -45,7 +47,6 @@ use Workflow\V2\Support\LongPollCacheValidator;
 use Workflow\V2\Support\PhpClassScheduleStarter;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowModeGuard;
-use Workflow\V2\TaskWatchdog;
 use Workflow\Watchdog;
 
 final class WorkflowServiceProvider extends ServiceProvider
@@ -58,6 +59,8 @@ final class WorkflowServiceProvider extends ServiceProvider
             OperatorObservabilityRepository::class,
             DefaultOperatorObservabilityRepository::class,
         );
+
+        $this->app->singletonIf(MatchingRole::class, DefaultMatchingRole::class);
 
         $this->app->singletonIf(HistoryProjectionRole::class, DefaultHistoryProjectionRole::class);
 
@@ -115,7 +118,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             Watchdog::wake($event->connectionName, $event->queue);
 
             if (config('workflows.v2.matching_role.queue_wake_enabled', true)) {
-                TaskWatchdog::wake($event->connectionName, $event->queue);
+                app(MatchingRole::class)->wake($event->connectionName, $event->queue);
             }
         });
     }

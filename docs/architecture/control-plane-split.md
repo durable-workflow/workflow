@@ -467,13 +467,16 @@ each step independently.
    an out-of-process adapter can replace the binding without
    patching the package. Today's bindings are
    `WorkflowControlPlane`, `OperatorObservabilityRepository`,
-   `HistoryProjectionRole`, `WorkflowTaskBridge`,
+   `MatchingRole`, `HistoryProjectionRole`, `WorkflowTaskBridge`,
    `ActivityTaskBridge`, `LongPollWakeStore`, and the scheduler's
-   `ScheduleWorkflowStarter`. The history/projection role now
-   crosses the matching seam through
-   `DefaultHistoryProjectionRole`, so a future out-of-process
-   adapter can replace that binding without patching the claim
-   paths.
+   `ScheduleWorkflowStarter`. The matching role now crosses the
+   queue-loop wake and dedicated daemon entrypoints through
+   `DefaultMatchingRole`, so a future out-of-process adapter can
+   replace that binding without patching `Looping` listeners or
+   `workflow:v2:repair-pass`. The history/projection role now
+   crosses the matching seam through `DefaultHistoryProjectionRole`,
+   so a future out-of-process adapter can replace that binding
+   without patching the claim paths.
 3. **Introduce the dedicated matching shape.** The Phase 3
    contract already allows a dedicated matching role; Phase 4
    provides the deployment guidance for running it as a separate

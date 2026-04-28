@@ -18,6 +18,7 @@ use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -108,6 +109,18 @@ final class WorkflowServiceProviderTest extends TestCase
         (new WorkflowServiceProvider($this->app))->register();
 
         $this->assertSame($custom, $this->app->make(HistoryProjectionRole::class));
+    }
+
+    public function testMatchingRoleBindingDefersToAppBinding(): void
+    {
+        $custom = $this->createMock(MatchingRole::class);
+
+        $this->app->offsetUnset(MatchingRole::class);
+        $this->app->singleton(MatchingRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(MatchingRole::class));
     }
 
     public function testProviderMergesV2DefaultsIntoLegacyPublishedConfig(): void
@@ -389,6 +402,18 @@ final class WorkflowServiceProviderTest extends TestCase
 
         $this->assertSame(1, $task->repair_count);
         $this->assertNotNull($task->last_dispatched_at);
+    }
+
+    public function testLoopingEventRoutesV2WakeThroughMatchingRoleBinding(): void
+    {
+        $matchingRole = $this->createMock(MatchingRole::class);
+        $matchingRole->expects($this->once())
+            ->method('wake')
+            ->with('redis', 'high,default');
+
+        $this->app->instance(MatchingRole::class, $matchingRole);
+
+        Event::dispatch(new Looping('redis', 'high,default'));
     }
 
     public function testLoopingEventSkipsTaskWatchdogWakeWhenMatchingRoleDisabled(): void
