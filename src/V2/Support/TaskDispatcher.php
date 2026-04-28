@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\Facades\DB;
 use Throwable;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\UnsupportedBackendCapabilitiesException;
@@ -185,7 +186,20 @@ final class TaskDispatcher
         $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($task->workflow_run_id);
 
         if ($run instanceof WorkflowRun) {
-            RunSummaryProjector::project($run);
+            self::historyProjectionRole()->projectRun(self::projectionRun($run));
         }
+    }
+
+    private static function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
+    }
+
+    private static function projectionRun(WorkflowRun $run): WorkflowRun
+    {
+        return $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run;
     }
 }
