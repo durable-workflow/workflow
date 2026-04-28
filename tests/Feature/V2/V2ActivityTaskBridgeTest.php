@@ -145,6 +145,60 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertCount(2, $results);
     }
 
+    public function testPollFiltersByActivityTypeBeforeApplyingLimit(): void
+    {
+        [, $firstExecution] = $this->createActivityExecution();
+        $firstExecution->forceFill([
+            'activity_type' => 'other-activity-one',
+        ])->save();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $firstExecution->workflow_run_id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinutes(3),
+            'payload' => [
+                'activity_execution_id' => $firstExecution->id,
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'attempt_count' => 0,
+        ]);
+
+        [, $secondExecution] = $this->createActivityExecution();
+        $secondExecution->forceFill([
+            'activity_type' => 'other-activity-two',
+        ])->save();
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $secondExecution->workflow_run_id,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subMinutes(2),
+            'payload' => [
+                'activity_execution_id' => $secondExecution->id,
+            ],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'attempt_count' => 0,
+        ]);
+
+        [$matchingRun, $matchingExecution, $matchingTask] = $this->createActivityTask([
+            'available_at' => now()
+                ->subMinute(),
+        ]);
+
+        $results = $this->bridge->poll(null, null, 2, null, null, ['test-greeting-activity']);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($matchingTask->id, $results[0]['task_id']);
+        $this->assertSame($matchingRun->id, $results[0]['workflow_run_id']);
+        $this->assertSame($matchingExecution->id, $results[0]['activity_execution_id']);
+        $this->assertSame('test-greeting-activity', $results[0]['activity_type']);
+    }
+
     public function testClaimStatusClaimsReadyTask(): void
     {
         [$run, $execution, $task] = $this->createActivityTask();

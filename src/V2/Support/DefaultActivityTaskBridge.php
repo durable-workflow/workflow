@@ -64,9 +64,22 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             $query->where('namespace', $namespace);
         }
 
+        if ($activityTypes !== []) {
+            $query->where(static function ($builder) use ($activityTypes): void {
+                $builder->whereNull('payload->activity_execution_id')
+                    ->orWhere('payload->activity_execution_id', '')
+                    ->orWhereIn(
+                        'payload->activity_execution_id',
+                        ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class)
+                            ->select('id')
+                            ->whereIn('activity_type', $activityTypes),
+                    );
+            });
+        }
+
         $tasks = $query->get();
 
-        $results = $tasks->map(static function (WorkflowTask $task) {
+        return $tasks->map(static function (WorkflowTask $task) {
             /** @var WorkflowRun|null $run */
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->find($task->workflow_run_id);
@@ -92,16 +105,6 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             ];
         })->values()
             ->all();
-
-        if ($activityTypes !== []) {
-            $results = array_values(array_filter($results, static function (array $task) use ($activityTypes): bool {
-                $type = $task['activity_type'] ?? null;
-
-                return ! is_string($type) || $type === '' || in_array($type, $activityTypes, true);
-            }));
-        }
-
-        return $results;
     }
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
