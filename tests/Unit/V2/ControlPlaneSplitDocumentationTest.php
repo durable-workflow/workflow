@@ -103,6 +103,8 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         '/api/workers/{workerId}',
     ];
 
+    private const REQUIRED_COMMAND_ENTRYPOINTS = ['workflow:v2:rebuild-projections', 'workflow:v2:schedule-tick'];
+
     private const REQUIRED_SERVER_CONTROLLERS = [
         'WorkflowController',
         'WorkerManagementController',
@@ -215,6 +217,22 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
                 sprintf(
                     'Control-plane split contract must name the %s HTTP route so role ownership is explicit.',
                     $route
+                ),
+            );
+        }
+    }
+
+    public function testContractDocumentNamesRoleCommandEntrypoints(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_COMMAND_ENTRYPOINTS as $command) {
+            $this->assertStringContainsString(
+                $command,
+                $contents,
+                sprintf(
+                    'Control-plane split contract must name %s so command-owned role seams stay explicit.',
+                    $command,
                 ),
             );
         }

@@ -50,6 +50,7 @@ class V2RebuildProjectionsCommand extends Command
 
         $runQuery = $this->runQuery($runIds, $instanceId, $missingOnly, $needsRebuildOnly);
         $matchedRuns = (clone $runQuery)->count();
+        $historyProjectionRole = $this->historyProjectionRole;
 
         $report = [
             'dry_run' => $dryRun,
@@ -68,8 +69,6 @@ class V2RebuildProjectionsCommand extends Command
             'run_lineage_entries_would_prune' => 0,
             'failures' => [],
         ];
-
-        $historyProjectionRole = $this->historyProjectionRole;
 
         $runQuery->chunkById(100, static function ($runs) use (&$report, $dryRun, $historyProjectionRole): void {
             foreach ($runs as $run) {

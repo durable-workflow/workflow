@@ -249,6 +249,48 @@ final class V2RebuildProjectionsCommandTest extends TestCase
         ]);
     }
 
+    public function testItUsesHistoryProjectionRoleBindingForRebuilds(): void
+    {
+        [, $run] = $this->createCompletedRun('projection-command-history-role');
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                \Workflow\V2\Models\ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        $this->artisan('workflow:v2:rebuild-projections', [
+            '--run-id' => [$run->id],
+        ])->assertSuccessful();
+
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+        $this->assertDatabaseHas('workflow_run_summaries', [
+            'id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+        ]);
+    }
+
     public function testDryRunReportsMatchedRowsWithoutMutatingProjectionTables(): void
     {
         [$instance, $run] = $this->createCompletedRun('projection-command-dry-run');

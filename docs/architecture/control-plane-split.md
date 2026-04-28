@@ -213,6 +213,13 @@ Authority:
   `Workflow\V2\Support\HistoryExport` and the
   `GET /api/workflows/{id}/runs/{runId}/history/export` route.
 
+Canonical implementation surface:
+
+- `Workflow\V2\Contracts\HistoryProjectionRole` and
+  `Workflow\V2\Support\DefaultHistoryProjectionRole` own the
+  synchronous run-projection entrypoints exposed by task-claim paths
+  and `workflow:v2:rebuild-projections`.
+
 Guarantees:
 
 - History recording is **exactly-once per logical event** per the
