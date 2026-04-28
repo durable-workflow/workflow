@@ -16,8 +16,8 @@ class V2RepairPassCommand extends Command
     protected $signature = 'workflow:v2:repair-pass
         {--run-id=* : Limit the sweep to one or more workflow run ids}
         {--instance-id= : Limit the sweep to one workflow instance id}
-        {--connection= : Limit the repair pass and record the heartbeat against a queue connection scope}
-        {--queue= : Limit the repair pass and record the heartbeat against a queue scope}
+        {--connection= : Record the repair pass heartbeat against a queue connection scope}
+        {--queue= : Record the repair pass heartbeat against a queue scope}
         {--respect-throttle : Respect the queue-loop repair throttle instead of forcing a repair pass}
         {--loop : Run the repair pass on a loop as a dedicated matching-role daemon until interrupted}
         {--sleep-seconds= : Seconds to sleep between loop iterations (defaults to the configured loop throttle)}

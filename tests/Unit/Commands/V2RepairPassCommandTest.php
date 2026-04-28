@@ -378,220 +378,6 @@ final class V2RepairPassCommandTest extends TestCase
         Queue::assertPushed(RunWorkflowTask::class, 1);
     }
 
-    public function testConnectionAndQueueScopeRepairsOnlyMatchingExistingAndMissingTaskCandidates(): void
-    {
-        Queue::fake();
-        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
-
-        $selectedTask = $this->createOverdueWorkflowTask(
-            'repair-pass-queue-scope-existing-selected',
-            connection: 'redis',
-            queue: 'critical',
-        );
-        $otherTask = $this->createOverdueWorkflowTask(
-            'repair-pass-queue-scope-existing-other',
-            connection: 'redis',
-            queue: 'default',
-        );
-        $otherLastDispatchedAt = $otherTask->last_dispatched_at?->toJSON();
-        [$selectedRun] = $this->createRepairNeededSignalRun(
-            'repair-pass-queue-scope-missing-selected',
-            connection: 'redis',
-            queue: 'critical',
-        );
-        [$otherRun] = $this->createRepairNeededSignalRun(
-            'repair-pass-queue-scope-missing-other',
-            connection: 'redis',
-            queue: 'default',
-        );
-
-        $expected = [
-            'connection' => 'redis',
-            'queue' => 'critical',
-            'run_ids' => [],
-            'instance_id' => null,
-            'respect_throttle' => false,
-            'throttled' => false,
-            'selected_existing_task_candidates' => 1,
-            'selected_missing_task_candidates' => 1,
-            'selected_total_candidates' => 2,
-            'repaired_existing_tasks' => 1,
-            'repaired_missing_tasks' => 1,
-            'dispatched_tasks' => 2,
-            'existing_task_failures' => [],
-            'missing_run_failures' => [],
-            'deadline_expired_candidates' => 0,
-            'deadline_expired_tasks_created' => 0,
-            'deadline_expired_failures' => [],
-            'activity_timeout_candidates' => 0,
-            'activity_timeouts_enforced' => 0,
-            'activity_timeout_failures' => [],
-        ];
-
-        $this->artisan('workflow:v2:repair-pass', [
-            '--connection' => 'redis',
-            '--queue' => 'critical',
-            '--json' => true,
-        ])
-            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
-            ->assertSuccessful();
-
-        $selectedTask->refresh();
-        $otherTask->refresh();
-
-        $this->assertSame(1, $selectedTask->repair_count);
-        $this->assertNotNull($selectedTask->last_dispatched_at);
-        $this->assertSame(0, $otherTask->repair_count);
-        $this->assertSame($otherLastDispatchedAt, $otherTask->last_dispatched_at?->toJSON());
-        $this->assertSame(0, WorkflowTask::query()
-            ->where('workflow_run_id', $otherRun->id)
-            ->where('task_type', TaskType::Workflow->value)
-            ->count());
-
-        /** @var WorkflowTask $selectedMissingTask */
-        $selectedMissingTask = WorkflowTask::query()
-            ->where('workflow_run_id', $selectedRun->id)
-            ->where('task_type', TaskType::Workflow->value)
-            ->where('status', TaskStatus::Ready->value)
-            ->sole();
-
-        Queue::assertPushed(
-            RunWorkflowTask::class,
-            static fn (RunWorkflowTask $job): bool => in_array(
-                $job->taskId,
-                [$selectedTask->id, $selectedMissingTask->id],
-                true,
-            ),
-        );
-        Queue::assertPushed(RunWorkflowTask::class, 2);
-    }
-
-    public function testConnectionAndQueueScopeRepairsOnlyMatchingDeadlineExpiredRuns(): void
-    {
-        Queue::fake();
-        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
-
-        $selectedRun = $this->createDeadlineExpiredRun(
-            'repair-pass-queue-scope-deadline-selected',
-            connection: 'redis',
-            queue: 'critical',
-        );
-        $otherRun = $this->createDeadlineExpiredRun(
-            'repair-pass-queue-scope-deadline-other',
-            connection: 'redis',
-            queue: 'default',
-        );
-
-        $expected = [
-            'connection' => 'redis',
-            'queue' => 'critical',
-            'run_ids' => [],
-            'instance_id' => null,
-            'respect_throttle' => false,
-            'throttled' => false,
-            'selected_existing_task_candidates' => 0,
-            'selected_missing_task_candidates' => 0,
-            'selected_total_candidates' => 0,
-            'repaired_existing_tasks' => 0,
-            'repaired_missing_tasks' => 0,
-            'dispatched_tasks' => 1,
-            'existing_task_failures' => [],
-            'missing_run_failures' => [],
-            'deadline_expired_candidates' => 1,
-            'deadline_expired_tasks_created' => 1,
-            'deadline_expired_failures' => [],
-            'activity_timeout_candidates' => 0,
-            'activity_timeouts_enforced' => 0,
-            'activity_timeout_failures' => [],
-        ];
-
-        $this->artisan('workflow:v2:repair-pass', [
-            '--connection' => 'redis',
-            '--queue' => 'critical',
-            '--json' => true,
-        ])
-            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
-            ->assertSuccessful();
-
-        $this->assertSame(1, WorkflowTask::query()
-            ->where('workflow_run_id', $selectedRun->id)
-            ->where('task_type', TaskType::Workflow->value)
-            ->count());
-        $this->assertSame(0, WorkflowTask::query()
-            ->where('workflow_run_id', $otherRun->id)
-            ->where('task_type', TaskType::Workflow->value)
-            ->count());
-        Queue::assertPushed(RunWorkflowTask::class, 1);
-    }
-
-    public function testConnectionAndQueueScopeEnforcesOnlyMatchingActivityTimeouts(): void
-    {
-        Queue::fake();
-        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
-
-        [$selectedRun, $selectedExecution, $selectedTask] = $this->createTimedOutPendingActivity(
-            'repair-pass-queue-scope-activity-selected',
-            connection: 'redis',
-            queue: 'critical',
-        );
-        [$otherRun, $otherExecution, $otherTask] = $this->createTimedOutPendingActivity(
-            'repair-pass-queue-scope-activity-other',
-            connection: 'redis',
-            queue: 'default',
-        );
-
-        $expected = [
-            'connection' => 'redis',
-            'queue' => 'critical',
-            'run_ids' => [],
-            'instance_id' => null,
-            'respect_throttle' => false,
-            'throttled' => false,
-            'selected_existing_task_candidates' => 0,
-            'selected_missing_task_candidates' => 0,
-            'selected_total_candidates' => 0,
-            'repaired_existing_tasks' => 0,
-            'repaired_missing_tasks' => 0,
-            'dispatched_tasks' => 1,
-            'existing_task_failures' => [],
-            'missing_run_failures' => [],
-            'deadline_expired_candidates' => 0,
-            'deadline_expired_tasks_created' => 0,
-            'deadline_expired_failures' => [],
-            'activity_timeout_candidates' => 1,
-            'activity_timeouts_enforced' => 1,
-            'activity_timeout_failures' => [],
-        ];
-
-        $this->artisan('workflow:v2:repair-pass', [
-            '--connection' => 'redis',
-            '--queue' => 'critical',
-            '--json' => true,
-        ])
-            ->expectsOutput(json_encode($expected, JSON_UNESCAPED_SLASHES))
-            ->assertSuccessful();
-
-        $selectedExecution->refresh();
-        $selectedTask->refresh();
-        $otherExecution->refresh();
-        $otherTask->refresh();
-
-        $this->assertSame(\Workflow\V2\Enums\ActivityStatus::Failed, $selectedExecution->status);
-        $this->assertSame(TaskStatus::Cancelled, $selectedTask->status);
-        $this->assertSame(\Workflow\V2\Enums\ActivityStatus::Pending, $otherExecution->status);
-        $this->assertSame(TaskStatus::Ready, $otherTask->status);
-        $this->assertSame(1, WorkflowTask::query()
-            ->where('workflow_run_id', $selectedRun->id)
-            ->where('task_type', TaskType::Workflow->value)
-            ->count());
-        $this->assertSame(0, WorkflowTask::query()
-            ->where('workflow_run_id', $otherRun->id)
-            ->where('task_type', TaskType::Workflow->value)
-            ->count());
-
-        Queue::assertPushed(RunWorkflowTask::class, 1);
-    }
-
     public function testLoopModeRunsTheRequestedNumberOfIterationsAndForcesThrottleAcrossIterations(): void
     {
         Queue::fake();
@@ -712,12 +498,9 @@ final class V2RepairPassCommandTest extends TestCase
     /**
      * @return array{0: WorkflowRun, 1: WorkflowSignal}
      */
-    private function createRepairNeededSignalRun(
-        string $instanceId,
-        ?string $connection = 'redis',
-        ?string $queue = 'default',
-    ): array {
-        $run = $this->createWaitingRun($instanceId, $connection, $queue);
+    private function createRepairNeededSignalRun(string $instanceId): array
+    {
+        $run = $this->createWaitingRun($instanceId);
 
         /** @var WorkflowSignal $signal */
         $signal = WorkflowSignal::query()->create([
@@ -745,8 +528,8 @@ final class V2RepairPassCommandTest extends TestCase
             'workflow_type' => 'test-command-target-workflow',
             'status' => RunStatus::Waiting->value,
             'status_bucket' => 'running',
-            'connection' => $connection,
-            'queue' => $queue,
+            'connection' => 'redis',
+            'queue' => 'default',
             'started_at' => $run->started_at,
             'wait_kind' => 'signal',
             'wait_reason' => 'Waiting to apply signal name-provided',
@@ -764,12 +547,9 @@ final class V2RepairPassCommandTest extends TestCase
         return [$run, $signal];
     }
 
-    private function createOverdueWorkflowTask(
-        string $instanceId,
-        ?string $connection = 'redis',
-        ?string $queue = 'default',
-    ): WorkflowTask {
-        $run = $this->createWaitingRun($instanceId, $connection, $queue);
+    private function createOverdueWorkflowTask(string $instanceId): WorkflowTask
+    {
+        $run = $this->createWaitingRun($instanceId);
 
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create([
@@ -781,81 +561,15 @@ final class V2RepairPassCommandTest extends TestCase
             'last_dispatched_at' => now()
                 ->subSeconds(20),
             'payload' => [],
-            'connection' => $connection,
-            'queue' => $queue,
+            'connection' => 'redis',
+            'queue' => 'default',
         ]);
 
         return $task;
     }
 
-    private function createDeadlineExpiredRun(
-        string $instanceId,
-        ?string $connection = 'redis',
-        ?string $queue = 'default',
-    ): WorkflowRun {
-        $run = $this->createWaitingRun($instanceId, $connection, $queue);
-
-        $run->forceFill([
-            'run_deadline_at' => now()
-                ->subMinute(),
-        ])->save();
-
-        return $run;
-    }
-
-    /**
-     * @return array{0: WorkflowRun, 1: \Workflow\V2\Models\ActivityExecution, 2: WorkflowTask}
-     */
-    private function createTimedOutPendingActivity(
-        string $instanceId,
-        ?string $connection = 'redis',
-        ?string $queue = 'default',
-    ): array {
-        $run = $this->createWaitingRun($instanceId, $connection, $queue);
-
-        $execution = \Workflow\V2\Models\ActivityExecution::query()->create([
-            'workflow_run_id' => $run->id,
-            'sequence' => 1,
-            'activity_class' => TestCommandTargetWorkflow::class,
-            'activity_type' => 'test-command-target-activity',
-            'status' => \Workflow\V2\Enums\ActivityStatus::Pending->value,
-            'attempt_count' => 0,
-            'payload_codec' => CodecRegistry::defaultCodec(),
-            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), []),
-            'connection' => $connection,
-            'queue' => $queue,
-            'schedule_deadline_at' => now()
-                ->subMinute(),
-            'retry_policy' => [
-                'snapshot_version' => 1,
-                'max_attempts' => 1,
-                'backoff_seconds' => [],
-                'start_to_close_timeout' => null,
-                'schedule_to_start_timeout' => null,
-            ],
-        ]);
-
-        $task = WorkflowTask::query()->create([
-            'workflow_run_id' => $run->id,
-            'task_type' => TaskType::Activity->value,
-            'status' => TaskStatus::Ready->value,
-            'available_at' => now()
-                ->subMinute(),
-            'payload' => [
-                'activity_execution_id' => $execution->id,
-            ],
-            'connection' => $connection,
-            'queue' => $queue,
-        ]);
-
-        return [$run, $execution, $task];
-    }
-
-    private function createWaitingRun(
-        string $instanceId,
-        ?string $connection = 'redis',
-        ?string $queue = 'default',
-    ): WorkflowRun {
+    private function createWaitingRun(string $instanceId): WorkflowRun
+    {
         $instance = WorkflowInstance::query()->create([
             'id' => $instanceId,
             'workflow_class' => TestCommandTargetWorkflow::class,
@@ -877,8 +591,8 @@ final class V2RepairPassCommandTest extends TestCase
             'status' => RunStatus::Waiting->value,
             'payload_codec' => CodecRegistry::defaultCodec(),
             'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), []),
-            'connection' => $connection,
-            'queue' => $queue,
+            'connection' => 'redis',
+            'queue' => 'default',
             'started_at' => now()
                 ->subMinutes(5),
             'last_progress_at' => now()

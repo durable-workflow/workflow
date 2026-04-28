@@ -103,18 +103,8 @@ final class TaskWatchdog
 
         WorkerCompatibilityFleet::heartbeat($connection, $queue);
 
-        $existingTaskCandidateIds = TaskRepairCandidates::taskIds(
-            runIds: $runIds,
-            instanceId: $instanceId,
-            connection: $connection,
-            queue: $queue,
-        );
-        $missingRunIds = TaskRepairCandidates::runIds(
-            runIds: $runIds,
-            instanceId: $instanceId,
-            connection: $connection,
-            queue: $queue,
-        );
+        $existingTaskCandidateIds = TaskRepairCandidates::taskIds(runIds: $runIds, instanceId: $instanceId);
+        $missingRunIds = TaskRepairCandidates::runIds(runIds: $runIds, instanceId: $instanceId);
         $report = self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
         $report['selected_existing_task_candidates'] = count($existingTaskCandidateIds);
         $report['selected_missing_task_candidates'] = count($missingRunIds);
@@ -152,7 +142,7 @@ final class TaskWatchdog
             }
         }
 
-        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue);
+        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId);
         $report['deadline_expired_candidates'] = count($deadlineExpiredRunIds);
 
         foreach ($deadlineExpiredRunIds as $deadlineRunId) {
@@ -171,11 +161,7 @@ final class TaskWatchdog
             }
         }
 
-        $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(
-            TaskRepairPolicy::scanLimit(),
-            $connection,
-            $queue,
-        );
+        $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(TaskRepairPolicy::scanLimit());
         $report['activity_timeout_candidates'] = count($activityTimeoutIds);
 
         foreach ($activityTimeoutIds as $activityExecutionId) {
@@ -380,12 +366,8 @@ final class TaskWatchdog
      *
      * @return list<string>
      */
-    private static function deadlineExpiredRunIds(
-        array $runIds = [],
-        ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
-    ): array {
+    private static function deadlineExpiredRunIds(array $runIds = [], ?string $instanceId = null): array
+    {
         $now = now();
 
         $query = WorkflowRun::query()
@@ -412,34 +394,7 @@ final class TaskWatchdog
             $query->where('workflow_instance_id', $instanceId);
         }
 
-        self::applyRequestedScope($query, $connection, $queue);
-
         return $query->limit(TaskRepairPolicy::scanLimit())->pluck('id')->all();
-    }
-
-    private static function applyRequestedScope($query, ?string $connection, ?string $queue): void
-    {
-        self::applyRequestedScopeValue($query, 'connection', $connection);
-        self::applyRequestedScopeValue($query, 'queue', $queue);
-    }
-
-    private static function applyRequestedScopeValue($query, string $column, ?string $value): void
-    {
-        if ($value === null) {
-            return;
-        }
-
-        if ($value === 'default') {
-            $query->where(static function ($defaultScope) use ($column): void {
-                $defaultScope->whereNull($column)
-                    ->orWhere($column, '')
-                    ->orWhere($column, 'default');
-            });
-
-            return;
-        }
-
-        $query->where($column, $value);
     }
 
     private static function tablesReady(): bool

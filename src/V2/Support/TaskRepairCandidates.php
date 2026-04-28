@@ -29,18 +29,9 @@ final class TaskRepairCandidates
         ?CarbonInterface $now = null,
         array $runIds = [],
         ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
     ): array {
         return self::roundRobinCandidateIds(
-            self::existingTaskIdsByScope(
-                $limit ?? TaskRepairPolicy::scanLimit(),
-                $now,
-                $runIds,
-                $instanceId,
-                $connection,
-                $queue,
-            ),
+            self::existingTaskIdsByScope($limit ?? TaskRepairPolicy::scanLimit(), $now, $runIds, $instanceId),
             $limit ?? TaskRepairPolicy::scanLimit(),
         );
     }
@@ -48,21 +39,10 @@ final class TaskRepairCandidates
     /**
      * @return list<string>
      */
-    public static function runIds(
-        ?int $limit = null,
-        array $runIds = [],
-        ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
-    ): array {
+    public static function runIds(?int $limit = null, array $runIds = [], ?string $instanceId = null): array
+    {
         return self::roundRobinCandidateIds(
-            self::missingTaskRunIdsByScope(
-                $limit ?? TaskRepairPolicy::scanLimit(),
-                $runIds,
-                $instanceId,
-                $connection,
-                $queue,
-            ),
+            self::missingTaskRunIdsByScope($limit ?? TaskRepairPolicy::scanLimit(), $runIds, $instanceId),
             $limit ?? TaskRepairPolicy::scanLimit(),
         );
     }
@@ -245,10 +225,8 @@ final class TaskRepairCandidates
         CarbonInterface $now,
         array $runIds = [],
         ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
     ) {
-        return self::existingTaskQuery($now, $runIds, $instanceId, $connection, $queue)
+        return self::existingTaskQuery($now, $runIds, $instanceId)
             ->select(['connection', 'queue', 'compatibility'])
             ->selectRaw('COUNT(*) as candidate_count')
             ->selectRaw('MIN(created_at) as oldest_candidate_at')
@@ -256,13 +234,9 @@ final class TaskRepairCandidates
             ->get();
     }
 
-    private static function missingTaskScopeRows(
-        array $runIds = [],
-        ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
-    ) {
-        return self::missingTaskRunQuery($runIds, $instanceId, $connection, $queue)
+    private static function missingTaskScopeRows(array $runIds = [], ?string $instanceId = null)
+    {
+        return self::missingTaskRunQuery($runIds, $instanceId)
             ->select(['connection', 'queue', 'compatibility'])
             ->selectRaw('COUNT(*) as candidate_count')
             ->selectRaw('MIN(COALESCE(wait_started_at, started_at, created_at)) as oldest_candidate_at')
@@ -361,21 +335,13 @@ final class TaskRepairCandidates
         ?CarbonInterface $now = null,
         array $runIds = [],
         ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
     ): array {
         $now ??= now();
         $buckets = [];
 
-        foreach (self::normalizedScopes(self::existingTaskScopeRows(
-            $now,
-            $runIds,
-            $instanceId,
-            $connection,
-            $queue,
-        )) as $scope) {
+        foreach (self::normalizedScopes(self::existingTaskScopeRows($now, $runIds, $instanceId)) as $scope) {
             /** @var list<string> $ids */
-            $ids = self::existingTaskQuery($now, $runIds, $instanceId, $connection, $queue)
+            $ids = self::existingTaskQuery($now, $runIds, $instanceId)
                 ->where(static function ($query) use ($scope): void {
                     self::applyScope($query, $scope['connection'], $scope['queue'], $scope['compatibility']);
                 })
@@ -401,19 +367,12 @@ final class TaskRepairCandidates
         int $limit,
         array $runIds = [],
         ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
     ): array {
         $buckets = [];
 
-        foreach (self::normalizedScopes(self::missingTaskScopeRows(
-            $runIds,
-            $instanceId,
-            $connection,
-            $queue,
-        )) as $scope) {
+        foreach (self::normalizedScopes(self::missingTaskScopeRows($runIds, $instanceId)) as $scope) {
             /** @var list<string> $ids */
-            $ids = self::missingTaskRunQuery($runIds, $instanceId, $connection, $queue)
+            $ids = self::missingTaskRunQuery($runIds, $instanceId)
                 ->where(static function ($query) use ($scope): void {
                     self::applyScope($query, $scope['connection'], $scope['queue'], $scope['compatibility']);
                 })
@@ -564,8 +523,6 @@ final class TaskRepairCandidates
         ?CarbonInterface $now = null,
         array $runIds = [],
         ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
     ) {
         $now ??= now();
         $staleDispatchCutoff = $now->copy()
@@ -631,17 +588,12 @@ final class TaskRepairCandidates
             });
 
         self::applyRunSelection($query, $runIds, $instanceId);
-        self::applyRequestedScope($query, $connection, $queue);
 
         return $query;
     }
 
-    private static function missingTaskRunQuery(
-        array $runIds = [],
-        ?string $instanceId = null,
-        ?string $connection = null,
-        ?string $queue = null,
-    ) {
+    private static function missingTaskRunQuery(array $runIds = [], ?string $instanceId = null)
+    {
         $query = WorkflowRunSummary::query()
             ->where('liveness_state', 'repair_needed')
             ->whereNull('next_task_id')
@@ -654,8 +606,6 @@ final class TaskRepairCandidates
         if ($instanceId !== null) {
             $query->where('workflow_instance_id', $instanceId);
         }
-
-        self::applyRequestedScope($query, $connection, $queue);
 
         return $query;
     }
@@ -685,31 +635,6 @@ final class TaskRepairCandidates
         self::applyNullableScopeValue($query, 'connection', $connection);
         self::applyNullableScopeValue($query, 'queue', $queue);
         self::applyNullableScopeValue($query, 'compatibility', $compatibility);
-    }
-
-    private static function applyRequestedScope($query, ?string $connection, ?string $queue): void
-    {
-        self::applyRequestedScopeValue($query, 'connection', $connection);
-        self::applyRequestedScopeValue($query, 'queue', $queue);
-    }
-
-    private static function applyRequestedScopeValue($query, string $column, ?string $value): void
-    {
-        if ($value === null) {
-            return;
-        }
-
-        if ($value === 'default') {
-            $query->where(static function ($defaultScope) use ($column): void {
-                $defaultScope->whereNull($column)
-                    ->orWhere($column, '')
-                    ->orWhere($column, 'default');
-            });
-
-            return;
-        }
-
-        $query->where($column, $value);
     }
 
     private static function applyNullableScopeValue($query, string $column, ?string $value): void
