@@ -515,6 +515,40 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(1000, $result['page_size']);
     }
 
+    public function testExecuteClosedRunUsesHistoryProjectionRoleBinding(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->forceFill([
+            'status' => RunStatus::Completed->value,
+            'closed_reason' => 'completed',
+            'closed_at' => now(),
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $result = $this->bridge->execute($task->id);
+
+        $this->assertTrue($result['executed']);
+        $this->assertSame('completed', $result['run_status']);
+        $this->assertSame(
+            [['projectRun', $run->id], ['projectRun', $run->id]],
+            array_slice($customRole->calls, 0, 2),
+        );
+    }
+
     public function testFailRecordsTaskFailure(): void
     {
         $run = $this->createWaitingRun();
@@ -567,6 +601,31 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $task->refresh();
         $this->assertSame(TaskStatus::Failed, $task->status);
         $this->assertSame('Replay failed', $task->last_error);
+    }
+
+    public function testFailUsesHistoryProjectionRoleBinding(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $result = $this->bridge->fail($task->id, 'Worker crashed');
+
+        $this->assertTrue($result['recorded']);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
 
     public function testFailRejectsCompletedTask(): void
@@ -1100,6 +1159,26 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNotNull($completionEvent);
     }
 
+    public function testCompleteWorkflowCompletionUsesHistoryProjectionRoleBinding(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('Hello, Taylor'),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+    }
+
     public function testCompleteWithWorkflowFailureFailsRun(): void
     {
         $run = $this->createWaitingRun();
@@ -1153,6 +1232,27 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNotNull($failure);
         $this->assertSame('Determinism violation', $failure->message);
         $this->assertSame(RuntimeException::class, $failure->exception_class);
+    }
+
+    public function testCompleteWorkflowFailureUsesHistoryProjectionRoleBinding(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'fail_workflow',
+                'message' => 'workflow failed',
+                'exception_class' => RuntimeException::class,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
 
     public function testCompleteRejectsNonLeasedTask(): void
@@ -1858,6 +1958,26 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
     }
 
+    public function testCompleteOpenConditionWaitUsesHistoryProjectionRoleBinding(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'order-ready',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+    }
+
     public function testCompleteOpenConditionWaitWithTimeoutSchedulesConditionTimeoutTimer(): void
     {
         $run = $this->createWaitingRun();
@@ -2355,6 +2475,68 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(0, $parentReadyTasks);
     }
 
+    public function testChildWorkflowRetryUsesHistoryProjectionRoleBinding(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+                'retry_policy' => [
+                    'max_attempts' => 2,
+                    'backoff_seconds' => [0],
+                ],
+                'run_timeout_seconds' => 120,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $initialLink */
+        $initialLink = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        /** @var WorkflowTask $initialChildTask */
+        $initialChildTask = WorkflowTask::query()
+            ->where('workflow_run_id', $initialLink->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->bridge->claimStatus($initialChildTask->id, 'external-child-worker');
+
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $failed = $this->bridge->complete($initialChildTask->id, [
+            [
+                'type' => 'fail_workflow',
+                'message' => 'retryable child failure',
+                'exception_class' => RuntimeException::class,
+            ],
+        ]);
+
+        $this->assertTrue($failed['completed']);
+
+        $links = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('created_at')
+            ->get();
+
+        /** @var WorkflowLink|null $retryLink */
+        $retryLink = $links->last();
+
+        $this->assertCount(2, $links);
+        $this->assertNotNull($retryLink);
+        $this->assertContains(['projectRun', $retryLink->child_workflow_run_id], $customRole->calls);
+    }
+
     public function testChildWorkflowCompletionCreatesParentResumeTaskWithChildContext(): void
     {
         $run = $this->createWaitingRun();
@@ -2512,6 +2694,36 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($continuedEvent);
         $this->assertSame($continuedRun->id, $continuedEvent->payload['continued_to_run_id']);
+    }
+
+    public function testCompleteContinueAsNewUsesHistoryProjectionRoleBinding(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'continue_as_new',
+                'arguments' => Serializer::serialize(['new-args']),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'continue_as_new')
+            ->firstOrFail();
+
+        $this->assertSame(
+            [['projectRun', $run->id], ['projectRun', $link->child_workflow_run_id]],
+            $customRole->calls,
+        );
     }
 
     public function testCompleteWithMultipleNonTerminalCommands(): void
@@ -2756,6 +2968,38 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertFalse($result['completed']);
         $this->assertSame([], $result['created_task_ids']);
+    }
+
+    private function bindHistoryProjectionSpy()
+    {
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        return $customRole;
     }
 
     private function createLeasedTask(WorkflowRun $run): WorkflowTask

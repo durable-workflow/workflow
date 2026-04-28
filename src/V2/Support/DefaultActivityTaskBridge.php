@@ -9,6 +9,7 @@ use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -531,7 +532,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
         ActivityCancellation::record($run, $execution, $task);
 
-        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+        self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
     }
 
     /**
@@ -608,6 +609,19 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             'reason' => $outcome['reason'],
             'next_task_id' => $nextTask?->id,
         ];
+    }
+
+    private static function projectRun(WorkflowRun $run): void
+    {
+        self::historyProjectionRole()->projectRun($run);
+    }
+
+    private static function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
     }
 
     /**
