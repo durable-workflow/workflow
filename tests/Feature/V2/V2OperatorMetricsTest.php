@@ -65,6 +65,34 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertTrue($snapshot['workers']['fleet'][0]['supports_required']);
     }
 
+    public function testWorkerFleetSnapshotUsesRequestedNamespaceInsteadOfConfiguredCompatibilityNamespace(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+            WorkerCompatibilityFleet::clear();
+        });
+
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.namespace', 'shipping');
+
+        WorkerCompatibilityFleet::clear();
+        WorkerCompatibilityFleet::recordForNamespace('billing', ['build-a'], 'redis', 'default', 'worker-billing');
+        WorkerCompatibilityFleet::recordForNamespace('shipping', ['build-a'], 'redis', 'default', 'worker-shipping');
+
+        $snapshot = OperatorMetrics::snapshot(now(), 'billing');
+
+        $this->assertSame('billing', $snapshot['workers']['compatibility_namespace']);
+        $this->assertSame(1, $snapshot['workers']['active_workers']);
+        $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
+        $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+        $this->assertCount(1, $snapshot['workers']['fleet']);
+        $this->assertSame('worker-billing', $snapshot['workers']['fleet'][0]['worker_id']);
+        $this->assertSame('billing', $snapshot['workers']['fleet'][0]['namespace']);
+    }
+
     public function testSnapshotSummarizesDurableBacklogRepairCompatibilityAndWorkerFleet(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');

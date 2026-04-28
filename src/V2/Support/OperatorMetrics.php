@@ -50,7 +50,7 @@ final class OperatorMetrics
             'command_contracts' => self::commandContractMetrics($namespace),
             'projections' => self::projectionMetrics($now, $namespace),
             'schedules' => self::scheduleMetrics($now, $namespace),
-            'workers' => self::workerMetrics(),
+            'workers' => self::workerMetrics($namespace),
             'backend' => BackendCapabilities::snapshot($now),
             'structural_limits' => StructuralLimits::snapshot(),
             'update_wait' => UpdateWaitPolicy::snapshot(),
@@ -302,10 +302,13 @@ final class OperatorMetrics
     /**
      * @return array<string, mixed>
      */
-    private static function workerMetrics(): array
+    private static function workerMetrics(?string $namespace): array
     {
         $required = WorkerCompatibility::current();
-        $snapshots = WorkerCompatibilityFleet::details($required);
+        $compatibilityNamespace = $namespace ?? WorkerCompatibilityFleet::scopeNamespace();
+        $snapshots = $compatibilityNamespace === null
+            ? WorkerCompatibilityFleet::details($required)
+            : WorkerCompatibilityFleet::detailsForNamespace($compatibilityNamespace, $required);
         $workerIds = [];
         $supportingWorkerIds = [];
         $fleet = [];
@@ -329,7 +332,7 @@ final class OperatorMetrics
         }
 
         return [
-            'compatibility_namespace' => WorkerCompatibilityFleet::scopeNamespace(),
+            'compatibility_namespace' => $compatibilityNamespace,
             'required_compatibility' => $required,
             'active_workers' => count($workerIds),
             'active_worker_scopes' => count($snapshots),
