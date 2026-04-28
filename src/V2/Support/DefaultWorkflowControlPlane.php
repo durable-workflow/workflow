@@ -201,12 +201,6 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'last_history_sequence' => 0,
                 ]);
 
-            $this->seedTypedVisibilityMetadata(
-                $run,
-                is_array($memo) ? $memo : null,
-                is_array($searchAttributes) ? $searchAttributes : null,
-            );
-
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes($commandContext, [
                 'command_type' => CommandType::Start->value,
                 'target_scope' => 'instance',
@@ -228,9 +222,6 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'run_count' => $run->run_number,
             ])->save();
 
-            $memoPayload = self::visibilityMetadataPayload($memo);
-            $searchAttributesPayload = self::visibilityMetadataPayload($searchAttributes);
-
             WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
@@ -239,8 +230,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'workflow_type' => $run->workflow_type,
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
-                'memo' => $memoPayload,
-                'search_attributes' => $searchAttributesPayload,
+                'memo' => $run->memo,
+                'search_attributes' => $run->search_attributes,
                 'outcome' => $command->outcome?->value,
             ], null, $command);
 
@@ -252,8 +243,8 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'workflow_command_id' => $command->id,
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
-                'memo' => $memoPayload,
-                'search_attributes' => $searchAttributesPayload,
+                'memo' => $run->memo,
+                'search_attributes' => $run->search_attributes,
                 'execution_timeout_seconds' => $executionTimeoutSeconds,
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
@@ -988,36 +979,5 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     private function taskQuery(): \Illuminate\Database\Eloquent\Builder
     {
         return ConfiguredV2Models::query('task_model', WorkflowTask::class);
-    }
-
-    /**
-     * @param array<string, mixed>|null $memo
-     * @param array<string, scalar|null>|null $searchAttributes
-     */
-    private function seedTypedVisibilityMetadata(WorkflowRun $run, ?array $memo, ?array $searchAttributes): void
-    {
-        if (is_array($memo) && $memo !== []) {
-            app(MemoUpsertService::class)->upsert($run, new UpsertMemosCall($memo), 0);
-            $run->unsetRelation('memos');
-        }
-
-        if (is_array($searchAttributes) && $searchAttributes !== []) {
-            app(SearchAttributeUpsertService::class)->upsert(
-                $run,
-                new UpsertSearchAttributesCall($searchAttributes),
-                0,
-            );
-            $run->unsetRelation('searchAttributes');
-        }
-    }
-
-    /**
-     * @param array<string, mixed>|null $values
-     *
-     * @return array<string, mixed>|null
-     */
-    private static function visibilityMetadataPayload(?array $values): ?array
-    {
-        return is_array($values) && $values !== [] ? $values : null;
     }
 }
