@@ -18,6 +18,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
+use Workflow\V2\Support\RequestedTaskScope;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -103,8 +104,18 @@ final class TaskWatchdog
 
         WorkerCompatibilityFleet::heartbeat($connection, $queue);
 
-        $existingTaskCandidateIds = TaskRepairCandidates::taskIds(runIds: $runIds, instanceId: $instanceId);
-        $missingRunIds = TaskRepairCandidates::runIds(runIds: $runIds, instanceId: $instanceId);
+        $existingTaskCandidateIds = TaskRepairCandidates::taskIds(
+            runIds: $runIds,
+            instanceId: $instanceId,
+            connection: $connection,
+            queue: $queue,
+        );
+        $missingRunIds = TaskRepairCandidates::runIds(
+            runIds: $runIds,
+            instanceId: $instanceId,
+            connection: $connection,
+            queue: $queue,
+        );
         $report = self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
         $report['selected_existing_task_candidates'] = count($existingTaskCandidateIds);
         $report['selected_missing_task_candidates'] = count($missingRunIds);
@@ -142,7 +153,7 @@ final class TaskWatchdog
             }
         }
 
-        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId);
+        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue);
         $report['deadline_expired_candidates'] = count($deadlineExpiredRunIds);
 
         foreach ($deadlineExpiredRunIds as $deadlineRunId) {
@@ -161,7 +172,11 @@ final class TaskWatchdog
             }
         }
 
-        $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(TaskRepairPolicy::scanLimit());
+        $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(
+            TaskRepairPolicy::scanLimit(),
+            $connection,
+            $queue,
+        );
         $report['activity_timeout_candidates'] = count($activityTimeoutIds);
 
         foreach ($activityTimeoutIds as $activityExecutionId) {
@@ -366,8 +381,12 @@ final class TaskWatchdog
      *
      * @return list<string>
      */
-    private static function deadlineExpiredRunIds(array $runIds = [], ?string $instanceId = null): array
-    {
+    private static function deadlineExpiredRunIds(
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $connection = null,
+        ?string $queue = null,
+    ): array {
         $now = now();
 
         $query = WorkflowRun::query()
@@ -393,6 +412,8 @@ final class TaskWatchdog
         if ($instanceId !== null) {
             $query->where('workflow_instance_id', $instanceId);
         }
+
+        RequestedTaskScope::apply($query, $connection, $queue);
 
         return $query->limit(TaskRepairPolicy::scanLimit())->pluck('id')->all();
     }
