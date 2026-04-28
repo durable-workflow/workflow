@@ -146,6 +146,24 @@ class WorkflowRun extends Model
         );
     }
 
+    public function searchAttributes(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('search_attribute_model', WorkflowSearchAttribute::class),
+            'workflow_run_id',
+            'id',
+        );
+    }
+
+    public function memos(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('memo_model', WorkflowMemo::class),
+            'workflow_run_id',
+            'id',
+        );
+    }
+
     public function waits(): HasMany
     {
         return $this->hasMany(
@@ -257,6 +275,86 @@ class WorkflowRun extends Model
             'codec' => $this->payload_codec ?? CodecRegistry::defaultCodec(),
             'blob' => $this->output,
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function typedSearchAttributes(): array
+    {
+        if (! $this->exists) {
+            return $this->decodeVisibilityArrayAttribute($this->attributes['search_attributes'] ?? null);
+        }
+
+        $this->loadMissing('searchAttributes');
+
+        /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowSearchAttribute> $searchAttributes */
+        $searchAttributes = $this->getRelation('searchAttributes');
+
+        return $searchAttributes
+            ->mapWithKeys(static function (WorkflowSearchAttribute $attribute): array {
+                return [
+                    $attribute->key => $attribute->getValue(),
+                ];
+            })
+            ->toArray();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function typedMemos(): array
+    {
+        if (! $this->exists) {
+            return $this->decodeVisibilityArrayAttribute($this->attributes['memo'] ?? null);
+        }
+
+        $this->loadMissing('memos');
+
+        /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowMemo> $memos */
+        $memos = $this->getRelation('memos');
+
+        return $memos
+            ->mapWithKeys(static function (WorkflowMemo $memo): array {
+                return [
+                    $memo->key => $memo->getValue(),
+                ];
+            })
+            ->toArray();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getSearchAttributesAttribute(mixed $value): array
+    {
+        return $this->typedSearchAttributes();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getMemoAttribute(mixed $value): array
+    {
+        return $this->typedMemos();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeVisibilityArrayAttribute(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (! is_string($value) || $value === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+
+        return is_array($decoded) ? $decoded : [];
     }
 
     /**

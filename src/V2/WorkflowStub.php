@@ -50,12 +50,14 @@ use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\LifecycleEventDispatcher;
+use Workflow\V2\Support\MemoUpsertService;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\ParentClosePolicyEnforcer;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RoutingResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\StructuralLimits;
@@ -65,6 +67,8 @@ use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateCommandGate;
 use Workflow\V2\Support\UpdateWaitPolicy;
+use Workflow\V2\Support\UpsertMemosCall;
+use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowExecutionGate;
@@ -965,6 +969,8 @@ final class WorkflowStub
                 'last_history_sequence' => 0,
             ]);
 
+            $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
+
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
                 'command_type' => CommandType::Start->value,
@@ -990,6 +996,9 @@ final class WorkflowStub
                 'run_count' => $run->run_number,
             ])->save();
 
+            $memoPayload = self::visibilityMetadataPayload($memo);
+            $searchAttributesPayload = self::visibilityMetadataPayload($searchAttributes);
+
             WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
                 'workflow_command_id' => $command->id,
                 'workflow_instance_id' => $instance->id,
@@ -998,8 +1007,8 @@ final class WorkflowStub
                 'workflow_type' => $run->workflow_type,
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
-                'memo' => $run->memo,
-                'search_attributes' => $run->search_attributes,
+                'memo' => $memoPayload,
+                'search_attributes' => $searchAttributesPayload,
                 'outcome' => $command->outcome?->value,
             ], null, $command);
 
@@ -1011,8 +1020,8 @@ final class WorkflowStub
                 'workflow_command_id' => $command->id,
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
-                'memo' => $run->memo,
-                'search_attributes' => $run->search_attributes,
+                'memo' => $memoPayload,
+                'search_attributes' => $searchAttributesPayload,
                 'execution_timeout_seconds' => $executionTimeoutSeconds,
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
@@ -2583,6 +2592,8 @@ final class WorkflowStub
                 'last_history_sequence' => 0,
             ]);
 
+            $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
+
             /** @var WorkflowCommand $startCommand */
             $startCommand = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
                 $commandContext,
@@ -2611,6 +2622,9 @@ final class WorkflowStub
                 'run_count' => $run->run_number,
             ])->save();
 
+            $memoPayload = self::visibilityMetadataPayload($memo);
+            $searchAttributesPayload = self::visibilityMetadataPayload($searchAttributes);
+
             WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
                 'workflow_command_id' => $startCommand->id,
                 'workflow_instance_id' => $instance->id,
@@ -2619,8 +2633,8 @@ final class WorkflowStub
                 'workflow_type' => $run->workflow_type,
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
-                'memo' => $run->memo,
-                'search_attributes' => $run->search_attributes,
+                'memo' => $memoPayload,
+                'search_attributes' => $searchAttributesPayload,
                 'outcome' => $startCommand->outcome?->value,
             ], null, $startCommand);
 
@@ -2632,8 +2646,8 @@ final class WorkflowStub
                 'workflow_command_id' => $startCommand->id,
                 'business_key' => $run->business_key,
                 'visibility_labels' => $run->visibility_labels,
-                'memo' => $run->memo,
-                'search_attributes' => $run->search_attributes,
+                'memo' => $memoPayload,
+                'search_attributes' => $searchAttributesPayload,
                 'execution_timeout_seconds' => $executionTimeoutSeconds,
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
@@ -4243,5 +4257,36 @@ final class WorkflowStub
     private static function taskQuery()
     {
         return ConfiguredV2Models::query('task_model', WorkflowTask::class);
+    }
+
+    /**
+     * @param array<string, mixed>|null $values
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function visibilityMetadataPayload(?array $values): ?array
+    {
+        return is_array($values) && $values !== [] ? $values : null;
+    }
+
+    /**
+     * @param array<string, mixed>|null $memo
+     * @param array<string, scalar|null>|null $searchAttributes
+     */
+    private function seedTypedVisibilityMetadata(WorkflowRun $run, ?array $memo, ?array $searchAttributes): void
+    {
+        if (is_array($memo) && $memo !== []) {
+            app(MemoUpsertService::class)->upsert($run, new UpsertMemosCall($memo), 0);
+            $run->unsetRelation('memos');
+        }
+
+        if (is_array($searchAttributes) && $searchAttributes !== []) {
+            app(SearchAttributeUpsertService::class)->upsert(
+                $run,
+                new UpsertSearchAttributesCall($searchAttributes),
+                0,
+            );
+            $run->unsetRelation('searchAttributes');
+        }
     }
 }

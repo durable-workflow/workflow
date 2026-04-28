@@ -1608,6 +1608,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'last_history_sequence' => 0,
         ]);
 
+        $this->inheritTypedVisibilityMetadata($run, $childRun);
+
         $childInstance->forceFill([
             'current_run_id' => $childRun->id,
         ])->save();
@@ -1844,6 +1846,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'last_history_sequence' => 0,
         ]);
 
+        $this->inheritTypedVisibilityMetadata($run, $continuedRun);
+
         $instance->forceFill([
             'current_run_id' => $continuedRun->id,
             'run_count' => $continuedRun->run_number,
@@ -2031,6 +2035,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
         ]);
+
+        $this->inheritTypedVisibilityMetadata($failedChildRun, $retryRun);
 
         $childInstance->forceFill([
             'current_run_id' => $retryRun->id,
@@ -2969,5 +2975,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void
+    {
+        app(MemoUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
+        app(SearchAttributeUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
+
+        $targetRun->unsetRelation('memos');
+        $targetRun->unsetRelation('searchAttributes');
     }
 }

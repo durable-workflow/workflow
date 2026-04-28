@@ -9,7 +9,9 @@ use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 
@@ -131,6 +133,87 @@ final class V2ContinueAsNewMetadataTest extends TestCase
         $secondRunMemo = $runs[1]->memo;
         $this->assertSame('Hello, run!', $secondRunMemo['last_greeting']);
         $this->assertSame(1, $secondRunMemo['iteration']);
+    }
+
+    public function testStartMetadataSeedsTypedRowsAndContinueAsNewInheritsThem(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, run!');
+
+        $workflow = WorkflowStub::make(TestContinueAsNewMetadataWorkflow::class, 'meta-continue-typed');
+        $workflow->start(
+            0,
+            1,
+            StartOptions::rejectDuplicate()
+                ->withSearchAttributes([
+                    'env' => 'production',
+                    'team' => 'platform',
+                ])
+                ->withMemo([
+                    'customer' => 'Taylor',
+                    'priority' => 'high',
+                ]),
+        );
+
+        $this->assertTrue($workflow->refresh()->completed());
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'meta-continue-typed')
+            ->orderBy('run_number')
+            ->get()
+            ->values();
+
+        $this->assertCount(2, $runs);
+
+        $firstRunSearchAttributes = WorkflowSearchAttribute::query()
+            ->where('workflow_run_id', $runs[0]->id)
+            ->get()
+            ->keyBy('key');
+        $secondRunSearchAttributes = WorkflowSearchAttribute::query()
+            ->where('workflow_run_id', $runs[1]->id)
+            ->get()
+            ->keyBy('key');
+
+        $this->assertSame('production', $firstRunSearchAttributes['env']->getValue());
+        $this->assertSame(0, $firstRunSearchAttributes['env']->upserted_at_sequence);
+        $this->assertFalse($firstRunSearchAttributes['env']->inherited_from_parent);
+        $this->assertSame('platform', $firstRunSearchAttributes['team']->getValue());
+        $this->assertSame(0, $firstRunSearchAttributes['team']->upserted_at_sequence);
+        $this->assertFalse($firstRunSearchAttributes['team']->inherited_from_parent);
+
+        $this->assertSame('production', $secondRunSearchAttributes['env']->getValue());
+        $this->assertSame(1, $secondRunSearchAttributes['env']->upserted_at_sequence);
+        $this->assertTrue($secondRunSearchAttributes['env']->inherited_from_parent);
+        $this->assertSame('platform', $secondRunSearchAttributes['team']->getValue());
+        $this->assertSame(1, $secondRunSearchAttributes['team']->upserted_at_sequence);
+        $this->assertTrue($secondRunSearchAttributes['team']->inherited_from_parent);
+        $this->assertSame('1', $secondRunSearchAttributes['iteration']->getValue());
+        $this->assertFalse($secondRunSearchAttributes['iteration']->inherited_from_parent);
+
+        $firstRunMemos = WorkflowMemo::query()
+            ->where('workflow_run_id', $runs[0]->id)
+            ->get()
+            ->keyBy('key');
+        $secondRunMemos = WorkflowMemo::query()
+            ->where('workflow_run_id', $runs[1]->id)
+            ->get()
+            ->keyBy('key');
+
+        $this->assertSame('Taylor', $firstRunMemos['customer']->getValue());
+        $this->assertSame(0, $firstRunMemos['customer']->upserted_at_sequence);
+        $this->assertFalse($firstRunMemos['customer']->inherited_from_parent);
+        $this->assertSame('high', $firstRunMemos['priority']->getValue());
+        $this->assertSame(0, $firstRunMemos['priority']->upserted_at_sequence);
+        $this->assertFalse($firstRunMemos['priority']->inherited_from_parent);
+
+        $this->assertSame('Taylor', $secondRunMemos['customer']->getValue());
+        $this->assertSame(1, $secondRunMemos['customer']->upserted_at_sequence);
+        $this->assertTrue($secondRunMemos['customer']->inherited_from_parent);
+        $this->assertSame('high', $secondRunMemos['priority']->getValue());
+        $this->assertSame(1, $secondRunMemos['priority']->upserted_at_sequence);
+        $this->assertTrue($secondRunMemos['priority']->inherited_from_parent);
+        $this->assertSame(1, $secondRunMemos['iteration']->getValue());
+        $this->assertFalse($secondRunMemos['iteration']->inherited_from_parent);
     }
 
     public function testContinueAsNewMetadataHistoryEventsAreRecordedPerRun(): void

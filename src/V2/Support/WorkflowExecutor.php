@@ -1607,6 +1607,8 @@ final class WorkflowExecutor
             'last_history_sequence' => 0,
         ]);
 
+        $this->inheritTypedVisibilityMetadata($run, $childRun);
+
         $childInstance->forceFill([
             'current_run_id' => $childRun->id,
         ])->save();
@@ -2305,6 +2307,8 @@ final class WorkflowExecutor
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
         ]);
+
+        $this->inheritTypedVisibilityMetadata($run, $continuedRun);
 
         $instance->forceFill([
             'current_run_id' => $continuedRun->id,
@@ -3259,6 +3263,8 @@ final class WorkflowExecutor
             'last_history_sequence' => 0,
         ]);
 
+        $this->inheritTypedVisibilityMetadata($failedChildRun, $retryRun);
+
         $childInstance->forceFill([
             'current_run_id' => $retryRun->id,
             'run_count' => max((int) $childInstance->run_count, $nextRunNumber),
@@ -3852,6 +3858,7 @@ final class WorkflowExecutor
 
         $searchAttributeService = app(SearchAttributeUpsertService::class);
         $searchAttributeService->upsert($run, $call, $sequence);
+        $run->unsetRelation('searchAttributes');
 
         $event = WorkflowHistoryEvent::record(
             $run,
@@ -3918,6 +3925,7 @@ final class WorkflowExecutor
 
         $memoService = app(MemoUpsertService::class);
         $memoService->upsert($run, new UpsertMemosCall($call->entries), $sequence);
+        $run->unsetRelation('memos');
 
         $event = WorkflowHistoryEvent::record(
             $run,
@@ -4624,5 +4632,14 @@ final class WorkflowExecutor
             'workflow_run_id' => $run->id,
             'workflow_type' => $run->workflow_type,
         ], $extraContext));
+    }
+
+    private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void
+    {
+        app(MemoUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
+        app(SearchAttributeUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
+
+        $targetRun->unsetRelation('memos');
+        $targetRun->unsetRelation('searchAttributes');
     }
 }
