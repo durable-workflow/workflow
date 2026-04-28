@@ -133,8 +133,14 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $this->assertSame('stale', $payload['pollers'][1]['status']);
         $this->assertSame(3, $payload['repair']['candidates']);
         $this->assertSame(1, $payload['repair']['dispatch_failed']);
+        $this->assertSame(now()->subSecond()->toJSON(), $payload['repair']['oldest_dispatch_failed_at']);
+        $this->assertSame(1000, $payload['repair']['max_dispatch_failed_age_ms']);
         $this->assertSame(1, $payload['repair']['expired_leases']);
+        $this->assertSame(now()->subMinute()->toJSON(), $payload['repair']['oldest_lease_expired_at']);
+        $this->assertSame(60 * 1000, $payload['repair']['max_lease_expired_age_ms']);
         $this->assertSame(1, $payload['repair']['dispatch_overdue']);
+        $this->assertSame(now()->subSeconds(50)->toJSON(), $payload['repair']['oldest_dispatch_overdue_since']);
+        $this->assertSame(50 * 1000, $payload['repair']['max_dispatch_overdue_age_ms']);
         $this->assertTrue($payload['repair']['needs_attention']);
         $this->assertSame(7, $payload['repair']['policy']['redispatch_after_seconds']);
         $this->assertSame($expiredWorkflowTask->id, $payload['current_leases'][0]['task_id']);

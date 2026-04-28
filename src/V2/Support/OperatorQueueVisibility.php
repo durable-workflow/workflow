@@ -358,7 +358,7 @@ final class OperatorQueueVisibility
         $redispatchCutoff = $now->copy()
             ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
 
-        $dispatchFailedCount = self::baseTaskQuery($namespace, $taskQueue)
+        $dispatchFailedQuery = self::baseTaskQuery($namespace, $taskQueue)
             ->where($taskTable . '.status', TaskStatus::Ready->value)
             ->whereNotNull($taskTable . '.last_dispatch_attempt_at')
             ->whereNotNull($taskTable . '.last_dispatch_error')
@@ -366,16 +366,30 @@ final class OperatorQueueVisibility
             ->where(static function ($query) use ($taskTable): void {
                 $query->whereNull($taskTable . '.last_dispatched_at')
                     ->orWhereColumn($taskTable . '.last_dispatch_attempt_at', '>', $taskTable . '.last_dispatched_at');
-            })
-            ->count();
+            });
 
-        $expiredLeaseCount = self::baseTaskQuery($namespace, $taskQueue)
+        $dispatchFailedCount = (clone $dispatchFailedQuery)->count();
+        $oldestDispatchFailedTask = (clone $dispatchFailedQuery)
+            ->orderBy($taskTable . '.last_dispatch_attempt_at')
+            ->first();
+        $oldestDispatchFailedAt = $oldestDispatchFailedTask instanceof WorkflowTask
+            ? self::carbon($oldestDispatchFailedTask->last_dispatch_attempt_at)
+            : null;
+
+        $expiredLeaseQuery = self::baseTaskQuery($namespace, $taskQueue)
             ->where($taskTable . '.status', TaskStatus::Leased->value)
             ->whereNotNull($taskTable . '.lease_expires_at')
-            ->where($taskTable . '.lease_expires_at', '<=', $now)
-            ->count();
+            ->where($taskTable . '.lease_expires_at', '<=', $now);
 
-        $dispatchOverdueCount = self::baseTaskQuery($namespace, $taskQueue)
+        $expiredLeaseCount = (clone $expiredLeaseQuery)->count();
+        $oldestExpiredLeaseTask = (clone $expiredLeaseQuery)
+            ->orderBy($taskTable . '.lease_expires_at')
+            ->first();
+        $oldestLeaseExpiredAt = $oldestExpiredLeaseTask instanceof WorkflowTask
+            ? self::carbon($oldestExpiredLeaseTask->lease_expires_at)
+            : null;
+
+        $dispatchOverdueQuery = self::baseTaskQuery($namespace, $taskQueue)
             ->where($taskTable . '.status', TaskStatus::Ready->value)
             ->where(static function ($query) use ($now, $taskTable): void {
                 $query->whereNull($taskTable . '.available_at')
@@ -393,21 +407,43 @@ final class OperatorQueueVisibility
             ->where(static function ($query) use ($taskTable): void {
                 $query->whereNull($taskTable . '.last_dispatch_error')
                     ->orWhere($taskTable . '.last_dispatch_error', '');
-            })
-            ->count();
+            });
+
+        $dispatchOverdueCount = (clone $dispatchOverdueQuery)->count();
+        $oldestDispatchOverdueTask = (clone $dispatchOverdueQuery)
+            ->orderByRaw('COALESCE(' . $taskTable . '.last_dispatched_at, ' . $taskTable . '.created_at) asc')
+            ->first();
+        $oldestDispatchOverdueSince = $oldestDispatchOverdueTask instanceof WorkflowTask
+            ? self::carbon($oldestDispatchOverdueTask->last_dispatched_at ?? $oldestDispatchOverdueTask->created_at)
+            : null;
 
         $totalCandidates = $dispatchFailedCount + $expiredLeaseCount + $dispatchOverdueCount;
 
         return [
             'candidates' => $totalCandidates,
             'dispatch_failed' => $dispatchFailedCount,
+            'oldest_dispatch_failed_at' => $oldestDispatchFailedAt?->toJSON(),
+            'max_dispatch_failed_age_ms' => self::ageMilliseconds($oldestDispatchFailedAt, $now),
             'expired_leases' => $expiredLeaseCount,
+            'oldest_lease_expired_at' => $oldestLeaseExpiredAt?->toJSON(),
+            'max_lease_expired_age_ms' => self::ageMilliseconds($oldestLeaseExpiredAt, $now),
             'dispatch_overdue' => $dispatchOverdueCount,
+            'oldest_dispatch_overdue_since' => $oldestDispatchOverdueSince?->toJSON(),
+            'max_dispatch_overdue_age_ms' => self::ageMilliseconds($oldestDispatchOverdueSince, $now),
             'needs_attention' => $totalCandidates > 0,
             'policy' => [
                 'redispatch_after_seconds' => TaskRepairPolicy::redispatchAfterSeconds(),
             ],
         ];
+    }
+
+    private static function ageMilliseconds(?CarbonInterface $timestamp, CarbonInterface $now): int
+    {
+        if ($timestamp === null) {
+            return 0;
+        }
+
+        return (int) $timestamp->diffInMilliseconds($now);
     }
 
     private static function namespaceTaskQuery(string $namespace): Builder
