@@ -27,4 +27,25 @@ interface HistoryProjectionRole
         ActivityAttempt $attempt,
         WorkflowTask $task,
     ): WorkflowRunSummary;
+
+    /**
+     * @param list<string> $runIds
+     * @return array{
+     *     run_summaries_pruned: int,
+     *     run_summaries_would_prune: int,
+     *     run_waits_pruned: int,
+     *     run_waits_would_prune: int,
+     *     run_timeline_entries_pruned: int,
+     *     run_timeline_entries_would_prune: int,
+     *     run_timer_entries_pruned: int,
+     *     run_timer_entries_would_prune: int,
+     *     run_lineage_entries_pruned: int,
+     *     run_lineage_entries_would_prune: int
+     * }
+     */
+    public function pruneStaleProjections(
+        array $runIds = [],
+        ?string $instanceId = null,
+        bool $dryRun = false,
+    ): array;
 }
