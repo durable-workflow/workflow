@@ -28,6 +28,12 @@ final class HealthCheck
             self::historyRetentionInvariantCheck($metrics['history'] ?? []),
             self::commandContractCheck($metrics['command_contracts'] ?? []),
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
+            self::routingHealthCheck(
+                $metrics['tasks'] ?? [],
+                $metrics['backlog'] ?? [],
+                $metrics['matching_role'] ?? [],
+                $metrics['workers'] ?? [],
+            ),
             self::durableResumePathCheck(
                 $metrics['backlog'] ?? [],
                 $metrics['repair'] ?? [],
@@ -267,6 +273,74 @@ final class HealthCheck
                     ? $backlog['oldest_compatibility_blocked_started_at']
                     : null,
                 'max_compatibility_blocked_age_ms' => self::integer($backlog['max_compatibility_blocked_age_ms'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $tasks
+     * @param array<string, mixed> $backlog
+     * @param array<string, mixed> $matchingRole
+     * @param array<string, mixed> $workers
+     * @return array<string, mixed>
+     */
+    private static function routingHealthCheck(
+        array $tasks,
+        array $backlog,
+        array $matchingRole,
+        array $workers,
+    ): array {
+        $compatibilityBlockedRuns = self::integer($backlog['compatibility_blocked_runs'] ?? 0);
+        $dispatchOverdueTasks = self::integer($tasks['dispatch_overdue'] ?? 0);
+        $claimFailedTasks = self::integer($tasks['claim_failed'] ?? 0);
+        $queueWakeEnabled = ($matchingRole['queue_wake_enabled'] ?? false) === true;
+        $matchingShape = is_string($matchingRole['shape'] ?? null) ? $matchingRole['shape'] : 'in_worker';
+        $taskDispatchMode = is_string($matchingRole['task_dispatch_mode'] ?? null)
+            ? $matchingRole['task_dispatch_mode']
+            : 'queue';
+        $activeWorkerScopes = self::integer($workers['active_worker_scopes'] ?? 0);
+
+        $message = 'No routing drains, compatibility blocks, or uncleared claim failures are currently projected.';
+        if ($compatibilityBlockedRuns > 0 || $dispatchOverdueTasks > 0 || $claimFailedTasks > 0) {
+            $signalCount = ($compatibilityBlockedRuns > 0 ? 1 : 0)
+                + ($dispatchOverdueTasks > 0 ? 1 : 0)
+                + ($claimFailedTasks > 0 ? 1 : 0);
+
+            $message = match (true) {
+                $signalCount > 1 => 'Routing health is degraded: compatibility blocks, dispatch lag, or uncleared claim failures are visible in durable state.',
+                $compatibilityBlockedRuns > 0 => 'One or more runs are ready but waiting for a compatible worker in the active fleet.',
+                $dispatchOverdueTasks > 0 => 'One or more ready tasks have waited past the redispatch window without a successful dispatch wake.',
+                default => 'One or more ready tasks still carry an uncleared claim failure.',
+            };
+        }
+
+        return self::check(
+            'routing_health',
+            ($compatibilityBlockedRuns > 0 || $dispatchOverdueTasks > 0 || $claimFailedTasks > 0) ? 'warning' : 'ok',
+            $message,
+            self::CATEGORY_CORRECTNESS,
+            [
+                'compatibility_blocked_runs' => $compatibilityBlockedRuns,
+                'oldest_compatibility_blocked_started_at' => is_string(
+                    $backlog['oldest_compatibility_blocked_started_at'] ?? null
+                )
+                    ? $backlog['oldest_compatibility_blocked_started_at']
+                    : null,
+                'max_compatibility_blocked_age_ms' => self::integer($backlog['max_compatibility_blocked_age_ms'] ?? 0),
+                'dispatch_overdue_tasks' => $dispatchOverdueTasks,
+                'oldest_dispatch_overdue_since' => is_string($tasks['oldest_dispatch_overdue_since'] ?? null)
+                    ? $tasks['oldest_dispatch_overdue_since']
+                    : null,
+                'max_dispatch_overdue_age_ms' => self::integer($tasks['max_dispatch_overdue_age_ms'] ?? 0),
+                'claim_failed_tasks' => $claimFailedTasks,
+                'oldest_claim_failed_at' => is_string($tasks['oldest_claim_failed_at'] ?? null)
+                    ? $tasks['oldest_claim_failed_at']
+                    : null,
+                'max_claim_failed_age_ms' => self::integer($tasks['max_claim_failed_age_ms'] ?? 0),
+                'queue_wake_enabled' => $queueWakeEnabled,
+                'matching_shape' => $matchingShape,
+                'task_dispatch_mode' => $taskDispatchMode,
+                'active_worker_scopes' => $activeWorkerScopes,
             ],
         );
     }

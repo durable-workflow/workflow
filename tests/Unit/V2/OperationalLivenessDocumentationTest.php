@@ -189,6 +189,7 @@ final class OperationalLivenessDocumentationTest extends TestCase
         'history_retention_invariant',
         'command_contract_snapshots',
         'task_transport',
+        'routing_health',
         'durable_resume_paths',
         'worker_compatibility',
         'long_poll_wake_acceleration',

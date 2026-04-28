@@ -660,7 +660,7 @@ liveness (sub-keys under the named groups):
   surfaced as metrics so a dashboard can read them without reading
   config.
 
-The nine frozen health check names under `HealthCheck::snapshot()`:
+The ten frozen health check names under `HealthCheck::snapshot()`:
 
 - `backend_capabilities`
 - `run_summary_projection`
@@ -668,6 +668,7 @@ The nine frozen health check names under `HealthCheck::snapshot()`:
 - `history_retention_invariant`
 - `command_contract_snapshots`
 - `task_transport`
+- `routing_health`
 - `durable_resume_paths`
 - `worker_compatibility`
 - `long_poll_wake_acceleration`
@@ -687,6 +688,12 @@ Rules:
   liveness: it reports unhealthy when `tasks.dispatch_failed`,
   `tasks.dispatch_overdue`, `tasks.claim_failed`, or
   `tasks.lease_expired` are non-zero.
+- `routing_health` is the authoritative check for routing drains: it
+  rolls `backlog.compatibility_blocked_runs`,
+  `tasks.dispatch_overdue`, and `tasks.claim_failed` together with
+  the local matching-role shape so operators can tell whether work
+  is blocked on compatibility coverage, dispatch wake latency, or
+  claim churn without re-aggregating the metrics by hand.
 - `durable_resume_paths` is the authoritative check for
   next-resume-source completeness: it reports unhealthy when any
   open run has no projected `next_task_id` or a missing

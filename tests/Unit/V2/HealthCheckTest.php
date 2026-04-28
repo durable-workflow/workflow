@@ -10,6 +10,7 @@ use Tests\Support\NonLockingCacheStore;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ScheduleStatus;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -19,6 +20,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -54,7 +56,8 @@ final class HealthCheckTest extends TestCase
 
     public function testSnapshotWarnsWhenCustomNoLockCacheStoreDegradesOnlyAcceleration(): void
     {
-        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.default', 'redis');
         config()
             ->set('queue.connections.redis.driver', 'redis');
         config()
@@ -75,7 +78,8 @@ final class HealthCheckTest extends TestCase
 
     public function testSnapshotWarnsWhenRunSummaryProjectionNeedsRebuild(): void
     {
-        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.default', 'redis');
         config()
             ->set('queue.connections.redis.driver', 'redis');
         config()
@@ -122,7 +126,8 @@ final class HealthCheckTest extends TestCase
 
     public function testSnapshotWarnsWhenRunSummaryProjectionIsStale(): void
     {
-        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.default', 'redis');
         config()
             ->set('queue.connections.redis.driver', 'redis');
         config()
@@ -654,6 +659,154 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(0, $projection['data']['stale']);
         $this->assertSame(1, $projection['data']['schema_outdated']);
         $this->assertSame(RunSummaryProjector::SCHEMA_VERSION, $projection['data']['projection_schema_version']);
+    }
+
+    public function testSnapshotReportsRoutingHealthOkWhenNoRoutingRisksAreVisible(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $snapshot = HealthCheck::snapshot();
+        $routing = collect($snapshot['checks'])->firstWhere('name', 'routing_health');
+
+        $this->assertNotNull($routing, 'HealthCheck must expose a routing_health check.');
+        $this->assertSame('ok', $routing['status']);
+        $this->assertSame(HealthCheck::CATEGORY_CORRECTNESS, $routing['category']);
+        $this->assertSame(0, $routing['data']['compatibility_blocked_runs']);
+        $this->assertSame(0, $routing['data']['dispatch_overdue_tasks']);
+        $this->assertSame(0, $routing['data']['claim_failed_tasks']);
+        $this->assertSame('in_worker', $routing['data']['matching_shape']);
+        $this->assertSame('queue', $routing['data']['task_dispatch_mode']);
+        $this->assertTrue($routing['data']['queue_wake_enabled']);
+        $this->assertSame(0, $routing['data']['active_worker_scopes']);
+    }
+
+    public function testSnapshotWarnsWhenRoutingHealthSeesCompatibilityDispatchAndClaimDrains(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+        config()
+            ->set('workflows.v2.matching_role.queue_wake_enabled', false);
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'health-routing-instance',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'id' => '01JHEALTHROUTINGRUN000001',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'running',
+            'started_at' => now()
+                ->subMinutes(12),
+            'last_progress_at' => now()
+                ->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'running',
+            'status_bucket' => 'running',
+            'started_at' => now()
+                ->subMinutes(12),
+            'next_task_at' => now()
+                ->subMinutes(7),
+            'liveness_state' => 'workflow_task_waiting_for_compatible_worker',
+            'liveness_reason' => 'No active worker heartbeat advertises the required compatibility marker.',
+            'created_at' => now()
+                ->subMinutes(12),
+            'updated_at' => now(),
+        ]);
+
+        WorkflowTask::query()->create([
+            'id' => '01JHEALTHROUTEDISPATCH0001',
+            'workflow_run_id' => $run->id,
+            'task_type' => 'workflow',
+            'status' => TaskStatus::Ready->value,
+            'connection' => 'redis',
+            'queue' => 'default',
+            'available_at' => now()
+                ->subMinutes(4),
+            'last_dispatched_at' => now()
+                ->subMinutes(4),
+            'created_at' => now()
+                ->subMinutes(4),
+            'updated_at' => now(),
+        ]);
+
+        WorkflowTask::query()->create([
+            'id' => '01JHEALTHROUTECLAIM000001',
+            'workflow_run_id' => $run->id,
+            'task_type' => 'workflow',
+            'status' => TaskStatus::Ready->value,
+            'connection' => 'redis',
+            'queue' => 'default',
+            'available_at' => now()
+                ->subSeconds(90),
+            'last_claim_failed_at' => now()
+                ->subSeconds(90),
+            'last_claim_error' => 'Previous claim attempt failed before lease grant.',
+            'created_at' => now()
+                ->subSeconds(90),
+            'updated_at' => now(),
+        ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $routing = collect($snapshot['checks'])->firstWhere('name', 'routing_health');
+
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertTrue($snapshot['healthy']);
+        $this->assertSame(200, HealthCheck::httpStatus($snapshot));
+        $this->assertNotNull($routing);
+        $this->assertSame('warning', $routing['status']);
+        $this->assertSame(HealthCheck::CATEGORY_CORRECTNESS, $routing['category']);
+        $this->assertStringContainsString('Routing health is degraded', $routing['message']);
+        $this->assertSame(1, $routing['data']['compatibility_blocked_runs']);
+        $this->assertSame('2026-04-09T11:53:00.000000Z', $routing['data']['oldest_compatibility_blocked_started_at']);
+        $this->assertSame(7 * 60 * 1000, $routing['data']['max_compatibility_blocked_age_ms']);
+        $this->assertSame(1, $routing['data']['dispatch_overdue_tasks']);
+        $this->assertSame('2026-04-09T11:56:00.000000Z', $routing['data']['oldest_dispatch_overdue_since']);
+        $this->assertSame(4 * 60 * 1000, $routing['data']['max_dispatch_overdue_age_ms']);
+        $this->assertSame(1, $routing['data']['claim_failed_tasks']);
+        $this->assertSame('2026-04-09T11:58:30.000000Z', $routing['data']['oldest_claim_failed_at']);
+        $this->assertSame(90 * 1000, $routing['data']['max_claim_failed_age_ms']);
+        $this->assertFalse($routing['data']['queue_wake_enabled']);
+        $this->assertSame('dedicated', $routing['data']['matching_shape']);
+        $this->assertSame('poll', $routing['data']['task_dispatch_mode']);
+        $this->assertSame(0, $routing['data']['active_worker_scopes']);
     }
 
     public function testSnapshotClassifiesEveryCheckAsCorrectnessOrAcceleration(): void
