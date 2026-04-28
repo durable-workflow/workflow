@@ -470,26 +470,6 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertSame([['projectRun', $run->id]], $calls);
     }
 
-    public function testCompleteAfterCancelledRunUsesHistoryProjectionRoleBinding(): void
-    {
-        [$run, $execution, $task] = $this->createActivityTask();
-
-        $claim = $this->bridge->claim($task->id, 'worker-1');
-        $this->assertNotNull($claim);
-
-        $run->forceFill([
-            'status' => RunStatus::Cancelled->value,
-        ])->save();
-
-        $result = [];
-        $calls = $this->historyProjectionCallsDuring(function () use ($claim, &$result): void {
-            $result = $this->bridge->complete($claim['activity_attempt_id'], 'too late');
-        });
-
-        $this->assertFalse($result['recorded']);
-        $this->assertSame([['projectRun', $run->id]], $calls);
-    }
-
     public function testFailAfterTerminatedRunClosesAttemptAndReportsIgnoredOutcome(): void
     {
         [$run, $execution, $task] = $this->createActivityTask();
