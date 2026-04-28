@@ -36,11 +36,14 @@ final class ActivityTimeoutEnforcer
      *
      * @return list<string>
      */
-    public static function expiredExecutionIds(int $limit = 100): array
-    {
+    public static function expiredExecutionIds(
+        int $limit = 100,
+        ?string $connection = null,
+        ?string $queue = null,
+    ): array {
         $now = now();
 
-        return ActivityExecution::query()
+        $query = ActivityExecution::query()
             ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
             ->where(static function ($query) use ($now): void {
                 $query->where(static function ($schedule) use ($now): void {
@@ -60,8 +63,11 @@ final class ActivityTimeoutEnforcer
                         ->where('heartbeat_deadline_at', '<=', $now);
                 });
             })
-            ->limit($limit)
-            ->pluck('id')
+            ->limit($limit);
+
+        self::applyRequestedScope($query, $connection, $queue);
+
+        return $query->pluck('id')
             ->all();
     }
 
@@ -198,6 +204,31 @@ final class ActivityTimeoutEnforcer
         }
 
         return null;
+    }
+
+    private static function applyRequestedScope($query, ?string $connection, ?string $queue): void
+    {
+        self::applyRequestedScopeValue($query, 'connection', $connection);
+        self::applyRequestedScopeValue($query, 'queue', $queue);
+    }
+
+    private static function applyRequestedScopeValue($query, string $column, ?string $value): void
+    {
+        if ($value === null) {
+            return;
+        }
+
+        if ($value === 'default') {
+            $query->where(static function ($defaultScope) use ($column): void {
+                $defaultScope->whereNull($column)
+                    ->orWhere($column, '')
+                    ->orWhere($column, 'default');
+            });
+
+            return;
+        }
+
+        $query->where($column, $value);
     }
 
     /**
