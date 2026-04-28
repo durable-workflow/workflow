@@ -76,8 +76,11 @@ It does not cover:
   first-class role so topologies can host it explicitly.
 - **History/projection role** — the role that owns `HistoryEvent`
   persistence, visibility projection via
-  `Workflow\V2\Support\RunSummaryProjector`, and the observability
-  surface via `Workflow\V2\Support\DefaultOperatorObservabilityRepository`.
+  `Workflow\V2\Support\RunSummaryProjector`, the
+  `Workflow\V2\Contracts\HistoryProjectionRole` /
+  `Workflow\V2\Support\DefaultHistoryProjectionRole` binding seam,
+  and the observability surface via
+  `Workflow\V2\Support\DefaultOperatorObservabilityRepository`.
 - **Scheduler role** — the role that evaluates active
   `WorkflowSchedule` rows, resolves cron/interval triggers to
   workflow starts, and hands the start to the control plane through
@@ -203,7 +206,8 @@ Authority:
   recording path inside the transaction that produced the event.
 - projecting run, activity, timer, update, and signal state into
   `WorkflowRunSummary` and the operator observability surfaces via
-  `Workflow\V2\Support\RunSummaryProjector` and
+  `Workflow\V2\Support\RunSummaryProjector`,
+  `Workflow\V2\Contracts\HistoryProjectionRole`, and
   `Workflow\V2\Support\DefaultOperatorObservabilityRepository`.
 - exporting redacted history through
   `Workflow\V2\Support\HistoryExport` and the
@@ -463,10 +467,13 @@ each step independently.
    an out-of-process adapter can replace the binding without
    patching the package. Today's bindings are
    `WorkflowControlPlane`, `OperatorObservabilityRepository`,
-   `WorkflowTaskBridge`, `ActivityTaskBridge`, `LongPollWakeStore`,
-   and the scheduler's `ScheduleWorkflowStarter`; Phase 4 adds a
-   binding for the history/projection role when it moves out of
-   process.
+   `HistoryProjectionRole`, `WorkflowTaskBridge`,
+   `ActivityTaskBridge`, `LongPollWakeStore`, and the scheduler's
+   `ScheduleWorkflowStarter`. The history/projection role now
+   crosses the matching seam through
+   `DefaultHistoryProjectionRole`, so a future out-of-process
+   adapter can replace that binding without patching the claim
+   paths.
 3. **Introduce the dedicated matching shape.** The Phase 3
    contract already allows a dedicated matching role; Phase 4
    provides the deployment guidance for running it as a separate

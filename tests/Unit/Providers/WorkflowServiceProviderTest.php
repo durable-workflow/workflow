@@ -17,6 +17,7 @@ use Workflow\Models\StoredWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\Serializers\Serializer;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -95,6 +96,18 @@ final class WorkflowServiceProviderTest extends TestCase
         (new WorkflowServiceProvider($this->app))->register();
 
         $this->assertSame($custom, $this->app->make(OperatorObservabilityRepository::class));
+    }
+
+    public function testHistoryProjectionRoleBindingDefersToAppBinding(): void
+    {
+        $custom = $this->createMock(HistoryProjectionRole::class);
+
+        $this->app->offsetUnset(HistoryProjectionRole::class);
+        $this->app->singleton(HistoryProjectionRole::class, static fn () => $custom);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $this->assertSame($custom, $this->app->make(HistoryProjectionRole::class));
     }
 
     public function testProviderMergesV2DefaultsIntoLegacyPublishedConfig(): void

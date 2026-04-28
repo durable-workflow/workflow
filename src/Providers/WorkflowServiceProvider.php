@@ -20,6 +20,7 @@ use Workflow\Commands\V2RepairPassCommand;
 use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\LongPollWakeStore;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
@@ -36,6 +37,7 @@ use Workflow\V2\Observers\WorkflowTaskObserver;
 use Workflow\V2\Support\CacheLongPollWakeStore;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
@@ -56,6 +58,8 @@ final class WorkflowServiceProvider extends ServiceProvider
             OperatorObservabilityRepository::class,
             DefaultOperatorObservabilityRepository::class,
         );
+
+        $this->app->singletonIf(HistoryProjectionRole::class, DefaultHistoryProjectionRole::class);
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
 
