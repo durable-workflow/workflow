@@ -10,6 +10,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -19,7 +20,6 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
-use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
@@ -88,7 +88,7 @@ final class RunTimerTask implements ShouldQueue
                     ),
                 ])->save();
 
-                RunSummaryProjector::project(
+                $this->projectRun(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
                 );
 
@@ -110,9 +110,7 @@ final class RunTimerTask implements ShouldQueue
                     ])->save();
                 }
 
-                RunSummaryProjector::project(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
-                );
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
 
                 return null;
             }
@@ -174,9 +172,7 @@ final class RunTimerTask implements ShouldQueue
                 'compatibility' => $run->compatibility,
             ]);
 
-            RunSummaryProjector::project(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
-            );
+            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
 
             return $resumeTask;
         });
@@ -226,7 +222,7 @@ final class RunTimerTask implements ShouldQueue
                     ),
                 ])->save();
 
-                RunSummaryProjector::project(
+                $this->projectRun(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
                 );
 
@@ -236,17 +232,13 @@ final class RunTimerTask implements ShouldQueue
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                RunSummaryProjector::project(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
-                );
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
 
                 return [null, null];
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
-                );
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
 
                 return [null, null];
             }
@@ -262,11 +254,23 @@ final class RunTimerTask implements ShouldQueue
                 'last_claim_error' => null,
             ])->save();
 
-            RunSummaryProjector::project(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
-            );
+            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
 
             return [$timerId, null];
         });
+    }
+
+    private function projectRun(WorkflowRun $run): void
+    {
+        $this->historyProjectionRole()
+            ->projectRun($run);
+    }
+
+    private function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
     }
 }

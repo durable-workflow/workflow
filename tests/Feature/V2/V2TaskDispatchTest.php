@@ -14,6 +14,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\ActivityTaskBridge;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -32,6 +33,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\TaskDispatcher;
@@ -454,6 +456,32 @@ final class V2TaskDispatchTest extends TestCase
                 ->subSecond(),
         ]);
 
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
         $this->app->call([new RunTimerTask($task->id), 'handle']);
 
         $task->refresh();
@@ -479,6 +507,7 @@ final class V2TaskDispatchTest extends TestCase
 
         $this->assertTrue($detail['tasks'][0]['claim_failed']);
         $this->assertSame('repair_backoff', $detail['tasks'][0]['transport_state']);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
 
     public function testPollModeSkipsQueueDispatchAndLeavesTaskReadyForExternalPolling(): void

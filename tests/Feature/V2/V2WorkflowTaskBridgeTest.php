@@ -1766,6 +1766,63 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(HistoryEventType::TimerFired->value, $resumeTask->payload['workflow_event_type'] ?? null);
     }
 
+    public function testRunTimerTaskUsesHistoryProjectionRoleBinding(): void
+    {
+        Queue::fake();
+
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_timer',
+                'delay_seconds' => 0,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->findOrFail($result['created_task_ids'][0]);
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+        $this->app->call([new RunTimerTask($timerTask->id), 'handle']);
+
+        $this->assertGreaterThanOrEqual(2, count($customRole->calls));
+        $this->assertSame(
+            [['projectRun', $run->id], ['projectRun', $run->id]],
+            array_slice($customRole->calls, 0, 2),
+        );
+    }
+
     public function testCompleteOpenConditionWaitWithoutTimeoutRecordsEventAndMarksWaiting(): void
     {
         $run = $this->createWaitingRun();
