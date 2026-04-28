@@ -13,6 +13,7 @@ use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\CommandOutcome;
@@ -1713,7 +1714,7 @@ final class WorkflowExecutor
             $this->markRunWaiting($run, $task);
         }
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $childRun->fresh([
                 'instance',
                 'tasks',
@@ -2240,7 +2241,7 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
     }
@@ -2496,7 +2497,7 @@ final class WorkflowExecutor
 
         LifecycleEventDispatcher::workflowStarted($continuedRun);
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
         foreach (array_keys($parentRunsToProject) as $parentRunId) {
@@ -2507,7 +2508,7 @@ final class WorkflowExecutor
                 continue;
             }
 
-            RunSummaryProjector::project(
+            $this->projectRun(
                 $parentRun->fresh([
                     'instance',
                     'tasks',
@@ -2521,7 +2522,7 @@ final class WorkflowExecutor
                 ])
             );
         }
-        RunSummaryProjector::project(
+        $this->projectRun(
             $continuedRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
@@ -2611,7 +2612,7 @@ final class WorkflowExecutor
 
         $this->dispatchParentResumeTasks($run);
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
     }
@@ -2799,7 +2800,7 @@ final class WorkflowExecutor
         // Notify parent workflows and project summary.
         $this->dispatchParentResumeTasks($run);
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
     }
@@ -2899,7 +2900,7 @@ final class WorkflowExecutor
 
         $this->dispatchParentResumeTasks($run);
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
     }
@@ -2978,7 +2979,7 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
     }
@@ -3008,7 +3009,7 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
     }
@@ -3032,7 +3033,7 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
     }
@@ -3365,7 +3366,7 @@ final class WorkflowExecutor
 
         TaskDispatcher::dispatch($retryTask);
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $retryRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
@@ -3439,7 +3440,7 @@ final class WorkflowExecutor
                     $parentReference['parent_sequence'],
                     $childRun,
                 ) !== null) {
-                    RunSummaryProjector::project(
+                    $this->projectRun(
                         $parentRun->fresh([
                             'instance',
                             'tasks',
@@ -3471,7 +3472,7 @@ final class WorkflowExecutor
                         $childStatus
                     )
                 ) {
-                    RunSummaryProjector::project(
+                    $this->projectRun(
                         $parentRun->fresh([
                             'instance',
                             'tasks',
@@ -3496,7 +3497,7 @@ final class WorkflowExecutor
                         $parentReference['parent_sequence'],
                     )
                 ) {
-                    RunSummaryProjector::project(
+                    $this->projectRun(
                         $parentRun->fresh([
                             'instance',
                             'tasks',
@@ -3525,7 +3526,7 @@ final class WorkflowExecutor
                         WorkflowStepHistory::CHILD_WORKFLOW,
                     );
                 } catch (HistoryEventShapeMismatchException) {
-                    RunSummaryProjector::project(
+                    $this->projectRun(
                         $parentRun->fresh([
                             'instance',
                             'tasks',
@@ -3576,7 +3577,7 @@ final class WorkflowExecutor
 
             TaskDispatcher::dispatch($parentTask);
 
-            RunSummaryProjector::project(
+            $this->projectRun(
                 $parentRun->fresh([
                     'instance',
                     'tasks',
@@ -4343,7 +4344,7 @@ final class WorkflowExecutor
             'compatibility' => $run->compatibility,
         ]);
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
 
@@ -4587,6 +4588,20 @@ final class WorkflowExecutor
         }
 
         return $sequence;
+    }
+
+    private function projectRun(WorkflowRun $run): void
+    {
+        $this->historyProjectionRole()
+            ->projectRun($run);
+    }
+
+    private function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
     }
 
     private static function intValue(mixed $value): ?int

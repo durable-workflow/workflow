@@ -11,12 +11,12 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Throwable;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
-use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
@@ -71,7 +71,7 @@ final class RunWorkflowTask implements ShouldQueue
                         'lease_expires_at' => null,
                     ])->save();
 
-                    RunSummaryProjector::project(
+                    $this->projectRun(
                         $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
                     );
 
@@ -99,7 +99,7 @@ final class RunWorkflowTask implements ShouldQueue
 
                 /** @var WorkflowRun $run */
                 $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->findOrFail($task->workflow_run_id);
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
             });
 
             throw $throwable;
@@ -128,13 +128,13 @@ final class RunWorkflowTask implements ShouldQueue
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return false;
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return false;
             }
@@ -150,9 +150,23 @@ final class RunWorkflowTask implements ShouldQueue
                 'last_claim_error' => null,
             ])->save();
 
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return true;
         });
+    }
+
+    private function projectRun(WorkflowRun $run): void
+    {
+        $this->historyProjectionRole()
+            ->projectRun($run);
+    }
+
+    private function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
     }
 }

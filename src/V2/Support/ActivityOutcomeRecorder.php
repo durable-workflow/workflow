@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
@@ -92,7 +93,7 @@ final class ActivityOutcomeRecorder
 
                 ActivityCancellation::record($run, $lockedExecution, $task);
 
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return self::ignored($reason);
             }
@@ -167,7 +168,7 @@ final class ActivityOutcomeRecorder
                     'lease_expires_at' => null,
                 ])->save();
 
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return self::recorded(null);
             }
@@ -272,7 +273,7 @@ final class ActivityOutcomeRecorder
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $parallelMetadata ?? []), $task);
 
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return self::recorded($retryTask);
             } else {
@@ -359,7 +360,7 @@ final class ActivityOutcomeRecorder
                     $closedStatus,
                 )
             ) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
                 return self::recorded(null);
             }
@@ -379,7 +380,7 @@ final class ActivityOutcomeRecorder
                 'compatibility' => $run->compatibility,
             ]);
 
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return self::recorded($resumeTask);
         });
@@ -572,5 +573,18 @@ final class ActivityOutcomeRecorder
         }
 
         return CodecRegistry::defaultCodec();
+    }
+
+    private static function projectRun(WorkflowRun $run): void
+    {
+        self::historyProjectionRole()->projectRun($run);
+    }
+
+    private static function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
     }
 }

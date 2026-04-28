@@ -333,6 +333,50 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertSame([['projectRun', $first['workflow_run_id']]], $customRole->calls);
     }
 
+    public function testRunWorkflowTaskUsesHistoryProjectionRoleBindingDuringExecution(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-greeting-workflow' => TestGreetingWorkflow::class,
+        ]);
+
+        $start = $this->controlPlane->start('test-greeting-workflow', 'ctrl-plane-history-role-execution-1', [
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
+            'connection' => 'redis',
+            'queue' => 'default',
+        ]);
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                \Workflow\V2\Models\ActivityExecution $execution,
+                \Workflow\V2\Models\ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+        $this->app->call([new RunWorkflowTask((string) $start['task_id']), 'handle']);
+
+        $this->assertGreaterThanOrEqual(2, count($customRole->calls));
+        $this->assertContains(['projectRun', $start['workflow_run_id']], $customRole->calls);
+    }
+
     public function testCancelActiveWorkflow(): void
     {
         $start = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-cancel-1', [

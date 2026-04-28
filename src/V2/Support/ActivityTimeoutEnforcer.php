@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
 use Throwable;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
@@ -273,7 +274,7 @@ final class ActivityTimeoutEnforcer
             'activity' => ActivitySnapshot::fromExecution($execution),
         ]), $existingTask);
 
-        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+        self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
         return [
             'enforced' => true,
@@ -368,7 +369,7 @@ final class ActivityTimeoutEnforcer
                 ActivityStatus::Failed,
             )
         ) {
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
             return [
                 'enforced' => true,
@@ -390,7 +391,7 @@ final class ActivityTimeoutEnforcer
             'compatibility' => $run->compatibility,
         ]);
 
-        RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+        self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
         return [
             'enforced' => true,
@@ -470,5 +471,18 @@ final class ActivityTimeoutEnforcer
             'reason' => $reason,
             'next_task' => null,
         ];
+    }
+
+    private static function projectRun(WorkflowRun $run): void
+    {
+        self::historyProjectionRole()->projectRun($run);
+    }
+
+    private static function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
     }
 }

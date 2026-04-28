@@ -9,6 +9,7 @@ use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
@@ -22,8 +23,10 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\TaskWatchdog;
 
@@ -106,6 +109,53 @@ final class V2ActivityTimeoutTest extends TestCase
             ->where('status', TaskStatus::Ready->value)
             ->first();
         $this->assertNotNull($resumeTask);
+
+        Carbon::setTestNow();
+    }
+
+    public function testScheduleToStartTimeoutUsesHistoryProjectionRoleBinding(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+
+        [$run, $execution] = $this->createPendingActivity(
+            instanceId: 'act-timeout-history-role-1',
+            scheduleDeadlineAt: $startedAt->copy()
+                ->addSeconds(30),
+        );
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+        Carbon::setTestNow($startedAt->copy()->addSeconds(60));
+
+        $result = ActivityTimeoutEnforcer::enforce($execution->id);
+
+        $this->assertTrue($result['enforced']);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
 
         Carbon::setTestNow();
     }

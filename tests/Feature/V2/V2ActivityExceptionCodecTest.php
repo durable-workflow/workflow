@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -21,8 +22,10 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\FailureSnapshots;
 
@@ -74,6 +77,55 @@ final class V2ActivityExceptionCodecTest extends TestCase
             otherCodec: 'avro',
             expectedMessage: 'retry boom',
         );
+    }
+
+    public function testRetryPathUsesHistoryProjectionRoleBinding(): void
+    {
+        [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
+            pinnedCodec: 'workflow-serializer-y',
+            maxAttempts: 2,
+            instanceId: 'td089-history-role-retry',
+        );
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        $outcome = ActivityOutcomeRecorder::record(
+            taskId: $task->id,
+            attemptId: $attempt->id,
+            attemptCount: 1,
+            result: null,
+            throwable: new RuntimeException('retry boom', 7),
+            maxAttempts: 2,
+            backoffSeconds: 1,
+        );
+
+        $this->assertTrue($outcome['recorded']);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
 
     public function testFinalFailurePathStoresExceptionUnderRunCodecWhenDefaultDiffers(): void
