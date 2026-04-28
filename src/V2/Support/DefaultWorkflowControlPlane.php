@@ -30,7 +30,6 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\UpdateResult;
 use Workflow\V2\WorkflowStub;
-use Workflow\V2\Support\WorkflowStartGate;
 
 final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 {

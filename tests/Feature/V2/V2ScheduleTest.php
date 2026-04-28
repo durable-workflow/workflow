@@ -198,12 +198,18 @@ final class V2ScheduleTest extends TestCase
     {
         WorkerCompatibilityFleet::clear();
 
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
-        config()->set('workflows.v2.compatibility.namespace', null);
-        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.namespace', null);
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'fail');
 
         WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
 
@@ -959,12 +965,18 @@ final class V2ScheduleTest extends TestCase
     {
         WorkerCompatibilityFleet::clear();
 
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.driver', 'redis');
-        config()->set('workflows.v2.compatibility.current', 'build-a');
-        config()->set('workflows.v2.compatibility.supported', ['build-a']);
-        config()->set('workflows.v2.compatibility.namespace', null);
-        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.v2.compatibility.current', 'build-a');
+        config()
+            ->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()
+            ->set('workflows.v2.compatibility.namespace', null);
+        config()
+            ->set('workflows.v2.fleet.validation_mode', 'fail');
 
         WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
 
