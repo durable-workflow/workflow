@@ -12,6 +12,7 @@ use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -63,7 +64,7 @@ final class V2WorkflowControlPlaneTest extends TestCase
         ]);
 
         $result = $this->controlPlane->start('test-greeting-workflow', 'ctrl-plane-test-1', [
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
         ]);
@@ -100,7 +101,7 @@ final class V2WorkflowControlPlaneTest extends TestCase
     public function testStartWithTypeKeyOnly(): void
     {
         $result = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-test-2', [
-            'arguments' => Serializer::serialize(['arg1']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['arg1']),
             'connection' => 'redis',
             'queue' => 'remote-workers',
         ]);
@@ -369,7 +370,7 @@ final class V2WorkflowControlPlaneTest extends TestCase
         ]);
 
         $this->controlPlane->start('test-greeting-workflow', 'ctrl-plane-signal-1', [
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
         ]);
@@ -403,7 +404,7 @@ final class V2WorkflowControlPlaneTest extends TestCase
         ]);
 
         $result = $this->controlPlane->start('test-greeting-workflow', 'ctrl-plane-routing-1', [
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'connection' => 'redis',
             'queue' => 'custom-queue',
         ]);
@@ -450,7 +451,7 @@ final class V2WorkflowControlPlaneTest extends TestCase
         ]);
 
         $result = $this->controlPlane->start('tests.external-greeting-workflow', 'ctrl-plane-dotted-1', [
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
         ]);
@@ -503,7 +504,7 @@ final class V2WorkflowControlPlaneTest extends TestCase
         ]);
 
         $start = $this->controlPlane->start('test-greeting-workflow', 'ctrl-plane-desc-1', [
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
             'business_key' => 'order-100',

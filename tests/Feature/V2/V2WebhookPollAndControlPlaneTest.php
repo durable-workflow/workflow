@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
@@ -191,7 +192,7 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
         $response = $this->postJson('/webhooks/control-plane/start', [
             'workflow_type' => 'test-greeting-workflow',
             'instance_id' => 'cp-start-1',
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
         ]);
@@ -210,13 +211,13 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
         $this->postJson('/webhooks/control-plane/start', [
             'workflow_type' => 'test-greeting-workflow',
             'instance_id' => 'cp-dup-1',
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
         ])->assertStatus(202);
 
         $response = $this->postJson('/webhooks/control-plane/start', [
             'workflow_type' => 'test-greeting-workflow',
             'instance_id' => 'cp-dup-1',
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
         ]);
 
         $response->assertStatus(409);
@@ -229,13 +230,13 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
         $this->postJson('/webhooks/control-plane/start', [
             'workflow_type' => 'test-greeting-workflow',
             'instance_id' => 'cp-reuse-1',
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
         ])->assertStatus(202);
 
         $response = $this->postJson('/webhooks/control-plane/start', [
             'workflow_type' => 'test-greeting-workflow',
             'instance_id' => 'cp-reuse-1',
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'duplicate_start_policy' => 'return_existing_active',
         ]);
 
@@ -268,7 +269,7 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
         $response = $this->postJson('/webhooks/control-plane/start', [
             'workflow_type' => 'test-greeting-workflow',
             'instance_id' => 'cp-vis-1',
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'business_key' => 'order-123',
             'labels' => [
                 'tenant' => 'acme',
@@ -289,7 +290,7 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
     {
         $response = $this->postJson('/webhooks/control-plane/start', [
             'workflow_type' => 'test-greeting-workflow',
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
         ]);
 
         $response->assertStatus(202);
@@ -319,7 +320,7 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'workflow_class' => TestGreetingWorkflow::class,
             'workflow_type' => 'test-greeting-workflow',
             'status' => RunStatus::Waiting->value,
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
             'compatibility' => 'build-a',
@@ -350,7 +351,7 @@ final class V2WebhookPollAndControlPlaneTest extends TestCase
             'activity_type' => 'test-greeting-activity',
             'sequence' => 1,
             'status' => ActivityStatus::Pending->value,
-            'arguments' => Serializer::serialize(['Taylor']),
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), ['Taylor']),
             'connection' => 'redis',
             'queue' => 'default',
             'attempt_count' => 0,
