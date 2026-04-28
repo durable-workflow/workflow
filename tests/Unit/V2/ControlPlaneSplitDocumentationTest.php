@@ -85,9 +85,11 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         'RunWorkflowTask',
         'RunActivityTask',
         'RunTimerTask',
+        'ServerTopology',
     ];
 
     private const REQUIRED_HTTP_ROUTES = [
+        '/api/cluster/info',
         '/api/worker/workflow-tasks/poll',
         '/api/worker/workflow-tasks/{taskId}/complete',
         '/api/worker/workflow-tasks/{taskId}/fail',
@@ -140,6 +142,24 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         'workflow:v2:repair-pass',
         'workflow:v2:rebuild-projections',
         'workflow:v2:schedule-tick',
+    ];
+
+    private const REQUIRED_PROCESS_CLASSES = [
+        'application_process',
+        'server_http_node',
+        'scheduler_node',
+        'worker_node',
+        'ingress_node',
+        'control_plane_node',
+        'matching_node',
+        'execution_node',
+    ];
+
+    private const REQUIRED_CLUSTER_MANIFEST_TERMS = [
+        'current_shape',
+        'current_roles',
+        'matching_role',
+        'shape_assignments',
     ];
 
     public function testContractDocumentExistsAndDeclaresFrozenSections(): void
@@ -228,6 +248,30 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
                     'Control-plane split contract must name %s so the role-bound maintenance entrypoint stays explicit.',
                     $command
                 ),
+            );
+        }
+    }
+
+    public function testContractDocumentNamesClusterDiscoverySurface(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_PROCESS_CLASSES as $processClass) {
+            $this->assertStringContainsString(
+                $processClass,
+                $contents,
+                sprintf(
+                    'Control-plane split contract must name %s as a logical process class in the topology manifest.',
+                    $processClass
+                ),
+            );
+        }
+
+        foreach (self::REQUIRED_CLUSTER_MANIFEST_TERMS as $term) {
+            $this->assertStringContainsString(
+                $term,
+                $contents,
+                sprintf('Control-plane split contract must name %s from the cluster discovery manifest.', $term),
             );
         }
     }

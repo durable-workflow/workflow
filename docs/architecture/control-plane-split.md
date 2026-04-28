@@ -411,6 +411,9 @@ the same process via the Queue worker.
 - The matching role uses the in-worker library shape.
 - Scheduler runs as a normal Laravel schedule hook against the
   app's database.
+- When a server-hosted cluster discovery surface is present, the
+  logical process-class name for this shape is
+  `application_process`.
 
 This topology is the lowest-friction way to adopt v2 and MUST
 continue to work. The split is opt-in; no existing embedded host
@@ -418,18 +421,26 @@ is required to migrate.
 
 ### Standalone server topology
 
-Two process classes: server nodes and worker nodes. Server nodes
-fill API ingress, control plane, matching role (HTTP shape),
-history/projection role, and scheduler. Worker nodes fill the
-execution plane and a local matching-library cache for polling.
+Three logical process classes: `server_http_node`,
+`scheduler_node`, and `worker_node`. The HTTP node fills API
+ingress, control plane, matching role (HTTP shape), and the
+history/projection role. The scheduler runs as its own process
+class, and worker nodes fill the execution plane plus a local
+matching-library cache for polling.
 
 - The server is `durable-workflow/server`, which embeds the
   `workflow` package.
 - Workers talk to the server through the worker protocol.
-- Both process classes share one workflow database.
-- Scheduler runs on server nodes under per-schedule leader
+- All three process classes share one workflow database.
+- Scheduler runs on `scheduler_node` under per-schedule leader
   election; pre-Phase-6 deployments should run a single scheduler
-  server replica.
+  replica.
+- `GET /api/cluster/info` publishes
+  `App\Support\ServerTopology` with
+  `current_shape: standalone_server`, the HTTP node's
+  `current_roles`, and
+  `shape_assignments.standalone_server.process_classes` naming
+  `server_http_node`, `scheduler_node`, and `worker_node`.
 
 This is the topology the standalone `server` repo ships today. It
 MUST continue to work without topology-specific configuration
@@ -437,16 +448,18 @@ once the split lands.
 
 ### Split control/execution topology
 
-Four or more process classes, with roles split for independent
-scaling:
+Five logical process classes, with roles split for independent
+scaling. Operators may co-locate some of them into four or more
+live process groups, but the logical class names stay stable:
 
-- **Ingress nodes** run only API ingress.
-- **Control-plane nodes** run the control plane,
-  history/projection role, and scheduler.
-- **Matching nodes** run the matching role in its dedicated-service
-  shape, which may be co-located with control-plane nodes for
-  simpler deployments.
-- **Execution nodes** run only workers.
+- **`ingress_node`** runs only API ingress.
+- **`control_plane_node`** runs the control plane and the
+  history/projection role.
+- **`scheduler_node`** runs only the scheduler role.
+- **`matching_node`** runs the matching role in its
+  dedicated-service shape and may be co-located with the control
+  plane for simpler deployments.
+- **`execution_node`** runs only workers.
 
 Requirements for this topology:
 
@@ -457,6 +470,10 @@ Requirements for this topology:
   run as their own process image.
 - Protocol versions negotiated across roles remain single-stepped
   per the Phase 2 mixed-version guidance.
+- `GET /api/cluster/info` keeps publishing the same
+  `current_shape`, `current_roles`, `matching_role`, and
+  `shape_assignments` vocabulary even when some logical classes are
+  co-located physically.
 
 This topology is the target shape for the Phase 4 work and is the
 topology the migration path below lands on without a hard cutover.
@@ -560,6 +577,12 @@ durable record. Phase 4 freezes the role split for that surface:
 Operators must be able to see which roles are healthy and which
 are degraded without reading model tables directly:
 
+- The standalone server exposes
+  `GET /api/cluster/info`, backed by
+  `App\Support\ServerTopology`, so operators can read the current
+  role split (`current_shape`, `current_roles`, `matching_role`,
+  and `shape_assignments`) without inferring it from deployment
+  notes.
 - `Workflow\V2\Support\OperatorMetrics::snapshot()` reports per-role
   health signals: `tasks.ready`, `tasks.leased`,
   `tasks.claim_failed`, `repair.missing_task_candidates`,
