@@ -55,6 +55,10 @@ return [
         'run_lineage_entry_model' => Workflow\V2\Models\WorkflowRunLineageEntry::class,
         'schedule_model' => Workflow\V2\Models\WorkflowSchedule::class,
         'schedule_history_event_model' => Workflow\V2\Models\WorkflowScheduleHistoryEvent::class,
+        'service_endpoint_model' => Workflow\V2\Models\WorkflowServiceEndpoint::class,
+        'service_model' => Workflow\V2\Models\WorkflowService::class,
+        'service_operation_model' => Workflow\V2\Models\WorkflowServiceOperation::class,
+        'service_call_model' => Workflow\V2\Models\WorkflowServiceCall::class,
         'types' => [
             'workflows' => [
                 // 'billing.invoice-sync' => App\Workflows\InvoiceSyncWorkflow::class,

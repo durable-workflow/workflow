@@ -7,6 +7,7 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\CommandOutcome;
@@ -66,6 +67,17 @@ class WorkflowUpdate extends Model
             ConfiguredV2Models::resolve('failure_model', WorkflowFailure::class),
             'failure_id',
         );
+    }
+
+    public function serviceCalls(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('service_call_model', WorkflowServiceCall::class),
+            'linked_workflow_update_id',
+        )
+            ->oldest('accepted_at')
+            ->oldest('created_at')
+            ->oldest('id');
     }
 
     /**

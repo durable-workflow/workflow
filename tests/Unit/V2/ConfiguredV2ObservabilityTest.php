@@ -22,6 +22,10 @@ use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowRunWait;
+use Workflow\V2\Models\WorkflowService;
+use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
+use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
@@ -337,18 +341,144 @@ final class ConfiguredV2ObservabilityTest extends TestCase
             ],
             'run parent links' => [WorkflowRun::class, 'parentLinks', 'link_model', ConfiguredWorkflowLink::class],
             'run child links' => [WorkflowRun::class, 'childLinks', 'link_model', ConfiguredWorkflowLink::class],
+            'run outgoing service calls' => [
+                WorkflowRun::class,
+                'outgoingServiceCalls',
+                'service_call_model',
+                ConfiguredWorkflowServiceCall::class,
+            ],
+            'run linked service calls' => [
+                WorkflowRun::class,
+                'linkedServiceCalls',
+                'service_call_model',
+                ConfiguredWorkflowServiceCall::class,
+            ],
             'lineage entry run' => [WorkflowRunLineageEntry::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'summary run' => [WorkflowRunSummary::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'timer entry run' => [WorkflowRunTimerEntry::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'wait run' => [WorkflowRunWait::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
+            'service endpoint services' => [
+                WorkflowServiceEndpoint::class,
+                'services',
+                'service_model',
+                ConfiguredWorkflowService::class,
+            ],
+            'service endpoint operations' => [
+                WorkflowServiceEndpoint::class,
+                'operations',
+                'service_operation_model',
+                ConfiguredWorkflowServiceOperation::class,
+            ],
+            'service endpoint service calls' => [
+                WorkflowServiceEndpoint::class,
+                'serviceCalls',
+                'service_call_model',
+                ConfiguredWorkflowServiceCall::class,
+            ],
+            'service service endpoint' => [
+                WorkflowService::class,
+                'endpoint',
+                'service_endpoint_model',
+                ConfiguredWorkflowServiceEndpoint::class,
+            ],
+            'service operations' => [
+                WorkflowService::class,
+                'operations',
+                'service_operation_model',
+                ConfiguredWorkflowServiceOperation::class,
+            ],
+            'service service calls' => [
+                WorkflowService::class,
+                'serviceCalls',
+                'service_call_model',
+                ConfiguredWorkflowServiceCall::class,
+            ],
+            'service operation endpoint' => [
+                WorkflowServiceOperation::class,
+                'endpoint',
+                'service_endpoint_model',
+                ConfiguredWorkflowServiceEndpoint::class,
+            ],
+            'service operation service' => [
+                WorkflowServiceOperation::class,
+                'service',
+                'service_model',
+                ConfiguredWorkflowService::class,
+            ],
+            'service operation service calls' => [
+                WorkflowServiceOperation::class,
+                'serviceCalls',
+                'service_call_model',
+                ConfiguredWorkflowServiceCall::class,
+            ],
             'signal instance' => [
                 WorkflowSignal::class,
                 'instance',
                 'instance_model',
                 ConfiguredWorkflowInstance::class,
             ],
+            'instance outgoing service calls' => [
+                WorkflowInstance::class,
+                'outgoingServiceCalls',
+                'service_call_model',
+                ConfiguredWorkflowServiceCall::class,
+            ],
+            'instance linked service calls' => [
+                WorkflowInstance::class,
+                'linkedServiceCalls',
+                'service_call_model',
+                ConfiguredWorkflowServiceCall::class,
+            ],
             'signal run' => [WorkflowSignal::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'signal command' => [WorkflowSignal::class, 'command', 'command_model', ConfiguredWorkflowCommand::class],
+            'service call endpoint' => [
+                WorkflowServiceCall::class,
+                'endpoint',
+                'service_endpoint_model',
+                ConfiguredWorkflowServiceEndpoint::class,
+            ],
+            'service call service' => [
+                WorkflowServiceCall::class,
+                'service',
+                'service_model',
+                ConfiguredWorkflowService::class,
+            ],
+            'service call operation' => [
+                WorkflowServiceCall::class,
+                'operation',
+                'service_operation_model',
+                ConfiguredWorkflowServiceOperation::class,
+            ],
+            'service call caller instance' => [
+                WorkflowServiceCall::class,
+                'callerInstance',
+                'instance_model',
+                ConfiguredWorkflowInstance::class,
+            ],
+            'service call caller run' => [
+                WorkflowServiceCall::class,
+                'callerRun',
+                'run_model',
+                ConfiguredWorkflowRun::class,
+            ],
+            'service call linked instance' => [
+                WorkflowServiceCall::class,
+                'linkedInstance',
+                'instance_model',
+                ConfiguredWorkflowInstance::class,
+            ],
+            'service call linked run' => [
+                WorkflowServiceCall::class,
+                'linkedRun',
+                'run_model',
+                ConfiguredWorkflowRun::class,
+            ],
+            'service call linked update' => [
+                WorkflowServiceCall::class,
+                'linkedUpdate',
+                'update_model',
+                ConfiguredWorkflowUpdate::class,
+            ],
             'task run' => [WorkflowTask::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'timeline entry run' => [WorkflowTimelineEntry::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
             'timer run' => [WorkflowTimer::class, 'run', 'run_model', ConfiguredWorkflowRun::class],
@@ -399,6 +529,14 @@ final class ConfiguredV2ObservabilityTest extends TestCase
             ->set('workflows.v2.signal_model', ConfiguredWorkflowSignal::class);
         config()
             ->set('workflows.v2.update_model', ConfiguredWorkflowUpdate::class);
+        config()
+            ->set('workflows.v2.service_endpoint_model', ConfiguredWorkflowServiceEndpoint::class);
+        config()
+            ->set('workflows.v2.service_model', ConfiguredWorkflowService::class);
+        config()
+            ->set('workflows.v2.service_operation_model', ConfiguredWorkflowServiceOperation::class);
+        config()
+            ->set('workflows.v2.service_call_model', ConfiguredWorkflowServiceCall::class);
     }
 
     private function createConfiguredRunsTable(): void
@@ -553,5 +691,21 @@ final class ConfiguredWorkflowSignal extends WorkflowSignal
 }
 
 final class ConfiguredWorkflowUpdate extends WorkflowUpdate
+{
+}
+
+final class ConfiguredWorkflowServiceEndpoint extends WorkflowServiceEndpoint
+{
+}
+
+final class ConfiguredWorkflowService extends WorkflowService
+{
+}
+
+final class ConfiguredWorkflowServiceOperation extends WorkflowServiceOperation
+{
+}
+
+final class ConfiguredWorkflowServiceCall extends WorkflowServiceCall
 {
 }

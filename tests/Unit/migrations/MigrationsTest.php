@@ -180,6 +180,10 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasTable('workflow_run_timeline_entries'));
         $this->assertTrue(Schema::hasTable('workflow_run_timer_entries'));
         $this->assertTrue(Schema::hasTable('workflow_run_lineage_entries'));
+        $this->assertTrue(Schema::hasTable('workflow_service_endpoints'));
+        $this->assertTrue(Schema::hasTable('workflow_services'));
+        $this->assertTrue(Schema::hasTable('workflow_service_operations'));
+        $this->assertTrue(Schema::hasTable('workflow_service_calls'));
         $this->assertTrue(Schema::hasColumn('activity_executions', 'current_attempt_id'));
         $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_timestamp'));
@@ -225,6 +229,10 @@ final class MigrationsTest extends TestCase
         $this->assertFalse(Schema::hasTable('workflow_run_timeline_entries'));
         $this->assertFalse(Schema::hasTable('workflow_run_timer_entries'));
         $this->assertFalse(Schema::hasTable('workflow_run_lineage_entries'));
+        $this->assertFalse(Schema::hasTable('workflow_service_endpoints'));
+        $this->assertFalse(Schema::hasTable('workflow_services'));
+        $this->assertFalse(Schema::hasTable('workflow_service_operations'));
+        $this->assertFalse(Schema::hasTable('workflow_service_calls'));
     }
 
     /**
@@ -390,6 +398,10 @@ final class MigrationsTest extends TestCase
             'workflow_search_attributes',
             'workflow_child_calls',
             'workflow_schedule_history_events',
+            'workflow_service_endpoints',
+            'workflow_services',
+            'workflow_service_operations',
+            'workflow_service_calls',
         ];
     }
 }

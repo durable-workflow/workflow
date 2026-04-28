@@ -90,6 +90,28 @@ class WorkflowRun extends Model
             ->oldest('id');
     }
 
+    public function outgoingServiceCalls(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('service_call_model', WorkflowServiceCall::class),
+            'caller_workflow_run_id',
+        )
+            ->oldest('accepted_at')
+            ->oldest('created_at')
+            ->oldest('id');
+    }
+
+    public function linkedServiceCalls(): HasMany
+    {
+        return $this->hasMany(
+            ConfiguredV2Models::resolve('service_call_model', WorkflowServiceCall::class),
+            'linked_workflow_run_id',
+        )
+            ->oldest('accepted_at')
+            ->oldest('created_at')
+            ->oldest('id');
+    }
+
     public function signals(): HasMany
     {
         return $this->hasMany(

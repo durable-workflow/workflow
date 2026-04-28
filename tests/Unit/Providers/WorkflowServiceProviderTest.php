@@ -154,6 +154,16 @@ final class WorkflowServiceProviderTest extends TestCase
             \Workflow\V2\Models\WorkflowTimelineEntry::class,
             config('workflows.v2.run_timeline_entry_model')
         );
+        $this->assertSame(
+            \Workflow\V2\Models\WorkflowServiceEndpoint::class,
+            config('workflows.v2.service_endpoint_model')
+        );
+        $this->assertSame(\Workflow\V2\Models\WorkflowService::class, config('workflows.v2.service_model'));
+        $this->assertSame(
+            \Workflow\V2\Models\WorkflowServiceOperation::class,
+            config('workflows.v2.service_operation_model')
+        );
+        $this->assertSame(\Workflow\V2\Models\WorkflowServiceCall::class, config('workflows.v2.service_call_model'));
         $this->assertSame(30, config('workflows.v2.compatibility.heartbeat_ttl_seconds'));
         $this->assertSame(10, config('workflows.v2.update_wait.completion_timeout_seconds'));
         $this->assertSame(50, config('workflows.v2.update_wait.poll_interval_milliseconds'));
