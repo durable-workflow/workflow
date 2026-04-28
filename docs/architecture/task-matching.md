@@ -459,7 +459,7 @@ layer healthy" without reading task rows directly:
   `::forQueue()` returns per-partition queue depth, leased depth,
   poller heartbeats, and stale-worker detection.
 - The standalone server exposes the metrics snapshot at
-  `POST /api/system/metrics`.
+  `GET /api/system/metrics`.
 
 Guarantees:
 
