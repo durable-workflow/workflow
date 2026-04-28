@@ -2995,6 +2995,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     {
         return $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run;
     }
+
     private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void
     {
         app(MemoUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
