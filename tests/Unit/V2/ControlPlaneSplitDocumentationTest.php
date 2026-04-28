@@ -232,17 +232,6 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         }
     }
 
-    public function testContractDocumentStatesStaleProjectionPruneCrossesHistoryRole(): void
-    {
-        $contents = $this->documentContents();
-
-        $this->assertMatchesRegularExpression(
-            '/history\\/projection role now\\s+crosses.*workflow:v2:rebuild-projections.*--prune-stale/s',
-            $contents,
-            'Control-plane split contract must state that stale projection pruning crosses the history role seam.',
-        );
-    }
-
     public function testContractDocumentNamesAuthorityBoundarySurfaces(): void
     {
         $contents = $this->documentContents();

@@ -59,14 +59,6 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             ): WorkflowRunSummary {
                 return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
             }
-
-            public function pruneStaleProjections(
-                array $runIds = [],
-                ?string $instanceId = null,
-                bool $dryRun = false,
-            ): array {
-                return $this->delegate->pruneStaleProjections($runIds, $instanceId, $dryRun);
-            }
         };
 
         $this->app->instance(HistoryProjectionRole::class, $customRole);
@@ -82,110 +74,6 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             'id' => $run->id,
             'workflow_instance_id' => $run->workflow_instance_id,
             'status' => RunStatus::Completed->value,
-        ]);
-    }
-
-    public function testItUsesTheHistoryProjectionRoleBindingForStaleProjectionPrune(): void
-    {
-        [$instance] = $this->createCompletedRun('projection-command-history-role-prune');
-        $staleRunId = (string) Str::ulid();
-
-        WorkflowRunSummary::query()->create([
-            'id' => $staleRunId,
-            'workflow_instance_id' => $instance->id,
-            'run_number' => 99,
-            'is_current_run' => false,
-            'engine_source' => 'v2',
-            'class' => 'App\\Workflows\\DeletedWorkflow',
-            'workflow_type' => 'deleted.workflow',
-            'status' => RunStatus::Completed->value,
-            'status_bucket' => 'completed',
-            'closed_reason' => 'completed',
-            'started_at' => now()
-                ->subHour(),
-            'closed_at' => now()
-                ->subMinutes(50),
-            'duration_ms' => 600000,
-            'exception_count' => 0,
-            'created_at' => now()
-                ->subHour(),
-            'updated_at' => now()
-                ->subMinutes(50),
-        ]);
-        WorkflowRunWait::query()->create([
-            'id' => 'projection-command-prune-history-role-wait',
-            'workflow_run_id' => $staleRunId,
-            'workflow_instance_id' => $instance->id,
-            'wait_id' => 'signal:deleted',
-            'position' => 0,
-            'kind' => 'signal',
-            'status' => 'open',
-            'source_status' => 'open',
-            'task_backed' => false,
-            'external_only' => true,
-        ]);
-
-        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
-            /**
-             * @var list<array{runIds: list<string>, instanceId: ?string, dryRun: bool}>
-             */
-            public array $pruneCalls = [];
-
-            public function __construct(
-                private readonly DefaultHistoryProjectionRole $delegate,
-            ) {
-            }
-
-            public function projectRun(WorkflowRun $run): WorkflowRunSummary
-            {
-                return $this->delegate->projectRun($run);
-            }
-
-            public function recordActivityStarted(
-                WorkflowRun $run,
-                ActivityExecution $execution,
-                ActivityAttempt $attempt,
-                WorkflowTask $task,
-            ): WorkflowRunSummary {
-                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
-            }
-
-            public function pruneStaleProjections(
-                array $runIds = [],
-                ?string $instanceId = null,
-                bool $dryRun = false,
-            ): array {
-                $this->pruneCalls[] = [
-                    'runIds' => $runIds,
-                    'instanceId' => $instanceId,
-                    'dryRun' => $dryRun,
-                ];
-
-                return $this->delegate->pruneStaleProjections($runIds, $instanceId, $dryRun);
-            }
-        };
-
-        $this->app->instance(HistoryProjectionRole::class, $customRole);
-
-        $this->artisan('workflow:v2:rebuild-projections', [
-            '--run-id' => [$staleRunId],
-            '--prune-stale' => true,
-        ])
-            ->expectsOutput('Rebuilt 0 run-summary projection row(s).')
-            ->expectsOutput('Pruned 1 stale run-summary projection row(s).')
-            ->expectsOutput('Pruned 1 stale wait projection row(s).')
-            ->assertSuccessful();
-
-        $this->assertSame([[
-            'runIds' => [$staleRunId],
-            'instanceId' => null,
-            'dryRun' => false,
-        ]], $customRole->pruneCalls);
-        $this->assertDatabaseMissing('workflow_run_summaries', [
-            'id' => $staleRunId,
-        ]);
-        $this->assertDatabaseMissing('workflow_run_waits', [
-            'id' => 'projection-command-prune-history-role-wait',
         ]);
     }
 
@@ -206,25 +94,6 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 WorkflowTask $task,
             ): WorkflowRunSummary {
                 throw new \RuntimeException('unused');
-            }
-
-            public function pruneStaleProjections(
-                array $runIds = [],
-                ?string $instanceId = null,
-                bool $dryRun = false,
-            ): array {
-                return [
-                    'run_summaries_pruned' => 0,
-                    'run_summaries_would_prune' => 0,
-                    'run_waits_pruned' => 0,
-                    'run_waits_would_prune' => 0,
-                    'run_timeline_entries_pruned' => 0,
-                    'run_timeline_entries_would_prune' => 0,
-                    'run_timer_entries_pruned' => 0,
-                    'run_timer_entries_would_prune' => 0,
-                    'run_lineage_entries_pruned' => 0,
-                    'run_lineage_entries_would_prune' => 0,
-                ];
             }
         };
 

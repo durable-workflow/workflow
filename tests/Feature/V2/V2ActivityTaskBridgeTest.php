@@ -191,14 +191,6 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
                 return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
             }
-
-            public function pruneStaleProjections(
-                array $runIds = [],
-                ?string $instanceId = null,
-                bool $dryRun = false,
-            ): array {
-                return $this->delegate->pruneStaleProjections($runIds, $instanceId, $dryRun);
-            }
         };
 
         $this->app->instance(HistoryProjectionRole::class, $customRole);

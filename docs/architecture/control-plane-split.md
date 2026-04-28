@@ -486,9 +486,8 @@ each step independently.
    `workflow:v2:repair-pass`. The history/projection role now
    crosses the matching seam through `DefaultHistoryProjectionRole`,
    so a future out-of-process adapter can replace that binding
-   without patching the claim paths or any part of the
-   `workflow:v2:rebuild-projections` maintenance command,
-   including `--prune-stale`. The
+   without patching the claim paths or the
+   `workflow:v2:rebuild-projections` maintenance command. The
    scheduler role now crosses `workflow:v2:schedule-tick` through
    `DefaultSchedulerRole`, so a future out-of-process adapter can
    replace that binding without patching the command entrypoint.
