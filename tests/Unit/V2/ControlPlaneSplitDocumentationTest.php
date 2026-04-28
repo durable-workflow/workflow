@@ -63,8 +63,6 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
     private const REQUIRED_REFERENCED_CLASSES = [
         'WorkflowControlPlane',
         'DefaultWorkflowControlPlane',
-        'HistoryProjectionRole',
-        'DefaultHistoryProjectionRole',
         'RunSummaryProjector',
         'DefaultOperatorObservabilityRepository',
         'OperatorObservabilityRepository',
