@@ -51,6 +51,7 @@ use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\ActivityTaskBridge;
 use Workflow\V2\AsyncWorkflow;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
@@ -78,6 +79,7 @@ use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
@@ -5849,6 +5851,33 @@ final class V2WorkflowTest extends TestCase
             'queue' => 'default',
         ]);
 
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public array $calls = [];
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->calls[] = ['projectRun', $run->id];
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
         $this->wakeTaskWatchdog();
 
         $task->refresh();
@@ -5866,6 +5895,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame('workflow-task', $summary->wait_kind);
         $this->assertSame('workflow_task_ready', $summary->liveness_state);
+        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
 
     public function testTaskWatchdogRedispatchesReadyWorkflowTaskAfterDispatchFailureBeforeAgeCutoff(): void

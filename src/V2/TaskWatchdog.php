@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -17,7 +18,6 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
-use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -227,7 +227,7 @@ final class TaskWatchdog
 
                 $task = TaskRepair::recoverExistingTask($task, $run);
 
-                RunSummaryProjector::project(
+                self::historyProjectionRole()->projectRun(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
                 );
 
@@ -271,7 +271,7 @@ final class TaskWatchdog
                     ->lockForUpdate()
                     ->findOrFail($runId);
 
-                $summary = RunSummaryProjector::project($run);
+                $summary = self::historyProjectionRole()->projectRun($run);
 
                 if ($summary->liveness_state !== 'repair_needed' || $summary->next_task_id !== null) {
                     return null;
@@ -279,7 +279,7 @@ final class TaskWatchdog
 
                 $task = TaskRepair::repairRun($run, $summary);
 
-                RunSummaryProjector::project(
+                self::historyProjectionRole()->projectRun(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
                 );
 
@@ -468,7 +468,7 @@ final class TaskWatchdog
                     'repair_count' => 1,
                 ]);
 
-                RunSummaryProjector::project(
+                self::historyProjectionRole()->projectRun(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
                 );
 
@@ -491,5 +491,13 @@ final class TaskWatchdog
             'task' => $task,
             'error' => null,
         ];
+    }
+
+    private static function historyProjectionRole(): HistoryProjectionRole
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role;
     }
 }
