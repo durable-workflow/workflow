@@ -387,55 +387,6 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(10 * 1000, $taskTransport['data']['max_dispatch_overdue_age_ms']);
     }
 
-    public function testHealthSnapshotScopesOperatorMetricsToRequestedNamespace(): void
-    {
-        Carbon::setTestNow('2026-04-09 12:00:00');
-        $this->beforeApplicationDestroyed(static function (): void {
-            Carbon::setTestNow();
-        });
-
-        $alphaRun = $this->createRunWithSummary(
-            instanceId: 'health-scope-alpha-instance',
-            runId: '01JHEALTHSCOPEALPHA000001',
-            status: 'running',
-            statusBucket: 'running',
-            livenessState: 'running',
-            namespace: 'alpha',
-        );
-        $betaRun = $this->createRunWithSummary(
-            instanceId: 'health-scope-beta-instance',
-            runId: '01JHEALTHSCOPEBETA000002X',
-            status: 'waiting',
-            statusBucket: 'running',
-            livenessState: 'repair_needed',
-            namespace: 'beta',
-        );
-
-        $this->createTask($alphaRun, '01JHTASKSCOPEALPHA000001X', TaskStatus::Ready->value, [
-            'available_at' => now()->subSecond(),
-        ]);
-        $this->createTask($betaRun, '01JHTASKSCOPEBETA000002XX', TaskStatus::Ready->value, [
-            'available_at' => now()->subSeconds(10),
-            'last_dispatch_attempt_at' => now()->subSecond(),
-            'last_dispatch_error' => 'Queue transport unavailable.',
-        ]);
-
-        $alphaSnapshot = HealthCheck::snapshot(Carbon::now(), 'alpha');
-        $betaSnapshot = HealthCheck::snapshot(Carbon::now(), 'beta');
-
-        $this->assertSame(1, $alphaSnapshot['operator_metrics']['runs']['total']);
-        $this->assertSame(0, $alphaSnapshot['operator_metrics']['runs']['repair_needed']);
-        $this->assertSame(1, $alphaSnapshot['operator_metrics']['tasks']['ready_due']);
-        $this->assertSame(0, $alphaSnapshot['operator_metrics']['tasks']['dispatch_failed']);
-        $this->assertSame(now()->subSecond()->toJSON(), $alphaSnapshot['operator_metrics']['tasks']['oldest_ready_due_at']);
-
-        $this->assertSame(1, $betaSnapshot['operator_metrics']['runs']['total']);
-        $this->assertSame(1, $betaSnapshot['operator_metrics']['runs']['repair_needed']);
-        $this->assertSame(1, $betaSnapshot['operator_metrics']['tasks']['dispatch_failed']);
-        $this->assertSame(1, $betaSnapshot['operator_metrics']['tasks']['ready_due']);
-        $this->assertSame(now()->subSeconds(10)->toJSON(), $betaSnapshot['operator_metrics']['tasks']['oldest_ready_due_at']);
-    }
-
     public function testSnapshotCountsStaleRunSummaryProjectionRows(): void
     {
         $run = $this->createRunWithSummary(
@@ -2296,11 +2247,9 @@ final class V2OperatorMetricsTest extends TestCase
         ?string $connection = null,
         ?string $queue = null,
         ?string $compatibility = null,
-        ?string $namespace = null,
     ): WorkflowRun {
         $instance = WorkflowInstance::query()->create([
             'id' => $instanceId,
-            'namespace' => $namespace,
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'run_count' => 1,
@@ -2314,7 +2263,6 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_class' => 'WorkflowClass',
             'workflow_type' => 'workflow.test',
             'status' => $status,
-            'namespace' => $namespace,
             'connection' => $connection,
             'queue' => $queue,
             'compatibility' => $compatibility,
@@ -2338,7 +2286,6 @@ final class V2OperatorMetricsTest extends TestCase
             'workflow_type' => 'workflow.test',
             'status' => $status,
             'status_bucket' => $statusBucket,
-            'namespace' => $namespace,
             'started_at' => now()
                 ->subMinutes(10),
             'liveness_state' => $livenessState,

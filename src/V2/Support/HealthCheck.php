@@ -17,10 +17,10 @@ final class HealthCheck
     /**
      * @return array<string, mixed>
      */
-    public static function snapshot(?CarbonInterface $now = null, ?string $namespace = null): array
+    public static function snapshot(?CarbonInterface $now = null): array
     {
         $now ??= now();
-        $metrics = OperatorMetrics::snapshot($now, $namespace);
+        $metrics = OperatorMetrics::snapshot($now);
         $checks = [
             self::backendCheck($metrics['backend'] ?? []),
             self::runSummaryProjectionCheck($metrics['projections']['run_summaries'] ?? []),
