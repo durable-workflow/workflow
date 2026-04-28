@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Cache\CacheManager;
+use Illuminate\Cache\Repository;
 use Illuminate\Support\Carbon;
+use Tests\Support\NonLockingCacheStore;
 use Tests\TestCase;
 use Workflow\V2\Support\BackendCapabilities;
 
@@ -93,10 +96,16 @@ final class BackendCapabilitiesTest extends TestCase
             'info',
             $contract['backend_capabilities']['queue']['poll_mode']['sync_or_missing_queue_severity']
         );
+        $this->assertSame('warning', $contract['backend_capabilities']['cache']['dispatch_blocking_severity']);
+        $this->assertSame('acceleration_only', $contract['backend_capabilities']['cache']['role']);
         $this->assertSame('avro', $contract['backend_capabilities']['codec']['default_for_new_v2_runs']);
         $this->assertSame(
             'evaluated_by_backend_capabilities_snapshot',
             $contract['effective_states']['dispatch']['state']
+        );
+        $this->assertStringContainsString(
+            'cache diagnostics stay warning-only',
+            $contract['effective_states']['dispatch']['blocking_rule']
         );
     }
 
@@ -372,6 +381,8 @@ final class BackendCapabilitiesTest extends TestCase
                 ->set('cache.default', 'array');
             config()
                 ->set('cache.stores.array.driver', 'array');
+            config()
+                ->set('workflows.serializer', 'avro');
 
             $snapshot = BackendCapabilities::snapshot();
 
@@ -438,5 +449,50 @@ final class BackendCapabilitiesTest extends TestCase
 
         $this->assertSame('error', $snapshot['severity']);
         $this->assertFalse($snapshot['supported']);
+    }
+
+    public function testCustomNoLockCacheStoreIsWarningOnlyAndDoesNotFailSupport(): void
+    {
+        config()
+            ->set('database.connections.pgsql.driver', 'pgsql');
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.serializer', 'avro');
+        $this->configureNonLockingCacheStore();
+
+        $snapshot = BackendCapabilities::snapshot(databaseConnection: 'pgsql');
+
+        $this->assertTrue($snapshot['supported']);
+        $this->assertTrue(BackendCapabilities::isSupported($snapshot));
+        $this->assertSame('pgsql', $snapshot['database']['connection']);
+        $this->assertTrue($snapshot['cache']['supported']);
+        $this->assertSame('warning', $snapshot['severity']);
+
+        $cacheIssue = collect($snapshot['issues'])->firstWhere('code', 'cache_locks_unsupported');
+        $this->assertNotNull($cacheIssue);
+        $this->assertSame('warning', $cacheIssue['severity']);
+        $this->assertStringContainsString('Wake acceleration remains optional', $cacheIssue['message']);
+    }
+
+    private function configureNonLockingCacheStore(): void
+    {
+        $driver = 'test-non-locking';
+        $store = 'test-non-locking';
+
+        $this->app['cache']->extend($driver, function (): Repository {
+            if (! $this instanceof CacheManager) {
+                throw new \RuntimeException('Unexpected cache manager binding.');
+            }
+
+            return new Repository(new NonLockingCacheStore());
+        });
+
+        config()
+            ->set("cache.stores.{$store}.driver", $driver);
+        config()
+            ->set('cache.default', $store);
     }
 }

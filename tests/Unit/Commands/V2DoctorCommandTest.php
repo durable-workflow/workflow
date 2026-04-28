@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Commands;
 
+use Illuminate\Cache\CacheManager;
+use Illuminate\Cache\Repository;
+use Tests\Support\NonLockingCacheStore;
 use Tests\TestCase;
 
 final class V2DoctorCommandTest extends TestCase
@@ -118,5 +121,41 @@ final class V2DoctorCommandTest extends TestCase
         ])
             ->expectsOutputToContain('[ERROR] [queue_sync_unsupported]')
             ->assertFailed();
+    }
+
+    public function testCustomNoLockCacheStoreAppearsInJsonOutputAndStrictStillSucceeds(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('workflows.serializer', 'avro');
+        $this->configureNonLockingCacheStore();
+
+        $this->artisan('workflow:v2:doctor', [
+            '--json' => true,
+            '--strict' => true,
+        ])
+            ->expectsOutputToContain('"code":"cache_locks_unsupported"')
+            ->assertSuccessful();
+    }
+
+    private function configureNonLockingCacheStore(): void
+    {
+        $driver = 'test-non-locking';
+        $store = 'test-non-locking';
+
+        $this->app['cache']->extend($driver, function (): Repository {
+            if (! $this instanceof CacheManager) {
+                throw new \RuntimeException('Unexpected cache manager binding.');
+            }
+
+            return new Repository(new NonLockingCacheStore());
+        });
+
+        config()
+            ->set("cache.stores.{$store}.driver", $driver);
+        config()
+            ->set('cache.default', $store);
     }
 }
