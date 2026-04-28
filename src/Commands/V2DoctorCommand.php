@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Workflow\V2\Support\BackendCapabilities;
+use Workflow\V2\Support\MatchingRoleSnapshot;
 
 #[AsCommand(name: 'workflow:v2:doctor')]
 class V2DoctorCommand extends Command
@@ -16,11 +17,12 @@ class V2DoctorCommand extends Command
         {--json : Output the capability snapshot as JSON}
         {--strict : Exit with failure when required capabilities are missing}';
 
-    protected $description = 'Inspect Workflow v2 backend capabilities for the configured database, queue, and cache stores';
+    protected $description = 'Inspect Workflow v2 backend capabilities and the local matching-role deployment shape';
 
     public function handle(): int
     {
         $snapshot = BackendCapabilities::snapshot();
+        $snapshot['matching_role'] = MatchingRoleSnapshot::current();
 
         if ((bool) $this->option('json')) {
             try {
@@ -52,6 +54,7 @@ class V2DoctorCommand extends Command
         $this->componentLine('queue', $snapshot['queue'] ?? []);
         $this->componentLine('cache', $snapshot['cache'] ?? []);
         $this->componentLine('codec', $snapshot['codec'] ?? []);
+        $this->matchingRoleLine($snapshot['matching_role'] ?? null);
 
         $issues = $snapshot['issues'] ?? [];
 
@@ -104,5 +107,27 @@ class V2DoctorCommand extends Command
         };
 
         $this->line(sprintf('[%s] %s: %s', $status, $name, $identity));
+    }
+
+    private function matchingRoleLine(mixed $matchingRole): void
+    {
+        if (! is_array($matchingRole)) {
+            $this->line('[INFO] matching_role: unavailable');
+
+            return;
+        }
+
+        $shape = is_string($matchingRole['shape'] ?? null) ? $matchingRole['shape'] : 'unknown';
+        $queueWakeEnabled = ($matchingRole['queue_wake_enabled'] ?? false) === true ? 'true' : 'false';
+        $dispatchMode = is_string($matchingRole['task_dispatch_mode'] ?? null)
+            ? $matchingRole['task_dispatch_mode']
+            : 'unknown';
+
+        $this->line(sprintf(
+            '[INFO] matching_role: %s (queue_wake_enabled=%s, task_dispatch_mode=%s)',
+            $shape,
+            $queueWakeEnabled,
+            $dispatchMode,
+        ));
     }
 }

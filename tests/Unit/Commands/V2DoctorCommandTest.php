@@ -30,6 +30,36 @@ final class V2DoctorCommandTest extends TestCase
         ])->assertSuccessful();
     }
 
+    public function testJsonOutputIncludesTheMatchingRoleShape(): void
+    {
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()
+            ->set('workflows.v2.matching_role.queue_wake_enabled', false);
+
+        $this->artisan('workflow:v2:doctor', [
+            '--json' => true,
+        ])
+            ->expectsOutputToContain(
+                '"matching_role":{"queue_wake_enabled":false,"shape":"dedicated","task_dispatch_mode":"poll"}'
+            )
+            ->assertSuccessful();
+    }
+
+    public function testHumanOutputIncludesTheMatchingRoleShape(): void
+    {
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        config()
+            ->set('workflows.v2.matching_role.queue_wake_enabled', false);
+
+        $this->artisan('workflow:v2:doctor')
+            ->expectsOutputToContain(
+                '[INFO] matching_role: dedicated (queue_wake_enabled=false, task_dispatch_mode=poll)'
+            )
+            ->assertSuccessful();
+    }
+
     public function testPollModeSyncQueueIsReportedAsInfoNotWarning(): void
     {
         // TD-078: in poll mode the queue-driver diagnostic is informational,
