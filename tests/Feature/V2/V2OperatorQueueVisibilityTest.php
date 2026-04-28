@@ -59,12 +59,18 @@ final class V2OperatorQueueVisibilityTest extends TestCase
                 'lease_expires_at' => now()
                     ->subMinute(),
                 'attempt_count' => 2,
+                'created_at' => now()
+                    ->subMinutes(2),
             ]
         );
         $activityTask = $this->createTask($run, '01JQUEUEVISIBLETASK000004', TaskType::Activity, TaskStatus::Leased, [
             'lease_owner' => 'worker-active',
             'lease_expires_at' => now()
                 ->addMinute(),
+            'created_at' => now()
+                ->subMinutes(2),
+            'last_dispatched_at' => now()
+                ->subSeconds(10),
         ]);
 
         ActivityAttempt::query()->create([
@@ -119,6 +125,8 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $this->assertSame(1, $payload['stats']['pollers']['active_count']);
         $this->assertSame(1, $payload['stats']['pollers']['stale_count']);
         $this->assertSame(60, $payload['stats']['pollers']['stale_after_seconds']);
+        $this->assertSame(2, $payload['stats']['tasks_added_last_minute']);
+        $this->assertSame(1, $payload['stats']['tasks_dispatched_last_minute']);
         $this->assertSame('worker-active', $payload['pollers'][0]['worker_id']);
         $this->assertFalse($payload['pollers'][0]['is_stale']);
         $this->assertSame('worker-stale', $payload['pollers'][1]['worker_id']);
@@ -151,6 +159,10 @@ final class V2OperatorQueueVisibilityTest extends TestCase
 
         $this->createTask($defaultRun, '01JQUEUENSDEFAULTTASK001', TaskType::Workflow, TaskStatus::Ready, [
             'queue' => 'alpha',
+            'created_at' => now()
+                ->subSeconds(30),
+            'last_dispatched_at' => now()
+                ->subSeconds(15),
         ]);
         $this->createTask($otherRun, '01JQUEUENSOTHERTASK0001', TaskType::Workflow, TaskStatus::Ready, [
             'queue' => 'beta',
@@ -170,8 +182,12 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $this->assertSame(['alpha', 'poller-only'], array_column($snapshot['task_queues'], 'name'));
         $queues = collect($snapshot['task_queues'])->keyBy('name');
         $this->assertSame(1, $queues->get('alpha')['stats']['approximate_backlog_count']);
+        $this->assertSame(1, $queues->get('alpha')['stats']['tasks_added_last_minute']);
+        $this->assertSame(1, $queues->get('alpha')['stats']['tasks_dispatched_last_minute']);
         $this->assertSame(1, $queues->get('poller-only')['stats']['pollers']['active_count']);
         $this->assertSame(0, $queues->get('poller-only')['stats']['approximate_backlog_count']);
+        $this->assertSame(0, $queues->get('poller-only')['stats']['tasks_added_last_minute']);
+        $this->assertSame(0, $queues->get('poller-only')['stats']['tasks_dispatched_last_minute']);
         $this->assertFalse($queues->has('beta'));
     }
 

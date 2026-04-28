@@ -199,6 +199,7 @@ final class OperatorQueueVisibility
             static fn (array $poller): bool => ($poller['is_stale'] ?? false) !== true,
         ));
         $stalePollers = count($pollers) - $activePollers;
+        $recentTaskFlow = self::recentTaskFlow($namespace, $taskQueue, $now);
 
         return [
             'approximate_backlog_count' => $readyCounts[TaskType::Workflow->value] + $readyCounts[TaskType::Activity->value],
@@ -229,6 +230,28 @@ final class OperatorQueueVisibility
                 'stale_count' => $stalePollers,
                 'stale_after_seconds' => $staleAfterSeconds,
             ],
+            'tasks_added_last_minute' => $recentTaskFlow['tasks_added_last_minute'],
+            'tasks_dispatched_last_minute' => $recentTaskFlow['tasks_dispatched_last_minute'],
+        ];
+    }
+
+    /**
+     * @return array{tasks_added_last_minute: int, tasks_dispatched_last_minute: int}
+     */
+    private static function recentTaskFlow(string $namespace, string $taskQueue, CarbonInterface $now): array
+    {
+        $taskTable = self::taskTable();
+        $windowStart = self::databaseTimestamp($now->copy()->subMinute());
+        $query = self::baseTaskQuery($namespace, $taskQueue);
+
+        return [
+            'tasks_added_last_minute' => (clone $query)
+                ->where($taskTable . '.created_at', '>=', $windowStart)
+                ->count(),
+            'tasks_dispatched_last_minute' => (clone $query)
+                ->whereNotNull($taskTable . '.last_dispatched_at')
+                ->where($taskTable . '.last_dispatched_at', '>=', $windowStart)
+                ->count(),
         ];
     }
 
