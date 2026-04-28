@@ -442,12 +442,14 @@ layer healthy" without reading task rows directly:
   `claim_failed_runs`, and `compatibility_blocked_runs`; a
   `workers` block with the Phase 2 compatibility roll-up; and a
   `matching_role` block with `queue_wake_enabled`, `shape`,
-  `task_dispatch_mode`, `partition_primitives`, and
+  `wake_owner`, `task_dispatch_mode`, `partition_primitives`, and
   `backpressure_model`. `shape` is `in_worker` when this process
   still runs the in-worker broad-poll wake and `dedicated` when
   the process has opted out so the broad sweep runs under
-  `php artisan workflow:v2:repair-pass`. `partition_primitives`
-  freezes the routing axes in order:
+  `php artisan workflow:v2:repair-pass`. `wake_owner` names the
+  cooperating owner for that sweep: `worker_loop` when this
+  process still owns it, `dedicated_repair_pass` when a separate
+  repair process should own it. `partition_primitives` freezes the routing axes in order:
   `connection`, `queue`, `compatibility`, `namespace`.
   `backpressure_model` reports `lease_ownership`, meaning the durable
   admission boundary is lease occupancy and lease expiry rather

@@ -119,14 +119,16 @@ class V2DoctorCommand extends Command
 
         $shape = is_string($matchingRole['shape'] ?? null) ? $matchingRole['shape'] : 'unknown';
         $queueWakeEnabled = ($matchingRole['queue_wake_enabled'] ?? false) === true ? 'true' : 'false';
+        $wakeOwner = is_string($matchingRole['wake_owner'] ?? null) ? $matchingRole['wake_owner'] : 'unknown';
         $dispatchMode = is_string($matchingRole['task_dispatch_mode'] ?? null)
             ? $matchingRole['task_dispatch_mode']
             : 'unknown';
 
         $this->line(sprintf(
-            '[INFO] matching_role: %s (queue_wake_enabled=%s, task_dispatch_mode=%s)',
+            '[INFO] matching_role: %s (queue_wake_enabled=%s, wake_owner=%s, task_dispatch_mode=%s)',
             $shape,
             $queueWakeEnabled,
+            $wakeOwner,
             $dispatchMode,
         ));
     }

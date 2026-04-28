@@ -341,9 +341,9 @@ final class RolloutSafetyDocumentationTest extends TestCase
         $contents = $this->documentContents();
 
         $this->assertMatchesRegularExpression(
-            '/\|\s*`matching_role`\s*\|[^|]*`queue_wake_enabled`[^|]*`shape`[^|]*`task_dispatch_mode`/',
+            '/\|\s*`matching_role`\s*\|[^|]*`queue_wake_enabled`[^|]*`shape`[^|]*`wake_owner`[^|]*`task_dispatch_mode`/',
             $contents,
-            'Rollout safety contract must pin the matching_role metric row so operators can read the matching-role deployment shape (queue_wake_enabled, shape, task_dispatch_mode) on each node from OperatorMetrics::snapshot() without inspecting config files.',
+            'Rollout safety contract must pin the matching_role metric row so operators can read the matching-role deployment shape (queue_wake_enabled, shape, wake_owner, task_dispatch_mode) on each node from OperatorMetrics::snapshot() without inspecting config files.',
         );
     }
 

@@ -14,8 +14,10 @@ final class MatchingRoleSnapshot
      * consumes it. `shape` reports `in_worker` when the in-worker broad-poll
      * wake is active on this process and `dedicated` when the process has
      * opted out and the broad sweep is expected to run as
-     * `php artisan workflow:v2:repair-pass` instead. `task_dispatch_mode`
-     * reports the configured dispatch mode (`queue` or `poll`).
+     * `php artisan workflow:v2:repair-pass` instead. `wake_owner` names which
+     * cooperating process should currently own that broad wake path.
+     * `task_dispatch_mode` reports the configured dispatch mode (`queue` or
+     * `poll`).
      * `partition_primitives` freezes the matching-role routing axes that
      * operators and downstream clients can reason about, while
      * `backpressure_model` reports the durable admission boundary the
@@ -24,6 +26,7 @@ final class MatchingRoleSnapshot
      * @return array{
      *     queue_wake_enabled: bool,
      *     shape: string,
+     *     wake_owner: string,
      *     task_dispatch_mode: string,
      *     partition_primitives: list<string>,
      *     backpressure_model: string
@@ -40,6 +43,7 @@ final class MatchingRoleSnapshot
         return [
             'queue_wake_enabled' => $queueWakeEnabled,
             'shape' => $queueWakeEnabled ? 'in_worker' : 'dedicated',
+            'wake_owner' => $queueWakeEnabled ? 'worker_loop' : 'dedicated_repair_pass',
             'task_dispatch_mode' => $dispatchMode,
             'partition_primitives' => ['connection', 'queue', 'compatibility', 'namespace'],
             'backpressure_model' => 'lease_ownership',

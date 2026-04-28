@@ -416,6 +416,7 @@ final class TaskMatchingDocumentationTest extends TestCase
             '`matching_role`',
             '`queue_wake_enabled`',
             '`shape`',
+            '`wake_owner`',
             '`task_dispatch_mode`',
             '`partition_primitives`',
             '`backpressure_model`',
@@ -437,6 +438,17 @@ final class TaskMatchingDocumentationTest extends TestCase
                 sprintf(
                     'Task matching contract must name the %s matching-role shape value so operators can interpret the snapshot.',
                     $shapeValue,
+                ),
+            );
+        }
+
+        foreach (['`worker_loop`', '`dedicated_repair_pass`'] as $wakeOwner) {
+            $this->assertStringContainsString(
+                $wakeOwner,
+                $contents,
+                sprintf(
+                    'Task matching contract must name the %s wake-owner value so operators can tell which cooperating process should own the broad repair sweep.',
+                    $wakeOwner,
                 ),
             );
         }

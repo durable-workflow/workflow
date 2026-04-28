@@ -32,7 +32,7 @@ final class V2DoctorCommandTest extends TestCase
         ])->assertSuccessful();
     }
 
-    public function testJsonOutputIncludesTheMatchingRoleShape(): void
+    public function testJsonOutputIncludesTheMatchingRoleWakeOwner(): void
     {
         config()
             ->set('workflows.v2.task_dispatch_mode', 'poll');
@@ -43,12 +43,12 @@ final class V2DoctorCommandTest extends TestCase
             '--json' => true,
         ])
             ->expectsOutputToContain(
-                '"matching_role":{"queue_wake_enabled":false,"shape":"dedicated","task_dispatch_mode":"poll","partition_primitives":["connection","queue","compatibility","namespace"],"backpressure_model":"lease_ownership"}'
+                '"matching_role":{"queue_wake_enabled":false,"shape":"dedicated","wake_owner":"dedicated_repair_pass","task_dispatch_mode":"poll","partition_primitives":["connection","queue","compatibility","namespace"],"backpressure_model":"lease_ownership"}'
             )
             ->assertSuccessful();
     }
 
-    public function testHumanOutputIncludesTheMatchingRoleShape(): void
+    public function testHumanOutputIncludesTheMatchingRoleWakeOwner(): void
     {
         config()
             ->set('workflows.v2.task_dispatch_mode', 'poll');
@@ -57,7 +57,7 @@ final class V2DoctorCommandTest extends TestCase
 
         $this->artisan('workflow:v2:doctor')
             ->expectsOutputToContain(
-                '[INFO] matching_role: dedicated (queue_wake_enabled=false, task_dispatch_mode=poll)'
+                '[INFO] matching_role: dedicated (queue_wake_enabled=false, wake_owner=dedicated_repair_pass, task_dispatch_mode=poll)'
             )
             ->assertSuccessful();
     }
