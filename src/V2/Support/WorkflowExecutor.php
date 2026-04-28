@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use LogicException;
 use ReflectionMethod;
@@ -3823,10 +3822,9 @@ final class WorkflowExecutor
         int $sequence,
         UpsertSearchAttributesCall $call,
     ): WorkflowHistoryEvent {
-        // Phase 1 dual-write: maintain JSON blob for backward compatibility
-        // while also writing to typed search attributes table
-
-        // Legacy JSON blob merge (backward compatibility)
+        // workflow_search_attributes is the authoritative v2 storage; the JSON
+        // column on workflow_runs is a transitional artifact that still
+        // mirrors the merged state for consumers that have not switched yet.
         $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
         $merged = $existing;
 
@@ -3852,20 +3850,8 @@ final class WorkflowExecutor
         $run->search_attributes = $merged;
         $run->save();
 
-        // New: Write to typed search attributes table
-        // This enables efficient Waterline visibility queries
-        try {
-            $searchAttributeService = app(SearchAttributeUpsertService::class);
-            $searchAttributeService->upsert($run, $call, $sequence);
-        } catch (\Throwable $e) {
-            // Log but don't fail the workflow if typed storage fails
-            // JSON blob is still authoritative during transition
-            Log::warning('Failed to write typed search attributes', [
-                'run_id' => $run->id,
-                'error' => $e->getMessage(),
-                'sequence' => $sequence,
-            ]);
-        }
+        $searchAttributeService = app(SearchAttributeUpsertService::class);
+        $searchAttributeService->upsert($run, $call, $sequence);
 
         $event = WorkflowHistoryEvent::record(
             $run,
@@ -3900,10 +3886,9 @@ final class WorkflowExecutor
         int $sequence,
         UpsertMemoCall $call,
     ): WorkflowHistoryEvent {
-        // Phase 1 dual-write: maintain JSON blob for backward compatibility
-        // while also writing to typed memos table
-
-        // Legacy JSON blob merge (backward compatibility)
+        // workflow_memos is the authoritative v2 storage; the JSON column on
+        // workflow_runs is a transitional artifact that still mirrors the
+        // merged state for consumers that have not switched yet.
         $existing = is_array($run->memo) ? $run->memo : [];
 
         $merged = $existing;
@@ -3931,21 +3916,8 @@ final class WorkflowExecutor
         $run->memo = $merged;
         $run->save();
 
-        // New: Write to typed memos table
-        // This enables structured memo storage with explicit size/count limits
-        try {
-            $memoService = app(MemoUpsertService::class);
-            // Convert UpsertMemoCall to UpsertMemosCall format
-            $memoService->upsert($run, new UpsertMemosCall($call->entries), $sequence);
-        } catch (\Throwable $e) {
-            // Log but don't fail the workflow if typed storage fails
-            // JSON blob is still authoritative during transition
-            Log::warning('Failed to write typed memos', [
-                'run_id' => $run->id,
-                'error' => $e->getMessage(),
-                'sequence' => $sequence,
-            ]);
-        }
+        $memoService = app(MemoUpsertService::class);
+        $memoService->upsert($run, new UpsertMemosCall($call->entries), $sequence);
 
         $event = WorkflowHistoryEvent::record(
             $run,

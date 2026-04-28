@@ -161,7 +161,65 @@ final class VisibilityMetadataContractDocumentationTest extends TestCase
         );
     }
 
+    public function testSearchAttributesDocFailureModeDeniesJsonSafetyNet(): void
+    {
+        $contents = $this->normalizedDocumentContents(self::SEARCH_ATTRIBUTES_DOCUMENT);
+
+        $this->assertStringContainsString(
+            'no silent fallback path that treats the JSON column as a safety net',
+            $contents,
+            'Search-attributes architecture must state that there is no silent JSON-column fallback when typed-storage writes fail; typed-storage is authoritative for failure-mode behavior.',
+        );
+    }
+
+    public function testMemosDocFailureModeDeniesJsonSafetyNet(): void
+    {
+        $contents = $this->normalizedDocumentContents(self::MEMOS_DOCUMENT);
+
+        $this->assertStringContainsString(
+            'no silent fallback path that treats the JSON column as a safety net',
+            $contents,
+            'Memos architecture must state that there is no silent JSON-column fallback when typed-storage writes fail; typed-storage is authoritative for failure-mode behavior.',
+        );
+    }
+
+    public function testWorkflowExecutorHasNoSilentJsonSafetyNetCatch(): void
+    {
+        $contents = $this->sourceContents('src/V2/Support/WorkflowExecutor.php');
+
+        $this->assertStringNotContainsString(
+            "Log::warning('Failed to write typed search attributes'",
+            $contents,
+            'WorkflowExecutor must not silently swallow typed-storage failures and continue with the JSON column for search attributes; a typed-storage failure must surface as a workflow task failure.',
+        );
+        $this->assertStringNotContainsString(
+            "Log::warning('Failed to write typed memos'",
+            $contents,
+            'WorkflowExecutor must not silently swallow typed-storage failures and continue with the JSON column for memos; a typed-storage failure must surface as a workflow task failure.',
+        );
+        $this->assertStringNotContainsString(
+            'JSON blob is still authoritative during transition',
+            $contents,
+            'WorkflowExecutor must not describe the JSON column as authoritative during transition; the typed tables are authoritative and the JSON column is a transitional mirror only.',
+        );
+    }
+
     private function documentContents(string $relativePath): string
+    {
+        $path = dirname(__DIR__, 3) . '/' . $relativePath;
+        $contents = file_get_contents($path);
+
+        $this->assertIsString($contents, sprintf('Could not read %s.', $relativePath));
+
+        return $contents;
+    }
+
+    private function normalizedDocumentContents(string $relativePath): string
+    {
+        return (string) preg_replace('/\s+/', ' ', $this->documentContents($relativePath));
+    }
+
+    private function sourceContents(string $relativePath): string
     {
         $path = dirname(__DIR__, 3) . '/' . $relativePath;
         $contents = file_get_contents($path);

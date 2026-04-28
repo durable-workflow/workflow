@@ -334,10 +334,17 @@ Required cleanup before v2.0 stable:
   finalized typed-table contract with no transition phases or alpha
   fallbacks
 
-Until that cleanup lands, the runtime continues to write the JSON
-column for backwards compatibility with already-running v2-alpha
-clusters in development environments. The runtime-side cleanup is a
-mechanical removal once the cleanup slice is scheduled.
+Failure-mode contract: typed-storage writes are not optional.
+`WorkflowExecutor` records `SearchAttributesUpserted` only after the
+typed-table upsert succeeds. There is no silent fallback path that
+treats the JSON column as a safety net for typed-storage failure; a
+typed-storage failure surfaces as a workflow task failure and follows
+the normal task-failure handling path.
+
+Until the dual-write itself is removed, the runtime continues to mirror
+the merged state into the JSON column for consumers that have not yet
+switched to the typed table. The runtime-side cleanup is a mechanical
+removal once those consumers are migrated.
 
 ## Waterline Integration
 
