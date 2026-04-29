@@ -321,7 +321,6 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'queue' => $run->queue,
                     'compatibility' => $run->compatibility,
                 ]);
-
         });
 
         if ($task instanceof WorkflowTask) {
