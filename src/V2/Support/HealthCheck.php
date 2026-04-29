@@ -364,6 +364,10 @@ final class HealthCheck
             self::CATEGORY_CORRECTNESS,
             [
                 'repair_needed_runs' => $repairNeededRuns,
+                'oldest_repair_needed_at' => is_string($runs['oldest_repair_needed_at'] ?? null)
+                    ? $runs['oldest_repair_needed_at']
+                    : null,
+                'max_repair_needed_age_ms' => self::integer($runs['max_repair_needed_age_ms'] ?? 0),
                 'missing_task_candidates' => self::integer($repair['missing_task_candidates'] ?? 0),
                 'selected_missing_task_candidates' => self::integer($repair['selected_missing_task_candidates'] ?? 0),
                 'oldest_missing_run_started_at' => is_string($repair['oldest_missing_run_started_at'] ?? null)

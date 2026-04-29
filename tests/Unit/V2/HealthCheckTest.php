@@ -568,7 +568,8 @@ final class HealthCheckTest extends TestCase
             'liveness_reason' => 'Run is non-terminal but has no durable next-resume source.',
             'created_at' => now()
                 ->subMinutes(10),
-            'updated_at' => now(),
+            'updated_at' => now()
+                ->subMinutes(4),
         ]);
 
         $snapshot = HealthCheck::snapshot();
@@ -592,6 +593,8 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(1, $taskTransport['data']['repair_needed_runs']);
         $this->assertSame('warning', $resumePaths['status']);
         $this->assertSame(1, $resumePaths['data']['repair_needed_runs']);
+        $this->assertSame('2026-04-09T11:56:00.000000Z', $resumePaths['data']['oldest_repair_needed_at']);
+        $this->assertSame(240000, $resumePaths['data']['max_repair_needed_age_ms']);
         $this->assertSame(1, $resumePaths['data']['missing_task_candidates']);
         $this->assertSame(1, $resumePaths['data']['selected_missing_task_candidates']);
         $this->assertSame('2026-04-09T11:55:00.000000Z', $resumePaths['data']['oldest_missing_run_started_at']);

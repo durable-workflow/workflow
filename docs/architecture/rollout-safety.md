@@ -525,8 +525,13 @@ are authoritative and how they surface.
   dispatch-path `dispatch_overdue` age signal.
 - **Repair-needed runs.** Runs whose projected state shows
   `liveness_state = repair_needed` are counted under
-  `runs.repair_needed` and surface through the
-  `durable_resume_paths` health check.
+  `runs.repair_needed`. The worst-case stuck age is surfaced through
+  `runs.oldest_repair_needed_at` and `runs.max_repair_needed_age_ms`,
+  both forwarded on the `durable_resume_paths` health check
+  (`oldest_repair_needed_at`, `max_repair_needed_age_ms`) so the
+  blocking health surface can tell operators how long the oldest
+  repair-needed run has been stalled without forcing a separate
+  operator-metrics read.
 - **Stale projection.** A projection behind the authoritative
   history surfaces through the `run_summary_projection` and
   `selected_run_projections` checks on `HealthCheck::snapshot()`.
