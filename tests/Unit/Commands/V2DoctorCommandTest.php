@@ -48,6 +48,18 @@ final class V2DoctorCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    public function testJsonOutputIncludesTheLocalRoleTopologyManifest(): void
+    {
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+
+        $this->artisan('workflow:v2:doctor', [
+            '--json' => true,
+        ])
+            ->expectsOutputToContain('"topology":{"schema":"durable-workflow.v2.role-topology","version":4')
+            ->assertSuccessful();
+    }
+
     public function testHumanOutputIncludesTheMatchingRoleWakeOwner(): void
     {
         config()
@@ -58,6 +70,18 @@ final class V2DoctorCommandTest extends TestCase
         $this->artisan('workflow:v2:doctor')
             ->expectsOutputToContain(
                 '[INFO] matching_role: dedicated (queue_wake_enabled=false, wake_owner=dedicated_repair_pass, task_dispatch_mode=poll)'
+            )
+            ->assertSuccessful();
+    }
+
+    public function testHumanOutputIncludesTheLocalRoleTopologySummary(): void
+    {
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+
+        $this->artisan('workflow:v2:doctor')
+            ->expectsOutputToContain(
+                '[INFO] topology: embedded/application_process (execution_mode=remote_worker_protocol, roles=control_plane,matching,history_projection,scheduler,execution_plane)'
             )
             ->assertSuccessful();
     }

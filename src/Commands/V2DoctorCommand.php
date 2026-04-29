@@ -9,6 +9,7 @@ use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\MatchingRoleSnapshot;
+use Workflow\V2\Support\RoleTopologySnapshot;
 
 #[AsCommand(name: 'workflow:v2:doctor')]
 class V2DoctorCommand extends Command
@@ -23,6 +24,7 @@ class V2DoctorCommand extends Command
     {
         $snapshot = BackendCapabilities::snapshot();
         $snapshot['matching_role'] = MatchingRoleSnapshot::current();
+        $snapshot['topology'] = RoleTopologySnapshot::current();
 
         if ((bool) $this->option('json')) {
             try {
@@ -54,6 +56,7 @@ class V2DoctorCommand extends Command
         $this->componentLine('queue', $snapshot['queue'] ?? []);
         $this->componentLine('cache', $snapshot['cache'] ?? []);
         $this->componentLine('codec', $snapshot['codec'] ?? []);
+        $this->topologyLine($snapshot['topology'] ?? null);
         $this->matchingRoleLine($snapshot['matching_role'] ?? null);
 
         $issues = $snapshot['issues'] ?? [];
@@ -130,6 +133,35 @@ class V2DoctorCommand extends Command
             $queueWakeEnabled,
             $wakeOwner,
             $dispatchMode,
+        ));
+    }
+
+    private function topologyLine(mixed $topology): void
+    {
+        if (! is_array($topology)) {
+            $this->line('[INFO] topology: unavailable');
+
+            return;
+        }
+
+        $shape = is_string($topology['current_shape'] ?? null) ? $topology['current_shape'] : 'unknown';
+        $processClass = is_string($topology['current_process_class'] ?? null)
+            ? $topology['current_process_class']
+            : 'unknown';
+        $executionMode = is_string($topology['execution_mode'] ?? null)
+            ? $topology['execution_mode']
+            : 'unknown';
+        $roles = array_values(array_filter(
+            is_array($topology['current_roles'] ?? null) ? $topology['current_roles'] : [],
+            static fn (mixed $role): bool => is_string($role) && $role !== '',
+        ));
+
+        $this->line(sprintf(
+            '[INFO] topology: %s/%s (execution_mode=%s, roles=%s)',
+            $shape,
+            $processClass,
+            $executionMode,
+            $roles === [] ? 'none' : implode(',', $roles),
         ));
     }
 }

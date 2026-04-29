@@ -590,9 +590,14 @@ are degraded without reading model tables directly:
 - The standalone server exposes
   `GET /api/cluster/info`, backed by
   `App\Support\ServerTopology`, so operators can read the current
-  role split (`current_shape`, `current_roles`, `matching_role`,
-  and `shape_assignments`) without inferring it from deployment
-  notes.
+  role split (`current_shape`, `current_process_class`,
+  `current_roles`, `matching_role`, and `shape_assignments`)
+  without inferring it from deployment notes.
+- Embedded or package-local installs expose the same
+  `durable-workflow.v2.role-topology` manifest through
+  `php artisan workflow:v2:doctor --json` under the `topology`
+  key, so operators can read the current application-process
+  role bundle without standing up the standalone server first.
 - `Workflow\V2\Support\OperatorMetrics::snapshot()` reports per-role
   health signals: `tasks.ready`, `tasks.leased`,
   `tasks.claim_failed`, `repair.missing_task_candidates`,
