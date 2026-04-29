@@ -1823,6 +1823,18 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
     }
 
+    public function testBridgeSourcesDoNotCallRunSummaryProjectorDirectly(): void
+    {
+        $repoRoot = dirname(__DIR__, 3);
+        $workflowBridgeSource = file_get_contents($repoRoot . '/src/V2/Support/DefaultWorkflowTaskBridge.php');
+        $activityBridgeSource = file_get_contents($repoRoot . '/src/V2/Support/DefaultActivityTaskBridge.php');
+
+        $this->assertIsString($workflowBridgeSource);
+        $this->assertIsString($activityBridgeSource);
+        $this->assertStringNotContainsString('RunSummaryProjector::project(', $workflowBridgeSource);
+        $this->assertStringNotContainsString('RunSummaryProjector::project(', $activityBridgeSource);
+    }
+
     public function testCompleteOpenConditionWaitWithoutTimeoutRecordsEventAndMarksWaiting(): void
     {
         $run = $this->createWaitingRun();

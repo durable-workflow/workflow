@@ -32,6 +32,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -137,9 +138,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
     {
-        $historyProjectionRole = $this->historyProjectionRole();
-
-        return DB::transaction(function () use ($taskId, $leaseOwner, $historyProjectionRole): array {
+        return DB::transaction(static function () use ($taskId, $leaseOwner): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -177,7 +176,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                $historyProjectionRole->projectRun($this->projectionRun($run));
+                self::projectRunSummary($run);
 
                 return self::claimRejected(
                     $taskId,
@@ -187,7 +186,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                $historyProjectionRole->projectRun($this->projectionRun($run));
+                self::projectRunSummary($run);
 
                 $mismatch = TaskCompatibility::mismatchReason($task, $run);
 
@@ -212,7 +211,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'last_claim_error' => null,
             ])->save();
 
-            $historyProjectionRole->projectRun($this->projectionRun($run));
+            self::projectRunSummary($run);
 
             return [
                 'claimed' => true,
@@ -3012,6 +3011,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             static fn (mixed $value): ?string => self::nonEmptyString($value),
             $values,
         )));
+    }
+
+    private static function projectRunSummary(WorkflowRun $run): WorkflowRunSummary
+    {
+        /** @var HistoryProjectionRole $role */
+        $role = app(HistoryProjectionRole::class);
+
+        return $role->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
     }
 
     private function historyProjectionRole(): HistoryProjectionRole
