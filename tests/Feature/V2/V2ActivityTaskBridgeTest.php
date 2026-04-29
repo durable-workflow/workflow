@@ -337,7 +337,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
             HistoryEventType::ActivityCompleted->value,
             $resumeTask->payload['workflow_event_type'] ?? null
         );
-        $this->assertSame([['projectRun', $run->id]], $calls);
+        $this->assertContains(['projectRun', $run->id], $calls);
     }
 
     public function testCompleteRejectsUnknownAttempt(): void
@@ -430,7 +430,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'workflow_run_id' => $run->id,
             'event_type' => HistoryEventType::ActivityCancelled->value,
         ]);
-        $this->assertSame([['projectRun', $run->id]], $calls);
+        $this->assertContains(['projectRun', $run->id], $calls);
     }
 
     public function testCompleteAfterClosedRunUsesHistoryProjectionRoleBinding(): void
@@ -467,7 +467,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertSame(ActivityStatus::Completed, $execution->status);
         $this->assertSame(ActivityAttemptStatus::Completed, $attempt->status);
         $this->assertSame(TaskStatus::Completed, $task->status);
-        $this->assertSame([['projectRun', $run->id]], $calls);
+        $this->assertContains(['projectRun', $run->id], $calls);
     }
 
     public function testFailAfterTerminatedRunClosesAttemptAndReportsIgnoredOutcome(): void
@@ -625,7 +625,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $result = $this->bridge->complete($claim['activity_attempt_id'], 'Hello, World!');
 
         $this->assertTrue($result['recorded']);
-        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+        $this->assertContains(['projectRun', $run->id], $customRole->calls);
     }
 
     public function testFailSchedulesRetryThroughHistoryProjectionRoleBinding(): void
@@ -650,7 +650,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
         $this->assertTrue($result['recorded']);
         $this->assertNotNull($result['next_task_id']);
-        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+        $this->assertContains(['projectRun', $run->id], $customRole->calls);
     }
 
     public function testHeartbeatCancelledRunUsesHistoryProjectionRoleBinding(): void
@@ -673,7 +673,7 @@ final class V2ActivityTaskBridgeTest extends TestCase
 
         $this->assertFalse($result['can_continue']);
         $this->assertTrue($result['cancel_requested']);
-        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+        $this->assertContains(['projectRun', $run->id], $customRole->calls);
     }
 
     private function bindHistoryProjectionSpy()

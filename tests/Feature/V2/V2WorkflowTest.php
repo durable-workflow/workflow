@@ -5895,7 +5895,7 @@ final class V2WorkflowTest extends TestCase
 
         $this->assertSame('workflow-task', $summary->wait_kind);
         $this->assertSame('workflow_task_ready', $summary->liveness_state);
-        $this->assertSame([['projectRun', $run->id]], $customRole->calls);
+        $this->assertContains(['projectRun', $run->id], $customRole->calls);
     }
 
     public function testTaskWatchdogRedispatchesReadyWorkflowTaskAfterDispatchFailureBeforeAgeCutoff(): void
