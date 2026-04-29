@@ -405,8 +405,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                         'lease_expires_at' => null,
                     ])->save();
 
-                    RunSummaryProjector::project(
-                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures'])
+                    $this->projectRun(
+                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']) ?? $run
                     );
 
                     return null;
@@ -415,7 +415,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 return $this->executor->run($run, $task);
             });
         } catch (Throwable $throwable) {
-            DB::transaction(static function () use ($taskId, $throwable): void {
+            DB::transaction(function () use ($taskId, $throwable): void {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -434,7 +434,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 /** @var WorkflowRun $run */
                 $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                     ->findOrFail($task->workflow_run_id);
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
             });
 
             return [
@@ -468,7 +468,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     public function fail(string $taskId, Throwable|array|string $failure, ?string $codec = null): array
     {
-        return DB::transaction(static function () use ($taskId, $failure): array {
+        return DB::transaction(function () use ($taskId, $failure): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -513,7 +513,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->findOrFail($task->workflow_run_id);
 
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
 
             return [
                 'recorded' => true,
@@ -815,8 +815,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $this->dispatchParentResumeTasksForRun($run);
 
-        RunSummaryProjector::project(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']) ?? $run
         );
     }
 
@@ -897,8 +897,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $this->dispatchParentResumeTasksForRun($run);
 
-        RunSummaryProjector::project(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']) ?? $run
         );
     }
 
@@ -914,8 +914,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'lease_expires_at' => null,
         ])->save();
 
-        RunSummaryProjector::project(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']) ?? $run
         );
     }
 
@@ -1741,8 +1741,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $createdTaskIds[] = $childTask->id;
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $childRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                ?? $childRun
         );
 
         return $sequence + 1;
@@ -1935,12 +1936,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         LifecycleEventDispatcher::workflowStarted($continuedRun);
 
-        RunSummaryProjector::project(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']) ?? $run
         );
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $continuedRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                ?? $continuedRun
         );
     }
 
@@ -2160,8 +2162,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         TaskDispatcher::dispatch($retryTask);
 
-        RunSummaryProjector::project(
+        $this->projectRun(
             $retryRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                ?? $retryRun
         );
 
         return $retryTask;
@@ -2222,7 +2225,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                         WorkflowStepHistory::CHILD_WORKFLOW,
                     );
                 } catch (HistoryEventShapeMismatchException) {
-                    RunSummaryProjector::project(
+                    $this->projectRun(
                         $parentRun->fresh([
                             'instance',
                             'tasks',
@@ -2234,6 +2237,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                             'childLinks.childRun.failures',
                             'childLinks.childRun.historyEvents',
                         ])
+                            ?? $parentRun
                     );
 
                     continue;
@@ -2882,7 +2886,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      */
     private function claimIfReady(string $taskId): bool
     {
-        return DB::transaction(static function () use ($taskId): bool {
+        return DB::transaction(function () use ($taskId): bool {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -2908,13 +2912,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
 
                 return false;
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
 
                 return false;
             }
@@ -2930,7 +2934,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'last_claim_error' => null,
             ])->save();
 
-            RunSummaryProjector::project($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
 
             return true;
         });
@@ -3016,6 +3020,12 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $role = app(HistoryProjectionRole::class);
 
         return $role;
+    }
+
+    private function projectRun(WorkflowRun $run): void
+    {
+        $this->historyProjectionRole()
+            ->projectRun($run);
     }
 
     private function projectionRun(WorkflowRun $run): WorkflowRun
