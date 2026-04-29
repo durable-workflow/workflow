@@ -25,10 +25,6 @@ return new class() extends Migration {
                 ->index('workflow_runs_business_key_index');
             $table->json('visibility_labels')
                 ->nullable();
-            $table->json('memo')
-                ->nullable();
-            $table->json('search_attributes')
-                ->nullable();
             $table->string('status');
             $table->string('closed_reason')
                 ->nullable();

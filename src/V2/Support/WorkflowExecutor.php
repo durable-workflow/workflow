@@ -2293,8 +2293,6 @@ final class WorkflowExecutor
             'namespace' => $run->namespace,
             'business_key' => $run->business_key,
             'visibility_labels' => $run->visibility_labels,
-            'memo' => $run->memo,
-            'search_attributes' => $run->search_attributes,
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
@@ -3248,8 +3246,6 @@ final class WorkflowExecutor
             'namespace' => $failedChildRun->namespace,
             'business_key' => $failedChildRun->business_key,
             'visibility_labels' => $failedChildRun->visibility_labels,
-            'memo' => $failedChildRun->memo,
-            'search_attributes' => $failedChildRun->search_attributes,
             'status' => RunStatus::Pending->value,
             'compatibility' => $failedChildRun->compatibility ?? WorkerCompatibility::current(),
             'payload_codec' => $failedChildRun->payload_codec ?? CodecRegistry::defaultCodec(),
@@ -3829,9 +3825,6 @@ final class WorkflowExecutor
         int $sequence,
         UpsertSearchAttributesCall $call,
     ): WorkflowHistoryEvent {
-        // workflow_search_attributes is the authoritative v2 storage; the JSON
-        // column on workflow_runs is a transitional artifact that still
-        // mirrors the merged state for consumers that have not switched yet.
         $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
         $merged = $existing;
 
@@ -3853,9 +3846,6 @@ final class WorkflowExecutor
             ],
         );
         StructuralLimits::guardSearchAttributeSize($serializedSearchAttributes);
-
-        $run->search_attributes = $merged;
-        $run->save();
 
         $searchAttributeService = app(SearchAttributeUpsertService::class);
         $searchAttributeService->upsert($run, $call, $sequence);
@@ -3894,9 +3884,6 @@ final class WorkflowExecutor
         int $sequence,
         UpsertMemoCall $call,
     ): WorkflowHistoryEvent {
-        // workflow_memos is the authoritative v2 storage; the JSON column on
-        // workflow_runs is a transitional artifact that still mirrors the
-        // merged state for consumers that have not switched yet.
         $existing = is_array($run->memo) ? $run->memo : [];
 
         $merged = $existing;
@@ -3920,9 +3907,6 @@ final class WorkflowExecutor
             ],
         );
         StructuralLimits::guardMemoSize($serializedMemo);
-
-        $run->memo = $merged;
-        $run->save();
 
         $memoService = app(MemoUpsertService::class);
         $memoService->upsert($run, new UpsertMemosCall($call->entries), $sequence);

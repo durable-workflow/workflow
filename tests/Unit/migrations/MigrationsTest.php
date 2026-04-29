@@ -209,7 +209,8 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasColumn('activity_executions', 'parallel_group_path'));
         $this->assertTrue(Schema::hasColumn('workflow_links', 'parallel_group_path'));
         $this->assertTrue(Schema::hasColumn('workflow_instances', 'memo'));
-        $this->assertTrue(Schema::hasColumn('workflow_runs', 'memo'));
+        $this->assertFalse(Schema::hasColumn('workflow_runs', 'memo'));
+        $this->assertFalse(Schema::hasColumn('workflow_runs', 'search_attributes'));
 
         $this->artisan('migrate:reset', [
             '--path' => dirname(__DIR__, 3) . '/src/migrations',

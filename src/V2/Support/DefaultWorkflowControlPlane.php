@@ -216,10 +216,6 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'visibility_labels' => $labels ?? (is_array(
                         $instance->visibility_labels
                     ) ? $instance->visibility_labels : null),
-                    'memo' => $memo ?? (is_array($instance->memo) ? $instance->memo : null),
-                    'search_attributes' => is_array(
-                        $searchAttributes
-                    ) && $searchAttributes !== [] ? $searchAttributes : null,
                     'run_timeout_seconds' => $runTimeoutSeconds,
                     'execution_deadline_at' => $executionDeadlineAt,
                     'run_deadline_at' => $runDeadlineAt,

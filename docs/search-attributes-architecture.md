@@ -1,16 +1,16 @@
 # Typed Search Attributes Architecture
 
-**Status**: Phase 1 Implementation Complete  
-**Date**: 2026-04-16  
-**Scope**: Core schema, models, upsert service, comprehensive tests
+**Status**: Current v2 contract  
+**Date**: 2026-04-29  
+**Scope**: Typed indexed workflow visibility metadata
 
 ## Purpose
 
-Implements v2 Plan Phase 1 deliverable: dedicated typed search attributes table replacing JSON blob storage.
+Defines the v2 typed search-attributes contract for workflow visibility metadata.
 
-**Before**: `workflow_runs.search_attributes` JSON column - no indexing, no type enforcement, no size limits, poor query performance.
-
-**After**: `workflow_search_attributes` table - typed columns, per-attribute rows, indexed values, efficient filtering, explicit size/count limits.
+`workflow_search_attributes` is the only v2 storage surface for search
+attributes. It provides typed columns, indexed filtering, and explicit
+size/count limits for engine and Waterline visibility queries.
 
 ## Core Design Principles (from v2 Plan)
 
@@ -312,10 +312,8 @@ All tests pass with proper database transactions and cleanup.
 The `workflow_search_attributes` table is the authoritative storage for
 search attribute values in v2. Every read path that filters, sorts, or
 displays search attributes binds to this table or to a projection that
-derives from it. The `workflow_runs.search_attributes` JSON column is
-not part of the v2 contract: it is a transitional artifact left over
-from earlier v2-alpha development snapshots and will be removed before
-the v2.0 stable release.
+derives from it. Fresh installs and new runtime write paths use this
+typed-table contract directly.
 
 There is no v2-alpha to v2 backwards-compatibility contract. v2 has
 never been released, so different v2 development snapshots are not a
@@ -323,26 +321,11 @@ mixed fleet — they are iterations of an unreleased product. Operators
 upgrading from v1 follow the documented v1-to-v2 migration path; there
 is no separate v2-alpha cutover surface to preserve.
 
-Required cleanup before v2.0 stable:
-
-- runtime stops dual-writing the JSON column from `WorkflowExecutor`
-- the `workflow_runs.search_attributes` column is dropped from the
-  `create_workflow_runs_table` migration
-- this document and `docs/workflow-memos-architecture.md` describe the
-  finalized typed-table contract with no transition phases or alpha
-  fallbacks
-
 Failure-mode contract: typed-storage writes are not optional.
 `WorkflowExecutor` records `SearchAttributesUpserted` only after the
-typed-table upsert succeeds. There is no silent fallback path that
-treats the JSON column as a safety net for typed-storage failure; a
-typed-storage failure surfaces as a workflow task failure and follows
-the normal task-failure handling path.
-
-Until the dual-write itself is removed, the runtime continues to mirror
-the merged state into the JSON column for consumers that have not yet
-switched to the typed table. The runtime-side cleanup is a mechanical
-removal once those consumers are migrated.
+typed-table upsert succeeds. There is no silent fallback path for
+typed-storage failure; a typed-storage failure surfaces as a workflow
+task failure and follows the normal task-failure handling path.
 
 ## Waterline Integration
 

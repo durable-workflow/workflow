@@ -1809,10 +1809,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         ksort($merged);
-
-        $run->forceFill([
-            'search_attributes' => $merged,
-        ])->save();
         app(SearchAttributeUpsertService::class)->upsert($run, $call, $sequence);
         $run->unsetRelation('searchAttributes');
 
@@ -1855,8 +1851,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'namespace' => $run->namespace,
             'business_key' => $run->business_key,
             'visibility_labels' => $run->visibility_labels,
-            'memo' => $run->memo,
-            'search_attributes' => $run->search_attributes,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,
@@ -2043,8 +2037,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'namespace' => $failedChildRun->namespace,
             'business_key' => $failedChildRun->business_key,
             'visibility_labels' => $failedChildRun->visibility_labels,
-            'memo' => $failedChildRun->memo,
-            'search_attributes' => $failedChildRun->search_attributes,
             'status' => RunStatus::Pending->value,
             'compatibility' => $failedChildRun->compatibility ?? WorkerCompatibility::current(),
             'payload_codec' => $failedChildRun->payload_codec ?? CodecRegistry::defaultCodec(),

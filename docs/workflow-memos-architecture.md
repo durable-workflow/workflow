@@ -1,16 +1,16 @@
 # Workflow Memos Architecture
 
-**Status**: Phase 1 Implementation Complete  
-**Date**: 2026-04-16  
-**Scope**: Non-indexed returned-only execution metadata
+**Status**: Current v2 contract  
+**Date**: 2026-04-29  
+**Scope**: Typed returned-only workflow memo metadata
 
 ## Purpose
 
-Implements v2 Plan Phase 1 deliverable: dedicated typed memos table for non-indexed workflow metadata.
+Defines the v2 typed memo contract for returned-only workflow metadata.
 
-**Before**: `workflow_runs.memo` JSON column - no structure, no size limits, mixed with search attributes
-
-**After**: `workflow_memos` table - structured key-value storage, explicit size/count limits, separate contract from search attributes
+`workflow_memos` is the only v2 storage surface for memo values. It
+provides structured JSON-friendly storage, explicit size/count limits,
+and a contract that remains separate from indexed search attributes.
 
 ## Core Design Principle (from v2 Plan)
 
@@ -197,7 +197,7 @@ class WorkflowRunSummary extends Model
     // Memo relationship (no filtering scope)
     public function memos(): HasMany;
     
-    // Get memos with dual-read fallback
+    // Get memos from the typed v2 contract
     public function getMemos(): array;
     
     // Note: NO scopeWithMemo() method
@@ -241,10 +241,9 @@ All tests pass with proper database transactions and cleanup.
 
 The `workflow_memos` table is the authoritative storage for memo
 values in v2. Every detail/describe/list view that returns memos
-binds to this table or to a projection that derives from it. The
-`workflow_runs.memo` JSON column is not part of the v2 contract: it
-is a transitional artifact left over from earlier v2-alpha development
-snapshots and will be removed before the v2.0 stable release.
+binds to this table or to a projection that derives from it. Fresh
+installs and new runtime write paths use this typed-table contract
+directly.
 
 There is no v2-alpha to v2 backwards-compatibility contract. v2 has
 never been released, so different v2 development snapshots are not a
@@ -252,26 +251,11 @@ mixed fleet — they are iterations of an unreleased product. Operators
 upgrading from v1 follow the documented v1-to-v2 migration path; there
 is no separate v2-alpha cutover surface to preserve.
 
-Required cleanup before v2.0 stable:
-
-- runtime stops dual-writing the JSON column from `WorkflowExecutor`
-- the `workflow_runs.memo` column is dropped from the
-  `create_workflow_runs_table` migration
-- this document and `docs/search-attributes-architecture.md` describe
-  the finalized typed-table contract with no transition phases or
-  alpha fallbacks
-
 Failure-mode contract: typed-storage writes are not optional.
 `WorkflowExecutor` records `MemoUpserted` only after the typed-table
-upsert succeeds. There is no silent fallback path that treats the JSON
-column as a safety net for typed-storage failure; a typed-storage
-failure surfaces as a workflow task failure and follows the normal
-task-failure handling path.
-
-Until the dual-write itself is removed, the runtime continues to mirror
-the merged state into the JSON column for consumers that have not yet
-switched to the typed table. The runtime-side cleanup is a mechanical
-removal once those consumers are migrated.
+upsert succeeds. There is no silent fallback path for typed-storage
+failure; a typed-storage failure surfaces as a workflow task failure
+and follows the normal task-failure handling path.
 
 ## Waterline Integration
 
@@ -356,7 +340,7 @@ Total implementation: ~800 lines across 5 files
 **Commits:**
 - d061e5d: Core schema, model, service, call
 - 76efaec: Comprehensive test coverage
-- 4433d9e: Runtime integration (WorkflowExecutor dual-write)
-- c50954b: Projection support (WorkflowRunSummary dual-read)
+- 4433d9e: Runtime integration
+- c50954b: Projection support
 
 This completes the indexed-vs-non-indexed metadata contract separation, a foundational Phase 1 deliverable enabling proper operator visibility boundaries.

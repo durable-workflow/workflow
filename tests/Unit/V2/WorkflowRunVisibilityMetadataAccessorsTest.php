@@ -37,14 +37,7 @@ final class WorkflowRunVisibilityMetadataAccessorsTest extends TestCase
 
     public function testRunPropertiesPreferTypedVisibilityRows(): void
     {
-        $run = $this->createRun([
-            'memo' => [
-                'legacy' => 'json',
-            ],
-            'search_attributes' => [
-                'legacy' => 'json',
-            ],
-        ]);
+        $run = $this->createRun();
 
         $this->createMemo($run, 'customer', 'Taylor');
         $this->createSearchAttribute($run, 'status', 'running');

@@ -12,8 +12,7 @@ use PHPUnit\Framework\TestCase;
  *
  * The contract names typed tables (workflow_search_attributes,
  * workflow_memos) as the only authoritative storage for v2 search
- * attributes and memos. The legacy JSON columns on workflow_runs are
- * alpha-transition state and must be removed before v2.0 stable.
+ * attributes and memos.
  *
  * v2 has never been released, so different v2 development snapshots
  * are not a "mixed fleet" and no v2-alpha-to-v2 backwards-compatibility
@@ -49,25 +48,25 @@ final class VisibilityMetadataContractDocumentationTest extends TestCase
         );
     }
 
-    public function testSearchAttributesDocDeclaresJsonColumnAsTransitionalArtifact(): void
+    public function testSearchAttributesDocDoesNotMentionLegacyWorkflowRunsColumn(): void
     {
         $contents = $this->documentContents(self::SEARCH_ATTRIBUTES_DOCUMENT);
 
-        $this->assertMatchesRegularExpression(
-            '/`workflow_runs\.search_attributes`[\s\S]{0,400}transitional artifact[\s\S]{0,400}removed before[\s\S]{0,40}v2\.0 stable release/i',
+        $this->assertStringNotContainsString(
+            'workflow_runs.search_attributes',
             $contents,
-            'Search-attributes architecture must declare workflow_runs.search_attributes JSON column as a transitional artifact slated for removal before v2.0 stable so the cutover is unambiguous.',
+            'Search-attributes architecture must describe the final typed-table contract without retaining the removed workflow_runs.search_attributes compatibility surface.',
         );
     }
 
-    public function testMemosDocDeclaresJsonColumnAsTransitionalArtifact(): void
+    public function testMemosDocDoesNotMentionLegacyWorkflowRunsColumn(): void
     {
         $contents = $this->documentContents(self::MEMOS_DOCUMENT);
 
-        $this->assertMatchesRegularExpression(
-            '/`workflow_runs\.memo`[\s\S]{0,400}transitional artifact[\s\S]{0,400}removed before[\s\S]{0,40}v2\.0 stable release/i',
+        $this->assertStringNotContainsString(
+            'workflow_runs.memo',
             $contents,
-            'Memos architecture must declare workflow_runs.memo JSON column as a transitional artifact slated for removal before v2.0 stable so the cutover is unambiguous.',
+            'Memos architecture must describe the final typed-table contract without retaining the removed workflow_runs.memo compatibility surface.',
         );
     }
 
@@ -93,36 +92,36 @@ final class VisibilityMetadataContractDocumentationTest extends TestCase
         );
     }
 
-    public function testSearchAttributesDocNamesRequiredCleanupSurfaces(): void
+    public function testSearchAttributesDocDoesNotDescribePendingCleanupSurfaces(): void
     {
         $contents = $this->documentContents(self::SEARCH_ATTRIBUTES_DOCUMENT);
 
-        foreach (['WorkflowExecutor', 'create_workflow_runs_table'] as $surface) {
-            $this->assertStringContainsString(
-                $surface,
-                $contents,
-                sprintf(
-                    'Search-attributes architecture must name %s as part of the required pre-v2.0 cleanup so reviewers know which surfaces still carry the JSON-column path.',
-                    $surface,
-                ),
-            );
-        }
+        $this->assertStringNotContainsString(
+            'Required cleanup before v2.0 stable',
+            $contents,
+            'Search-attributes architecture must describe the current typed-table contract, not pending cleanup work.',
+        );
+        $this->assertStringNotContainsString(
+            'create_workflow_runs_table',
+            $contents,
+            'Search-attributes architecture must not retain cleanup notes for the removed workflow_runs compatibility column.',
+        );
     }
 
-    public function testMemosDocNamesRequiredCleanupSurfaces(): void
+    public function testMemosDocDoesNotDescribePendingCleanupSurfaces(): void
     {
         $contents = $this->documentContents(self::MEMOS_DOCUMENT);
 
-        foreach (['WorkflowExecutor', 'create_workflow_runs_table'] as $surface) {
-            $this->assertStringContainsString(
-                $surface,
-                $contents,
-                sprintf(
-                    'Memos architecture must name %s as part of the required pre-v2.0 cleanup so reviewers know which surfaces still carry the JSON-column path.',
-                    $surface,
-                ),
-            );
-        }
+        $this->assertStringNotContainsString(
+            'Required cleanup before v2.0 stable',
+            $contents,
+            'Memos architecture must describe the current typed-table contract, not pending cleanup work.',
+        );
+        $this->assertStringNotContainsString(
+            'create_workflow_runs_table',
+            $contents,
+            'Memos architecture must not retain cleanup notes for the removed workflow_runs compatibility column.',
+        );
     }
 
     public function testSearchAttributesDocRetiresMultiPhaseMigrationLadder(): void
@@ -162,9 +161,9 @@ final class VisibilityMetadataContractDocumentationTest extends TestCase
         $contents = $this->normalizedDocumentContents(self::SEARCH_ATTRIBUTES_DOCUMENT);
 
         $this->assertStringContainsString(
-            'no silent fallback path that treats the JSON column as a safety net',
+            'no silent fallback path for typed-storage failure',
             $contents,
-            'Search-attributes architecture must state that there is no silent JSON-column fallback when typed-storage writes fail; typed-storage is authoritative for failure-mode behavior.',
+            'Search-attributes architecture must state that typed-storage failures have no silent fallback path.',
         );
     }
 
@@ -173,9 +172,9 @@ final class VisibilityMetadataContractDocumentationTest extends TestCase
         $contents = $this->normalizedDocumentContents(self::MEMOS_DOCUMENT);
 
         $this->assertStringContainsString(
-            'no silent fallback path that treats the JSON column as a safety net',
+            'no silent fallback path for typed-storage failure',
             $contents,
-            'Memos architecture must state that there is no silent JSON-column fallback when typed-storage writes fail; typed-storage is authoritative for failure-mode behavior.',
+            'Memos architecture must state that typed-storage failures have no silent fallback path.',
         );
     }
 
