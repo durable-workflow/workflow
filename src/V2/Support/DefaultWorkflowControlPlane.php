@@ -322,9 +322,6 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'compatibility' => $run->compatibility,
                 ]);
 
-            $this->projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']) ?? $run
-            );
         });
 
         if ($task instanceof WorkflowTask) {
