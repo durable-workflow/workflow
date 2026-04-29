@@ -664,6 +664,128 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(RunSummaryProjector::SCHEMA_VERSION, $projection['data']['projection_schema_version']);
     }
 
+    public function testSnapshotReportsActivityPathOkWhenNoActivityIsOverdueOrRetrying(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $snapshot = HealthCheck::snapshot();
+        $activityPath = collect($snapshot['checks'])->firstWhere('name', 'activity_path');
+
+        $this->assertNotNull($activityPath, 'HealthCheck must expose an activity_path check.');
+        $this->assertSame('ok', $activityPath['status']);
+        $this->assertSame(HealthCheck::CATEGORY_CORRECTNESS, $activityPath['category']);
+        $this->assertSame(0, $activityPath['data']['timeout_overdue']);
+        $this->assertNull($activityPath['data']['oldest_timeout_overdue_at']);
+        $this->assertSame(0, $activityPath['data']['max_timeout_overdue_age_ms']);
+        $this->assertSame(0, $activityPath['data']['retrying']);
+        $this->assertNull($activityPath['data']['oldest_retrying_started_at']);
+        $this->assertSame(0, $activityPath['data']['max_retrying_age_ms']);
+        $this->assertSame(0, $activityPath['data']['failed_attempts']);
+        $this->assertSame(0, $activityPath['data']['max_attempt_count']);
+    }
+
+    public function testSnapshotWarnsWhenActivityPathSeesOverdueDeadlineAndRetryBacklog(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()
+            ->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()
+            ->set('cache.default', 'array');
+        config()
+            ->set('cache.stores.array.driver', 'array');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'health-activity-instance',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'id' => '01JHEALTHACTIVITYRUN00001',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'running',
+            'started_at' => now()
+                ->subMinutes(20),
+            'last_progress_at' => now()
+                ->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        // Heartbeat-deadline overdue running activity — primary
+        // duplicate-risk indicator on the activity path.
+        ActivityExecution::query()->create([
+            'id' => 'health-act-overdue-001',
+            'workflow_run_id' => $run->id,
+            'sequence' => 1,
+            'activity_class' => 'HealthActivity',
+            'activity_type' => 'health.activity',
+            'status' => 'running',
+            'arguments' => serialize([]),
+            'attempt_count' => 1,
+            'started_at' => now()
+                ->subMinutes(10),
+            'heartbeat_deadline_at' => now()
+                ->subMinutes(8),
+            'created_at' => now()
+                ->subMinutes(10),
+            'updated_at' => now(),
+        ]);
+
+        // Pending activity in retry backlog with a recorded failed attempt.
+        ActivityExecution::query()->create([
+            'id' => 'health-act-retrying-001',
+            'workflow_run_id' => $run->id,
+            'sequence' => 2,
+            'activity_class' => 'HealthActivity',
+            'activity_type' => 'health.activity',
+            'status' => 'pending',
+            'arguments' => serialize([]),
+            'attempt_count' => 3,
+            'started_at' => now()
+                ->subMinutes(5),
+            'created_at' => now()
+                ->subMinutes(5),
+            'updated_at' => now(),
+        ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $activityPath = collect($snapshot['checks'])->firstWhere('name', 'activity_path');
+
+        $this->assertNotNull($activityPath);
+        $this->assertSame('warning', $activityPath['status']);
+        $this->assertSame(HealthCheck::CATEGORY_CORRECTNESS, $activityPath['category']);
+        $this->assertStringContainsString('timeout sweep is lagging', $activityPath['message']);
+        $this->assertSame(1, $activityPath['data']['timeout_overdue']);
+        $this->assertSame('2026-04-09T11:52:00.000000Z', $activityPath['data']['oldest_timeout_overdue_at']);
+        $this->assertSame(8 * 60 * 1000, $activityPath['data']['max_timeout_overdue_age_ms']);
+        $this->assertSame(1, $activityPath['data']['retrying']);
+        $this->assertSame('2026-04-09T11:55:00.000000Z', $activityPath['data']['oldest_retrying_started_at']);
+        $this->assertSame(5 * 60 * 1000, $activityPath['data']['max_retrying_age_ms']);
+        $this->assertSame(3, $activityPath['data']['max_attempt_count']);
+        $this->assertSame('warning', $snapshot['status']);
+        $this->assertTrue($snapshot['healthy']);
+        $this->assertSame(200, HealthCheck::httpStatus($snapshot));
+    }
+
     public function testSnapshotReportsRoutingHealthOkWhenNoRoutingRisksAreVisible(): void
     {
         config()->set('queue.default', 'redis');

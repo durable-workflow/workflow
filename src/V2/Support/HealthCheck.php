@@ -28,6 +28,7 @@ final class HealthCheck
             self::historyRetentionInvariantCheck($metrics['history'] ?? []),
             self::commandContractCheck($metrics['command_contracts'] ?? []),
             self::taskTransportCheck($metrics['tasks'] ?? [], $metrics['backlog'] ?? []),
+            self::activityPathCheck($metrics['activities'] ?? []),
             self::routingHealthCheck(
                 $metrics['tasks'] ?? [],
                 $metrics['backlog'] ?? [],
@@ -273,6 +274,52 @@ final class HealthCheck
                     ? $backlog['oldest_compatibility_blocked_started_at']
                     : null,
                 'max_compatibility_blocked_age_ms' => self::integer($backlog['max_compatibility_blocked_age_ms'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * Activity-path stuck and duplicate-risk indicator. Counterpart to
+     * `task_transport` on the activity execution path: surfaces activity
+     * executions whose schedule-to-start, start-to-close, schedule-to-close,
+     * or heartbeat deadline has already passed but `ActivityTimeoutEnforcer`
+     * has not yet enforced the timeout. A non-zero `timeout_overdue` paired
+     * with a growing `max_timeout_overdue_age_ms` means the enforcement sweep
+     * is lagging; on heartbeat-based deadlines this is also the canonical
+     * activity-side duplicate-risk age indicator because a stalled enforcement
+     * pass leaves a still-running attempt past its heartbeat budget while a
+     * retry could be scheduled. The check also reports the retry backlog
+     * (`retrying`, `oldest_retrying_started_at`, `max_retrying_age_ms`) so
+     * operators can correlate sustained retry activity with worker, payload,
+     * or downstream service health without re-aggregating metrics.
+     *
+     * @param array<string, mixed> $activities
+     * @return array<string, mixed>
+     */
+    private static function activityPathCheck(array $activities): array
+    {
+        $timeoutOverdue = self::integer($activities['timeout_overdue'] ?? 0);
+
+        return self::check(
+            'activity_path',
+            $timeoutOverdue === 0 ? 'ok' : 'warning',
+            $timeoutOverdue === 0
+                ? 'No activity executions have an enforcement-overdue deadline; the activity timeout sweep is keeping up.'
+                : 'One or more activity executions have a schedule-to-start, start-to-close, schedule-to-close, or heartbeat deadline past due without enforcement; the activity timeout sweep is lagging or stalled.',
+            self::CATEGORY_CORRECTNESS,
+            [
+                'timeout_overdue' => $timeoutOverdue,
+                'oldest_timeout_overdue_at' => is_string($activities['oldest_timeout_overdue_at'] ?? null)
+                    ? $activities['oldest_timeout_overdue_at']
+                    : null,
+                'max_timeout_overdue_age_ms' => self::integer($activities['max_timeout_overdue_age_ms'] ?? 0),
+                'retrying' => self::integer($activities['retrying'] ?? 0),
+                'oldest_retrying_started_at' => is_string($activities['oldest_retrying_started_at'] ?? null)
+                    ? $activities['oldest_retrying_started_at']
+                    : null,
+                'max_retrying_age_ms' => self::integer($activities['max_retrying_age_ms'] ?? 0),
+                'failed_attempts' => self::integer($activities['failed_attempts'] ?? 0),
+                'max_attempt_count' => self::integer($activities['max_attempt_count'] ?? 0),
             ],
         );
     }

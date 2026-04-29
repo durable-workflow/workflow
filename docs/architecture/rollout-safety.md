@@ -446,6 +446,7 @@ entry per named check. The following names are frozen:
 - `history_retention_invariant`
 - `command_contract_snapshots`
 - `task_transport`
+- `activity_path`
 - `routing_health`
 - `durable_resume_paths`
 - `worker_compatibility`
@@ -532,6 +533,33 @@ are authoritative and how they surface.
   blocking health surface can tell operators how long the oldest
   repair-needed run has been stalled without forcing a separate
   operator-metrics read.
+- **Activity timeout overdue.** An activity execution whose
+  schedule-to-start, start-to-close, schedule-to-close, or heartbeat
+  deadline has already passed without enforcement is counted under
+  `activities.timeout_overdue`, and its worst-case overdue age is
+  surfaced through `activities.oldest_timeout_overdue_at` and
+  `activities.max_timeout_overdue_age_ms`. All three are forwarded on
+  the `activity_path` health check (`timeout_overdue`,
+  `oldest_timeout_overdue_at`, `max_timeout_overdue_age_ms`).
+  `ActivityTimeoutEnforcer` is the authority for enforcement; the age
+  data is observability so operators can tell the difference between
+  "the timeout sweep is running normally between passes" and "the
+  timeout sweep has stalled and a still-running attempt is past its
+  deadline" — the activity-side counterpart of the task-path
+  `lease_expired` signal and, on heartbeat-based deadlines, the
+  primary activity-side duplicate-risk age indicator because a stalled
+  enforcement pass leaves a still-running attempt past its heartbeat
+  budget while a retry could be scheduled.
+- **Sustained activity retry backlog.** Activity executions that have
+  recorded at least one failed attempt are counted under
+  `activities.retrying`, with worst-case age surfaced through
+  `activities.oldest_retrying_started_at` and
+  `activities.max_retrying_age_ms`. Both age keys are forwarded on the
+  `activity_path` health check (`retrying`,
+  `oldest_retrying_started_at`, `max_retrying_age_ms`) so a sustained
+  retry backlog — worker, payload, or downstream-service health
+  pressure that is keeping activities in the retry path — is legible
+  from the metric alone without re-aggregating attempt history.
 - **Stale projection.** A projection behind the authoritative
   history surfaces through the `run_summary_projection` and
   `selected_run_projections` checks on `HealthCheck::snapshot()`.
