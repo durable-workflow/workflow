@@ -1,0 +1,60 @@
+when:
+  - event: [push, pull_request]
+
+services:
+  - name: mysql
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: testbench
+  - name: postgres
+    image: postgres:16
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: testbench
+  - name: redis
+    image: redis:7-alpine
+
+steps:
+  quality:
+    image: composer:2
+    commands:
+      - apt-get update
+      - apt-get install -y libpq-dev default-mysql-client
+      - docker-php-ext-install pdo_mysql pdo_pgsql
+      - composer validate --strict
+      - composer install --prefer-dist --no-progress
+      - vendor/bin/ecs check
+      - vendor/bin/phpstan analyse src tests
+
+  feature-mysql:
+    image: composer:2
+    commands:
+      - apt-get update
+      - apt-get install -y libpq-dev default-mysql-client
+      - docker-php-ext-install pdo_mysql pdo_pgsql
+      - composer install --prefer-dist --no-progress
+      - export APP_KEY='base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI='
+      - export DB_CONNECTION=mysql DB_HOST=mysql DB_DATABASE=testbench DB_USERNAME=root DB_PASSWORD=password
+      - export QUEUE_FAILED_DRIVER=null REDIS_HOST=redis REDIS_PORT=6379 CACHE_DRIVER=redis CACHE_STORE=redis
+      - vendor/bin/phpunit --testdox --testsuite feature
+
+  feature-postgresql:
+    image: composer:2
+    commands:
+      - apt-get update
+      - apt-get install -y libpq-dev default-mysql-client
+      - docker-php-ext-install pdo_mysql pdo_pgsql
+      - composer install --prefer-dist --no-progress
+      - export APP_KEY='base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI='
+      - export DB_CONNECTION=pgsql DB_HOST=postgres DB_DATABASE=testbench DB_USERNAME=root DB_PASSWORD=password
+      - export QUEUE_FAILED_DRIVER=null REDIS_HOST=redis REDIS_PORT=6379 CACHE_DRIVER=redis CACHE_STORE=redis
+      - vendor/bin/phpunit --testdox --testsuite feature
+
+  public-boundary:
+    image: composer:2
+    commands:
+      - export PUBLIC_BOUNDARY_GIT_RANGE="$${CI_COMMIT_SHA}^..$${CI_COMMIT_SHA}"
+      - if [ -n "$${CI_PREV_COMMIT_SHA:-}" ]; then export PUBLIC_BOUNDARY_GIT_RANGE="$${CI_PREV_COMMIT_SHA}..$${CI_COMMIT_SHA}"; fi
+      - scripts/check-public-boundary.sh
