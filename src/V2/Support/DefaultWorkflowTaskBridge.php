@@ -39,6 +39,12 @@ use Workflow\V2\Models\WorkflowUpdate;
 
 final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 {
+    public const POLL_BATCH_CAP = 100;
+
+    public const AVAILABILITY_CEILING_SECONDS = 1;
+
+    public const WORKFLOW_TASK_LEASE_SECONDS = 300;
+
     private const TERMINAL_TYPES = ['complete_workflow', 'fail_workflow', 'continue_as_new'];
 
     private const NON_TERMINAL_TYPES = [
@@ -72,11 +78,12 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             return [];
         }
 
-        // Use a 1-second ceiling on the availability cutoff so that tasks created
-        // in the same request tick are reliably surfaced across all backends,
-        // including SQLite where timestamp precision can vary.
+        // The availability ceiling is a deliberate cross-backend tolerance so tasks
+        // created in the same request tick are reliably surfaced on backends with
+        // sub-second timestamp drift (notably SQLite). It is part of the matching
+        // contract; tightening it would silently de-list freshly-available tasks.
         $availabilityCutoff = now()
-            ->addSecond();
+            ->addSeconds(self::AVAILABILITY_CEILING_SECONDS);
 
         $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->where('task_type', TaskType::Workflow->value)
@@ -87,7 +94,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             })
             ->orderBy('available_at')
             ->orderBy('id')
-            ->limit(max(1, min($limit, 100)));
+            ->limit(max(1, min($limit, self::POLL_BATCH_CAP)));
 
         if ($connection !== null) {
             $query->where('connection', $connection);
@@ -199,7 +206,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
             $resolvedLeaseOwner = $leaseOwner ?? $taskId;
             $leaseExpiresAt = now()
-                ->addMinutes(5);
+                ->addSeconds(self::WORKFLOW_TASK_LEASE_SECONDS);
 
             $task->forceFill([
                 'status' => TaskStatus::Leased,
@@ -576,7 +583,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             $leaseExpiresAt = now()
-                ->addMinutes(5);
+                ->addSeconds(self::WORKFLOW_TASK_LEASE_SECONDS);
 
             $task->forceFill([
                 'lease_expires_at' => $leaseExpiresAt,
@@ -2919,7 +2926,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'leased_at' => now(),
                 'lease_owner' => $taskId,
                 'lease_expires_at' => now()
-                    ->addMinutes(5),
+                    ->addSeconds(self::WORKFLOW_TASK_LEASE_SECONDS),
                 'attempt_count' => $task->attempt_count + 1,
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,

@@ -43,7 +43,7 @@ final class V2DoctorCommandTest extends TestCase
             '--json' => true,
         ])
             ->expectsOutputToContain(
-                '"matching_role":{"queue_wake_enabled":false,"shape":"dedicated","wake_owner":"dedicated_repair_pass","task_dispatch_mode":"poll","partition_primitives":["connection","queue","compatibility","namespace"],"backpressure_model":"lease_ownership"}'
+                '"matching_role":{"queue_wake_enabled":false,"shape":"dedicated","wake_owner":"dedicated_repair_pass","task_dispatch_mode":"poll","partition_primitives":["connection","queue","compatibility","namespace"],"backpressure_model":"lease_ownership","discovery_limits":{"poll_batch_cap":100,"availability_ceiling_seconds":1,"wake_signal_ttl_seconds":60,"workflow_task_lease_seconds":300,"activity_task_lease_seconds":300}}'
             )
             ->assertSuccessful();
     }

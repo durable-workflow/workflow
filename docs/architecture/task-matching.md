@@ -442,10 +442,11 @@ layer healthy" without reading task rows directly:
   `claim_failed_runs`, and `compatibility_blocked_runs`; a
   `workers` block with the Phase 2 compatibility roll-up; and a
   `matching_role` block with `queue_wake_enabled`, `shape`,
-  `wake_owner`, `task_dispatch_mode`, `partition_primitives`, and
-  `backpressure_model`. `shape` is `in_worker` when this process
-  still runs the in-worker broad-poll wake and `dedicated` when
-  the process has opted out so the broad sweep runs under
+  `wake_owner`, `task_dispatch_mode`, `partition_primitives`,
+  `backpressure_model`, and `discovery_limits`. `shape` is
+  `in_worker` when this process still runs the in-worker
+  broad-poll wake and `dedicated` when the process has opted out
+  so the broad sweep runs under
   `php artisan workflow:v2:repair-pass`. `wake_owner` names the
   cooperating owner for that sweep: `worker_loop` when this
   process still owns it, `dedicated_repair_pass` when a separate
@@ -453,10 +454,28 @@ layer healthy" without reading task rows directly:
   `connection`, `queue`, `compatibility`, `namespace`.
   `backpressure_model` reports `lease_ownership`, meaning the durable
   admission boundary is lease occupancy and lease expiry rather
-  than an engine-enforced per-worker quota. The snapshot reports
-  the configuration observed by the process serving the request;
-  in mixed-shape fleets, operators read one snapshot per node to
-  see the full deployment.
+  than an engine-enforced per-worker quota.
+  `discovery_limits` freezes the numeric matching-role contract
+  values that the engine compiles in: `poll_batch_cap` (the
+  100-row poll batch cap from
+  `DefaultWorkflowTaskBridge::POLL_BATCH_CAP`),
+  `availability_ceiling_seconds` (the one-second availability
+  ceiling from
+  `DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS`),
+  `wake_signal_ttl_seconds` (the default 60-second
+  `CacheLongPollWakeStore` signal TTL from
+  `CacheLongPollWakeStore::DEFAULT_SIGNAL_TTL_SECONDS`),
+  `workflow_task_lease_seconds` (the default 300-second workflow
+  task lease from
+  `DefaultWorkflowTaskBridge::WORKFLOW_TASK_LEASE_SECONDS`), and
+  `activity_task_lease_seconds` (the default 300-second activity
+  task lease from `ActivityLease::DURATION_SECONDS`). Tightening
+  any of these values is a protocol-level change because the
+  contract elsewhere in this document depends on them; loosening
+  them would silently change worker timing assumptions. The
+  snapshot reports the configuration observed by the process
+  serving the request; in mixed-shape fleets, operators read one
+  snapshot per node to see the full deployment.
 - `Workflow\V2\Support\OperatorQueueVisibility::forNamespace()` /
   `::forQueue()` returns per-partition queue depth, leased depth,
   poller heartbeats, and stale-worker detection.

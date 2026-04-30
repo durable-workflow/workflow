@@ -2249,6 +2249,13 @@ final class V2OperatorMetricsTest extends TestCase
                 'task_dispatch_mode' => 'queue',
                 'partition_primitives' => ['connection', 'queue', 'compatibility', 'namespace'],
                 'backpressure_model' => 'lease_ownership',
+                'discovery_limits' => [
+                    'poll_batch_cap' => 100,
+                    'availability_ceiling_seconds' => 1,
+                    'wake_signal_ttl_seconds' => 60,
+                    'workflow_task_lease_seconds' => 300,
+                    'activity_task_lease_seconds' => 300,
+                ],
             ],
             $snapshot['matching_role'],
         );
@@ -2270,6 +2277,13 @@ final class V2OperatorMetricsTest extends TestCase
                 'task_dispatch_mode' => 'poll',
                 'partition_primitives' => ['connection', 'queue', 'compatibility', 'namespace'],
                 'backpressure_model' => 'lease_ownership',
+                'discovery_limits' => [
+                    'poll_batch_cap' => 100,
+                    'availability_ceiling_seconds' => 1,
+                    'wake_signal_ttl_seconds' => 60,
+                    'workflow_task_lease_seconds' => 300,
+                    'activity_task_lease_seconds' => 300,
+                ],
             ],
             $snapshot['matching_role'],
         );

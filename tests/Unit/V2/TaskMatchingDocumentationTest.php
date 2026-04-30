@@ -420,6 +420,7 @@ final class TaskMatchingDocumentationTest extends TestCase
             '`task_dispatch_mode`',
             '`partition_primitives`',
             '`backpressure_model`',
+            '`discovery_limits`',
         ] as $field) {
             $this->assertStringContainsString(
                 $field,
@@ -458,6 +459,40 @@ final class TaskMatchingDocumentationTest extends TestCase
             $contents,
             'Task matching contract must name the lease_ownership backpressure model so operator surfaces can expose the durable admission boundary without paraphrasing it.',
         );
+
+        foreach ([
+            '`poll_batch_cap`',
+            '`availability_ceiling_seconds`',
+            '`wake_signal_ttl_seconds`',
+            '`workflow_task_lease_seconds`',
+            '`activity_task_lease_seconds`',
+        ] as $discoveryLimit) {
+            $this->assertStringContainsString(
+                $discoveryLimit,
+                $contents,
+                sprintf(
+                    'Task matching contract must name the %s discovery-limit field so the numeric matching-role contract values are observable per node.',
+                    $discoveryLimit,
+                ),
+            );
+        }
+
+        foreach ([
+            'DefaultWorkflowTaskBridge::POLL_BATCH_CAP',
+            'DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS',
+            'CacheLongPollWakeStore::DEFAULT_SIGNAL_TTL_SECONDS',
+            'DefaultWorkflowTaskBridge::WORKFLOW_TASK_LEASE_SECONDS',
+            'ActivityLease::DURATION_SECONDS',
+        ] as $sourceConst) {
+            $this->assertStringContainsString(
+                $sourceConst,
+                $contents,
+                sprintf(
+                    'Task matching contract must cite %s as the source-of-truth for the matching-role discovery limit.',
+                    $sourceConst,
+                ),
+            );
+        }
     }
 
     private function documentContents(): string

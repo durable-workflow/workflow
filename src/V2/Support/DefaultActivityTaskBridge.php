@@ -37,17 +37,17 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             ->where('task_type', TaskType::Activity->value)
             ->where('status', TaskStatus::Ready->value)
             ->where(static function ($q) {
-                // Use a 1-second ceiling on the availability cutoff so that tasks created
-                // in the same request tick are reliably surfaced across all backends,
-                // including SQLite where timestamp precision can vary.
+                // The availability ceiling is a deliberate cross-backend tolerance so
+                // tasks created in the same request tick are reliably surfaced on
+                // backends with sub-second timestamp drift (notably SQLite).
                 $availabilityCutoff = now()
-                    ->addSecond();
+                    ->addSeconds(DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS);
                 $q->whereNull('available_at')
                     ->orWhere('available_at', '<=', $availabilityCutoff);
             })
             ->orderBy('available_at')
             ->orderBy('id')
-            ->limit(max(1, min($limit, 100)));
+            ->limit(max(1, min($limit, DefaultWorkflowTaskBridge::POLL_BATCH_CAP)));
 
         if ($connection !== null) {
             $query->where('connection', $connection);

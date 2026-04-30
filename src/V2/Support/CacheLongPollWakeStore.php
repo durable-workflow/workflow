@@ -24,11 +24,13 @@ use Workflow\V2\Models\WorkflowTask;
  */
 class CacheLongPollWakeStore implements LongPollWakeStore
 {
+    public const DEFAULT_SIGNAL_TTL_SECONDS = 60;
+
     private const CACHE_PREFIX = 'workflow:long-poll-signal:';
 
     public function __construct(
         private readonly CacheRepository $cache,
-        private readonly int $signalTtlSeconds = 60,
+        private readonly int $signalTtlSeconds = self::DEFAULT_SIGNAL_TTL_SECONDS,
     ) {
     }
 

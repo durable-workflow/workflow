@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
@@ -248,7 +249,7 @@ final class RunTimerTask implements ShouldQueue
                 'leased_at' => now(),
                 'lease_owner' => $this->taskId,
                 'lease_expires_at' => now()
-                    ->addMinutes(5),
+                    ->addSeconds(DefaultWorkflowTaskBridge::WORKFLOW_TASK_LEASE_SECONDS),
                 'attempt_count' => $task->attempt_count + 1,
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,

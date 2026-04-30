@@ -22,6 +22,10 @@ final class MatchingRoleSnapshot
      * operators and downstream clients can reason about, while
      * `backpressure_model` reports the durable admission boundary the
      * engine enforces today.
+     * `discovery_limits` freezes the numeric matching-role contract values
+     * (poll batch cap, availability ceiling, default wake signal TTL, and
+     * default workflow/activity lease durations) so operators and downstream
+     * tooling can reason about the contract without grepping the source.
      *
      * @return array{
      *     queue_wake_enabled: bool,
@@ -29,7 +33,14 @@ final class MatchingRoleSnapshot
      *     wake_owner: string,
      *     task_dispatch_mode: string,
      *     partition_primitives: list<string>,
-     *     backpressure_model: string
+     *     backpressure_model: string,
+     *     discovery_limits: array{
+     *         poll_batch_cap: int,
+     *         availability_ceiling_seconds: int,
+     *         wake_signal_ttl_seconds: int,
+     *         workflow_task_lease_seconds: int,
+     *         activity_task_lease_seconds: int
+     *     }
      * }
      */
     public static function current(): array
@@ -47,6 +58,13 @@ final class MatchingRoleSnapshot
             'task_dispatch_mode' => $dispatchMode,
             'partition_primitives' => ['connection', 'queue', 'compatibility', 'namespace'],
             'backpressure_model' => 'lease_ownership',
+            'discovery_limits' => [
+                'poll_batch_cap' => DefaultWorkflowTaskBridge::POLL_BATCH_CAP,
+                'availability_ceiling_seconds' => DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS,
+                'wake_signal_ttl_seconds' => CacheLongPollWakeStore::DEFAULT_SIGNAL_TTL_SECONDS,
+                'workflow_task_lease_seconds' => DefaultWorkflowTaskBridge::WORKFLOW_TASK_LEASE_SECONDS,
+                'activity_task_lease_seconds' => ActivityLease::DURATION_SECONDS,
+            ],
         ];
     }
 }
