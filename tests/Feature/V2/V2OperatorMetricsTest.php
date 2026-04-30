@@ -1553,6 +1553,141 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $taskTransport['data']['max_dispatch_failed_age_ms']);
     }
 
+    public function testSnapshotSurfacesTaskRetryRateFromOpenTaskAttemptAndRepairCounts(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'task-retry-rate-instance',
+            runId: '01JTASKRETRYRUN0000000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Worst-case open ready task: 5 attempts, 2 redispatches.
+        $this->createTask($run, '01JTASKRETRYTASK000000001', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(30),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(10),
+            'attempt_count' => 5,
+            'repair_count' => 2,
+            'created_at' => $now->copy()
+                ->subSeconds(60),
+        ]);
+
+        // Open leased task with smaller counts — must not win the max.
+        $this->createTask($run, '01JTASKRETRYTASK000000002', TaskStatus::Leased->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(20),
+            'leased_at' => $now->copy()
+                ->subSeconds(5),
+            'lease_owner' => 'worker-leased',
+            'lease_expires_at' => $now->copy()
+                ->addSeconds(30),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(10),
+            'attempt_count' => 3,
+            'repair_count' => 1,
+            'created_at' => $now->copy()
+                ->subSeconds(60),
+        ]);
+
+        // Closed task with larger counts — excluded because status is Completed.
+        $this->createTask($run, '01JTASKRETRYTASK000000003', TaskStatus::Completed->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(120),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(60),
+            'attempt_count' => 99,
+            'repair_count' => 99,
+            'created_at' => $now->copy()
+                ->subSeconds(180),
+        ]);
+
+        // Failed task with larger counts — excluded because status is Failed.
+        $this->createTask($run, '01JTASKRETRYTASK000000004', TaskStatus::Failed->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(120),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(60),
+            'attempt_count' => 50,
+            'repair_count' => 25,
+            'created_at' => $now->copy()
+                ->subSeconds(180),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(5, $snapshot['tasks']['max_attempt_count']);
+        $this->assertSame(2, $snapshot['tasks']['max_repair_count']);
+
+        $healthSnapshot = HealthCheck::snapshot($now);
+        $taskTransport = collect($healthSnapshot['checks'])->firstWhere('name', 'task_transport');
+        $this->assertNotNull($taskTransport);
+        $this->assertSame(5, $taskTransport['data']['max_attempt_count']);
+        $this->assertSame(2, $taskTransport['data']['max_repair_count']);
+    }
+
+    public function testSnapshotReportsTaskRetryRateAsZeroWhenNoOpenTasksHaveRetried(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $now = Carbon::now();
+
+        $run = $this->createRunWithSummary(
+            instanceId: 'task-retry-rate-zero-instance',
+            runId: '01JTASKRETRYZRORUN0000001',
+            status: 'running',
+            statusBucket: 'running',
+            livenessState: 'running',
+        );
+
+        // Open ready task on its first attempt — counts at 1/0 must be visible.
+        $this->createTask($run, '01JTASKRETRYZROTASK000001', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSecond(),
+            'last_dispatched_at' => $now->copy()
+                ->subSecond(),
+            'attempt_count' => 1,
+            'repair_count' => 0,
+            'created_at' => $now->copy()
+                ->subSecond(),
+        ]);
+
+        // Closed task with non-zero counts — excluded.
+        $this->createTask($run, '01JTASKRETRYZROTASK000002', TaskStatus::Completed->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(60),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(30),
+            'attempt_count' => 4,
+            'repair_count' => 3,
+            'created_at' => $now->copy()
+                ->subSeconds(60),
+        ]);
+
+        $snapshot = OperatorMetrics::snapshot($now);
+
+        $this->assertSame(1, $snapshot['tasks']['max_attempt_count']);
+        $this->assertSame(0, $snapshot['tasks']['max_repair_count']);
+
+        $healthSnapshot = HealthCheck::snapshot($now);
+        $taskTransport = collect($healthSnapshot['checks'])->firstWhere('name', 'task_transport');
+        $this->assertNotNull($taskTransport);
+        $this->assertSame(1, $taskTransport['data']['max_attempt_count']);
+        $this->assertSame(0, $taskTransport['data']['max_repair_count']);
+    }
+
     public function testSnapshotSurfacesUnhealthyAgeRollupAsEarliestOfTheFourContributingPaths(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');

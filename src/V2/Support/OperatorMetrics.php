@@ -138,6 +138,8 @@ final class OperatorMetrics
             'max_dispatch_failed_age_ms' => $oldestDispatchFailedAt === null
                 ? 0
                 : (int) $oldestDispatchFailedAt->diffInMilliseconds($now),
+            'max_attempt_count' => self::maxOpenTaskAttemptCount($namespace),
+            'max_repair_count' => self::maxOpenTaskRepairCount($namespace),
             'unhealthy' => self::dispatchFailedTasks($namespace)
                 + self::claimFailedTasks($namespace)
                 + self::dispatchOverdueTasks($now, $namespace)
@@ -1302,6 +1304,42 @@ final class OperatorMetrics
         }
 
         return $task->last_dispatch_attempt_at;
+    }
+
+    /**
+     * Largest `attempt_count` among open tasks (Ready or Leased).
+     * Rollout-safety surfaces this as the task-side retry-rate
+     * indicator: a sustained non-zero reading means the worst-case
+     * task currently in flight has been claimed or dispatched many
+     * times without completing, mirroring `activities.max_attempt_count`
+     * on the activity path. Closed tasks (Completed or Failed) are
+     * excluded so the signal tracks active retry burn rather than
+     * accumulating against historical rows.
+     */
+    private static function maxOpenTaskAttemptCount(?string $namespace): int
+    {
+        return (int) self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->max('attempt_count');
+    }
+
+    /**
+     * Largest `repair_count` among open tasks (Ready or Leased).
+     * Rollout-safety surfaces this as the redispatch-burn indicator
+     * on the task transport path: a sustained non-zero reading means
+     * the worst-case task currently in flight has been redispatched
+     * by `TaskRepair::repairRun()` many times without making it
+     * through to a worker, which is the canonical signal that
+     * dispatch wakes are not landing on a compatible claimer. Closed
+     * tasks (Completed or Failed) are excluded so the signal tracks
+     * active repair burn rather than accumulating against historical
+     * rows.
+     */
+    private static function maxOpenTaskRepairCount(?string $namespace): int
+    {
+        return (int) self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->max('repair_count');
     }
 
     private static function dispatchOverdueQuery(CarbonInterface $now, ?string $namespace)

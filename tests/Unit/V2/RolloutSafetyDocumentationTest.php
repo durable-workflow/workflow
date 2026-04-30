@@ -132,6 +132,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'max_claim_failed_age_ms',
         'oldest_dispatch_failed_at',
         'max_dispatch_failed_age_ms',
+        'max_attempt_count',
+        'max_repair_count',
         'oldest_retrying_started_at',
         'max_retrying_age_ms',
         'timeout_overdue',
@@ -439,6 +441,17 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`tasks`\s*\|[^|]*`oldest_dispatch_failed_at`[^|]*`max_dispatch_failed_age_ms`/',
             $contents,
             'Rollout safety contract must pin the tasks dispatch-failed age row so operators can read "how long has the worst-case task been sitting with an uncleared dispatch error?" — the primary transport-failure age indicator on the dispatch path — from OperatorMetrics::snapshot() without walking workflow_tasks.',
+        );
+    }
+
+    public function testContractDocumentFreezesTaskRetryRateRow(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`tasks`\s*\|[^|]*`max_attempt_count`[^|]*`max_repair_count`/',
+            $contents,
+            'Rollout safety contract must pin the tasks retry-rate row so operators can read "what is the largest number of claim/dispatch attempts and TaskRepair redispatches any in-flight task has accumulated?" — the primary task-side retry-rate indicator — from OperatorMetrics::snapshot() without walking workflow_tasks.',
         );
     }
 

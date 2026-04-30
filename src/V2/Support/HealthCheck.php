@@ -265,6 +265,8 @@ final class HealthCheck
                     ? $tasks['oldest_dispatch_failed_at']
                     : null,
                 'max_dispatch_failed_age_ms' => self::integer($tasks['max_dispatch_failed_age_ms'] ?? 0),
+                'max_attempt_count' => self::integer($tasks['max_attempt_count'] ?? 0),
+                'max_repair_count' => self::integer($tasks['max_repair_count'] ?? 0),
                 'repair_needed_runs' => self::integer($backlog['repair_needed_runs'] ?? 0),
                 'claim_failed_runs' => self::integer($backlog['claim_failed_runs'] ?? 0),
                 'compatibility_blocked_runs' => self::integer($backlog['compatibility_blocked_runs'] ?? 0),
