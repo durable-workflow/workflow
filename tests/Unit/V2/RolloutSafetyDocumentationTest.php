@@ -174,6 +174,7 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'matching_role',
         'queue_wake_enabled',
         'shape',
+        'wake_owner',
         'task_dispatch_mode',
         'discovery_limits',
         'poll_batch_cap',
@@ -353,6 +354,22 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`matching_role`\s*\|[^|]*`queue_wake_enabled`[^|]*`shape`[^|]*`wake_owner`[^|]*`task_dispatch_mode`/',
             $contents,
             'Rollout safety contract must pin the matching_role metric row so operators can read the matching-role deployment shape (queue_wake_enabled, shape, wake_owner, task_dispatch_mode) on each node from OperatorMetrics::snapshot() without inspecting config files.',
+        );
+    }
+
+    public function testContractDocumentFreezesMatchingRoleWakeOwnerNaming(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`matching_role`\s*\|[\s\S]{0,800}`wake_owner`[\s\S]{0,400}`worker_loop`[\s\S]{0,400}`dedicated_repair_pass`/',
+            $contents,
+            'Rollout safety contract must name both wake_owner values (`worker_loop` on nodes that still run the in-worker broad-poll wake; `dedicated_repair_pass` on nodes that have opted out) on the matching_role metric row so operators reading OperatorMetrics::snapshot() can tell which cooperating process is expected to own the broad repair sweep on the node serving the snapshot — the same wake-ownership signal the routing-health surface rolls up — without re-aggregating against the routing_health block.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/\|\s*`matching_role`\s*\|[\s\S]{0,800}repair-pass[\s\S]{0,400}`wake_owner`/',
+            $contents,
+            'Rollout safety contract must connect the matching_role wake_owner key on OperatorMetrics::snapshot() to the `php artisan workflow:v2:repair-pass` command on the matching_role metric row so operators reading the operator-snapshot surface know the `dedicated_repair_pass` value names the same cooperating process the broad sweep is expected to run as.',
         );
     }
 
@@ -540,6 +557,22 @@ final class RolloutSafetyDocumentationTest extends TestCase
             '/\|\s*`runs`\s*\|[^|]*`oldest_repair_needed_at`[^|]*`max_repair_needed_age_ms`/',
             $contents,
             'Rollout safety contract must pin the runs repair-needed age row so operators can read "how long has the worst-case run been stuck without progress?" — the canonical stuck-workflow duplicate-risk age indicator paired with the durable_resume_paths health check — from OperatorMetrics::snapshot() without walking workflow_run_summaries.',
+        );
+    }
+
+    public function testContractDocumentFreezesRoutingHealthWakeOwnerRollup(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/`routing_health`[\s\S]{0,400}`queue_wake_enabled`[\s\S]{0,200}`matching_shape`[\s\S]{0,200}`wake_owner`[\s\S]{0,200}`task_dispatch_mode`/',
+            $contents,
+            'Rollout safety contract must pin the routing_health matching-role rollup quad (queue_wake_enabled, matching_shape, wake_owner, task_dispatch_mode) so operators can read which cooperating process is expected to own the broad wake on the node serving the snapshot off the routing-health surface without re-aggregating the matching_role block.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/`wake_owner`[\s\S]{0,200}`worker_loop`[\s\S]{0,200}`dedicated_repair_pass`[\s\S]{0,200}repair-pass/',
+            $contents,
+            'Rollout safety contract must name both wake_owner values (worker_loop on nodes that still run the in-worker broad-poll wake; dedicated_repair_pass on nodes that have opted out so the broad sweep runs as `php artisan workflow:v2:repair-pass`) on the routing-health surface.',
         );
     }
 

@@ -462,11 +462,18 @@ entry per named check. The following names are frozen:
 Each check carries `status`, `message`, and `data`. `routing_health`
 is the authoritative drain-focused roll-up: it combines
 `backlog.compatibility_blocked_runs`, `tasks.dispatch_overdue`, and
-`tasks.claim_failed` with the process-local matching-role shape so
-operators can distinguish compatibility drains from dispatch wake lag
-or claim churn without re-aggregating metrics. Adding a new check is
-allowed; renaming or removing one is a protocol-level change. The
-canonical check names above match the strings emitted by
+`tasks.claim_failed` with the process-local matching-role shape
+(`queue_wake_enabled`, `matching_shape`, `wake_owner`, and
+`task_dispatch_mode`) so operators can distinguish compatibility
+drains from dispatch wake lag or claim churn — and read which
+cooperating process is expected to own the broad wake on the node
+serving the snapshot — without re-aggregating metrics across the
+`matching_role` block. `wake_owner` is `worker_loop` on nodes that
+still run the in-worker broad-poll wake and `dedicated_repair_pass`
+on nodes that have opted out so the broad sweep runs as
+`php artisan workflow:v2:repair-pass` instead. Adding a new check
+is allowed; renaming or removing one is a protocol-level change.
+The canonical check names above match the strings emitted by
 `Workflow\V2\Support\HealthCheck::snapshot()` verbatim, and a runtime
 pinning test in the workflow package asserts the match so doc/code
 drift fails loudly.

@@ -344,6 +344,9 @@ final class HealthCheck
         $claimFailedTasks = self::integer($tasks['claim_failed'] ?? 0);
         $queueWakeEnabled = ($matchingRole['queue_wake_enabled'] ?? false) === true;
         $matchingShape = is_string($matchingRole['shape'] ?? null) ? $matchingRole['shape'] : 'in_worker';
+        $wakeOwner = is_string($matchingRole['wake_owner'] ?? null)
+            ? $matchingRole['wake_owner']
+            : ($queueWakeEnabled ? 'worker_loop' : 'dedicated_repair_pass');
         $taskDispatchMode = is_string($matchingRole['task_dispatch_mode'] ?? null)
             ? $matchingRole['task_dispatch_mode']
             : 'queue';
@@ -388,6 +391,7 @@ final class HealthCheck
                 'max_claim_failed_age_ms' => self::integer($tasks['max_claim_failed_age_ms'] ?? 0),
                 'queue_wake_enabled' => $queueWakeEnabled,
                 'matching_shape' => $matchingShape,
+                'wake_owner' => $wakeOwner,
                 'task_dispatch_mode' => $taskDispatchMode,
                 'active_worker_scopes' => $activeWorkerScopes,
             ],

@@ -806,6 +806,7 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(0, $routing['data']['dispatch_overdue_tasks']);
         $this->assertSame(0, $routing['data']['claim_failed_tasks']);
         $this->assertSame('in_worker', $routing['data']['matching_shape']);
+        $this->assertSame('worker_loop', $routing['data']['wake_owner']);
         $this->assertSame('queue', $routing['data']['task_dispatch_mode']);
         $this->assertTrue($routing['data']['queue_wake_enabled']);
         $this->assertSame(0, $routing['data']['active_worker_scopes']);
@@ -930,6 +931,7 @@ final class HealthCheckTest extends TestCase
         $this->assertSame(90 * 1000, $routing['data']['max_claim_failed_age_ms']);
         $this->assertFalse($routing['data']['queue_wake_enabled']);
         $this->assertSame('dedicated', $routing['data']['matching_shape']);
+        $this->assertSame('dedicated_repair_pass', $routing['data']['wake_owner']);
         $this->assertSame('poll', $routing['data']['task_dispatch_mode']);
         $this->assertSame(0, $routing['data']['active_worker_scopes']);
     }

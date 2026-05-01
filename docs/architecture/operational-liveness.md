@@ -691,9 +691,16 @@ Rules:
 - `routing_health` is the authoritative check for routing drains: it
   rolls `backlog.compatibility_blocked_runs`,
   `tasks.dispatch_overdue`, and `tasks.claim_failed` together with
-  the local matching-role shape so operators can tell whether work
-  is blocked on compatibility coverage, dispatch wake latency, or
-  claim churn without re-aggregating the metrics by hand.
+  the local matching-role shape — `queue_wake_enabled`,
+  `matching_shape`, `wake_owner`, and `task_dispatch_mode` — so
+  operators can tell whether work is blocked on compatibility
+  coverage, dispatch wake latency, or claim churn, and which
+  cooperating process is expected to own the broad wake on this
+  node, without re-aggregating the metrics by hand. `wake_owner`
+  reads `worker_loop` when the in-worker broad-poll wake is active
+  on this process and `dedicated_repair_pass` when the process has
+  opted out and the broad sweep is expected to run as
+  `php artisan workflow:v2:repair-pass` instead.
 - `durable_resume_paths` is the authoritative check for
   next-resume-source completeness: it reports unhealthy when any
   open run has no projected `next_task_id` or a missing
