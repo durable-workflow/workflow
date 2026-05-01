@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\Providers;
 
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
@@ -181,7 +180,13 @@ final class WorkflowServiceProvider extends ServiceProvider
         $multiNode = (bool) config('workflows.v2.long_poll.multi_node', false);
         $validationMode = config('workflows.v2.long_poll.validation_mode', 'warn');
 
-        $cache = $this->app->make(CacheRepository::class);
+        // Resolve through the CacheManager so the validator inspects the
+        // currently configured default store. Calling
+        // make(CacheRepository::class) hits Laravel's cache.store singleton
+        // binding, which would be resolved here at boot and then pinned for
+        // the lifetime of the application — drifting from cache.default if
+        // operators (or tests) reconfigure the default store after boot.
+        $cache = $this->app->make('cache')->store();
         $validator = new LongPollCacheValidator();
 
         $result = $validator->checkMultiNodeSafety($cache, $multiNode);
