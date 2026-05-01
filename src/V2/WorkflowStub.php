@@ -89,6 +89,42 @@ final class WorkflowStub
 
     private const MOCKS_LIST = 'workflow.v2.mocks';
 
+    /**
+     * Relations the history-projection role consumes for a run-only projection.
+     *
+     * Hydrated by {@see self::projectRun()} before the role is invoked so the
+     * role implementation always sees an up-to-date graph regardless of which
+     * call path queued the projection.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+        'historyEvents',
+    ];
+
+    /**
+     * Run relations plus the child-link graph required by parent-resume
+     * projections. Child links are only needed when projecting a parent run
+     * that has just observed a child closure.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_CHILDREN = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+        'historyEvents',
+        'childLinks.childRun.instance.currentRun',
+        'childLinks.childRun.failures',
+    ];
+
     private ?WorkflowRun $run = null;
 
     private ?string $selectedRunId = null;
@@ -915,10 +951,7 @@ final class WorkflowStub
                         'rejection_reason' => $command->rejection_reason,
                     ], null, $command);
 
-                self::projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                        ?? $run
-                );
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 return;
             }
@@ -1087,8 +1120,8 @@ final class WorkflowStub
             LifecycleEventDispatcher::workflowStarted($run);
 
             self::projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents'])
-                    ?? $run
+                $run,
+                ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents'],
             );
         });
 
@@ -1551,10 +1584,7 @@ final class WorkflowStub
                 'task_type' => $task?->task_type?->value,
             ], $task, $command);
 
-            self::projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
-            );
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
         });
 
         $this->refresh();
@@ -1718,10 +1748,7 @@ final class WorkflowStub
                 ], static fn (mixed $value): bool => $value !== null), null, $command);
             }
 
-            self::projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
-            );
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
         });
 
         $this->refresh();
@@ -1997,10 +2024,7 @@ final class WorkflowStub
                 ]);
             }
 
-            self::projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
-            );
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
         });
 
         return [$command, $update, $resumeTask];
@@ -2347,10 +2371,7 @@ final class WorkflowStub
                 ]);
             }
 
-            self::projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
-            );
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
         });
 
         $this->refresh();
@@ -2546,10 +2567,7 @@ final class WorkflowStub
                     ]);
                 }
 
-                self::projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                        ?? $run
-                );
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 return;
             }
@@ -2797,10 +2815,7 @@ final class WorkflowStub
 
             LifecycleEventDispatcher::workflowStarted($run);
 
-            self::projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
-            );
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
         });
 
         $this->refresh();
@@ -3076,10 +3091,7 @@ final class WorkflowStub
 
             $parentTasks = $this->createParentResumeTasks($run);
 
-            self::projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                    ?? $run
-            );
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
         });
 
         $this->refresh();
@@ -4272,19 +4284,7 @@ final class WorkflowStub
                         $childStatus
                     )
                 ) {
-                    self::projectRun(
-                        $parentRun->fresh([
-                            'instance',
-                            'tasks',
-                            'activityExecutions',
-                            'timers',
-                            'failures',
-                            'historyEvents',
-                            'childLinks.childRun.instance.currentRun',
-                            'childLinks.childRun.failures',
-                        ])
-                            ?? $parentRun
-                    );
+                    self::projectRun($parentRun, self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN);
 
                     continue;
                 }
@@ -4313,19 +4313,7 @@ final class WorkflowStub
                 'compatibility' => $parentRun->compatibility,
             ]);
 
-            self::projectRun(
-                $parentRun->fresh([
-                    'instance',
-                    'tasks',
-                    'activityExecutions',
-                    'timers',
-                    'failures',
-                    'historyEvents',
-                    'childLinks.childRun.instance.currentRun',
-                    'childLinks.childRun.failures',
-                ])
-                    ?? $parentRun
-            );
+            self::projectRun($parentRun, self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN);
 
             $tasks[] = $task;
         }
@@ -4391,8 +4379,22 @@ final class WorkflowStub
         return ConfiguredV2Models::query('task_model', WorkflowTask::class);
     }
 
-    private static function projectRun(WorkflowRun $run): WorkflowRunSummary
+    /**
+     * Hydrate the relations the projection needs and dispatch into the
+     * {@see HistoryProjectionRole} contract. Every projection emitted by
+     * WorkflowStub flows through this helper so the role contract is the
+     * single entry point — no call site reaches into `RunSummaryProjector`
+     * directly, and the relation-hydration shape lives in one place rather
+     * than at each call site.
+     *
+     * @param list<string> $with
+     */
+    private static function projectRun(WorkflowRun $run, array $with = []): WorkflowRunSummary
     {
+        if ($with !== []) {
+            $run = $run->fresh($with) ?? $run;
+        }
+
         return self::historyProjectionRole()->projectRun($run);
     }
 
