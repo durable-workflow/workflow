@@ -378,6 +378,28 @@ final class RolloutSafetyDocumentationTest extends TestCase
         );
     }
 
+    public function testContractDocumentFreezesQueueVisibilityFlowKeys(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/- `stats` [\s\S]{0,400}?`tasks_added_last_minute`[\s\S]{0,200}?`tasks_dispatched_last_minute`/',
+            $contents,
+            'Rollout safety contract must pin the per-partition queue-flow keys (tasks_added_last_minute and tasks_dispatched_last_minute) on the QueueVisibilityDetail stats bullet so operators can read recent queue inflow and dispatch throughput per task queue from OperatorQueueVisibility::forNamespace() without re-aggregating the namespace-wide backlog row from OperatorMetrics::snapshot().',
+        );
+    }
+
+    public function testContractDocumentFreezesQueueVisibilityPerTypeFlowKeys(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/`workflow_tasks\.added_last_minute`[\s\S]{0,80}?`workflow_tasks\.dispatched_last_minute`[\s\S]{0,200}?`activity_tasks\.added_last_minute`[\s\S]{0,80}?`activity_tasks\.dispatched_last_minute`/',
+            $contents,
+            'Rollout safety contract must pin the per-task-type queue-flow keys (workflow_tasks.added_last_minute, workflow_tasks.dispatched_last_minute, activity_tasks.added_last_minute, activity_tasks.dispatched_last_minute) on the QueueVisibilityDetail stats bullet so operators can attribute recent queue flow to the workflow vs activity path per task queue without resampling workflow_tasks.',
+        );
+    }
+
     public function testContractDocumentFreezesLeaseExpiredAgeRow(): void
     {
         $contents = $this->documentContents();

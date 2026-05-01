@@ -219,24 +219,33 @@ final class OperatorQueueVisibility
                 'ready_count' => $readyCounts[TaskType::Workflow->value],
                 'leased_count' => $leasedCounts[TaskType::Workflow->value],
                 'expired_lease_count' => $expiredLeaseCounts[TaskType::Workflow->value],
+                'added_last_minute' => $recentTaskFlow['workflow_added'],
+                'dispatched_last_minute' => $recentTaskFlow['workflow_dispatched'],
             ],
             'activity_tasks' => [
                 'ready_count' => $readyCounts[TaskType::Activity->value],
                 'leased_count' => $leasedCounts[TaskType::Activity->value],
                 'expired_lease_count' => $expiredLeaseCounts[TaskType::Activity->value],
+                'added_last_minute' => $recentTaskFlow['activity_added'],
+                'dispatched_last_minute' => $recentTaskFlow['activity_dispatched'],
             ],
             'pollers' => [
                 'active_count' => $activePollers,
                 'stale_count' => $stalePollers,
                 'stale_after_seconds' => $staleAfterSeconds,
             ],
-            'tasks_added_last_minute' => $recentTaskFlow['tasks_added_last_minute'],
-            'tasks_dispatched_last_minute' => $recentTaskFlow['tasks_dispatched_last_minute'],
+            'tasks_added_last_minute' => $recentTaskFlow['workflow_added'] + $recentTaskFlow['activity_added'],
+            'tasks_dispatched_last_minute' => $recentTaskFlow['workflow_dispatched'] + $recentTaskFlow['activity_dispatched'],
         ];
     }
 
     /**
-     * @return array{tasks_added_last_minute: int, tasks_dispatched_last_minute: int}
+     * @return array{
+     *     workflow_added: int,
+     *     workflow_dispatched: int,
+     *     activity_added: int,
+     *     activity_dispatched: int
+     * }
      */
     private static function recentTaskFlow(string $namespace, string $taskQueue, CarbonInterface $now): array
     {
@@ -244,14 +253,21 @@ final class OperatorQueueVisibility
         $windowStart = self::databaseTimestamp($now->copy()->subMinute());
         $query = self::baseTaskQuery($namespace, $taskQueue);
 
-        return [
-            'tasks_added_last_minute' => (clone $query)
-                ->where($taskTable . '.created_at', '>=', $windowStart)
-                ->count(),
-            'tasks_dispatched_last_minute' => (clone $query)
+        $addedCounts = self::groupedTaskCounts(
+            (clone $query)
+                ->where($taskTable . '.created_at', '>=', $windowStart),
+        );
+        $dispatchedCounts = self::groupedTaskCounts(
+            (clone $query)
                 ->whereNotNull($taskTable . '.last_dispatched_at')
-                ->where($taskTable . '.last_dispatched_at', '>=', $windowStart)
-                ->count(),
+                ->where($taskTable . '.last_dispatched_at', '>=', $windowStart),
+        );
+
+        return [
+            'workflow_added' => $addedCounts[TaskType::Workflow->value],
+            'workflow_dispatched' => $dispatchedCounts[TaskType::Workflow->value],
+            'activity_added' => $addedCounts[TaskType::Activity->value],
+            'activity_dispatched' => $dispatchedCounts[TaskType::Activity->value],
         ];
     }
 

@@ -119,9 +119,13 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $this->assertSame(1, $payload['stats']['workflow_tasks']['ready_count']);
         $this->assertSame(1, $payload['stats']['workflow_tasks']['leased_count']);
         $this->assertSame(1, $payload['stats']['workflow_tasks']['expired_lease_count']);
+        $this->assertSame(1, $payload['stats']['workflow_tasks']['added_last_minute']);
+        $this->assertSame(0, $payload['stats']['workflow_tasks']['dispatched_last_minute']);
         $this->assertSame(1, $payload['stats']['activity_tasks']['ready_count']);
         $this->assertSame(1, $payload['stats']['activity_tasks']['leased_count']);
         $this->assertSame(0, $payload['stats']['activity_tasks']['expired_lease_count']);
+        $this->assertSame(1, $payload['stats']['activity_tasks']['added_last_minute']);
+        $this->assertSame(1, $payload['stats']['activity_tasks']['dispatched_last_minute']);
         $this->assertSame(1, $payload['stats']['pollers']['active_count']);
         $this->assertSame(1, $payload['stats']['pollers']['stale_count']);
         $this->assertSame(60, $payload['stats']['pollers']['stale_after_seconds']);
@@ -190,10 +194,18 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $this->assertSame(1, $queues->get('alpha')['stats']['approximate_backlog_count']);
         $this->assertSame(1, $queues->get('alpha')['stats']['tasks_added_last_minute']);
         $this->assertSame(1, $queues->get('alpha')['stats']['tasks_dispatched_last_minute']);
+        $this->assertSame(1, $queues->get('alpha')['stats']['workflow_tasks']['added_last_minute']);
+        $this->assertSame(1, $queues->get('alpha')['stats']['workflow_tasks']['dispatched_last_minute']);
+        $this->assertSame(0, $queues->get('alpha')['stats']['activity_tasks']['added_last_minute']);
+        $this->assertSame(0, $queues->get('alpha')['stats']['activity_tasks']['dispatched_last_minute']);
         $this->assertSame(1, $queues->get('poller-only')['stats']['pollers']['active_count']);
         $this->assertSame(0, $queues->get('poller-only')['stats']['approximate_backlog_count']);
         $this->assertSame(0, $queues->get('poller-only')['stats']['tasks_added_last_minute']);
         $this->assertSame(0, $queues->get('poller-only')['stats']['tasks_dispatched_last_minute']);
+        $this->assertSame(0, $queues->get('poller-only')['stats']['workflow_tasks']['added_last_minute']);
+        $this->assertSame(0, $queues->get('poller-only')['stats']['workflow_tasks']['dispatched_last_minute']);
+        $this->assertSame(0, $queues->get('poller-only')['stats']['activity_tasks']['added_last_minute']);
+        $this->assertSame(0, $queues->get('poller-only')['stats']['activity_tasks']['dispatched_last_minute']);
         $this->assertFalse($queues->has('beta'));
     }
 

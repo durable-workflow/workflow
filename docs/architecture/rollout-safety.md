@@ -478,7 +478,29 @@ drift fails loudly.
 
 - `pollers` — active long pollers, including `build_id` so a
   drain is visible without inspecting worker logs.
-- `stats` — queue depth and lease counts.
+- `stats` — queue depth and lease counts plus the trailing-60-second
+  queue-flow facts `tasks_added_last_minute` and
+  `tasks_dispatched_last_minute` so operators can read recent queue
+  inflow (distinct durable task rows created in the last minute) and
+  dispatch throughput (distinct durable task rows whose latest
+  successful `last_dispatched_at` falls in the last minute) per
+  partition without re-aggregating the namespace-wide
+  `backlog.tasks_added_last_minute` /
+  `backlog.tasks_dispatched_last_minute` row from
+  `OperatorMetrics::snapshot()`. The same trailing-60-second window is
+  also broken out by task type on `workflow_tasks.added_last_minute` /
+  `workflow_tasks.dispatched_last_minute` and
+  `activity_tasks.added_last_minute` /
+  `activity_tasks.dispatched_last_minute`, alongside the existing
+  per-type `ready_count`, `leased_count`, and `expired_lease_count`,
+  so operators can answer "is the recent queue flow surge driven by
+  the workflow path or the activity path?" without resampling
+  `workflow_tasks` per task type. The flat `tasks_added_last_minute`
+  and `tasks_dispatched_last_minute` keys are exactly the sum of the
+  per-type breakdowns. These are intentionally task-row facts, not a
+  transport-attempt counter stream; repeated redispatches of the same
+  durable task collapse to one count because `workflow_tasks` retains
+  only the latest successful dispatch timestamp.
 - `currentLeases` — live lease owners with expiry times so lease
   conflicts surface as overlapping or soon-to-expire leases.
 - `repairStats` — per-queue repair candidates so routing health
