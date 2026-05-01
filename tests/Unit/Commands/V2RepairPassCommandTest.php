@@ -17,11 +17,13 @@ use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\TaskWatchdog;
 
 final class V2RepairPassCommandTest extends TestCase
@@ -147,6 +149,41 @@ final class V2RepairPassCommandTest extends TestCase
         $this->assertSame(0, $task->repair_count);
         $this->assertNull($task->last_dispatch_attempt_at);
         Queue::assertNothingPushed();
+        $this->assertSame(0, WorkerCompatibilityHeartbeat::query()->count());
+    }
+
+    public function testRunPassDoesNotRecordWorkerHeartbeatWhileLoopThrottleIsHeld(): void
+    {
+        Queue::fake();
+        config()->set('workflows.v2.compatibility.current', 'build-throttled');
+        WorkerCompatibilityFleet::clear();
+        Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 60);
+
+        $report = TaskWatchdog::runPass(
+            connection: 'redis',
+            queue: 'default',
+            respectThrottle: true,
+        );
+
+        $this->assertTrue($report['throttled']);
+        $this->assertSame(0, WorkerCompatibilityHeartbeat::query()->count());
+    }
+
+    public function testRunPassRecordsWorkerHeartbeatOnceLoopThrottleClears(): void
+    {
+        Queue::fake();
+        config()->set('workflows.v2.compatibility.current', 'build-cleared');
+        WorkerCompatibilityFleet::clear();
+        Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+
+        $report = TaskWatchdog::runPass(
+            connection: 'redis',
+            queue: 'default',
+            respectThrottle: true,
+        );
+
+        $this->assertFalse($report['throttled']);
+        $this->assertGreaterThan(0, WorkerCompatibilityHeartbeat::query()->count());
     }
 
     public function testItReportsExistingTaskRecoveryCountsInHumanOutput(): void
