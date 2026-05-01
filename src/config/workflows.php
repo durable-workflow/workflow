@@ -261,7 +261,12 @@ return [
                 true
             ),
 
-            // How to handle validation failures: 'fail' (throw exception), 'warn' (log warning), 'silent' (no action)
+            // How to surface validation failures. The cache layer is the
+            // acceleration substrate, not the correctness substrate, so the
+            // admission is warning-only by contract: 'silent' suppresses the
+            // diagnostic; any other value ('warn', 'fail') logs a warning.
+            // The legacy 'fail' value is accepted for backwards compatibility
+            // and is now equivalent to 'warn' — boot is never blocked.
             'validation_mode' => Env::dw('DW_V2_CACHE_VALIDATION_MODE', 'WORKFLOW_V2_CACHE_VALIDATION_MODE', 'warn'),
         ],
 

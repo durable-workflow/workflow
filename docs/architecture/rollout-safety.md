@@ -148,11 +148,16 @@ The canonical admission layers are:
   the admission check through the `structural_limits` roll-up.
 - `Workflow\V2\Support\LongPollCacheValidator::checkMultiNodeSafety()`
   — the authority on whether the configured cache store can
-  propagate wake signals across nodes. This check is the one the
-  Phase 5 contract pins as the misconfiguration detector for the
-  acceleration layer; Phase 6 pins it as the fail-closed admission
-  check when `DW_V2_MULTI_NODE=1` and
-  `DW_V2_CACHE_VALIDATION_MODE=fail` are set together.
+  propagate wake signals across nodes. The cache layer is the
+  acceleration substrate, not the correctness substrate, so this
+  admission check is warning-only by contract: a multi-node
+  misconfiguration surfaces a logged diagnostic and the
+  `long_poll_wake_acceleration` health check, but never blocks
+  boot, regardless of `DW_V2_CACHE_VALIDATION_MODE`. The legacy
+  `fail` value is accepted for backwards compatibility and behaves
+  the same as `warn` for this check; the historical fail-closed
+  posture is retired so a degraded acceleration layer cannot
+  refuse traffic that the durable substrate is ready to serve.
 - `Workflow\V2\Support\WorkflowModeGuard::check()` — the authority
   on replay-safety of registered workflow classes. Controlled by
   `DW_V2_GUARDRAILS_BOOT`; supported modes are `silent`, `warn`
@@ -657,7 +662,7 @@ change only in a major version bump.
 | `DW_V2_GUARDRAILS_BOOT` | Boot-time workflow determinism guardrail mode (`silent`, `warn`, `throw`). |
 | `DW_V2_MULTI_NODE` | Declares multi-node intent; enables cache validation gates and mixed-build signal collection. |
 | `DW_V2_VALIDATE_CACHE_BACKEND` | Enables the Phase 5 cache validation gate at boot. |
-| `DW_V2_CACHE_VALIDATION_MODE` | Validation strictness (`warn` or `fail`); `fail` is the fail-closed mode. |
+| `DW_V2_CACHE_VALIDATION_MODE` | Diagnostic mode for the cache acceleration admission (`silent`, `warn`, `fail`). The cache admission is warning-only by contract: `silent` suppresses the diagnostic, and `warn` and `fail` both log a warning without blocking boot. |
 | `DW_V2_FLEET_VALIDATION_MODE` | Worker-compatibility fleet admission posture (`warn` or `fail`); `fail` escalates the `worker_compatibility` health check from `warning` to `error` so the readiness contract returns 503, and blocks queue dispatch so ready tasks stay retained under `repair_available_at` until a compatible worker heartbeats, both only when the required compatibility marker has no supporting live worker. |
 | `DW_V2_TASK_DISPATCH_MODE` | Task delivery mode (`queue` or `poll`). |
 | `DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS` | Ready-task redispatch grace period. |
@@ -703,14 +708,16 @@ tighter fail-closed posture can adopt each step independently.
 5. **Move repair cadence under operator control.** Tune
    `DW_V2_TASK_REPAIR_*` to match the production latency budget;
    the defaults are conservative.
-6. **Tighten to fail mode.** Switch
-   `DW_V2_CACHE_VALIDATION_MODE=fail`, set
+6. **Tighten to fail mode.** Set
    `DW_V2_FLEET_VALIDATION_MODE=fail` so the readiness contract
    refuses traffic when no active worker advertises the required
    compatibility marker, and if the replay-safety guardrail is
    green, switch `DW_V2_GUARDRAILS_BOOT=throw` in
    CI. Production may stay on `warn` if that matches the
-   operator's risk posture.
+   operator's risk posture. `DW_V2_CACHE_VALIDATION_MODE` is
+   warning-only by contract and does not participate in this
+   step — the cache admission stays a diagnostic regardless of
+   the configured value.
 
 Each step is reversible; every environment variable can be
 downgraded without data migration.

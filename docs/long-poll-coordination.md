@@ -250,7 +250,7 @@ If `-1` (no TTL) → cache backend not honoring TTL (configuration issue)
 
 - Auto-registration of observers in package service provider
 - Boot-time validation of cache backend for multi-node setups
-- Configuration flag: `DW_V2_MULTI_NODE=true` → fail fast if file cache detected (legacy `WORKFLOW_V2_MULTI_NODE` still honored)
+- Configuration flag: `DW_V2_MULTI_NODE=true` → log a warning if file cache is detected (legacy `WORKFLOW_V2_MULTI_NODE` still honored). The cache admission is warning-only by contract; boot is never blocked.
 - Load test suite across cache backends
 - Public `LongPollCoordinator` API wrapping lower-level primitives
 

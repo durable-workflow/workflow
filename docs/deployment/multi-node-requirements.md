@@ -74,7 +74,7 @@ See [Long-Poll Coordination](../long-poll-coordination.md) for the wake-signal p
 
 **Boot-time validation:**
 
-Set `DW_V2_MULTI_NODE=true` (env) or `workflows.v2.long_poll.multi_node=true` (config) to enable boot-time validation that the configured cache backend can carry the acceleration layer. Tune behaviour with `DW_V2_VALIDATE_CACHE_BACKEND` (default `true`) and `DW_V2_CACHE_VALIDATION_MODE` (`fail`, `warn`, or `silent`; default `warn`). Validation failures surface through the `backend_capabilities` health check; they do not affect correctness.
+Set `DW_V2_MULTI_NODE=true` (env) or `workflows.v2.long_poll.multi_node=true` (config) to enable boot-time validation that the configured cache backend can carry the acceleration layer. Tune behaviour with `DW_V2_VALIDATE_CACHE_BACKEND` (default `true`) and `DW_V2_CACHE_VALIDATION_MODE` (`fail`, `warn`, or `silent`; default `warn`). The cache admission is warning-only by contract: `silent` suppresses the diagnostic, and `warn` and `fail` both log a warning without blocking boot. Validation failures surface through the `backend_capabilities` health check; they do not affect correctness.
 
 ## Node Configuration
 

@@ -317,10 +317,13 @@ legally carry.
 
 Boot-time validation is gated by `DW_V2_VALIDATE_CACHE_BACKEND`
 (default true) and controlled by `DW_V2_CACHE_VALIDATION_MODE`
-(`fail`, `warn`, or `silent`; default `warn`). A deployment that
-sets the mode to `silent` accepts the risk of silently degraded
-wake propagation; the correctness substrate is unaffected either
-way.
+(`fail`, `warn`, or `silent`; default `warn`). The cache layer is
+the acceleration substrate, not the correctness substrate, so the
+admission is warning-only by contract: `silent` suppresses the
+diagnostic, and `warn` and `fail` both log a warning without
+blocking boot. A deployment that sets the mode to `silent`
+accepts the risk of silently degraded wake propagation; the
+correctness substrate is unaffected either way.
 
 ## Detection of misconfiguration and degraded acceleration
 
@@ -371,7 +374,10 @@ and a `workflows.v2.*` config path.
   validation on/off.
 - `DW_V2_CACHE_VALIDATION_MODE` /
   `workflows.v2.long_poll.validation_mode` — how validation
-  failures are surfaced (`fail`, `warn`, `silent`).
+  failures are surfaced (`fail`, `warn`, `silent`). The cache
+  admission is warning-only: `silent` suppresses the diagnostic;
+  `warn` and `fail` both log a warning. Boot is never blocked by
+  this check.
 - `DW_V2_TASK_DISPATCH_MODE` /
   `workflows.v2.task_dispatch_mode` — frozen by Phase 3. Named
   here because dispatch mode determines how tasks reach workers
@@ -412,10 +418,14 @@ can adopt this contract without a cutover.
    remains the same: `snapshot()` / `changed()` / `signal()` with
    a 60-second signal TTL upper bound. Discovery latency
    improves; the correctness substrate is unchanged.
-5. **Tighten the validation mode.** Once the deployment is
-   running on the chosen acceleration backend, move
-   `DW_V2_CACHE_VALIDATION_MODE` to `fail` so a future
-   misconfiguration is caught at boot rather than in production.
+5. **Keep the diagnostic visible.** Once the deployment is
+   running on the chosen acceleration backend, leave
+   `DW_V2_CACHE_VALIDATION_MODE` at `warn` (or `fail`, which is
+   equivalent) so a future misconfiguration surfaces a logged
+   warning and the `long_poll_wake_acceleration` health check
+   without blocking boot. Setting the mode to `silent` is allowed
+   but accepts the risk of degraded acceleration going
+   un-noticed.
 
 Each step is reversible. Rolling back to the cache-backed wake
 store or to a single-node deployment is always legal; the

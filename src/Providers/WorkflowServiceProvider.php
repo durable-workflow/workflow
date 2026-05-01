@@ -163,11 +163,11 @@ final class WorkflowServiceProvider extends ServiceProvider
     /**
      * Validate cache backend for multi-node deployments.
      *
-     * Checks if cache backend supports cross-node coordination when
-     * multi_node is enabled. Behavior controlled by validation_mode:
-     * - 'fail': throw exception
-     * - 'warn': log warning
-     * - 'silent': no action
+     * The cache layer is the acceleration substrate, not the correctness
+     * substrate, so this admission check is warning-only by contract: a
+     * misconfiguration surfaces a diagnostic but never blocks boot.
+     * `validation_mode` only chooses whether the diagnostic is logged
+     * (`warn`, `fail`) or suppressed (`silent`).
      */
     private function validateCacheBackend(): void
     {
@@ -192,13 +192,11 @@ final class WorkflowServiceProvider extends ServiceProvider
         $result = $validator->checkMultiNodeSafety($cache, $multiNode);
 
         if (! $result['safe']) {
-            $message = sprintf('[Workflow] Cache backend validation failed: %s', $result['message']);
+            if ($validationMode === 'silent') {
+                return;
+            }
 
-            match ($validationMode) {
-                'fail' => throw new \RuntimeException($message),
-                'warn' => Log::warning($message),
-                default => null, // 'silent' or unknown mode
-            };
+            Log::warning(sprintf('[Workflow] Cache backend validation failed: %s', $result['message']));
         } else {
             $validation = $validator->validateMultiNodeCapable($cache);
             Log::info(sprintf(

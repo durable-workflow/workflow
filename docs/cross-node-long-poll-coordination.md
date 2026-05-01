@@ -80,7 +80,7 @@ class LongPollCacheValidator
 ```
 
 **Add**: Boot-time validation in service provider:
-- If `multi_node` is true and cache is file-based → fail/warn
+- If `multi_node` is true and cache is file-based → log a warning (warning-only diagnostic; the cache admission never blocks boot)
 - Log cache backend type on boot for observability
 
 ### Phase 3: Move Observers to Package (Priority: P1)
@@ -158,7 +158,7 @@ This wraps the lower-level LongPoller + signals + timing hints into a documented
 **Mitigation**: Document which backends are production-ready, which are dev-only
 
 **Risk**: Validation too strict, breaks valid single-node file-cache setups  
-**Mitigation**: Only fail validation if multi_node=true AND file cache detected
+**Mitigation**: Cache validation is warning-only and only emits the diagnostic when multi_node=true AND file cache is detected; boot is never blocked.
 
 ## Timeline Estimate
 
