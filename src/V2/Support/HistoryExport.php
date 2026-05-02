@@ -85,8 +85,8 @@ final class HistoryExport
                 'workflow_class' => $run->workflow_class,
                 'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,
                 'visibility_labels' => $summary?->visibility_labels ?? $run->visibility_labels ?? $run->instance?->visibility_labels ?? [],
-                'memo' => $run->memo ?? $run->instance?->memo ?? [],
-                'search_attributes' => $summary?->search_attributes ?? $run->search_attributes ?? [],
+                'memo' => $run->typedMemos(),
+                'search_attributes' => self::resolveSearchAttributes($run, $summary),
                 'status' => $run->status->value,
                 'status_bucket' => $run->status->statusBucket()
 ->value,
@@ -403,6 +403,16 @@ final class HistoryExport
     private static function arrayValue(mixed $value): array
     {
         return is_array($value) ? array_values($value) : [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function resolveSearchAttributes(WorkflowRun $run, ?WorkflowRunSummary $summary): array
+    {
+        return $summary !== null
+            ? $summary->getTypedSearchAttributes()
+            : $run->typedSearchAttributes();
     }
 
     /**
@@ -955,7 +965,7 @@ final class HistoryExport
             'archive_reason' => $summary->archive_reason,
             'business_key' => $summary->business_key,
             'visibility_labels' => $summary->visibility_labels ?? [],
-            'search_attributes' => $summary->search_attributes ?? [],
+            'search_attributes' => $summary->getTypedSearchAttributes(),
             'is_current_run' => (bool) $summary->is_current_run,
             'started_at' => self::timestamp($summary->started_at),
             'closed_at' => self::timestamp($summary->closed_at),

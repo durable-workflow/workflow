@@ -41,13 +41,13 @@ final class V2ContinueAsNewMetadataTest extends TestCase
 
         $this->assertCount(2, $runs);
 
-        $firstRunAttrs = $runs[0]->search_attributes;
+        $firstRunAttrs = $runs[0]->typedSearchAttributes();
         $this->assertSame('production', $firstRunAttrs['env']);
         $this->assertSame('platform', $firstRunAttrs['team']);
         $this->assertSame('processing', $firstRunAttrs['status']);
         $this->assertSame('0', $firstRunAttrs['iteration']);
 
-        $secondRunAttrs = $runs[1]->search_attributes;
+        $secondRunAttrs = $runs[1]->typedSearchAttributes();
         $this->assertSame('production', $secondRunAttrs['env']);
         $this->assertSame('platform', $secondRunAttrs['team']);
         $this->assertSame('processing', $secondRunAttrs['status']);
@@ -82,13 +82,13 @@ final class V2ContinueAsNewMetadataTest extends TestCase
 
         $this->assertCount(2, $runs);
 
-        $firstRunMemo = $runs[0]->memo;
+        $firstRunMemo = $runs[0]->typedMemos();
         $this->assertSame('Taylor', $firstRunMemo['customer']);
         $this->assertSame('high', $firstRunMemo['priority']);
         $this->assertSame('Hello, run!', $firstRunMemo['last_greeting']);
         $this->assertSame(0, $firstRunMemo['iteration']);
 
-        $secondRunMemo = $runs[1]->memo;
+        $secondRunMemo = $runs[1]->typedMemos();
         $this->assertSame('Taylor', $secondRunMemo['customer']);
         $this->assertSame('high', $secondRunMemo['priority']);
         $this->assertSame('Hello, run!', $secondRunMemo['last_greeting']);
@@ -116,21 +116,21 @@ final class V2ContinueAsNewMetadataTest extends TestCase
 
         $this->assertCount(2, $runs);
 
-        $firstRunAttrs = $runs[0]->search_attributes;
+        $firstRunAttrs = $runs[0]->typedSearchAttributes();
         $this->assertSame('0', $firstRunAttrs['iteration']);
         $this->assertSame('processing', $firstRunAttrs['status']);
 
         // The second run inherits the first run's upserts, then upserts its own
-        $secondRunAttrs = $runs[1]->search_attributes;
+        $secondRunAttrs = $runs[1]->typedSearchAttributes();
         $this->assertSame('1', $secondRunAttrs['iteration']);
         $this->assertSame('processing', $secondRunAttrs['status']);
 
-        $firstRunMemo = $runs[0]->memo;
+        $firstRunMemo = $runs[0]->typedMemos();
         $this->assertSame('Hello, run!', $firstRunMemo['last_greeting']);
         $this->assertSame(0, $firstRunMemo['iteration']);
 
         // The second run inherits memo from the first, then overwrites with its own upsert
-        $secondRunMemo = $runs[1]->memo;
+        $secondRunMemo = $runs[1]->typedMemos();
         $this->assertSame('Hello, run!', $secondRunMemo['last_greeting']);
         $this->assertSame(1, $secondRunMemo['iteration']);
     }

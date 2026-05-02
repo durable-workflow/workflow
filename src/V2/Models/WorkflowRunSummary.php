@@ -39,8 +39,6 @@ class WorkflowRunSummary extends Model
         'repair_attention' => 'bool',
         'task_problem' => 'bool',
         'visibility_labels' => 'array',
-        'memo' => 'array',
-        'search_attributes' => 'array',
         'projection_schema_version' => 'integer',
         'history_event_count' => 'integer',
         'history_size_bytes' => 'integer',
@@ -159,7 +157,7 @@ class WorkflowRunSummary extends Model
     public function getTypedSearchAttributes(): array
     {
         if (! $this->exists) {
-            return $this->decodeVisibilityArrayAttribute($this->attributes['search_attributes'] ?? null);
+            return [];
         }
 
         $this->loadMissing('searchAttributes');
@@ -185,7 +183,7 @@ class WorkflowRunSummary extends Model
     public function getMemos(): array
     {
         if (! $this->exists) {
-            return $this->decodeVisibilityArrayAttribute($this->attributes['memo'] ?? null);
+            return [];
         }
 
         $this->loadMissing('memos');
@@ -201,22 +199,6 @@ class WorkflowRunSummary extends Model
             })
             ->sortKeys()
             ->toArray();
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function getSearchAttributesAttribute(mixed $value): array
-    {
-        return $this->getTypedSearchAttributes();
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function getMemoAttribute(mixed $value): array
-    {
-        return $this->getMemos();
     }
 
     /**
@@ -253,23 +235,5 @@ class WorkflowRunSummary extends Model
                 $q->where('value_string', $value);
             }
         });
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function decodeVisibilityArrayAttribute(mixed $value): array
-    {
-        if (is_array($value)) {
-            return $value;
-        }
-
-        if (! is_string($value) || $value === '') {
-            return [];
-        }
-
-        $decoded = json_decode($value, true);
-
-        return is_array($decoded) ? $decoded : [];
     }
 }

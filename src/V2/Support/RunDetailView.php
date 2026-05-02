@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 
 final class RunDetailView
 {
@@ -146,8 +147,8 @@ final class RunDetailView
             'workflow_type' => $run->workflow_type,
             'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,
             'visibility_labels' => $summary?->visibility_labels ?? $run->visibility_labels ?? $run->instance?->visibility_labels ?? [],
-            'memo' => $run->memo ?? $run->instance?->memo ?? [],
-            'search_attributes' => $summary?->search_attributes ?? $run->search_attributes ?? [],
+            'memo' => $run->typedMemos(),
+            'search_attributes' => self::resolveSearchAttributes($run, $summary),
             'workflow_definition_fingerprint' => $recordedDefinitionFingerprint,
             'workflow_definition_current_fingerprint' => $currentDefinitionFingerprint,
             'workflow_definition_matches_current' => $definitionMatchesCurrent,
@@ -386,6 +387,16 @@ final class RunDetailView
             'continuedWorkflows' => $lineageSnapshot['continued_workflows'],
             'chartData' => self::chartData($run, $activities),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function resolveSearchAttributes(WorkflowRun $run, ?WorkflowRunSummary $summary): array
+    {
+        return $summary !== null
+            ? $summary->getTypedSearchAttributes()
+            : $run->typedSearchAttributes();
     }
 
     /**

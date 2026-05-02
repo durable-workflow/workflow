@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\RunListItemView;
 
 final class RunListItemViewTest extends TestCase
@@ -320,7 +322,6 @@ final class RunListItemViewTest extends TestCase
             'wait_reason' => null,
             'liveness_state' => 'executing',
             'visibility_labels' => [],
-            'search_attributes' => [],
             'repair_attention' => false,
             'repair_blocked_reason' => null,
             'task_problem' => false,
@@ -333,9 +334,42 @@ final class RunListItemViewTest extends TestCase
             'projection_schema_version' => 1,
         ];
 
+        $merged = array_merge($defaults, $overrides);
+        $searchAttributes = $merged['search_attributes'] ?? null;
+        unset($merged['search_attributes']);
+
         $summary = new WorkflowRunSummary();
-        $summary->forceFill(array_merge($defaults, $overrides));
+        $summary->forceFill($merged);
+        $summary->exists = true;
+        $summary->setRelation(
+            'searchAttributes',
+            self::stubSearchAttributes($summary, is_array($searchAttributes) ? $searchAttributes : []),
+        );
 
         return $summary;
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     *
+     * @return Collection<int, WorkflowSearchAttribute>
+     */
+    private static function stubSearchAttributes(WorkflowRunSummary $summary, array $values): Collection
+    {
+        $rows = [];
+
+        foreach ($values as $key => $value) {
+            $attribute = new WorkflowSearchAttribute([
+                'workflow_run_id' => $summary->id,
+                'workflow_instance_id' => $summary->workflow_instance_id,
+                'key' => (string) $key,
+            ]);
+            $attribute->setTypedValueWithInference($value);
+            $attribute->upserted_at_sequence = 1;
+            $attribute->inherited_from_parent = false;
+            $rows[] = $attribute;
+        }
+
+        return new Collection($rows);
     }
 }

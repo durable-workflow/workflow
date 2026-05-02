@@ -66,8 +66,6 @@ final class WorkflowReplayer
             'workflow_class' => self::requiredString($workflow, 'workflow_class'),
             'business_key' => self::stringValue($workflow['business_key'] ?? null),
             'visibility_labels' => self::jsonValue(self::arrayValue($workflow['visibility_labels'] ?? null)),
-            'memo' => self::jsonValue(self::arrayValue($workflow['memo'] ?? null)),
-            'search_attributes' => self::jsonValue(self::arrayValue($workflow['search_attributes'] ?? null)),
             'status' => self::stringValue($workflow['status'] ?? null) ?? 'running',
             'closed_reason' => self::stringValue($workflow['closed_reason'] ?? null),
             'compatibility' => self::stringValue($workflow['compatibility'] ?? null),

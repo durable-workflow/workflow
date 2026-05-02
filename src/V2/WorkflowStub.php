@@ -678,9 +678,13 @@ final class WorkflowStub
      */
     public function memo(): array
     {
-        $memo = $this->run?->memo ?? $this->instance->memo ?? [];
+        if ($this->run !== null) {
+            return $this->run->typedMemos();
+        }
 
-        return is_array($memo) ? $memo : [];
+        $instanceMemo = $this->instance->memo ?? [];
+
+        return is_array($instanceMemo) ? $instanceMemo : [];
     }
 
     /**
@@ -688,9 +692,7 @@ final class WorkflowStub
      */
     public function searchAttributes(): array
     {
-        $attributes = $this->run?->search_attributes ?? [];
-
-        return is_array($attributes) ? $attributes : [];
+        return $this->run?->typedSearchAttributes() ?? [];
     }
 
     public function status(): string
@@ -945,8 +947,8 @@ final class WorkflowStub
                         'workflow_type' => $run->workflow_type,
                         'business_key' => $run->business_key,
                         'visibility_labels' => $run->visibility_labels,
-                        'memo' => $run->memo,
-                        'search_attributes' => $run->search_attributes,
+                        'memo' => $run->typedMemos(),
+                        'search_attributes' => $run->typedSearchAttributes(),
                         'outcome' => $command->outcome?->value,
                         'rejection_reason' => $command->rejection_reason,
                     ], null, $command);
@@ -2516,7 +2518,7 @@ final class WorkflowStub
                     'workflow_type' => $run->workflow_type,
                     'business_key' => $run->business_key,
                     'visibility_labels' => $run->visibility_labels,
-                    'memo' => $run->memo,
+                    'memo' => $run->typedMemos(),
                     'outcome' => $startCommand->outcome?->value,
                 ], null, $startCommand);
 

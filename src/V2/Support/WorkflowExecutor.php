@@ -2434,6 +2434,9 @@ final class WorkflowExecutor
 
         $parentReference = ChildRunHistory::parentReferenceForRun($run);
 
+        $continuedMemo = $continuedRun->typedMemos();
+        $continuedSearchAttributes = $continuedRun->typedSearchAttributes();
+
         WorkflowHistoryEvent::record($continuedRun, HistoryEventType::StartAccepted, [
             'workflow_command_id' => $startCommand->id,
             'workflow_instance_id' => $continuedRun->workflow_instance_id,
@@ -2442,8 +2445,8 @@ final class WorkflowExecutor
             'workflow_type' => $continuedRun->workflow_type,
             'business_key' => $continuedRun->business_key,
             'visibility_labels' => $continuedRun->visibility_labels,
-            'memo' => $continuedRun->memo,
-            'search_attributes' => $continuedRun->search_attributes,
+            'memo' => $continuedMemo,
+            'search_attributes' => $continuedSearchAttributes,
             'outcome' => $startCommand->outcome?->value,
         ], null, $startCommand);
 
@@ -2455,8 +2458,8 @@ final class WorkflowExecutor
             'workflow_command_id' => $startCommand->id,
             'business_key' => $continuedRun->business_key,
             'visibility_labels' => $continuedRun->visibility_labels,
-            'memo' => $continuedRun->memo,
-            'search_attributes' => $continuedRun->search_attributes,
+            'memo' => $continuedMemo,
+            'search_attributes' => $continuedSearchAttributes,
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($continuedRun->workflow_class),
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
@@ -3825,7 +3828,7 @@ final class WorkflowExecutor
         int $sequence,
         UpsertSearchAttributesCall $call,
     ): WorkflowHistoryEvent {
-        $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
+        $existing = $run->typedSearchAttributes();
         $merged = $existing;
 
         foreach ($call->attributes as $key => $value) {
@@ -3884,7 +3887,7 @@ final class WorkflowExecutor
         int $sequence,
         UpsertMemoCall $call,
     ): WorkflowHistoryEvent {
-        $existing = is_array($run->memo) ? $run->memo : [];
+        $existing = $run->typedMemos();
 
         $merged = $existing;
 

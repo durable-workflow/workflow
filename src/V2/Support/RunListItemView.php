@@ -66,7 +66,7 @@ final class RunListItemView
 
             // Operator metadata
             'visibility_labels' => is_array($summary->visibility_labels) ? $summary->visibility_labels : [],
-            'search_attributes' => is_array($summary->search_attributes) ? $summary->search_attributes : [],
+            'search_attributes' => $summary->getTypedSearchAttributes(),
 
             // Repair & diagnostics
             'repair_attention' => (bool) $summary->repair_attention,

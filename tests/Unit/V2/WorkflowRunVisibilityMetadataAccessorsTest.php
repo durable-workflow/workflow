@@ -16,26 +16,15 @@ final class WorkflowRunVisibilityMetadataAccessorsTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function testUnsavedRunRetainsInMemoryVisibilityMetadata(): void
+    public function testTypedMethodsReturnEmptyForUnsavedRun(): void
     {
-        $run = new WorkflowRun([
-            'memo' => [
-                'customer' => 'Taylor',
-            ],
-            'search_attributes' => [
-                'status' => 'pending',
-            ],
-        ]);
+        $run = new WorkflowRun();
 
-        $this->assertSame([
-            'customer' => 'Taylor',
-        ], $run->memo);
-        $this->assertSame([
-            'status' => 'pending',
-        ], $run->search_attributes);
+        $this->assertSame([], $run->typedMemos());
+        $this->assertSame([], $run->typedSearchAttributes());
     }
 
-    public function testRunPropertiesPreferTypedVisibilityRows(): void
+    public function testRunTypedMethodsReadFromTypedTables(): void
     {
         $run = $this->createRun();
 
@@ -46,15 +35,13 @@ final class WorkflowRunVisibilityMetadataAccessorsTest extends TestCase
 
         $this->assertSame([
             'customer' => 'Taylor',
-        ], $run->memo);
+        ], $run->typedMemos());
         $this->assertSame([
             'status' => 'running',
-        ], $run->search_attributes);
-        $this->assertSame($run->memo, $run->typedMemos());
-        $this->assertSame($run->search_attributes, $run->typedSearchAttributes());
+        ], $run->typedSearchAttributes());
     }
 
-    public function testSummaryPropertiesPreferTypedVisibilityRows(): void
+    public function testSummaryTypedMethodsReadFromTypedTables(): void
     {
         $run = $this->createRun();
         $statusBucket = $run->status->statusBucket();
@@ -79,12 +66,10 @@ final class WorkflowRunVisibilityMetadataAccessorsTest extends TestCase
 
         $this->assertSame([
             'customer' => 'Taylor',
-        ], $summary->memo);
+        ], $summary->getMemos());
         $this->assertSame([
             'status' => 'running',
-        ], $summary->search_attributes);
-        $this->assertSame($summary->memo, $summary->getMemos());
-        $this->assertSame($summary->search_attributes, $summary->getTypedSearchAttributes());
+        ], $summary->getTypedSearchAttributes());
     }
 
     private function createRun(array $overrides = []): WorkflowRun

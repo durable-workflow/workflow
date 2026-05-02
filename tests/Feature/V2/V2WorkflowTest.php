@@ -2478,7 +2478,7 @@ final class V2WorkflowTest extends TestCase
                 'vip' => true,
             ],
             'line_items' => [123, 456],
-        ], $run->memo);
+        ], $run->typedMemos());
         $this->assertSame('order-123', $summary->business_key);
         $this->assertSameJsonObject([
             'region' => 'us-east',
@@ -2694,7 +2694,7 @@ final class V2WorkflowTest extends TestCase
                     'tier' => 'gold',
                 ],
             ],
-        ], $runs->map(static fn (WorkflowRun $run): ?array => $run->memo)
+        ], $runs->map(static fn (WorkflowRun $run): array => $run->typedMemos())
             ->all());
         $this->assertSame(['completed', 'completed', 'completed'], $runs->pluck('status')->map(
             static fn (RunStatus $status): string => $status->value

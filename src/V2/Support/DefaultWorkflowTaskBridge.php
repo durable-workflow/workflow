@@ -1855,7 +1855,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         int $sequence,
     ): int {
         $call = new UpsertSearchAttributesCall($command['attributes']);
-        $existing = is_array($run->search_attributes) ? $run->search_attributes : [];
+        $existing = $run->typedSearchAttributes();
         $merged = $existing;
 
         foreach ($call->attributes as $key => $value) {

@@ -94,7 +94,7 @@ final class V2SearchAttributeTest extends TestCase
             'customer' => 'Taylor',
             'result' => 'success',
             'status' => 'completed',
-        ], $run->search_attributes);
+        ], $run->typedSearchAttributes());
     }
 
     public function testSearchAttributesAppearInRunSummary(): void
@@ -113,7 +113,7 @@ final class V2SearchAttributeTest extends TestCase
             'customer' => 'Taylor',
             'result' => 'success',
             'status' => 'completed',
-        ], $summary->search_attributes);
+        ], $summary->getTypedSearchAttributes());
     }
 
     public function testHistoryEventSequenceIncludesSearchAttributeUpserts(): void
@@ -157,9 +157,10 @@ final class V2SearchAttributeTest extends TestCase
 
         $run = WorkflowRun::query()->where('id', $workflow->runId())->firstOrFail();
 
-        $this->assertArrayHasKey('customer', $run->search_attributes);
-        $this->assertArrayHasKey('status', $run->search_attributes);
-        $this->assertArrayHasKey('result', $run->search_attributes);
+        $runAttrs = $run->typedSearchAttributes();
+        $this->assertArrayHasKey('customer', $runAttrs);
+        $this->assertArrayHasKey('status', $runAttrs);
+        $this->assertArrayHasKey('result', $runAttrs);
     }
 
     public function testVisibilityFiltersDefinitionIncludesSearchAttributes(): void

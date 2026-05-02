@@ -96,7 +96,7 @@ final class V2MemoUpsertTest extends TestCase
             'result_summary' => 'Hello, Taylor!',
             'status' => 'completed',
             'tags' => ['greeting', 'test'],
-        ], $run->memo);
+        ], $run->typedMemos());
     }
 
     public function testHistoryEventSequenceIncludesMemoUpserts(): void
@@ -141,10 +141,11 @@ final class V2MemoUpsertTest extends TestCase
         $run = WorkflowRun::query()->where('id', $workflow->runId())->firstOrFail();
 
         // The workflow does not set any null keys, so all keys should be present
-        $this->assertArrayHasKey('customer_name', $run->memo);
-        $this->assertArrayHasKey('status', $run->memo);
-        $this->assertArrayHasKey('result_summary', $run->memo);
-        $this->assertArrayHasKey('tags', $run->memo);
+        $runMemo = $run->typedMemos();
+        $this->assertArrayHasKey('customer_name', $runMemo);
+        $this->assertArrayHasKey('status', $runMemo);
+        $this->assertArrayHasKey('result_summary', $runMemo);
+        $this->assertArrayHasKey('tags', $runMemo);
     }
 
     public function testMemoAccessibleOnWorkflowStub(): void

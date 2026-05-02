@@ -54,8 +54,9 @@ final class V2StartSearchAttributeTest extends TestCase
 
         $run = WorkflowRun::query()->where('id', $workflow->runId())->firstOrFail();
 
-        $this->assertArrayHasKey('tenant', $run->search_attributes);
-        $this->assertSame('acme', $run->search_attributes['tenant']);
+        $runAttrs = $run->typedSearchAttributes();
+        $this->assertArrayHasKey('tenant', $runAttrs);
+        $this->assertSame('acme', $runAttrs['tenant']);
     }
 
     public function testStartTimeSearchAttributesAppearInRunSummary(): void
@@ -75,8 +76,9 @@ final class V2StartSearchAttributeTest extends TestCase
 
         $summary = WorkflowRunSummary::query()->where('id', $workflow->runId())->firstOrFail();
 
-        $this->assertArrayHasKey('region', $summary->search_attributes);
-        $this->assertSame('us-east', $summary->search_attributes['region']);
+        $summaryAttrs = $summary->getTypedSearchAttributes();
+        $this->assertArrayHasKey('region', $summaryAttrs);
+        $this->assertSame('us-east', $summaryAttrs['region']);
     }
 
     public function testStartTimeSearchAttributesRecordedInStartHistory(): void

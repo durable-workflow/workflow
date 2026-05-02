@@ -1344,17 +1344,18 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('waiting', $result['run_status']);
 
         $run->refresh();
+        $runAttrs = $run->typedSearchAttributes();
         $this->assertSame([
             'env' => 'staging',
             'tenant' => 'acme',
-        ], $run->search_attributes);
+        ], $runAttrs);
 
         $summary = WorkflowRunSummary::query()
             ->whereKey($run->id)
             ->first();
 
         $this->assertNotNull($summary);
-        $this->assertSame($run->search_attributes, $summary->search_attributes);
+        $this->assertSame($runAttrs, $summary->getTypedSearchAttributes());
 
         $event = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
@@ -1367,7 +1368,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             'env' => 'staging',
             'remove_me' => null,
         ], $event->payload['attributes']);
-        $this->assertSame($run->search_attributes, $event->payload['merged']);
+        $this->assertSame($runAttrs, $event->payload['merged']);
     }
 
     public function testCompleteUpdateCommandClosesAcceptedUpdateLifecycle(): void

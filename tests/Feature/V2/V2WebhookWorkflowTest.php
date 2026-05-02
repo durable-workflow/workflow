@@ -554,7 +554,7 @@ final class V2WebhookWorkflowTest extends TestCase
                 'name' => 'Taylor',
                 'vip' => true,
             ],
-        ], $run->memo);
+        ], $run->typedMemos());
     }
 
     public function testWebhookCommandsPersistDurableIngressMetadata(): void
@@ -2831,7 +2831,7 @@ final class V2WebhookWorkflowTest extends TestCase
         $this->assertSame([
             'env' => 'staging',
             'tenant' => 'acme',
-        ], $summary->search_attributes);
+        ], $summary->getTypedSearchAttributes());
     }
 
     public function testWorkflowTaskCompleteWebhookAppliesTerminalCommand(): void

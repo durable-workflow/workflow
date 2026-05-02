@@ -512,7 +512,7 @@ final class V2WorkflowControlPlaneTest extends TestCase
         ], $run->visibility_labels);
         $this->assertSameJsonObject([
             'description' => 'Test workflow',
-        ], $run->memo);
+        ], $run->typedMemos());
     }
 
     public function testStartResolvesDottedDurableTypeKey(): void

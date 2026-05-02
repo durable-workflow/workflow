@@ -31,8 +31,6 @@ class WorkflowRun extends Model
     protected $casts = [
         'status' => RunStatus::class,
         'visibility_labels' => 'array',
-        'memo' => 'array',
-        'search_attributes' => 'array',
         'last_command_sequence' => 'integer',
         'message_cursor_position' => 'integer',
         'run_timeout_seconds' => 'integer',
@@ -305,7 +303,7 @@ class WorkflowRun extends Model
     public function typedSearchAttributes(): array
     {
         if (! $this->exists) {
-            return $this->decodeVisibilityArrayAttribute($this->attributes['search_attributes'] ?? null);
+            return [];
         }
 
         $this->loadMissing('searchAttributes');
@@ -329,7 +327,7 @@ class WorkflowRun extends Model
     public function typedMemos(): array
     {
         if (! $this->exists) {
-            return $this->decodeVisibilityArrayAttribute($this->attributes['memo'] ?? null);
+            return [];
         }
 
         $this->loadMissing('memos');
@@ -345,40 +343,6 @@ class WorkflowRun extends Model
             })
             ->sortKeys()
             ->toArray();
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function getSearchAttributesAttribute(mixed $value): array
-    {
-        return $this->typedSearchAttributes();
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    public function getMemoAttribute(mixed $value): array
-    {
-        return $this->typedMemos();
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function decodeVisibilityArrayAttribute(mixed $value): array
-    {
-        if (is_array($value)) {
-            return $value;
-        }
-
-        if (! is_string($value) || $value === '') {
-            return [];
-        }
-
-        $decoded = json_decode($value, true);
-
-        return is_array($decoded) ? $decoded : [];
     }
 
     /**
