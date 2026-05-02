@@ -32,7 +32,6 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -44,6 +43,71 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     public const AVAILABILITY_CEILING_SECONDS = 1;
 
     public const WORKFLOW_TASK_LEASE_SECONDS = 300;
+
+    /**
+     * Relations the history-projection role consumes for a workflow-bridge
+     * projection. Hydrated by {@see self::projectRun()} before the role is
+     * invoked so the role implementation always sees an up-to-date graph,
+     * regardless of which call path queued the projection.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'failures',
+    ];
+
+    /**
+     * Projection relations for call sites that also need to see active timer
+     * rows on the run (e.g. the post-execute terminal-status projection that
+     * cancels still-armed timers).
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_TIMERS = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+    ];
+
+    /**
+     * Projection relations for call sites that also need the full history
+     * stream (terminal-write paths and command-application paths that close
+     * out a workflow turn).
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_HISTORY = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+        'historyEvents',
+    ];
+
+    /**
+     * Projection relations for the parent-resume rebuild path, which also
+     * needs the parent's child-link graph hydrated so the projection sees
+     * the same shape the parent will read on its next workflow task.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_CHILDREN = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+        'historyEvents',
+        'childLinks.childRun.instance.currentRun',
+        'childLinks.childRun.failures',
+        'childLinks.childRun.historyEvents',
+    ];
 
     private const TERMINAL_TYPES = ['complete_workflow', 'fail_workflow', 'continue_as_new'];
 
@@ -183,7 +247,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                self::projectRunSummary($run);
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 return self::claimRejected(
                     $taskId,
@@ -193,7 +257,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                self::projectRunSummary($run);
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 $mismatch = TaskCompatibility::mismatchReason($task, $run);
 
@@ -218,7 +282,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'last_claim_error' => null,
             ])->save();
 
-            self::projectRunSummary($run);
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             return [
                 'claimed' => true,
@@ -411,9 +475,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                         'lease_expires_at' => null,
                     ])->save();
 
-                    $this->projectRun(
-                        $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']) ?? $run
-                    );
+                    self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_TIMERS);
 
                     return null;
                 }
@@ -440,7 +502,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 /** @var WorkflowRun $run */
                 $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                     ->findOrFail($task->workflow_run_id);
-                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
             });
 
             return [
@@ -519,7 +581,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->findOrFail($task->workflow_run_id);
 
-            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             return [
                 'recorded' => true,
@@ -821,9 +883,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $this->dispatchParentResumeTasksForRun($run);
 
-        $this->projectRun(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']) ?? $run
-        );
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
     }
 
     /**
@@ -903,9 +963,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $this->dispatchParentResumeTasksForRun($run);
 
-        $this->projectRun(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']) ?? $run
-        );
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
     }
 
     private function markRunWaiting(WorkflowRun $run, WorkflowTask $task): void
@@ -920,9 +978,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'lease_expires_at' => null,
         ])->save();
 
-        $this->projectRun(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']) ?? $run
-        );
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
     }
 
     /**
@@ -1747,10 +1803,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $createdTaskIds[] = $childTask->id;
 
-        $this->projectRun(
-            $childRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                ?? $childRun
-        );
+        self::projectRun($childRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
 
         return $sequence + 1;
     }
@@ -1936,14 +1989,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         LifecycleEventDispatcher::workflowStarted($continuedRun);
 
-        $this->projectRun(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']) ?? $run
-        );
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
 
-        $this->projectRun(
-            $continuedRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                ?? $continuedRun
-        );
+        self::projectRun($continuedRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
     }
 
     private function startChildRetryIfAvailable(
@@ -2160,10 +2208,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         TaskDispatcher::dispatch($retryTask);
 
-        $this->projectRun(
-            $retryRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                ?? $retryRun
-        );
+        self::projectRun($retryRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
 
         return $retryTask;
     }
@@ -2223,20 +2268,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                         WorkflowStepHistory::CHILD_WORKFLOW,
                     );
                 } catch (HistoryEventShapeMismatchException) {
-                    $this->projectRun(
-                        $parentRun->fresh([
-                            'instance',
-                            'tasks',
-                            'activityExecutions',
-                            'timers',
-                            'failures',
-                            'historyEvents',
-                            'childLinks.childRun.instance.currentRun',
-                            'childLinks.childRun.failures',
-                            'childLinks.childRun.historyEvents',
-                        ])
-                            ?? $parentRun
-                    );
+                    self::projectRun($parentRun, self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN);
 
                     continue;
                 }
@@ -2910,13 +2942,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 return false;
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
+                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 return false;
             }
@@ -2932,7 +2964,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'last_claim_error' => null,
             ])->save();
 
-            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             return true;
         });
@@ -3012,31 +3044,31 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         )));
     }
 
-    private static function projectRunSummary(WorkflowRun $run): WorkflowRunSummary
+    /**
+     * Hydrate the relations the projection needs and dispatch into the
+     * {@see HistoryProjectionRole} contract. Every projection emitted by the
+     * workflow bridge flows through this helper so the role contract is the
+     * single entry point — no call site reaches into `RunSummaryProjector`
+     * directly, and the relation-hydration shape lives in one of the
+     * `PROJECTION_RUN_RELATIONS*` constants rather than at each call site.
+     *
+     * @param list<string> $with
+     */
+    private static function projectRun(WorkflowRun $run, array $with = []): void
     {
-        /** @var HistoryProjectionRole $role */
-        $role = app(HistoryProjectionRole::class);
+        if ($with !== []) {
+            $run = $run->fresh($with) ?? $run;
+        }
 
-        return $role->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
+        self::historyProjectionRole()->projectRun($run);
     }
 
-    private function historyProjectionRole(): HistoryProjectionRole
+    private static function historyProjectionRole(): HistoryProjectionRole
     {
         /** @var HistoryProjectionRole $role */
         $role = app(HistoryProjectionRole::class);
 
         return $role;
-    }
-
-    private function projectRun(WorkflowRun $run): void
-    {
-        $this->historyProjectionRole()
-            ->projectRun($run);
-    }
-
-    private function projectionRun(WorkflowRun $run): WorkflowRun
-    {
-        return $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run;
     }
 
     private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void

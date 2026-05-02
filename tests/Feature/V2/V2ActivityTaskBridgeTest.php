@@ -676,6 +676,22 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertContains(['projectRun', $run->id], $customRole->calls);
     }
 
+    public function testHeartbeatRenewLeaseUsesHistoryProjectionRoleBinding(): void
+    {
+        [$run, $execution, $task] = $this->createActivityTask();
+
+        $claim = $this->bridge->claim($task->id, 'worker-1');
+        $this->assertNotNull($claim);
+
+        $customRole = $this->bindHistoryProjectionSpy();
+
+        $result = $this->bridge->heartbeat($claim['activity_attempt_id']);
+
+        $this->assertTrue($result['can_continue']);
+        $this->assertTrue($result['heartbeat_recorded']);
+        $this->assertContains(['projectRun', $run->id], $customRole->calls);
+    }
+
     private function bindHistoryProjectionSpy()
     {
         $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {

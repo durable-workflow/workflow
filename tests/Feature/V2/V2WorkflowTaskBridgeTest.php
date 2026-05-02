@@ -1835,6 +1835,116 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertStringNotContainsString('RunSummaryProjector::project(', $activityBridgeSource);
     }
 
+    public function testBridgeSourcesDoNotMutateWorkflowRunSummaryDirectly(): void
+    {
+        $repoRoot = dirname(__DIR__, 3);
+        $workflowBridgeSource = file_get_contents($repoRoot . '/src/V2/Support/DefaultWorkflowTaskBridge.php');
+        $activityBridgeSource = file_get_contents($repoRoot . '/src/V2/Support/DefaultActivityTaskBridge.php');
+
+        $this->assertIsString($workflowBridgeSource);
+        $this->assertIsString($activityBridgeSource);
+        $this->assertStringNotContainsString(
+            'WorkflowRunSummary::query()',
+            $workflowBridgeSource,
+            'Bridge must mutate run summaries via HistoryProjectionRole, not direct queries.',
+        );
+        $this->assertStringNotContainsString(
+            'WorkflowRunSummary::query()',
+            $activityBridgeSource,
+            'Bridge must mutate run summaries via HistoryProjectionRole, not direct queries.',
+        );
+    }
+
+    public function testActivityBridgeProjectRunHelperOwnsRelationHydration(): void
+    {
+        $repoRoot = dirname(__DIR__, 3);
+        $activityBridgeSource = file_get_contents($repoRoot . '/src/V2/Support/DefaultActivityTaskBridge.php');
+
+        $this->assertIsString($activityBridgeSource);
+
+        $this->assertStringContainsString(
+            'PROJECTION_RUN_RELATIONS',
+            $activityBridgeSource,
+            'Activity bridge must declare a PROJECTION_RUN_RELATIONS constant so the relation list lives in one place.',
+        );
+
+        $this->assertMatchesRegularExpression(
+            '/private static function projectRun\(WorkflowRun \$run, array \$with = \[\]\): void/',
+            $activityBridgeSource,
+            'projectRun() must accept the relation list so call sites do not hydrate inline.',
+        );
+
+        $this->assertSame(
+            1,
+            substr_count($activityBridgeSource, 'historyProjectionRole()->projectRun('),
+            'Only the projectRun() helper may dispatch into HistoryProjectionRole::projectRun().',
+        );
+
+        $this->assertDoesNotMatchRegularExpression(
+            '/->fresh\(\[[^\]]*\]\)\s*\n?\s*\?\?\s*\$\w+\s*\)/',
+            $activityBridgeSource,
+            'Projection call sites must not inline `->fresh([...]) ?? $run` — '
+                . 'the projectRun() helper owns relation hydration.',
+        );
+    }
+
+    public function testWorkflowBridgeProjectRunHelperOwnsRelationHydration(): void
+    {
+        $repoRoot = dirname(__DIR__, 3);
+        $workflowBridgeSource = file_get_contents($repoRoot . '/src/V2/Support/DefaultWorkflowTaskBridge.php');
+
+        $this->assertIsString($workflowBridgeSource);
+
+        $this->assertStringContainsString(
+            'PROJECTION_RUN_RELATIONS',
+            $workflowBridgeSource,
+            'Workflow bridge must declare a PROJECTION_RUN_RELATIONS constant so the relation list lives in one place.',
+        );
+
+        $this->assertStringContainsString(
+            'PROJECTION_RUN_RELATIONS_WITH_TIMERS',
+            $workflowBridgeSource,
+            'Workflow bridge must declare PROJECTION_RUN_RELATIONS_WITH_TIMERS for the post-execute terminal projection.',
+        );
+
+        $this->assertStringContainsString(
+            'PROJECTION_RUN_RELATIONS_WITH_HISTORY',
+            $workflowBridgeSource,
+            'Workflow bridge must declare PROJECTION_RUN_RELATIONS_WITH_HISTORY for terminal-write call sites.',
+        );
+
+        $this->assertStringContainsString(
+            'PROJECTION_RUN_RELATIONS_WITH_CHILDREN',
+            $workflowBridgeSource,
+            'Workflow bridge must declare PROJECTION_RUN_RELATIONS_WITH_CHILDREN for the parent-resume rebuild path.',
+        );
+
+        $this->assertMatchesRegularExpression(
+            '/private static function projectRun\(WorkflowRun \$run, array \$with = \[\]\): void/',
+            $workflowBridgeSource,
+            'projectRun() must accept the relation list so call sites do not hydrate inline.',
+        );
+
+        $this->assertSame(
+            1,
+            substr_count($workflowBridgeSource, 'historyProjectionRole()->projectRun('),
+            'Only the projectRun() helper may dispatch into HistoryProjectionRole::projectRun().',
+        );
+
+        $this->assertDoesNotMatchRegularExpression(
+            '/->fresh\(\[[^\]]*\]\)\s*\n?\s*\?\?\s*\$\w+\s*\)/',
+            $workflowBridgeSource,
+            'Projection call sites must not inline `->fresh([...]) ?? $run` — '
+                . 'the projectRun() helper owns relation hydration.',
+        );
+
+        $this->assertStringNotContainsString(
+            'projectRunSummary',
+            $workflowBridgeSource,
+            'projectRunSummary() must be removed in favor of the unified projectRun() helper.',
+        );
+    }
+
     public function testCompleteOpenConditionWaitWithoutTimeoutRecordsEventAndMarksWaiting(): void
     {
         $run = $this->createWaitingRun();

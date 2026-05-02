@@ -20,11 +20,25 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 
 final class DefaultActivityTaskBridge implements ActivityTaskBridge
 {
+    /**
+     * Relations the history-projection role consumes for an activity-bridge
+     * projection. Hydrated by {@see self::projectRun()} before the role is
+     * invoked so the role implementation always sees an up-to-date graph,
+     * regardless of which call path queued the projection.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'failures',
+    ];
+
     public function poll(
         ?string $connection,
         ?string $queue,
@@ -382,13 +396,6 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
                 'lease_expires_at' => $leaseExpiresAt,
             ])->save();
 
-            WorkflowRunSummary::query()
-                ->whereKey($execution->workflow_run_id)
-                ->where('next_task_id', $task->id)
-                ->update([
-                    'next_task_lease_expires_at' => $leaseExpiresAt,
-                ]);
-
             $payload = [
                 'activity_execution_id' => $execution->id,
                 'activity_attempt_id' => $attempt->id,
@@ -416,6 +423,8 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             }
 
             WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, $payload, $task);
+
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             return self::attemptStatus($attemptId, $attempt, $execution, $run, $task, true, false, null, true);
         });
@@ -532,7 +541,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
 
         ActivityCancellation::record($run, $execution, $task);
 
-        self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
     }
 
     /**
@@ -640,8 +649,22 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             : null;
     }
 
-    private static function projectRun(WorkflowRun $run): void
+    /**
+     * Hydrate the relations the projection needs and dispatch into the
+     * {@see HistoryProjectionRole} contract. Every projection emitted by the
+     * activity bridge flows through this helper so the role contract is the
+     * single entry point — no call site reaches into `RunSummaryProjector`
+     * directly, and the relation-hydration shape lives in one place rather
+     * than at each call site.
+     *
+     * @param list<string> $with
+     */
+    private static function projectRun(WorkflowRun $run, array $with = []): void
     {
+        if ($with !== []) {
+            $run = $run->fresh($with) ?? $run;
+        }
+
         self::historyProjectionRole()->projectRun($run);
     }
 
