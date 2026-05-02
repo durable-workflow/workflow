@@ -84,6 +84,9 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'StructuralLimits',
         'WorkerProtocolVersionResolver',
         'ControlPlaneVersionResolver',
+        'WorkflowStartGate',
+        'WorkflowExecutionUnavailableException',
+        'ScheduleManager',
     ];
 
     private const REQUIRED_HTTP_ROUTES = [

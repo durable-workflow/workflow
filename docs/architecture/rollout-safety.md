@@ -229,6 +229,31 @@ Guarantees:
   Scopes with no heartbeats yet and runs without a required
   marker fall back to normal dispatch so the first worker
   heartbeat never races an incoming dispatch.
+- `Workflow\V2\Support\WorkflowStartGate` is the authority on
+  per-call admission for new workflow runs under
+  `DW_V2_FLEET_VALIDATION_MODE=fail`. It refuses to admit a start
+  when the run's resolved connection/queue has at least one
+  active worker heartbeat but none of them advertise the
+  `WorkerCompatibility::current()` marker the producer is about
+  to write onto the run. The start callers
+  (`Workflow\V2\WorkflowStub::attemptStart`,
+  `Workflow\V2\WorkflowStub::attemptSignalWithStart`, and
+  `Workflow\V2\Support\DefaultWorkflowControlPlane::startWorkflow`)
+  consult the gate inside the same transaction that would have
+  created the run, persist a rejected `WorkflowCommand` carrying
+  `CommandOutcome::RejectedCompatibilityBlocked` with
+  `rejection_reason = compatibility_blocked`, and surface the
+  refusal as
+  `Workflow\V2\Exceptions\WorkflowExecutionUnavailableException`
+  with `blockedReason() = compatibility_blocked` so
+  `Workflow\V2\Support\ScheduleManager` can record a `skipped`
+  trigger without creating a run. Scopes with no heartbeats yet
+  and producers with no required marker fall back to normal
+  start admission so the first worker heartbeat never races an
+  incoming start. The rejection is observable through the
+  `runs.compatibility_blocked` and
+  `backlog.oldest_compatibility_blocked_started_at` keys on
+  `OperatorMetrics::snapshot()`.
 - Operators see mixed-build state explicitly through
   `workers.active_worker_scopes` (how many distinct
   namespace/queue/compatibility tuples are live) and through the
