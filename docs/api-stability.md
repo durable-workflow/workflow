@@ -28,6 +28,18 @@ The platform surface families that own the contents of this document are
 `official_sdks` (for the `Workflow` PHP authoring and `Support\*` API)
 and `history_event_wire_formats` (for the frozen-event tables below).
 
+## Relationship to the platform conformance suite
+
+This document declares *what* the per-package contract is. The platform
+conformance suite — specified in
+[`docs/architecture/platform-conformance-suite.md`](architecture/platform-conformance-suite.md)
+and mirrored by `Workflow\V2\Support\PlatformConformanceSuite` — defines
+*how* an implementation proves it follows the contract: the target
+matrix, the fixture catalog, the pass / fail rules, and the release
+gates. The PHP workflow package claims the `official_sdk` and
+`worker_protocol_implementation` targets; releases of this package must
+attach a passing harness result document before tag.
+
 ## Scope
 
 The workflow package is consumed by three distinct audiences:
