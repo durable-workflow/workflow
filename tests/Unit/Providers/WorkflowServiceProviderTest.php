@@ -138,6 +138,22 @@ final class WorkflowServiceProviderTest extends TestCase
         $this->assertSame($custom, $this->app->make(HistoryProjectionMaintenanceRole::class));
     }
 
+    public function testHistoryProjectionMaintenanceRoleFallsBackWhenBoundRoleLacksMaintenance(): void
+    {
+        $projectionOnly = $this->createMock(HistoryProjectionRole::class);
+
+        $this->app->offsetUnset(HistoryProjectionRole::class);
+        $this->app->offsetUnset(HistoryProjectionMaintenanceRole::class);
+        $this->app->singleton(HistoryProjectionRole::class, static fn () => $projectionOnly);
+
+        (new WorkflowServiceProvider($this->app))->register();
+
+        $resolved = $this->app->make(HistoryProjectionMaintenanceRole::class);
+
+        $this->assertInstanceOf(HistoryProjectionMaintenanceRole::class, $resolved);
+        $this->assertNotSame($projectionOnly, $resolved);
+    }
+
     public function testMatchingRoleBindingDefersToAppBinding(): void
     {
         $custom = $this->createMock(MatchingRole::class);

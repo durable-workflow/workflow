@@ -8,6 +8,8 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\App;
+use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 
@@ -38,11 +40,20 @@ final class RunLineageProjector
             $projected[] = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen);
         }
 
-        StaleProjectionCleanup::forRun($lineageModel, $run->id, $seen);
+        self::historyProjectionMaintenanceRole()
+            ->pruneStaleProjectionRowsForRun($lineageModel, $run->id, $seen);
 
         $run->unsetRelation('lineageEntries');
 
         return array_values(array_filter($projected));
+    }
+
+    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
+    {
+        /** @var HistoryProjectionMaintenanceRole $role */
+        $role = App::make(HistoryProjectionMaintenanceRole::class);
+
+        return $role;
     }
 
     /**

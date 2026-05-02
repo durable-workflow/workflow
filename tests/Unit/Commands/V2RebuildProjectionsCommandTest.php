@@ -67,6 +67,14 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             ): array {
                 return $this->delegate->pruneStaleProjections($runIds, $instanceId, $dryRun);
             }
+
+            public function pruneStaleProjectionRowsForRun(
+                string $projectionModel,
+                string $runId,
+                array $seenProjectionIds,
+            ): void {
+                $this->delegate->pruneStaleProjectionRowsForRun($projectionModel, $runId, $seenProjectionIds);
+            }
         };
 
         $this->app->instance(HistoryProjectionMaintenanceRole::class, $customRole);
@@ -109,6 +117,14 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ?string $instanceId = null,
                 bool $dryRun = false
             ): array {
+                throw new \RuntimeException('unused');
+            }
+
+            public function pruneStaleProjectionRowsForRun(
+                string $projectionModel,
+                string $runId,
+                array $seenProjectionIds,
+            ): void {
                 throw new \RuntimeException('unused');
             }
         };
@@ -330,6 +346,14 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ];
 
                 return $this->delegate->pruneStaleProjections($runIds, $instanceId, $dryRun);
+            }
+
+            public function pruneStaleProjectionRowsForRun(
+                string $projectionModel,
+                string $runId,
+                array $seenProjectionIds,
+            ): void {
+                $this->delegate->pruneStaleProjectionRowsForRun($projectionModel, $runId, $seenProjectionIds);
             }
         };
 

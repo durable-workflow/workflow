@@ -45,6 +45,7 @@ use Workflow\V2\Support\DefaultOperatorObservabilityRepository;
 use Workflow\V2\Support\DefaultSchedulerRole;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
 use Workflow\V2\Support\LongPollCacheValidator;
 use Workflow\V2\Support\PhpClassScheduleStarter;
 use Workflow\V2\Support\TypeRegistry;
@@ -72,16 +73,14 @@ final class WorkflowServiceProvider extends ServiceProvider
                 static function ($app): HistoryProjectionMaintenanceRole {
                     $role = $app->make(HistoryProjectionRole::class);
 
-                    if (! $role instanceof HistoryProjectionMaintenanceRole) {
-                        throw new \RuntimeException(sprintf(
-                            'Configured %s [%s] must also implement %s to back workflow:v2:rebuild-projections.',
-                            HistoryProjectionRole::class,
-                            $role::class,
-                            HistoryProjectionMaintenanceRole::class,
-                        ));
+                    if ($role instanceof HistoryProjectionMaintenanceRole) {
+                        return $role;
                     }
 
-                    return $role;
+                    return new HistoryProjectionMaintenanceFallback(
+                        $role,
+                        new DefaultHistoryProjectionRole(),
+                    );
                 }
             );
         }

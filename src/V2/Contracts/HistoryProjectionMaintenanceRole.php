@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Contracts;
 
+use Illuminate\Database\Eloquent\Model;
+
 interface HistoryProjectionMaintenanceRole extends HistoryProjectionRole
 {
     /**
@@ -17,4 +19,14 @@ interface HistoryProjectionMaintenanceRole extends HistoryProjectionRole
      * }
      */
     public function pruneStaleProjections(array $runIds = [], ?string $instanceId = null, bool $dryRun = false): array;
+
+    /**
+     * @param class-string<Model> $projectionModel
+     * @param list<string> $seenProjectionIds
+     */
+    public function pruneStaleProjectionRowsForRun(
+        string $projectionModel,
+        string $runId,
+        array $seenProjectionIds,
+    ): void;
 }

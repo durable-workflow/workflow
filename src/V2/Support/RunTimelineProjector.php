@@ -7,6 +7,8 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\App;
+use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 
@@ -64,11 +66,20 @@ final class RunTimelineProjector
             $projected[] = $row;
         }
 
-        StaleProjectionCleanup::forRun($entryModel, $run->id, $seen);
+        self::historyProjectionMaintenanceRole()
+            ->pruneStaleProjectionRowsForRun($entryModel, $run->id, $seen);
 
         $run->unsetRelation('timelineEntries');
 
         return $projected;
+    }
+
+    private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
+    {
+        /** @var HistoryProjectionMaintenanceRole $role */
+        $role = App::make(HistoryProjectionMaintenanceRole::class);
+
+        return $role;
     }
 
     /**

@@ -57,6 +57,14 @@ final class DefaultHistoryProjectionRole implements HistoryProjectionRole, Histo
         return $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
     }
 
+    public function pruneStaleProjectionRowsForRun(
+        string $projectionModel,
+        string $runId,
+        array $seenProjectionIds,
+    ): void {
+        StaleProjectionCleanup::forRun($projectionModel, $runId, $seenProjectionIds);
+    }
+
     public function pruneStaleProjections(array $runIds = [], ?string $instanceId = null, bool $dryRun = false): array
     {
         $staleSummaryQuery = $this->staleSummaryQuery($runIds, $instanceId);
