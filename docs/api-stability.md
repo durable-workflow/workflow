@@ -67,10 +67,12 @@ are covered by the semver guarantee until their server-facing method surface
 is either promoted to a `Contracts\*` interface or removed:
 
 - `Workflow\V2\Support\ActivityTimeoutEnforcer`
+- `Workflow\V2\Support\BundleIntegrityVerifier`
 - `Workflow\V2\Support\ConfiguredV2Models`
 - `Workflow\V2\Support\HistoryPayloadCompression`
 - `Workflow\V2\Support\OperatorQueueVisibility`
 - `Workflow\V2\Support\PayloadEnvelopeResolver`
+- `Workflow\V2\Support\ReplayDiff`
 - `Workflow\V2\Support\ReplayState`
 - `Workflow\V2\Support\ScheduleManager`
 - `Workflow\V2\Support\ScheduleStartResult`
