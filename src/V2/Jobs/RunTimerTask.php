@@ -36,6 +36,40 @@ final class RunTimerTask implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
+    /**
+     * Relations the history-projection role consumes for a timer-task
+     * projection. Hydrated by {@see self::projectRun()} before the role is
+     * invoked so the role implementation always sees an up-to-date graph,
+     * regardless of which exit path queued the projection.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+    ];
+
+    /**
+     * Run relations plus the history-event graph required when a timer
+     * could not be restored from durable history. Both the claim-side and
+     * handler-side missing-timer exits use this shape so the projection
+     * sees the history events the operator views surface alongside the
+     * unrecoverable-state markers.
+     *
+     * @var list<string>
+     */
+    private const PROJECTION_RUN_RELATIONS_WITH_HISTORY_EVENTS = [
+        'instance',
+        'tasks',
+        'activityExecutions',
+        'timers',
+        'failures',
+        'historyEvents',
+    ];
+
     public int $tries = 5;
 
     public function __construct(
@@ -89,9 +123,7 @@ final class RunTimerTask implements ShouldQueue
                     ),
                 ])->save();
 
-                $this->projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                );
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY_EVENTS);
 
                 return null;
             }
@@ -111,7 +143,7 @@ final class RunTimerTask implements ShouldQueue
                     ])->save();
                 }
 
-                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 return null;
             }
@@ -173,7 +205,7 @@ final class RunTimerTask implements ShouldQueue
                 'compatibility' => $run->compatibility,
             ]);
 
-            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
+            $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             return $resumeTask;
         });
@@ -223,9 +255,7 @@ final class RunTimerTask implements ShouldQueue
                     ),
                 ])->save();
 
-                $this->projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
-                );
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY_EVENTS);
 
                 return [null, null];
             }
@@ -233,13 +263,13 @@ final class RunTimerTask implements ShouldQueue
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
-                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 return [null, null];
             }
 
             if (! TaskCompatibility::supported($task, $run)) {
-                $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
+                $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
                 return [null, null];
             }
@@ -255,16 +285,29 @@ final class RunTimerTask implements ShouldQueue
                 'last_claim_error' => null,
             ])->save();
 
-            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures']));
+            $this->projectRun($run, self::PROJECTION_RUN_RELATIONS);
 
             return [$timerId, null];
         });
     }
 
-    private function projectRun(WorkflowRun $run): void
+    /**
+     * Hydrate the relations the projection needs and dispatch into the
+     * {@see HistoryProjectionRole} contract. Every projection emitted by
+     * the timer-task job flows through this helper so the role contract is
+     * the single entry point — no call site reaches into `RunSummaryProjector`
+     * directly, and the relation-hydration shape lives in one place rather
+     * than at each call site.
+     *
+     * @param list<string> $with
+     */
+    private function projectRun(WorkflowRun $run, array $with = []): void
     {
-        $this->historyProjectionRole()
-            ->projectRun($run);
+        if ($with !== []) {
+            $run = $run->fresh($with) ?? $run;
+        }
+
+        $this->historyProjectionRole()->projectRun($run);
     }
 
     private function historyProjectionRole(): HistoryProjectionRole
