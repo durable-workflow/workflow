@@ -52,17 +52,29 @@ final class V2OperatorMetricsTest extends TestCase
         WorkerCompatibilityFleet::clear();
         Schema::dropIfExists('workflow_worker_compatibility_heartbeats');
 
-        WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
+        try {
+            WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
 
-        $snapshot = OperatorMetrics::snapshot();
+            $snapshot = OperatorMetrics::snapshot();
 
-        $this->assertSame(1, $snapshot['workers']['active_workers']);
-        $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
-        $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
-        $this->assertCount(1, $snapshot['workers']['fleet']);
-        $this->assertSame('worker-a', $snapshot['workers']['fleet'][0]['worker_id']);
-        $this->assertSame('cache', $snapshot['workers']['fleet'][0]['source']);
-        $this->assertTrue($snapshot['workers']['fleet'][0]['supports_required']);
+            $this->assertSame(1, $snapshot['workers']['active_workers']);
+            $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
+            $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+            $this->assertCount(1, $snapshot['workers']['fleet']);
+            $this->assertSame('worker-a', $snapshot['workers']['fleet'][0]['worker_id']);
+            $this->assertSame('cache', $snapshot['workers']['fleet'][0]['source']);
+            $this->assertTrue($snapshot['workers']['fleet'][0]['supports_required']);
+        } finally {
+            // Restore the dropped table within this test so the next test
+            // does not depend on Testbench's per-test migrate:fresh racing
+            // to re-create it. Re-running the migration's up() keeps the
+            // restored schema in sync with the canonical definition.
+            if (! Schema::hasTable('workflow_worker_compatibility_heartbeats')) {
+                $migration = require __DIR__
+                    . '/../../../src/migrations/2026_04_08_000126_create_worker_compatibility_heartbeats_table.php';
+                $migration->up();
+            }
+        }
     }
 
     public function testWorkerFleetSnapshotUsesRequestedNamespaceInsteadOfConfiguredCompatibilityNamespace(): void
