@@ -1203,6 +1203,38 @@ final class V2OperatorMetricsTest extends TestCase
                 ->subSeconds(120),
         ]);
 
+        // Claim-failed ready task — applyClaimHealthy excludes it from the
+        // overdue set even though its last_dispatched_at is well past cutoff;
+        // the claim path owns this row through tasks.claim_failed.
+        $this->createTask($run, '01JDSPTCHOVRTASK0000000005', TaskStatus::Ready->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(300),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(200),
+            'last_claim_failed_at' => $now->copy()
+                ->subSeconds(150),
+            'last_claim_error' => 'Workflow v2 backend capabilities are unsupported: [queue_sync_unsupported] sync.',
+            'created_at' => $now->copy()
+                ->subSeconds(300),
+        ]);
+
+        // Leased task whose last_dispatched_at is well past cutoff — excluded
+        // because dispatchOverdueQuery requires status=Ready; this row has
+        // already been claimed and now lives on the lease path.
+        $this->createTask($run, '01JDSPTCHOVRTASK0000000006', TaskStatus::Leased->value, [
+            'available_at' => $now->copy()
+                ->subSeconds(300),
+            'leased_at' => $now->copy()
+                ->subSeconds(5),
+            'lease_owner' => 'worker-leased',
+            'lease_expires_at' => $now->copy()
+                ->addSeconds(10),
+            'last_dispatched_at' => $now->copy()
+                ->subSeconds(200),
+            'created_at' => $now->copy()
+                ->subSeconds(300),
+        ]);
+
         $snapshot = OperatorMetrics::snapshot($now);
 
         $expectedOldestDispatchOverdueSince = $now->copy()
@@ -1253,6 +1285,13 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(0, $snapshot['tasks']['dispatch_overdue']);
         $this->assertNull($snapshot['tasks']['oldest_dispatch_overdue_since']);
         $this->assertSame(0, $snapshot['tasks']['max_dispatch_overdue_age_ms']);
+
+        $healthSnapshot = HealthCheck::snapshot($now);
+        $taskTransport = collect($healthSnapshot['checks'])->firstWhere('name', 'task_transport');
+        $this->assertNotNull($taskTransport);
+        $this->assertSame(0, $taskTransport['data']['dispatch_overdue_tasks']);
+        $this->assertNull($taskTransport['data']['oldest_dispatch_overdue_since']);
+        $this->assertSame(0, $taskTransport['data']['max_dispatch_overdue_age_ms']);
     }
 
     public function testSnapshotSurfacesClaimFailedAgeFromOldestClaimFailure(): void

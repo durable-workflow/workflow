@@ -131,6 +131,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'max_lease_expired_age_ms',
         'oldest_ready_due_at',
         'max_ready_due_age_ms',
+        'oldest_dispatch_overdue_since',
+        'max_dispatch_overdue_age_ms',
         'oldest_claim_failed_at',
         'max_claim_failed_age_ms',
         'oldest_dispatch_failed_at',
