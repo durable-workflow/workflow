@@ -3,6 +3,31 @@
 This document describes the v2 public API stability contract of the
 `durable-workflow/workflow` package.
 
+## Relationship to the platform compatibility authority
+
+This document is the per-package stability contract for the PHP workflow
+package. It is **downstream** of the platform-wide canonical compatibility
+and release-authority page:
+
+- <https://durable-workflow.github.io/docs/2.0/compatibility>
+- machine-readable mirror: `surface_stability_contract` in
+  `GET /api/cluster/info`, schema
+  `durable-workflow.v2.surface-stability.contract`, version `1`.
+
+The platform authority defines stability levels (`frozen`, `stable`,
+`prerelease`, `experimental`), the patch/minor/major change rules, the
+diagnostic-vs-guaranteed-field rule, and the surface family table that
+covers the server API, worker protocol, CLI JSON, Waterline API, MCP
+discovery/results, official SDKs, and history-event wire formats. This
+document adds workflow-package-specific detail under those rules; it must
+not contradict the platform authority. When this document and the
+platform authority disagree, the platform authority wins, and the
+disagreement is a bug here.
+
+The platform surface families that own the contents of this document are
+`official_sdks` (for the `Workflow` PHP authoring and `Support\*` API)
+and `history_event_wire_formats` (for the frozen-event tables below).
+
 ## Scope
 
 The workflow package is consumed by three distinct audiences:
@@ -50,6 +75,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\ScheduleManager`
 - `Workflow\V2\Support\ScheduleStartResult`
 - `Workflow\V2\Support\StructuralLimits`
+- `Workflow\V2\Support\SurfaceStabilityContract`
 - `Workflow\V2\Support\TaskRepairCandidates`
 - `Workflow\V2\Support\TaskRepairPolicy`
 - `Workflow\V2\Support\WorkerCompatibilityFleet`
