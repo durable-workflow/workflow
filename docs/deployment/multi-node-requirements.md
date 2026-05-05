@@ -6,6 +6,8 @@ This document outlines the requirements and recommendations for deploying the wo
 
 The v2 engine separates **correctness substrate** from **acceleration layer**. The shared workflow database is the correctness substrate; every multi-node guarantee in this document depends on it. Shared cache and the wake-notification layer are acceleration: they shorten discovery latency without affecting which tasks are eligible or who claims them. A deployment whose acceleration backend is degraded continues to make correct progress, bounded by the durable poll and repair cadence. See [`docs/architecture/scheduler-correctness.md`](../architecture/scheduler-correctness.md) for the full contract, including the reversible migration path that lets a deployment move between cache-coordinated wake notification and a stronger acceleration primitive (Redis pub/sub, PostgreSQL `LISTEN/NOTIFY`, NATS) without a cutover.
 
+The engine-side contract for high availability and failover behavior inside a single region — managed-database failover, managed-Redis failover, API-node loss, worker loss, scheduler-runner restart, and the load-balancer / readiness rules that govern traffic shift during each event — is frozen in [`docs/deployment/ha-failover.md`](ha-failover.md). The cross-region active/passive recovery contract lives separately in [`docs/deployment/multi-region.md`](multi-region.md).
+
 ## Prerequisites
 
 ### Shared Database
