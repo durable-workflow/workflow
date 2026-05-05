@@ -355,6 +355,10 @@ render:
 - the **caller namespace** (`caller_namespace`), the caller workflow
   instance and run (`caller_workflow_instance_id`,
   `caller_workflow_run_id`) when the caller is a workflow;
+- the **caller principal** (`caller_principal_subject`,
+  `caller_principal_method`, `caller_principal_roles`,
+  `caller_principal_tenant`, `caller_principal_claims`) when the
+  embedding host supplies authenticated actor data;
 - the **target namespace** (`target_namespace`), the resolved
   endpoint, service, and operation names (`endpoint_name`,
   `service_name`, `operation_name`) plus their canonical IDs

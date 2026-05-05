@@ -461,6 +461,12 @@ becomes terminal:
   originating outside any workflow run; the other two columns are
   always populated when the caller is reachable through the worker
   protocol.
+- **Caller principal columns**: `caller_principal_subject`,
+  `caller_principal_method`, `caller_principal_roles`,
+  `caller_principal_tenant`, and `caller_principal_claims`. These are
+  the authenticated actor fields supplied by the embedding host or
+  worker protocol. They are audit attributes, not payload attributes,
+  and they are populated for accepted and rejected calls alike.
 - **Contract address columns**: `target_namespace`, `endpoint_name`,
   `service_name`, `operation_name`. These hold the literal name
   parts the caller addressed, not the resolved row ids, so a

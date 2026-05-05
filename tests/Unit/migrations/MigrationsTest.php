@@ -189,6 +189,17 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasColumn('workflow_service_operations', 'boundary_policy'));
         $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'boundary_policy'));
         $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'outcome'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'outcome_category'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'outcome_reason'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'outcome_message'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'outcome_metadata'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'policy_name'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'retry_after_seconds'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'caller_principal_subject'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'caller_principal_method'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'caller_principal_roles'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'caller_principal_tenant'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'caller_principal_claims'));
         $this->assertTrue(Schema::hasColumn('activity_executions', 'current_attempt_id'));
         $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_timestamp'));

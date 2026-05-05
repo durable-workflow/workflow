@@ -40,6 +40,10 @@ final class ServiceCallView
             'caller_namespace' => $call->caller_namespace,
             'caller_workflow_instance_id' => $call->caller_workflow_instance_id,
             'caller_workflow_run_id' => $call->caller_workflow_run_id,
+            'caller_principal_subject' => $call->caller_principal_subject,
+            'caller_principal_method' => $call->caller_principal_method,
+            'caller_principal_roles' => self::array($call->caller_principal_roles),
+            'caller_principal_tenant' => $call->caller_principal_tenant,
 
             'target_namespace' => $call->target_namespace,
             'linked_workflow_instance_id' => $call->linked_workflow_instance_id,
@@ -87,6 +91,7 @@ final class ServiceCallView
         $base['retry_policy'] = self::array($call->retry_policy);
         $base['boundary_policy'] = self::array($call->boundary_policy);
         $base['metadata'] = self::array($call->metadata);
+        $base['caller_principal_claims'] = self::array($call->caller_principal_claims);
 
         $base['caller_link'] = self::callerLinkRef($call, $observerNamespace);
         $base['linked_run_ref'] = self::linkedRunRef($call, $observerNamespace);

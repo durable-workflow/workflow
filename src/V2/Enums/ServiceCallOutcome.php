@@ -111,6 +111,23 @@ enum ServiceCallOutcome: string
         };
     }
 
+    public function category(): string
+    {
+        return match ($this) {
+            self::Accepted => 'accepted',
+            self::RejectedNotFound,
+            self::RejectedForbidden,
+            self::RejectedThrottled,
+            self::RejectedConcurrencyLimited,
+            self::RejectedCircuitOpen => 'rejected',
+            self::Completed,
+            self::Cancelled,
+            self::TimedOut,
+            self::Degraded,
+            self::HandlerFailed => 'handler',
+        };
+    }
+
     /**
      * @return array<string, list<string>>
      */

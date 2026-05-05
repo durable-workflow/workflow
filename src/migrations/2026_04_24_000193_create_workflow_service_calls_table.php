@@ -55,6 +55,12 @@ return new class() extends Migration {
 
     private const ACCEPTED_AT_INDEX = 'wf_service_calls_accepted_at_idx';
 
+    private const OUTCOME_CATEGORY_INDEX = 'wf_service_calls_outcome_category_idx';
+
+    private const POLICY_INDEX = 'wf_service_calls_policy_idx';
+
+    private const PRINCIPAL_SUBJECT_INDEX = 'wf_service_calls_principal_subject_idx';
+
     public function up(): void
     {
         Schema::create(self::TABLE, static function (Blueprint $table): void {
@@ -128,6 +134,36 @@ return new class() extends Migration {
             $table->json('boundary_policy')
                 ->nullable();
             $table->json('metadata')
+                ->nullable();
+
+            $table->string('outcome_category', 32)
+                ->nullable()
+                ->index(self::OUTCOME_CATEGORY_INDEX);
+            $table->string('outcome_reason', 191)
+                ->nullable();
+            $table->text('outcome_message')
+                ->nullable();
+            $table->json('outcome_metadata')
+                ->nullable();
+            $table->string('policy_name', 191)
+                ->nullable()
+                ->index(self::POLICY_INDEX);
+            $table->unsignedInteger('retry_after_seconds')
+                ->nullable();
+
+            // Caller principal recorded as the audit actor. Roles and
+            // claims live in JSON; subject + method are indexed so
+            // per-actor lookups stay cheap.
+            $table->string('caller_principal_subject', 191)
+                ->nullable()
+                ->index(self::PRINCIPAL_SUBJECT_INDEX);
+            $table->string('caller_principal_method', 64)
+                ->nullable();
+            $table->json('caller_principal_roles')
+                ->nullable();
+            $table->string('caller_principal_tenant', 191)
+                ->nullable();
+            $table->json('caller_principal_claims')
                 ->nullable();
             $table->timestamp('accepted_at', 6)
                 ->nullable()

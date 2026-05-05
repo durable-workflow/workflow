@@ -290,6 +290,42 @@ return [
                 'warn'
             ),
         ],
+
+        // Cross-namespace service-call boundary policy. The default
+        // implementation reads its rule set directly from this config
+        // block; binding a custom ServiceBoundaryPolicy implementation
+        // in a host service provider replaces it wholesale and the
+        // rules below become advisory.
+        //
+        // See Workflow\V2\Support\DefaultServiceBoundaryPolicy for the
+        // accepted rule schema.
+        'service_boundary' => [
+            'rules' => [
+                'default_action' => 'allow',
+                'authorization' => [
+                    'required_roles' => [],
+                ],
+                'namespaces' => [
+                    'allow_callers' => null,
+                    'deny_callers' => [],
+                    'cross_namespace_default' => 'allow',
+                ],
+                'rate_limit' => [
+                    'requests_per_minute' => null,
+                    'retry_after_seconds' => 1,
+                    'sync_only' => false,
+                ],
+                'concurrency' => [
+                    'max_in_flight' => null,
+                    'retry_after_seconds' => 1,
+                    'sync_only' => true,
+                ],
+                'circuit_break' => [
+                    'open_targets' => [],
+                    'retry_after_seconds' => 30,
+                ],
+            ],
+        ],
     ],
 
     // Payload codec diagnostic input. Final v2 always uses "avro" as the

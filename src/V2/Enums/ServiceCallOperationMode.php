@@ -34,4 +34,13 @@ enum ServiceCallOperationMode: string
      * through the service-call id.
      */
     case SyncWithDurableReference = 'sync_with_durable_reference';
+
+    public static function tryFromCatalog(?string $value): ?self
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return self::tryFrom(strtolower(trim($value)));
+    }
 }
