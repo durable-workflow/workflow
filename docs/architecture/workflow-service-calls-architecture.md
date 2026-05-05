@@ -11,11 +11,11 @@ by a handler in another namespace through the
 `workflow_service_operations` registry.
 
 The contract pinned here covers the durable identifier, the explicit
-non-terminal and terminal states, the sync vs async operation modes,
-the explicit linked target references, the deadline / cancellation /
-retry / idempotency surface, the reference-based payload storage rule,
-the failure taxonomy, and the observability surface that explains a
-call without raw transport logs.
+non-terminal and terminal states, the caller-facing boundary outcome,
+the sync vs async operation modes, the explicit linked target
+references, the deadline / cancellation / retry / idempotency surface,
+the reference-based payload storage rule, the failure taxonomy, and the
+observability surface that explains a call without raw transport logs.
 
 The contract builds on:
 - `docs/architecture/workflow-child-calls-architecture.md` for the
@@ -27,6 +27,9 @@ The contract builds on:
   execution invariants every linked target reference must satisfy.
 - `docs/architecture/control-plane-split.md` for the control-plane
   rules every cross-namespace admission decision must obey.
+- `docs/architecture/cross-namespace-service-policy.md` for the
+  boundary policy order and caller-facing outcome values that sit above
+  handler binding.
 
 The pinning test for this contract lives at
 `tests/Unit/V2/WorkflowServiceCallsArchitectureDocumentationTest.php`.
@@ -61,6 +64,10 @@ lifecycle, references, and outcome semantics.
   matching the `ServiceCallOperationMode` enum. Determines whether
   the caller observes a terminal result inline or only an in-flight
   durable reference.
+- **Boundary outcome**: the value of `outcome` on the call, matching
+  the `ServiceCallOutcome` enum. It answers whether the boundary
+  accepted the call, rejected it by a specific policy step, or the
+  handler completed, degraded, failed, timed out, or cancelled it.
 - **Resolution**: the act of mapping the requested endpoint / service
   / operation triple to a concrete handler binding and recording the
   linked target reference on the call row.
@@ -120,20 +127,52 @@ Notes on the transitions:
 
 - **Pending → Failed** is the resolution-failure path: the requested
   triple did not resolve to a registered operation in the target
-  namespace.
+  namespace. The `outcome` is `rejected_not_found`.
 - **Pending → Cancelled** is legal: a caller may withdraw a call that
   has not yet been admitted by the target namespace. The cancellation
   is still terminal and still records `cancelled_at`.
 - **Accepted → Failed** with reason `policy_rejection` records a
   policy rejection that happened after admission but before the
-  handler started.
+  handler started. The `outcome` distinguishes forbidden,
+  throttled, concurrency-limited, and circuit-open rejections.
 - **Started → Cancelled** records a cancellation that took effect
   while the handler was running. The handler may or may not have
   produced any side effects on the linked target reference; the
   service-call contract does not promise that it did not.
 - A **terminal status never changes**. Any second outcome event MUST
   be recorded in `metadata` and MUST NOT mutate `status`,
-  `failure_payload_reference`, or any of the closure timestamps.
+  `outcome`, `failure_payload_reference`, or any of the closure
+  timestamps.
+
+## Boundary outcome
+
+The caller-facing result is defined by `ServiceCallOutcome` and stored
+on `workflow_service_calls.outcome`. `ServiceCallStatus` stays a
+lifecycle enum; `outcome` is the contract value callers, Waterline, the
+CLI, and webhook delivery use to distinguish target resolution,
+boundary policy, service-level limits, degradation, and handler
+failure without inspecting raw logs or handler-specific metadata.
+
+| Outcome | Value | Status shape | Meaning |
+|---------|-------|--------------|---------|
+| Accepted | `'accepted'` | Open, usually Accepted or Started | Boundary policy admitted the call and dispatched the handler. |
+| Completed | `'completed'` | Completed | Handler returned the full successful result. |
+| Cancelled | `'cancelled'` | Cancelled | Call ended by cancellation. |
+| TimedOut | `'timed_out'` | Failed | Call deadline elapsed before a terminal handler result arrived. |
+| RejectedNotFound | `'rejected_not_found'` | Failed | Target namespace, endpoint, service, or operation did not resolve. |
+| RejectedForbidden | `'rejected_forbidden'` | Failed | Endpoint, service, or operation authorization denied the caller. |
+| RejectedThrottled | `'rejected_throttled'` | Failed | Service-level rate limiting rejected the call before handler dispatch. |
+| RejectedConcurrencyLimited | `'rejected_concurrency_limited'` | Failed | Service-level concurrency limiting rejected the call before handler dispatch. |
+| RejectedCircuitOpen | `'rejected_circuit_open'` | Failed | Service-level circuit-break state rejected the call before handler dispatch. |
+| Degraded | `'degraded'` | Completed | Handler returned a fallback result rather than the full advertised result. |
+| HandlerFailed | `'handler_failed'` | Failed | Handler accepted the call and produced a terminal failure. |
+
+Boundary rejections are all Failed lifecycle states, but they are not a
+single caller-facing outcome. A surface that collapses
+`rejected_not_found`, `rejected_forbidden`, `rejected_throttled`,
+`rejected_concurrency_limited`, `rejected_circuit_open`, `timed_out`,
+and `handler_failed` into one generic failure value is out of
+contract.
 
 ## Sync vs async operation modes
 
@@ -262,7 +301,11 @@ the failure reference.
 
 When `status` is Failed, the call carries a `failure_reason` whose
 value matches the `ServiceCallFailureReason` enum and is recorded in
-`metadata.failure_reason`. The taxonomy distinguishes:
+`metadata.failure_reason`. `failure_reason` is coarser than
+`ServiceCallOutcome`: it groups all boundary policy rejections under
+`PolicyRejection` while `outcome` keeps forbidden, throttled,
+concurrency-limited, and circuit-open rejections distinct for callers
+and operators. The taxonomy distinguishes:
 
 - `ServiceCallFailureReason::ResolutionFailure`
   (`'resolution_failure'`): the requested endpoint / service /
@@ -322,8 +365,9 @@ render:
   workflow run, workflow update, activity execution, or invocable
   carrier request;
 - the **operation mode** (`operation_mode`);
-- the **status** (`status`) and, when terminal, the failure reason
-  on Failed (and the cancellation source on Cancelled);
+- the **status** (`status`), the caller-facing **outcome** (`outcome`),
+  and, when terminal, the failure reason on Failed (and the
+  cancellation source on Cancelled);
 - the **snapped policies** (`deadline_policy`,
   `cancellation_policy`, `retry_policy`, `idempotency_policy`);
 - the **payload references** (`input_payload_reference`,
@@ -391,6 +435,8 @@ asserts:
   runtime `Workflow\V2\Enums\ServiceCallOperationMode` enum;
 - that the documented `ServiceCallBindingKind` values match the
   runtime `Workflow\V2\Enums\ServiceCallBindingKind` enum;
+- that the documented `ServiceCallOutcome` values match the runtime
+  `Workflow\V2\Enums\ServiceCallOutcome` enum;
 - that the documented `ServiceCallFailureReason` values match the
   runtime `Workflow\V2\Enums\ServiceCallFailureReason` enum;
 - that the documented schema columns match the
@@ -402,8 +448,8 @@ pinning test in the same change so drift is reviewed deliberately.
 
 ## Changing this contract
 
-Adding a new ServiceCallStatus, operation mode, binding kind, or
-failure reason requires:
+Adding a new ServiceCallStatus, operation mode, binding kind, outcome,
+or failure reason requires:
 
 1. A new value on the corresponding enum, with `isTerminal()` (where
    applicable) updated to the right partition.

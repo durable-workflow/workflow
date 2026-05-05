@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -75,6 +76,8 @@ final class CrossNamespaceServicePolicyDocumentationTest extends TestCase
         'WorkflowService',
         'WorkflowServiceOperation',
         'WorkflowServiceCall',
+        'ServiceCallStatus',
+        'ServiceCallOutcome',
         'PayloadEnvelopeResolver',
         'CodecRegistry',
         'ConfiguredV2Models',
@@ -93,6 +96,7 @@ final class CrossNamespaceServicePolicyDocumentationTest extends TestCase
 
     private const REQUIRED_DURABLE_COLUMNS = [
         'workflow_service_calls.status',
+        'workflow_service_calls.outcome',
         'workflow_service_calls.resolved_binding_kind',
         'workflow_service_calls.namespace',
         'caller_namespace',
@@ -138,11 +142,10 @@ final class CrossNamespaceServicePolicyDocumentationTest extends TestCase
     ];
 
     private const REQUIRED_OUTCOME_VALUES = [
-        '`pending`',
         '`accepted`',
-        '`running`',
         '`completed`',
         '`cancelled`',
+        '`timed_out`',
         '`degraded`',
         '`handler_failed`',
         '`rejected_not_found`',
@@ -175,6 +178,7 @@ final class CrossNamespaceServicePolicyDocumentationTest extends TestCase
     private const REQUIRED_CROSS_CONTRACT_CITATIONS = [
         'docs/architecture/routing-precedence.md',
         'docs/architecture/workflow-child-calls-architecture.md',
+        'docs/architecture/workflow-service-calls-architecture.md',
         'docs/architecture/control-plane-split.md',
         'docs/architecture/cancellation-scope.md',
         'docs/architecture/child-outcome-source-of-truth.md',
@@ -487,6 +491,39 @@ final class CrossNamespaceServicePolicyDocumentationTest extends TestCase
         );
     }
 
+    public function testServiceCallOutcomeEnumMatchesPolicyOutcomeTaxonomy(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertSame('accepted', ServiceCallOutcome::Accepted->value);
+        $this->assertSame('completed', ServiceCallOutcome::Completed->value);
+        $this->assertSame('cancelled', ServiceCallOutcome::Cancelled->value);
+        $this->assertSame('timed_out', ServiceCallOutcome::TimedOut->value);
+        $this->assertSame('rejected_not_found', ServiceCallOutcome::RejectedNotFound->value);
+        $this->assertSame('rejected_forbidden', ServiceCallOutcome::RejectedForbidden->value);
+        $this->assertSame('rejected_throttled', ServiceCallOutcome::RejectedThrottled->value);
+        $this->assertSame(
+            'rejected_concurrency_limited',
+            ServiceCallOutcome::RejectedConcurrencyLimited->value,
+        );
+        $this->assertSame('rejected_circuit_open', ServiceCallOutcome::RejectedCircuitOpen->value);
+        $this->assertSame('degraded', ServiceCallOutcome::Degraded->value);
+        $this->assertSame('handler_failed', ServiceCallOutcome::HandlerFailed->value);
+        $this->assertTrue(ServiceCallOutcome::RejectedForbidden->isBoundaryRejection());
+        $this->assertFalse(ServiceCallOutcome::HandlerFailed->isBoundaryRejection());
+
+        foreach (ServiceCallOutcome::cases() as $case) {
+            $this->assertStringContainsString(
+                sprintf('`%s`', $case->value),
+                $contents,
+                sprintf(
+                    'Cross-namespace service policy contract must name ServiceCallOutcome value %s.',
+                    $case->value,
+                ),
+            );
+        }
+    }
+
     public function testServiceModelsExistOnTheirFrozenTables(): void
     {
         $this->assertSame(
@@ -514,6 +551,12 @@ final class CrossNamespaceServicePolicyDocumentationTest extends TestCase
     public function testServiceCallModelCastsThePolicySnapshotColumns(): void
     {
         $casts = (new WorkflowServiceCall())->getCasts();
+
+        $this->assertSame(
+            ServiceCallOutcome::class,
+            $casts['outcome'] ?? null,
+            'WorkflowServiceCall must cast outcome to ServiceCallOutcome so caller-facing outcomes are enum-backed.',
+        );
 
         foreach (
             [

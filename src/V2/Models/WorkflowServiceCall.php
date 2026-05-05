@@ -7,6 +7,7 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowServiceCall extends Model
@@ -24,6 +25,7 @@ class WorkflowServiceCall extends Model
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
     protected $casts = [
+        'outcome' => ServiceCallOutcome::class,
         'deadline_policy' => 'array',
         'idempotency_policy' => 'array',
         'cancellation_policy' => 'array',

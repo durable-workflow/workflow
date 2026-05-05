@@ -33,6 +33,8 @@ return new class() extends Migration {
 
     private const STATUS_INDEX = 'wf_service_calls_status_idx';
 
+    private const OUTCOME_INDEX = 'wf_service_calls_outcome_idx';
+
     private const MODE_INDEX = 'wf_service_calls_mode_idx';
 
     private const BINDING_KIND_INDEX = 'wf_service_calls_binding_kind_idx';
@@ -41,7 +43,15 @@ return new class() extends Migration {
 
     private const NAMESPACE_STATUS_INDEX = 'wf_service_calls_namespace_status_idx';
 
+    private const CALLER_STATUS_INDEX = 'wf_service_calls_caller_status_idx';
+
     private const TARGET_STATUS_INDEX = 'wf_service_calls_target_status_idx';
+
+    private const NAMESPACE_OUTCOME_INDEX = 'wf_service_calls_namespace_outcome_idx';
+
+    private const CALLER_OUTCOME_INDEX = 'wf_service_calls_caller_outcome_idx';
+
+    private const TARGET_OUTCOME_INDEX = 'wf_service_calls_target_outcome_idx';
 
     private const ACCEPTED_AT_INDEX = 'wf_service_calls_accepted_at_idx';
 
@@ -85,6 +95,9 @@ return new class() extends Migration {
                 ->index(self::LINKED_UPDATE_INDEX);
             $table->string('status', 32)
                 ->index(self::STATUS_INDEX);
+            $table->string('outcome', 64)
+                ->nullable()
+                ->index(self::OUTCOME_INDEX);
             $table->string('operation_mode', 32)
                 ->index(self::MODE_INDEX);
             $table->string('resolved_binding_kind', 64)
@@ -130,7 +143,11 @@ return new class() extends Migration {
             $table->timestamps(6);
 
             $table->index(['namespace', 'status'], self::NAMESPACE_STATUS_INDEX);
+            $table->index(['caller_namespace', 'status'], self::CALLER_STATUS_INDEX);
             $table->index(['target_namespace', 'status'], self::TARGET_STATUS_INDEX);
+            $table->index(['namespace', 'outcome'], self::NAMESPACE_OUTCOME_INDEX);
+            $table->index(['caller_namespace', 'outcome'], self::CALLER_OUTCOME_INDEX);
+            $table->index(['target_namespace', 'outcome'], self::TARGET_OUTCOME_INDEX);
         });
     }
 

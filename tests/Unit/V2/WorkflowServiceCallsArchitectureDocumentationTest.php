@@ -9,6 +9,7 @@ use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallFailureReason;
 use Workflow\V2\Enums\ServiceCallOperationMode;
+use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
 
 /**
@@ -18,12 +19,12 @@ use Workflow\V2\Enums\ServiceCallStatus;
  * the single reference used by product docs, CLI reasoning, Waterline
  * diagnostics, SDK documentation, and webhook delivery for the durable
  * service-call id, the explicit non-terminal and terminal states, the
- * sync vs async operation modes, the explicit linked target
- * references, the deadline / cancellation / retry / idempotency
- * surface, the reference-based payload storage rule, and the failure
- * taxonomy. Changes to any named guarantee must update this test and
- * the documented contract in the same change so drift is reviewed
- * deliberately.
+ * caller-facing boundary outcome, the sync vs async operation modes,
+ * the explicit linked target references, the deadline / cancellation /
+ * retry / idempotency surface, the reference-based payload storage
+ * rule, and the failure taxonomy. Changes to any named guarantee must
+ * update this test and the documented contract in the same change so
+ * drift is reviewed deliberately.
  */
 final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
 {
@@ -37,6 +38,7 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
         '## Terminology',
         '## The durable service-call id',
         '## Service-call lifecycle',
+        '## Boundary outcome',
         '## Sync vs async operation modes',
         '## Linked target references',
         '## Deadline, cancellation, retry, and idempotency',
@@ -56,6 +58,7 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
         'Durable service-call id',
         'Linked target reference',
         'Operation mode',
+        'Boundary outcome',
         'Resolution',
     ];
 
@@ -80,6 +83,21 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
         "`'workflow_update'`",
         "`'activity_execution'`",
         "`'invocable_carrier_request'`",
+    ];
+
+    private const REQUIRED_OUTCOME_PHRASES = [
+        "`ServiceCallOutcome`",
+        "`'accepted'`",
+        "`'completed'`",
+        "`'cancelled'`",
+        "`'timed_out'`",
+        "`'rejected_not_found'`",
+        "`'rejected_forbidden'`",
+        "`'rejected_throttled'`",
+        "`'rejected_concurrency_limited'`",
+        "`'rejected_circuit_open'`",
+        "`'degraded'`",
+        "`'handler_failed'`",
     ];
 
     private const REQUIRED_FAILURE_REASON_PHRASES = [
@@ -123,6 +141,8 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
     ];
 
     private const REQUIRED_OBSERVABILITY_COLUMNS = [
+        'status',
+        'outcome',
         'caller_namespace',
         'target_namespace',
         'caller_workflow_instance_id',
@@ -164,6 +184,7 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
         'docs/workflow-messages-architecture.md',
         'docs/architecture/execution-guarantees.md',
         'docs/architecture/control-plane-split.md',
+        'docs/architecture/cross-namespace-service-policy.md',
     ];
 
     public function testContractDocumentExistsAndDeclaresFrozenSections(): void
@@ -230,6 +251,19 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
                 $phrase,
                 $contents,
                 sprintf('Contract must name binding-kind phrase %s.', $phrase),
+            );
+        }
+    }
+
+    public function testContractDocumentNamesEveryBoundaryOutcome(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_OUTCOME_PHRASES as $phrase) {
+            $this->assertStringContainsString(
+                $phrase,
+                $contents,
+                sprintf('Contract must name boundary outcome phrase %s.', $phrase),
             );
         }
     }
@@ -510,6 +544,43 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
                 $contents,
                 sprintf(
                     'Documented binding-kind string %s must match the ServiceCallBindingKind runtime value verbatim.',
+                    $case->value,
+                ),
+            );
+        }
+    }
+
+    public function testServiceCallOutcomeEnumMatchesDocumentedValues(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertSame('accepted', ServiceCallOutcome::Accepted->value);
+        $this->assertSame('completed', ServiceCallOutcome::Completed->value);
+        $this->assertSame('cancelled', ServiceCallOutcome::Cancelled->value);
+        $this->assertSame('timed_out', ServiceCallOutcome::TimedOut->value);
+        $this->assertSame('rejected_not_found', ServiceCallOutcome::RejectedNotFound->value);
+        $this->assertSame('rejected_forbidden', ServiceCallOutcome::RejectedForbidden->value);
+        $this->assertSame('rejected_throttled', ServiceCallOutcome::RejectedThrottled->value);
+        $this->assertSame(
+            'rejected_concurrency_limited',
+            ServiceCallOutcome::RejectedConcurrencyLimited->value,
+        );
+        $this->assertSame('rejected_circuit_open', ServiceCallOutcome::RejectedCircuitOpen->value);
+        $this->assertSame('degraded', ServiceCallOutcome::Degraded->value);
+        $this->assertSame('handler_failed', ServiceCallOutcome::HandlerFailed->value);
+
+        $this->assertFalse(ServiceCallOutcome::Accepted->isTerminal());
+        $this->assertFalse(ServiceCallOutcome::Accepted->isBoundaryRejection());
+        $this->assertTrue(ServiceCallOutcome::RejectedForbidden->isTerminal());
+        $this->assertTrue(ServiceCallOutcome::RejectedForbidden->isBoundaryRejection());
+        $this->assertFalse(ServiceCallOutcome::HandlerFailed->isBoundaryRejection());
+
+        foreach (ServiceCallOutcome::cases() as $case) {
+            $this->assertStringContainsString(
+                sprintf("`'%s'`", $case->value),
+                $contents,
+                sprintf(
+                    'Documented boundary outcome string %s must match the ServiceCallOutcome runtime value verbatim.',
                     $case->value,
                 ),
             );

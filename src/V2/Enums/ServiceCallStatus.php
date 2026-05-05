@@ -60,4 +60,31 @@ enum ServiceCallStatus: string
     {
         return ! $this->isTerminal();
     }
+
+    public function bucket(): string
+    {
+        return match ($this) {
+            self::Pending, self::Accepted, self::Started => 'open',
+            self::Completed => 'completed',
+            self::Failed => 'failed',
+            self::Cancelled => 'cancelled',
+        };
+    }
+
+    /**
+     * Bucket to ordered list of lifecycle statuses the bucket covers. Used by
+     * Waterline to group service-call rows by state before outcome filters are
+     * applied.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function buckets(): array
+    {
+        return [
+            'open' => [self::Pending->value, self::Accepted->value, self::Started->value],
+            'completed' => [self::Completed->value],
+            'failed' => [self::Failed->value],
+            'cancelled' => [self::Cancelled->value],
+        ];
+    }
 }

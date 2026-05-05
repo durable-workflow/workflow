@@ -21,6 +21,8 @@ implements it is `@internal`.
 This contract builds on the routing semantics frozen in
 `docs/architecture/routing-precedence.md`, the parent–child call
 topology described in `docs/architecture/workflow-child-calls-architecture.md`,
+the lifecycle and outcome surface frozen in
+`docs/architecture/workflow-service-calls-architecture.md`,
 the control-plane / execution-plane role split frozen in
 `docs/architecture/control-plane-split.md`, and the execution
 guarantees frozen in `docs/architecture/execution-guarantees.md`.
@@ -140,11 +142,13 @@ It does not cover:
   that name the in-namespace executor that actually performs the
   work once the boundary admits the call. Handler bindings are an
   execution detail; they do not see policy decisions.
-- **Outcome** — the value stored on `workflow_service_calls.status`
-  taken from the frozen Outcome taxonomy below. The outcome is the
-  caller-facing answer to "what happened to my call?" and is the
-  authoritative reconciliation source for the durable workflow
-  history that recorded the call.
+- **Outcome** — the value stored on `workflow_service_calls.outcome`
+  taken from `Workflow\V2\Enums\ServiceCallOutcome` and from the
+  frozen Outcome taxonomy below. `status` remains the lifecycle state
+  defined by `ServiceCallStatus`; `outcome` is the caller-facing answer
+  to "what happened to my call?" and is the authoritative
+  reconciliation source for the durable workflow history that recorded
+  the call.
 - **Rejection** — an outcome decided by the boundary before handler
   dispatch (`rejected_not_found`, `rejected_forbidden`,
   `rejected_throttled`, `rejected_concurrency_limited`,
@@ -179,9 +183,14 @@ The contract authorities are:
   entry, regardless of outcome. Callers and audit consumers MUST
   read call state from `WorkflowServiceCall` rather than from any
   in-memory boundary cache.
-- **`workflow_service_calls.status`** — the single durable column
-  carrying the Outcome value. The contract freezes the string set
-  this column may hold; new outcomes are a protocol change.
+- **`workflow_service_calls.status`** — the lifecycle status defined by
+  `Workflow\V2\Enums\ServiceCallStatus` and by
+  `docs/architecture/workflow-service-calls-architecture.md`.
+- **`workflow_service_calls.outcome`** — the single durable column
+  carrying the caller-facing Outcome value. The contract freezes the
+  string set this column may hold through
+  `Workflow\V2\Enums\ServiceCallOutcome`; new outcomes are a protocol
+  change.
 - **`workflow_service_calls.resolved_binding_kind`** — the durable
   column recording which handler binding kind the boundary chose
   when accepting the call. This column is required even on
@@ -222,10 +231,11 @@ Resolution proceeds left-to-right and is deterministic:
    most one row.
 
 If any step finds no row, the boundary records the call with
-`status = 'rejected_not_found'` and stops. The operation is not
-distinguished from the service or the endpoint at the caller-facing
-outcome — the rejection is uniform — but the row records which
-component failed to resolve in `metadata.resolution_failed_at`
+`status = 'failed'` and `outcome = 'rejected_not_found'` and stops.
+The operation is not distinguished from the service or the endpoint
+at the caller-facing outcome — the rejection is uniform — but the row
+records which component failed to resolve in
+`metadata.resolution_failed_at`
 (`endpoint`, `service`, or `operation`) so operators can diagnose
 without re-running the call.
 
@@ -262,37 +272,43 @@ when the call does not pass:
    row to update.
 2. **Address resolution.** Resolve `(namespace, endpoint_name,
    service_name, operation_name)` using the rules in
-   "Contract addressing" above. On miss, set `status =
-   'rejected_not_found'` and stop.
+   "Contract addressing" above. On miss, set `status = 'failed'`,
+   `outcome = 'rejected_not_found'`,
+   `metadata.failure_reason = 'resolution_failure'`, and stop.
 3. **Authorization.** Evaluate the operation's `boundary_policy`
    against caller identity. The policy MUST evaluate three axes:
    *caller-versus-endpoint* (is this caller namespace allowed to
    reach this endpoint at all?), *service* (is this caller allowed
    on this service under that endpoint?), and *operation* (is this
    caller allowed on this specific operation?). On any axis denying
-   the call, set `status = 'rejected_forbidden'` and stop. The
-   axis that denied is recorded in `metadata.forbidden_axis`
-   (`endpoint`, `service`, or `operation`).
+   the call, set `status = 'failed'`, `outcome =
+   'rejected_forbidden'`, `metadata.failure_reason =
+   'policy_rejection'`, and stop. The axis that denied is recorded in
+   `metadata.forbidden_axis` (`endpoint`, `service`, or `operation`).
 4. **Rate limit.** Apply the operation's rate limit (with
-   service-level fallback). On rejection, set `status =
-   'rejected_throttled'` and stop. Rate-limit windows are declared
-   in `boundary_policy.rate_limit`.
+   service-level fallback). On rejection, set `status = 'failed'`,
+   `outcome = 'rejected_throttled'`, `metadata.failure_reason =
+   'policy_rejection'`, and stop. Rate-limit windows are declared in
+   `boundary_policy.rate_limit`.
 5. **Concurrency limit.** Apply the operation's concurrency limit
    (with service-level fallback). On rejection, set `status =
-   'rejected_concurrency_limited'` and stop. Concurrency tokens are
-   tracked against the in-flight count of `accepted` plus `running`
-   calls for the operation.
+   'failed'`, `outcome = 'rejected_concurrency_limited'`,
+   `metadata.failure_reason = 'policy_rejection'`, and stop.
+   Concurrency tokens are tracked against the in-flight count of
+   `accepted` plus `started` calls for the operation.
 6. **Circuit break.** Consult the circuit-break state for the
-   operation. If the circuit is open, set `status =
-   'rejected_circuit_open'` and stop. Circuit state is declared in
+   operation. If the circuit is open, set `status = 'failed'`,
+   `outcome = 'rejected_circuit_open'`, `metadata.failure_reason =
+   'policy_rejection'`, and stop. Circuit state is declared in
    `boundary_policy.circuit_break` and is itself derived from the
    recent rolling count of `handler_failed` outcomes — it is not a
    second source of authority for those failures, only a debounce.
-7. **Handler dispatch.** Set `status = 'accepted'`, populate
-   `resolved_binding_kind` from the operation row, and dispatch to
-   the bound handler. The handler then drives the call through
-   `running` to a terminal outcome (`completed`, `handler_failed`,
-   `cancelled`, or `degraded`).
+7. **Handler dispatch.** Set `status = 'accepted'`, `outcome =
+   'accepted'`, populate `resolved_binding_kind` from the operation
+   row, and dispatch to the bound handler. The handler then drives
+   the call through `started` to a terminal status with outcome
+   `completed`, `handler_failed`, `cancelled`, `timed_out`, or
+   `degraded`.
 
 ### Why this order is fixed
 
@@ -309,7 +325,7 @@ collapses the diagnostic surface frozen here.
 
 Resolution, authorization, throttling, concurrency, circuit-break,
 and handler failure are recorded as distinct outcome values on
-`workflow_service_calls.status`. A caller-facing surface that
+`workflow_service_calls.outcome`. A caller-facing surface that
 collapses any pair of these into a shared value (for example,
 returning a generic `failed` for both `rejected_forbidden` and
 `handler_failed`) is out of contract.
@@ -341,7 +357,7 @@ calls dispatched to a different binding).
 ### Concurrency limit
 
 `boundary_policy.concurrency_limit` declares an in-flight count
-ceiling. The in-flight set is `(accepted, running)` calls on the
+ceiling. The in-flight set is `(accepted, started)` calls on the
 operation. Concurrency limit is enforced at step 5 of the
 enforcement order. The implementation is allowed to use any
 counting strategy — token bucket, semaphore, projection — as long
@@ -370,23 +386,22 @@ when computing the limit.
 
 ## Outcome taxonomy
 
-The frozen set of values stored in `workflow_service_calls.status`
+The frozen set of values stored in `workflow_service_calls.outcome`
 is:
 
-- `pending` — the row has been created at step 1 of the boundary
-  enforcement order but no terminal step has been reached yet.
-  Pending rows are not caller-visible as a final outcome.
 - `accepted` — the call passed all six boundary checks and has
   been dispatched to the bound handler. Accepted is a transient
-  state for live calls; the row will move to `running` and then to
-  a terminal outcome.
-- `running` — the bound handler has begun executing the call.
-  Running is also transient.
+  outcome for live calls; the row will move to `started` status and
+  then to a terminal outcome.
 - `completed` — the handler returned successfully. The
   `output_payload_reference` carries the result envelope.
 - `cancelled` — the call was cancelled (by the caller, the
   handler, or a parent close policy). Cancellation semantics
   follow `docs/architecture/cancellation-scope.md`.
+- `timed_out` — the call deadline elapsed before the handler
+  produced a terminal result. Timeout semantics follow the
+  `deadline_policy` shape frozen in
+  `docs/architecture/workflow-service-calls-architecture.md`.
 - `degraded` — the handler accepted the call and returned a
   fallback result rather than its full result. Degraded is a
   *handler-driven* outcome, not a boundary-driven one; it is
@@ -404,10 +419,13 @@ is:
 - `rejected_circuit_open` — circuit-break check rejected the call
   at step 6.
 
-A row's terminal outcome is the value this column holds when one
-of `completed_at`, `failed_at`, or `cancelled_at` is non-null, or
-when the row is created in a terminal `rejected_*` state without
-ever moving to `accepted`.
+A row's lifecycle `status` remains one of the
+`ServiceCallStatus` values (`pending`, `accepted`, `started`,
+`completed`, `failed`, or `cancelled`). A row's terminal outcome is
+the `outcome` value this column holds when one of `completed_at`,
+`failed_at`, or `cancelled_at` is non-null. Boundary rejections use
+`status = 'failed'` and a terminal `rejected_*` outcome without ever
+moving to `accepted`.
 
 ### Mapping handler outcomes to FailureCategory
 
@@ -454,10 +472,10 @@ becomes terminal:
   literal string `unresolved` rather than left null, so projections
   can distinguish "we never tried to resolve" from "we tried and
   missed".
-- **Outcome columns**: `status`, plus the appropriate timestamp
-  among `accepted_at`, `completed_at`, `failed_at`, `cancelled_at`.
-  The `accepted_at` column doubles as "the boundary admitted the
-  call"; rejected rows leave it null.
+- **Outcome columns**: `status`, `outcome`, plus the appropriate
+  timestamp among `accepted_at`, `completed_at`, `failed_at`,
+  `cancelled_at`. The `accepted_at` column doubles as "the boundary
+  admitted the call"; rejected rows leave it null.
 - **Linked-run columns**: `linked_workflow_instance_id`,
   `linked_workflow_run_id`, `linked_workflow_update_id`. These point
   to the in-namespace durable entity the boundary spawned to

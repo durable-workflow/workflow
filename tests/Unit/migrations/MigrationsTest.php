@@ -188,6 +188,7 @@ final class MigrationsTest extends TestCase
         $this->assertTrue(Schema::hasColumn('workflow_services', 'boundary_policy'));
         $this->assertTrue(Schema::hasColumn('workflow_service_operations', 'boundary_policy'));
         $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'boundary_policy'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'outcome'));
         $this->assertTrue(Schema::hasColumn('activity_executions', 'current_attempt_id'));
         $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_timestamp'));
