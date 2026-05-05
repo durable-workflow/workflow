@@ -308,7 +308,10 @@ If workers receive **no** tasks at all (not just delayed tasks), the symptom is 
 2. **Scale horizontally** by adding nodes (not vertically)
 3. **Monitor wake signal latency** to detect cache backend issues
 4. **Use connection pooling** for high-throughput workloads
-5. **Keep nodes in same datacenter/region** to minimize latency
+5. **Keep active-region nodes in the same datacenter/region** to minimize
+   latency between API nodes, the workflow database, and Redis. For
+   regional failover, see the self-serve active/passive contract in
+   [`multi-region.md`](./multi-region.md).
 6. **Use blue-green deployment** for zero-downtime migrations
 7. **Test multi-node locally** using Docker Compose before production
 

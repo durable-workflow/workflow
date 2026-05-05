@@ -78,8 +78,12 @@ It does not cover:
   they do not define it.
 - replacement of the HTTP worker protocol or SQL persistence model.
   Rollout safety is a coordination change, not an engine rewrite.
-- multi-region active/active coordination. Cross-region rollout is
-  a future roadmap topic and is not covered.
+- multi-region active/active coordination. The self-serve multi-
+  region contract in
+  [`docs/deployment/multi-region.md`](../deployment/multi-region.md)
+  is active/passive with operator-driven failover and reuses every
+  rollout-safety guarantee here on the active side; cross-region
+  active/active rollout is still out of scope.
 
 ## Terminology
 

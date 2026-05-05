@@ -67,8 +67,13 @@ It does not cover:
   deployment surface decides whether a deployment is **eligible** to
   receive new work; the matching role still enforces that decision at
   claim time per Phase 3 and Phase 6.
-- multi-region active/active deployment coordination. Cross-region
-  deployment is a future roadmap topic and is not covered.
+- multi-region active/active deployment coordination. The self-serve
+  multi-region contract in
+  [`docs/deployment/multi-region.md`](../deployment/multi-region.md)
+  covers active/passive with operator-driven regional failover and
+  inherits this lifecycle surface unchanged on the active side; cross-
+  region active/active coordination is not part of that contract and
+  remains a future roadmap topic.
 - automatic promotion controllers (canary splitters, percentage
   ramps, traffic shifters). Those are deployment **tooling** that
   consumes this contract; they do not define it.
@@ -431,7 +436,11 @@ MUST NOT be assumed:
   a follow-on roadmap topic. Phase 7 promotes 100% on success.
 - Cross-region active/active deployment coordination. The
   lifecycle, fleet snapshot, and rollout-safety surfaces above
-  assume a single workflow database.
+  assume a single workflow database. The self-serve multi-region
+  contract in [`docs/deployment/multi-region.md`](../deployment/multi-region.md)
+  is active/passive with operator-driven failover and keeps that
+  single-writer assumption; active/active across regions is still
+  out of scope.
 - Per-workflow-run policy overrides. The compatibility policy is a
   deployment property; per-run overrides are not part of the Phase 7
   contract. A future phase may add a policy-override field on the
