@@ -14,6 +14,17 @@ and release-authority page:
   `GET /api/cluster/info`, schema
   `durable-workflow.v2.surface-stability.contract`, version `1`.
 
+The companion platform-wide normative protocol-spec catalog — *which*
+surface has *which* machine-readable spec, *what format* the spec uses,
+*who owns* it, and *which conformance test* pins it — is published at:
+
+- <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>
+- machine-readable mirror: `platform_protocol_specs` in
+  `GET /api/cluster/info`, schema
+  `durable-workflow.v2.platform-protocol-specs.catalog`, version `1`.
+- in-process source: `Workflow\V2\Support\PlatformProtocolSpecs`, which
+  the standalone server re-exports verbatim.
+
 The platform authority defines stability levels (`frozen`, `stable`,
 `prerelease`, `experimental`), the patch/minor/major change rules, the
 diagnostic-vs-guaranteed-field rule, and the surface family table that
@@ -84,6 +95,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\HistoryPayloadCompression`
 - `Workflow\V2\Support\OperatorQueueVisibility`
 - `Workflow\V2\Support\PayloadEnvelopeResolver`
+- `Workflow\V2\Support\PlatformProtocolSpecs`
 - `Workflow\V2\Support\ReplayDiff`
 - `Workflow\V2\Support\ReplayState`
 - `Workflow\V2\Support\ScheduleManager`
