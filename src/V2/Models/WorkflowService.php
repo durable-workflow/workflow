@@ -25,6 +25,7 @@ class WorkflowService extends Model
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
     protected $casts = [
+        'boundary_policy' => 'array',
         'metadata' => 'array',
     ];
 

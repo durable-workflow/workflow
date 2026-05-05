@@ -27,6 +27,8 @@ return new class() extends Migration {
                 ->index(self::NAME_INDEX);
             $table->text('description')
                 ->nullable();
+            $table->json('boundary_policy')
+                ->nullable();
             $table->json('metadata')
                 ->nullable();
             $table->timestamps(6);
