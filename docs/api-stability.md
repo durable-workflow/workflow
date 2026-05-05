@@ -92,6 +92,8 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\ActivityTimeoutEnforcer`
 - `Workflow\V2\Support\BundleIntegrityVerifier`
 - `Workflow\V2\Support\ConfiguredV2Models`
+- `Workflow\V2\Support\EmbeddedV2HistoryImport`
+- `Workflow\V2\Support\EmbeddedV2ImportContract`
 - `Workflow\V2\Support\HistoryPayloadCompression`
 - `Workflow\V2\Support\OperatorQueueVisibility`
 - `Workflow\V2\Support\PayloadEnvelopeResolver`

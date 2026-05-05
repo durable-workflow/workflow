@@ -40,6 +40,8 @@ class WorkflowRun extends Model
         'closed_at' => 'datetime',
         'archived_at' => 'datetime',
         'last_progress_at' => 'datetime',
+        'import_contract_version' => 'integer',
+        'imported_at' => 'datetime',
     ];
 
     public function instance(): BelongsTo

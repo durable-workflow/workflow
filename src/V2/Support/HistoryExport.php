@@ -40,6 +40,7 @@ final class HistoryExport
         HistoryExportRedactor|callable|null $redactor = null,
     ): array {
         $exportedAt ??= now();
+        $sourceNode = RoleTopologySnapshot::currentNode();
 
         $run->loadMissing([
             'instance.runs.summary',
@@ -83,13 +84,14 @@ final class HistoryExport
                 'current_run_source' => $currentRunResolution['source'],
                 'workflow_type' => $run->workflow_type,
                 'workflow_class' => $run->workflow_class,
+                'source_runtime' => $sourceNode['shape'],
+                'source_process_class' => $sourceNode['process_class'],
                 'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,
                 'visibility_labels' => $summary?->visibility_labels ?? $run->visibility_labels ?? $run->instance?->visibility_labels ?? [],
                 'memo' => $run->typedMemos(),
                 'search_attributes' => self::resolveSearchAttributes($run, $summary),
                 'status' => $run->status->value,
-                'status_bucket' => $run->status->statusBucket()
-->value,
+                'status_bucket' => $run->status->statusBucket()->value,
                 'closed_reason' => $summary?->closed_reason ?? $run->closed_reason,
                 'archived_at' => self::timestamp($summary?->archived_at ?? $run->archived_at),
                 'archive_command_id' => $summary?->archive_command_id ?? $run->archive_command_id,
@@ -292,11 +294,13 @@ final class HistoryExport
                 continue;
             }
 
+            $codec = self::stringValue($activity['payload_codec'] ?? null) ?? $runCodec;
+
             foreach (['arguments', 'result'] as $field) {
                 self::addPayloadManifestEntry(
                     $entries,
                     "activities.{$index}.{$field}",
-                    $runCodec,
+                    $codec,
                     $activity[$field] ?? null,
                     self::payloadAvailable($activity[$field] ?? null),
                     $redactedPaths,
@@ -425,7 +429,7 @@ final class HistoryExport
             return true;
         }
 
-        foreach (['commands', 'updates', 'signals', 'tasks'] as $section) {
+        foreach (['commands', 'updates', 'signals', 'tasks', 'activities'] as $section) {
             if (! isset($bundle[$section]) || ! is_array($bundle[$section])) {
                 continue;
             }
@@ -1020,6 +1024,7 @@ final class HistoryExport
         return [
             'id' => $command->id,
             'sequence' => $command->command_sequence,
+            'message_sequence' => $command->message_sequence,
             'type' => $command->command_type->value,
             'target_scope' => $command->target_scope,
             'requested_run_id' => $command->requestedRunId(),
@@ -1130,6 +1135,7 @@ final class HistoryExport
             'last_claim_failed_at' => self::timestamp($task->last_claim_failed_at),
             'last_claim_error' => $task->last_claim_error,
             'repair_available_at' => self::timestamp($task->repair_available_at),
+            'created_at' => self::timestamp($task->created_at),
         ];
     }
 
@@ -1251,6 +1257,7 @@ final class HistoryExport
             'sequence' => $activity['sequence'] ?? ($state['sequence'] ?? null),
             'activity_type' => $activity['type'] ?? ($state['type'] ?? null),
             'activity_class' => $activity['class'] ?? ($state['class'] ?? null),
+            'payload_codec' => $activity['payload_codec'] ?? ($state['payload_codec'] ?? null),
             'status' => $activity['status'] ?? ($state['status'] ?? 'pending'),
             'source_status' => self::stringValue($activity['row_status'] ?? null)
                 ?? self::stringValue($state['row_status'] ?? null)
@@ -1317,7 +1324,7 @@ final class HistoryExport
 
         $snapshot = ActivitySnapshot::fromExecution($execution);
 
-        foreach (['sequence', 'type', 'class', 'retry_policy', 'connection', 'queue', 'arguments'] as $key) {
+        foreach (['sequence', 'type', 'class', 'payload_codec', 'retry_policy', 'connection', 'queue', 'arguments'] as $key) {
             if (! array_key_exists($key, $state) && array_key_exists($key, $snapshot)) {
                 $state[$key] = $snapshot[$key];
             }
@@ -1368,6 +1375,7 @@ final class HistoryExport
             'sequence' => $activity['sequence'] ?? null,
             'activity_type' => $activity['activity_type'] ?? null,
             'activity_class' => $activity['activity_class'] ?? null,
+            'payload_codec' => $activity['payload_codec'] ?? null,
             'status' => $activity['status'] ?? null,
             'source_status' => $activity['source_status'] ?? ($activity['status'] ?? null),
             'history_authority' => $activity['history_authority'] ?? null,

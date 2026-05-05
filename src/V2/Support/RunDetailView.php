@@ -142,7 +142,14 @@ final class RunDetailView
             'current_run_status' => $currentRun?->status?->value,
             'current_run_status_bucket' => $currentSummary?->status_bucket,
             'current_run_closed_reason' => $currentSummary?->closed_reason ?? $currentRun?->closed_reason,
-            'engine_source' => 'v2',
+            'engine_source' => $run->import_source === EmbeddedV2ImportContract::IMPORT_SOURCE
+                ? EmbeddedV2ImportContract::ENGINE_SOURCE
+                : 'v2',
+            'import_source' => $run->import_source,
+            'import_id' => $run->import_id,
+            'import_dedupe_key' => $run->import_dedupe_key,
+            'import_contract_version' => $run->import_contract_version,
+            'imported_at' => $run->imported_at?->toIso8601String(),
             'class' => $run->workflow_class,
             'workflow_type' => $run->workflow_type,
             'business_key' => $summary?->business_key ?? $run->business_key ?? $run->instance?->business_key,

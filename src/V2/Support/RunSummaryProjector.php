@@ -311,7 +311,7 @@ final class RunSummaryProjector
                 'workflow_instance_id' => $run->workflow_instance_id,
                 'run_number' => $run->run_number,
                 'is_current_run' => $currentRun?->id === $run->id,
-                'engine_source' => 'v2',
+                'engine_source' => self::engineSource($run),
                 'projection_schema_version' => self::SCHEMA_VERSION,
                 'class' => $run->workflow_class,
                 'workflow_type' => $run->workflow_type,
@@ -382,6 +382,13 @@ final class RunSummaryProjector
         $model = config('workflows.v2.run_summary_model', WorkflowRunSummary::class);
 
         return $model;
+    }
+
+    private static function engineSource(WorkflowRun $run): string
+    {
+        return $run->import_source === EmbeddedV2ImportContract::IMPORT_SOURCE
+            ? EmbeddedV2ImportContract::ENGINE_SOURCE
+            : 'v2';
     }
 
     private static function taskProblemDetected(
