@@ -226,11 +226,11 @@ final class SurfaceStabilityContract
                 'notes' => 'Renaming, removing, or repurposing a field on any published event is a protocol break regardless of whether the producing PHP class is `@internal`. Treat any new shape as a parallel primitive with a new event type name. The frozen field tables in workflow `docs/api-stability.md` are the per-event source of truth.',
             ],
             'cluster_info_manifests' => [
-                'description' => 'The protocol manifests published by `GET /api/cluster/info` itself: `client_compatibility`, `control_plane`, `worker_protocol`, `auth_composition_contract`, `coordination_health`, and `surface_stability_contract`.',
+                'description' => 'The protocol manifests published by `GET /api/cluster/info` itself: `client_compatibility`, `control_plane`, `worker_protocol`, `auth_composition_contract`, `coordination_health`, `surface_stability_contract`, `platform_protocol_specs`, and `platform_conformance_suite`.',
                 'stability_level' => self::STABILITY_STABLE,
                 'authority_manifest' => 'cluster_info',
                 'breaking_change_release' => 'major',
-                'notes' => 'Each nested manifest carries its own `schema` and `version` and evolves under its own contract rules. The envelope keys themselves are stable; renaming `client_compatibility`, `control_plane`, `worker_protocol`, or `surface_stability_contract` is a major change.',
+                'notes' => 'Each nested manifest carries its own `schema` and `version` and evolves under its own contract rules. The envelope keys themselves are stable; renaming `client_compatibility`, `control_plane`, `worker_protocol`, `surface_stability_contract`, `platform_protocol_specs`, or `platform_conformance_suite` is a major change. New manifest keys may be added additively without bumping `cluster_info_manifests`; removing or renaming any published key is a major change.',
             ],
         ];
     }
