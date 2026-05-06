@@ -5,7 +5,7 @@ safe during rollout and how it surfaces distributed coordination
 health to operators. It is the reference cited by product docs, CLI
 reasoning, Waterline diagnostics, server deployment guidance, cloud
 capacity planning, and test coverage so the whole fleet speaks one
-language about boot-time admission, mixed-build safety, routing
+language about boot-time admission, compatibility coverage, routing
 drains, stuck-work detection, lease conflict visibility, and
 machine-readable coordination health.
 
@@ -37,9 +37,10 @@ The contract covers:
 - **admission checks** — the boot-time gates that fail closed or warn
   loud when the configured backends, bindings, workflow definitions,
   and protocol versions cannot safely serve v2 traffic.
-- **mixed-build safety** — the in-system rules that decide whether a
-  fleet spanning more than one build can continue to claim work or
-  must drain, and which reason codes operators see when it cannot.
+- **stable worker-contract coverage** — the in-system rules that
+  decide whether live workers satisfy the stable v2 worker contract
+  for a namespace/queue and which reason codes operators see when
+  they do not.
 - **schema fencing** — which migrations gate v2 operator surfaces,
   how the readiness contract exposes the schema version, and how a
   partial migration looks to callers.
@@ -94,11 +95,17 @@ It does not cover:
   affected operation instead of logging and continuing. A
   fail-closed admission check MUST surface an explicit reason so an
   operator can diagnose the block without log archaeology.
-- **Mixed-build state** — a fleet shape where workers or servers
-  advertise more than one compatibility marker, build id, or
-  negotiated protocol version at the same time. Phase 2 guarantees
-  single-step compatibility; Phase 6 guarantees that violations
-  surface explicitly rather than silently.
+- **Stable v2 worker contract** — the single worker-plane protocol
+  and manifest set every conforming v2 worker, bridge adapter, and
+  SDK implements. It includes the worker bridge envelopes, auth
+  metadata, type-key aliases, codec envelopes, compatibility marker
+  fields, and reason codes named below.
+- **Worker-contract coverage** — a fleet shape where live workers in a
+  namespace/queue advertise the compatibility marker, workflow or
+  activity type keys, protocol version, and codec support required to
+  claim the work currently ready there. Phase 2 guarantees marker
+  compatibility; Phase 6 guarantees that missing coverage surfaces
+  explicitly rather than silently.
 - **Drain** — a cooperative shutdown where a worker refuses new
   claims, finishes in-flight work, and is eventually expired out of
   the fleet snapshot. Drain is not a hard stop.
@@ -129,7 +136,7 @@ It does not cover:
   migration guards, and routing drains that together decide whether
   the fleet is in a safe configuration to accept new work.
 
-## Admission authority and mixed-build safety
+## Admission authority and stable v2 worker contract
 
 ### Boot-time admission
 
@@ -192,7 +199,7 @@ Guarantees:
   choose `warn` mode for individual checks while rolling out a
   change, but MUST NOT disable the check entirely.
 
-### Mixed-build safety
+### Stable v2 worker contract
 
 Phase 2 already freezes the worker-compatibility marker
 contract (`DW_V2_CURRENT_COMPATIBILITY`, `DW_V2_SUPPORTED_COMPATIBILITIES`),
@@ -258,10 +265,10 @@ Guarantees:
   `runs.compatibility_blocked` and
   `backlog.oldest_compatibility_blocked_started_at` keys on
   `OperatorMetrics::snapshot()`.
-- Operators see mixed-build state explicitly through
+- Operators see compatibility coverage explicitly through
   `workers.active_worker_scopes` (how many distinct
   namespace/queue/compatibility tuples are live) and through the
-  Waterline workers view. Mixed-build state is never hidden; it
+  Waterline workers view. Compatibility coverage is never hidden; it
   is always a first-class metric.
 - A control-plane request that pins a workflow to a recorded
   definition fingerprint MUST route only to workers that match that
@@ -270,7 +277,7 @@ Guarantees:
   MUST refuse a claim whose worker fingerprint does not match the
   run's `workflow_definition_fingerprint` when
   `DW_V2_PIN_TO_RECORDED_FINGERPRINT=1`.
-- Mixed-build admission is a fleet property, not a per-request
+- Worker-contract admission is a fleet property, not a per-request
   property. A single worker advertising a new marker cannot change
   the fleet-wide required marker; the required marker is still
   read from the configured `DW_V2_CURRENT_COMPATIBILITY` on the
@@ -292,6 +299,62 @@ adds the rollout-safety enforcement:
   code on the response, not as a 500. The contract reserves
   `compatibility_unsupported` for version gaps; the ingress layer
   is the one place that maps negotiation failures to HTTP.
+
+### Minimum cross-service worker contract
+
+The v2 runtime has one stable worker contract. There is no v2-alpha to
+v2 backwards-compatibility contract, no older v2 lane, and no
+prerelease-to-stable migration matrix. Compatibility markers and build
+ids are routing facts inside the stable v2 contract; they never change
+the wire shape a conforming v2 worker must speak. The v1-to-v2
+migration surface is the only cross-generation boundary.
+
+The minimum contract for PHP bridge adapters, the standalone server,
+first-party SDK workers, and future non-PHP workers is:
+
+- **Worker bridge.** `Workflow\V2\Contracts\WorkflowTaskBridge` and
+  `Workflow\V2\Contracts\ActivityTaskBridge` define the PHP package
+  bridge shape. The standalone server publishes the language-neutral
+  mirrors under `worker_protocol.external_task_input_contract`,
+  `worker_protocol.external_task_result_contract`, and
+  `worker_protocol.external_execution_surface_contract` from
+  `GET /api/cluster/info`. A conforming worker understands the stable
+  poll, claim, heartbeat, complete, and fail lifecycle and preserves
+  the guaranteed keys `task_id`, `workflow_run_id`,
+  `workflow_instance_id`, `workflow_type`, `activity_type`,
+  `payload_codec`, `connection`, `queue`, `compatibility`,
+  `lease_owner`, `lease_expires_at`, `reason`, and `reason_detail`
+  wherever the corresponding bridge response names them.
+- **Authentication metadata.** Server-side carriers compose endpoint,
+  namespace, profile, auth, and TLS through `auth_composition_contract`.
+  Runtime command history records only normalized metadata from
+  `Workflow\V2\CommandContext`: `auth_status`, `auth_method`,
+  `principal_type`, `principal_id`, and request diagnostics that are
+  safe to persist. Tokens, signatures, TLS material, and provider
+  secrets are never part of the worker task, history, or fixture
+  contract.
+- **Type aliases.** `Workflow\V2\Attributes\Type` and
+  `Workflow\V2\Support\TypeRegistry` resolve PHP classes to the
+  language-neutral `workflow_type` and `activity_type` keys. Those keys
+  and `child_workflow_type`, `supported_workflow_types`, and
+  `supported_activity_types` are the stable cross-language identifiers.
+  PHP class names may be present for local diagnostics, but non-PHP
+  workers route and replay by type key, not by PHP class name.
+- **Codec envelopes.** Every worker-facing payload is codec-tagged by
+  `payload_codec` or a `{codec, blob}` envelope.
+  `CodecRegistry::universal()` is the language-neutral advertised codec
+  set; PHP-only codecs are advertised separately under
+  `payload_codecs_engine_specific` and must not be required of non-PHP
+  workers. A worker that cannot decode an input codec fails closed with
+  `unsupported_payload_codec`; it does not reinterpret the bytes
+  through another codec or silently drop the task.
+
+Removing or renaming any schema, guaranteed key, reason code, type-key
+field, auth metadata field, or codec behavior named in this subsection
+is a stable worker-contract break governed by
+`Workflow\V2\Support\SurfaceStabilityContract`. Additive optional fields
+are allowed only under the diagnostic/guaranteed-field rules published
+by that contract and by the platform conformance suite.
 
 ## Schema fencing and migration safety
 
@@ -343,9 +406,9 @@ Reversibility:
 
 ## Routing safety: drain, block, and fail-closed
 
-Routing safety is the per-task enforcement of mixed-build and
-compatibility guarantees. The authority classes are the Phase 3
-matching surfaces plus the Phase 2 compatibility types.
+Routing safety is the per-task enforcement of the stable worker
+contract and compatibility guarantees. The authority classes are the
+Phase 3 matching surfaces plus the Phase 2 compatibility types.
 
 - `Workflow\V2\Support\ActivityTaskClaimer::claimDetailed()` is the
   authority on whether an activity task claim succeeds. Every
@@ -456,11 +519,11 @@ change.
 | `backlog` | `runnable_tasks`, `delayed_tasks`, `leased_tasks` | authoritative backlog counts |
 | `backlog` | `tasks_added_last_minute`, `tasks_dispatched_last_minute` | trailing-60-second queue-flow facts: distinct durable task rows created in the last minute and distinct durable task rows whose latest successful `last_dispatched_at` falls in the last minute. These are intentionally task-row facts, not a transport-attempt counter stream; repeated redispatches of the same durable task collapse to one count because `workflow_tasks` retains only the latest successful dispatch timestamp |
 | `backlog` | `unhealthy_tasks`, `repair_needed_runs`, `claim_failed_runs`, `compatibility_blocked_runs` | stuck/blocked roll-ups |
-| `backlog` | `oldest_compatibility_blocked_started_at`, `max_compatibility_blocked_age_ms` | earliest wait-start timestamp among compatibility-blocked runs and the largest blocked age in milliseconds, mirroring the `repair.oldest_missing_run_started_at` / `max_missing_run_age_ms` shape so operators can answer "how stale is the worst mixed-build block?" from the metric alone |
+| `backlog` | `oldest_compatibility_blocked_started_at`, `max_compatibility_blocked_age_ms` | earliest wait-start timestamp among compatibility-blocked runs and the largest blocked age in milliseconds, mirroring the `repair.oldest_missing_run_started_at` / `max_missing_run_age_ms` shape so operators can answer "how stale is the worst compatibility block?" from the metric alone |
 | `repair` | `missing_task_candidates`, `selected_missing_task_candidates`, `oldest_missing_run_started_at`, `max_missing_run_age_ms` | stuck-run detectors per `TaskRepairCandidates` |
 | `projections.run_summaries` | `oldest_missing_run_started_at`, `max_missing_run_age_ms` | earliest `COALESCE(workflow_runs.started_at, workflow_runs.created_at)` among runs whose id is not present in `workflow_run_summaries` and the largest missing-projection age in milliseconds, mirroring the `repair.oldest_missing_run_started_at` / `max_missing_run_age_ms` shape so operators can read "how long has the worst-case run been without a run-summary projection?" — the primary projection-lag age indicator on the run-summary path — from the metric alone without walking `workflow_runs` |
 | `workers` | `required_compatibility`, `active_workers`, `active_worker_scopes`, `active_workers_supporting_required` | routing-health signals per `WorkerCompatibilityFleet` |
-| `workers` | `fleet` | per-scope fleet entries (`worker_id`, `namespace`, `connection`, `queue`, `supported`, `supports_required`, `recorded_at`, `expires_at`, `source`, `host`, `process_id`) so mixed-build state is legible to Waterline and other consumers without reinferring it from the summary counts |
+| `workers` | `fleet` | per-scope fleet entries (`worker_id`, `namespace`, `connection`, `queue`, `supported`, `supports_required`, `recorded_at`, `expires_at`, `source`, `host`, `process_id`) so compatibility coverage is legible to Waterline and other consumers without reinferring it from the summary counts |
 | `schedules` | `active`, `paused`, `missed`, `oldest_overdue_at`, `max_overdue_ms`, `fires_total`, `failures_total` | scheduler-role health: active and paused schedules in namespace, active schedules whose `next_fire_at` is overdue at snapshot time, the earliest overdue `next_fire_at` among them, the largest overdue age in milliseconds, and running totals of fires and failures so scheduler lag and failure trends are legible without reading `workflow_schedules` directly |
 | `matching_role` | `queue_wake_enabled`, `shape`, `wake_owner`, `task_dispatch_mode` | matching-role deployment shape on the process serving the snapshot: `queue_wake_enabled` reports `workflows.v2.matching_role.queue_wake_enabled` exactly as the `WorkflowServiceProvider` `Looping` listener consumes it, `shape` is `in_worker` when this process still runs the in-worker broad-poll wake and `dedicated` when the process has opted out so the broad sweep runs under `php artisan workflow:v2:repair-pass` instead, `wake_owner` names the cooperating owner for that sweep (`worker_loop` when this process still runs it, `dedicated_repair_pass` when a separate repair process should own it), and `task_dispatch_mode` reports the configured dispatch mode (`queue` or `poll`). The snapshot is process-local; in mixed-shape fleets, operators read one snapshot per node to confirm the opt-out was applied to the right nodes without inspecting config files |
 | `matching_role.discovery_limits` | `poll_batch_cap`, `availability_ceiling_seconds`, `wake_signal_ttl_seconds`, `workflow_task_lease_seconds`, `activity_task_lease_seconds` | numeric matching-role contract values surfaced from the package source-of-truth: `poll_batch_cap` is the maximum batch of ready-task rows returned per poll, `availability_ceiling_seconds` is the cross-backend tolerance applied to `available_at` so freshly-available tasks survive sub-second timestamp drift, `wake_signal_ttl_seconds` is the default `CacheLongPollWakeStore` signal TTL, and `workflow_task_lease_seconds` / `activity_task_lease_seconds` are the default workflow and activity task lease durations. Operators and downstream tooling read these to verify the deployment matches the documented matching-role contract without grepping the source |
@@ -718,7 +781,7 @@ change only in a major version bump.
 | `DW_V2_COMPATIBILITY_HEARTBEAT_TTL` | TTL for compatibility heartbeat entries; controls how long a missing worker counts as live. |
 | `DW_V2_PIN_TO_RECORDED_FINGERPRINT` | Pin runs to the workflow definition fingerprint recorded at start; forces matching-role refusal on fingerprint drift. |
 | `DW_V2_GUARDRAILS_BOOT` | Boot-time workflow determinism guardrail mode (`silent`, `warn`, `throw`). |
-| `DW_V2_MULTI_NODE` | Declares multi-node intent; enables cache validation gates and mixed-build signal collection. |
+| `DW_V2_MULTI_NODE` | Declares multi-node intent; enables cache validation gates and cross-node compatibility signal collection. |
 | `DW_V2_VALIDATE_CACHE_BACKEND` | Enables the Phase 5 cache validation gate at boot. |
 | `DW_V2_CACHE_VALIDATION_MODE` | Diagnostic mode for the cache acceleration admission (`silent`, `warn`, `fail`). The cache admission is warning-only by contract: `silent` suppresses the diagnostic, and `warn` and `fail` both log a warning without blocking boot. |
 | `DW_V2_FLEET_VALIDATION_MODE` | Worker-compatibility fleet admission posture (`warn` or `fail`); `fail` escalates the `worker_compatibility` health check from `warning` to `error` so the readiness contract returns 503, and blocks queue dispatch so ready tasks stay retained under `repair_available_at` until a compatible worker heartbeats, both only when the required compatibility marker has no supporting live worker. |
@@ -755,10 +818,10 @@ tighter fail-closed posture can adopt each step independently.
    `DW_V2_CACHE_VALIDATION_MODE=warn`, and
    `DW_V2_GUARDRAILS_BOOT=warn`. Operators observe warnings
    without blocking existing traffic.
-3. **Surface mixed-build state.** Set `DW_V2_MULTI_NODE=1` so the
+3. **Surface compatibility coverage.** Set `DW_V2_MULTI_NODE=1` so the
    fleet snapshot collects cross-node compatibility markers. The
-   Waterline workers view begins showing mixed-build
-   distributions.
+   Waterline workers view begins showing compatibility coverage by
+   namespace, queue, and marker.
 4. **Pin fingerprints.** Set `DW_V2_PIN_TO_RECORDED_FINGERPRINT=1`
    so runs already in flight remain pinned to their recorded
    workflow definition fingerprint. The matching role starts

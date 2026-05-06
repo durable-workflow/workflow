@@ -11,7 +11,7 @@ use PHPUnit\Framework\TestCase;
  * documented in docs/architecture/rollout-safety.md. The doc is the
  * single reference used by product docs, CLI reasoning, Waterline
  * diagnostics, server deployment guidance, cloud capacity planning,
- * and test coverage for boot-time admission, mixed-build safety,
+ * and test coverage for boot-time admission, compatibility coverage,
  * schema fencing, routing drains, stuck detectors, coordination
  * health metrics, Waterline surfaces, and the config surface.
  * Changes to any named guarantee must update this test and the
@@ -26,10 +26,11 @@ final class RolloutSafetyDocumentationTest extends TestCase
         '# Workflow V2 Rollout Safety and Coordination Health Contract',
         '## Scope',
         '## Terminology',
-        '## Admission authority and mixed-build safety',
+        '## Admission authority and stable v2 worker contract',
         '### Boot-time admission',
-        '### Mixed-build safety',
+        '### Stable v2 worker contract',
         '### Protocol version coordination',
+        '### Minimum cross-service worker contract',
         '## Schema fencing and migration safety',
         '## Routing safety: drain, block, and fail-closed',
         '## Coordination health: metrics, checks, and visibility',
@@ -48,7 +49,8 @@ final class RolloutSafetyDocumentationTest extends TestCase
     private const REQUIRED_TERMS = [
         'Admission check',
         'Fail closed',
-        'Mixed-build state',
+        'Stable v2 worker contract',
+        'Worker-contract coverage',
         'Drain',
         'Block',
         'Routing health',
@@ -87,6 +89,10 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'WorkflowStartGate',
         'WorkflowExecutionUnavailableException',
         'ScheduleManager',
+        'CommandContext',
+        'TypeRegistry',
+        'CodecRegistry',
+        'SurfaceStabilityContract',
     ];
 
     private const REQUIRED_HTTP_ROUTES = [
@@ -228,10 +234,31 @@ final class RolloutSafetyDocumentationTest extends TestCase
     private const REQUIRED_MIGRATION_PATH_STEPS = [
         '**Audit admission wiring.**',
         '**Turn on validation in `warn` mode.**',
-        '**Surface mixed-build state.**',
+        '**Surface compatibility coverage.**',
         '**Pin fingerprints.**',
         '**Move repair cadence under operator control.**',
         '**Tighten to fail mode.**',
+    ];
+
+    private const REQUIRED_CROSS_SERVICE_WORKER_CONTRACT_TERMS = [
+        'worker_protocol.external_task_input_contract',
+        'worker_protocol.external_task_result_contract',
+        'worker_protocol.external_execution_surface_contract',
+        'auth_composition_contract',
+        'auth_status',
+        'auth_method',
+        'principal_type',
+        'principal_id',
+        'Workflow\V2\Attributes\Type',
+        'workflow_type',
+        'activity_type',
+        'child_workflow_type',
+        'supported_workflow_types',
+        'supported_activity_types',
+        'payload_codec',
+        'CodecRegistry::universal()',
+        'payload_codecs_engine_specific',
+        'unsupported_payload_codec',
     ];
 
     public function testContractDocumentExistsAndDeclaresFrozenSections(): void
@@ -385,7 +412,7 @@ final class RolloutSafetyDocumentationTest extends TestCase
         $this->assertMatchesRegularExpression(
             '/\|\s*`backlog`\s*\|[^|]*`oldest_compatibility_blocked_started_at`[^|]*`max_compatibility_blocked_age_ms`/',
             $contents,
-            'Rollout safety contract must pin the backlog compatibility-blocked age row so operators can read "how stale is the worst mixed-build block?" from OperatorMetrics::snapshot() without a bespoke scan.',
+            'Rollout safety contract must pin the backlog compatibility-blocked age row so operators can read "how stale is the worst compatibility block?" from OperatorMetrics::snapshot() without a bespoke scan.',
         );
     }
 
@@ -640,6 +667,54 @@ final class RolloutSafetyDocumentationTest extends TestCase
                 sprintf(
                     'Rollout safety contract must name the %s claim reason code so routing blocks are diagnosable.',
                     $code
+                ),
+            );
+        }
+    }
+
+    public function testContractDocumentPinsMinimumCrossServiceWorkerContract(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_CROSS_SERVICE_WORKER_CONTRACT_TERMS as $term) {
+            $this->assertStringContainsString(
+                $term,
+                $contents,
+                sprintf(
+                    'Rollout safety contract must pin %s as part of the minimum stable cross-service worker contract.',
+                    $term
+                ),
+            );
+        }
+
+        $this->assertMatchesRegularExpression(
+            '/one stable worker contract/i',
+            $contents,
+            'Rollout safety contract must frame v2 as one stable worker contract.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/no v2-alpha to\s+v2 backwards-compatibility contract/i',
+            $contents,
+            'Rollout safety contract must reject v2-alpha-to-v2 compatibility framing.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/v1-to-v2\s+migration surface is the only cross-generation boundary/i',
+            $contents,
+            'Rollout safety contract must reserve cross-generation migration semantics for the v1-to-v2 boundary.',
+        );
+    }
+
+    public function testContractDocumentDoesNotReintroducePrereleaseVersionSkewFraming(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (['mixed-build', 'mixed fleet', 'mixed-fleet', 'For v2 alpha/beta releases:'] as $forbidden) {
+            $this->assertStringNotContainsString(
+                $forbidden,
+                $contents,
+                sprintf(
+                    'Rollout safety contract must not describe prerelease v2 version-skew as %s.',
+                    $forbidden
                 ),
             );
         }
