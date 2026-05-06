@@ -51,6 +51,18 @@ gates. The PHP workflow package claims the `official_sdk` and
 `worker_protocol_implementation` targets; releases of this package must
 attach a passing harness result document before tag.
 
+## Relationship to the feature mapping contract
+
+The v1 -> v2 feature parity and durable-home mapping is documented in
+[`docs/workflow/plan.md`](workflow/plan.md). That document names the
+feature-level home for activities, timers, signals, queries, updates,
+child workflows, continue-as-new, schedules, search attributes, memo,
+message streams, cross-namespace service calls, worker deployments,
+sticky execution, embedded v2 history import, replay-debug tooling,
+Waterline projections, and the explicit v2.0 support boundaries. This
+stability document freezes the
+public API and event payload rules those mapped features rely on.
+
 ## Scope
 
 The workflow package is consumed by three distinct audiences:
