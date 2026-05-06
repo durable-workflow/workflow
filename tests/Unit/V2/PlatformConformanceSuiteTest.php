@@ -138,6 +138,38 @@ final class PlatformConformanceSuiteTest extends TestCase
         }
     }
 
+    public function testMcpDiscoveryCategoryNamesCurrentReferenceSurface(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['mcp_discovery_envelopes'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_PROVISIONAL,
+            $category['status'],
+            'MCP conformance remains advisory until the public fixture set is promoted.',
+        );
+        $this->assertSame(
+            'durable-workflow.github.io/docs/mcp-workflows.md',
+            $category['authority_doc'],
+        );
+        $this->assertContains(
+            [
+                'repository' => 'sample-app',
+                'path' => 'tests/Feature/McpWorkflowServerTest.php',
+            ],
+            $category['sources'],
+            'the sample-app MCP server test is the current executable reference surface',
+        );
+        $this->assertContains(
+            [
+                'repository' => 'durable-workflow.github.io',
+                'path' => 'static/platform-protocol-specs/mcp-tool-results.schema.json',
+            ],
+            $category['sources'],
+            'the tool-result JSON Schema must remain named as a conformance source',
+        );
+    }
+
     public function testHistoryReplayBundlesAreFlaggedForFrozenExactMatch(): void
     {
         $manifest = PlatformConformanceSuite::manifest();

@@ -76,7 +76,7 @@ them from the declared locations.
 | `failure_repair_actionability` | `server`, `workflow` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, fixture pointers therein | Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces. |
 | `cli_json_envelopes` | `cli` | `tests/fixtures/control-plane/`, `schemas/` | The `--output=json` and `--output=jsonl` envelopes that automation depends on. Diagnostic-only fields are listed and excluded from the contract diff. |
 | `waterline_observer_envelopes` | `waterline` | (TBD: `tests/fixtures/observer/`) | The `/waterline/api/v2/*` shapes and operator dashboard JSON envelopes. Status: provisional — fixtures land alongside the next Waterline contract slice. |
-| `mcp_discovery_envelopes` | `workflow`, `server` | (TBD: shared `mcp/` fixture dir) | MCP `tools/list`, `tools/call`, and `llms-2.0.txt` discovery envelopes. Status: provisional — fixtures land alongside MCP tool stabilization. |
+| `mcp_discovery_envelopes` | `durable-workflow.github.io`, `sample-app` | `docs/mcp-workflows.md`, `static/platform-protocol-specs/mcp-tool-results.schema.json`, `tests/Feature/McpWorkflowServerTest.php` | MCP `tools/list`, `tools/call`, tool-result, and `llms-2.0.txt` discovery envelopes. Status: provisional — fixtures land alongside MCP tool stabilization. |
 
 A fixture category is **required** for a target only if both the target
 column lists it *and* the category status is not `provisional`.

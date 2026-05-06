@@ -279,18 +279,22 @@ final class PlatformConformanceSuite
             ],
             'mcp_discovery_envelopes' => [
                 'status' => self::CATEGORY_STATUS_PROVISIONAL,
-                'description' => 'MCP `tools/list`, `tools/call`, and `llms-2.0.txt` discovery envelopes. Promoted to required when the MCP tool surface stabilizes its public fixture set.',
+                'description' => 'MCP `tools/list`, `tools/call`, tool-result, and `llms-2.0.txt` discovery envelopes. Promoted to required when the MCP tool surface stabilizes its public fixture set.',
                 'sources' => [
                     [
-                        'repository' => 'workflow',
-                        'path' => 'tests/Fixtures/Mcp/ (planned)',
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'docs/mcp-workflows.md',
                     ],
                     [
-                        'repository' => 'server',
-                        'path' => 'tests/Fixtures/Mcp/ (planned)',
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-protocol-specs/mcp-tool-results.schema.json',
+                    ],
+                    [
+                        'repository' => 'sample-app',
+                        'path' => 'tests/Feature/McpWorkflowServerTest.php',
                     ],
                 ],
-                'authority_doc' => 'durable-workflow.github.io/docs/polyglot/ (mcp surface, planned)',
+                'authority_doc' => 'durable-workflow.github.io/docs/mcp-workflows.md',
             ],
         ];
     }
