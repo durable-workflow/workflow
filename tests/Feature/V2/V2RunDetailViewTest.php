@@ -2199,7 +2199,7 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame($historicalRun->id, $rebuiltCurrentDetail['parents'][0]['parent_workflow_run_id']);
     }
 
-    public function testRunDetailViewOmitsRawRequestContextForWebhookCommands(): void
+    public function testOperatorCommandAuditViewsOmitRawRequestContext(): void
     {
         $instance = WorkflowInstance::query()->create([
             'id' => 'detail-command-context',
@@ -2267,6 +2267,7 @@ final class V2RunDetailViewTest extends TestCase
             'payload' => Serializer::serialize([
                 'name' => 'name-provided',
                 'arguments' => ['Taylor'],
+                'reason' => 'Operator supplied audit reason',
             ]),
             'accepted_at' => now()
                 ->subSeconds(30),
@@ -2281,6 +2282,7 @@ final class V2RunDetailViewTest extends TestCase
         );
 
         $detail = RunDetailView::forRun($run->fresh(['summary']));
+        $export = HistoryExport::forRun($run->fresh(['summary']));
 
         $this->assertCount(1, $detail['commands']);
         $this->assertSame([
@@ -2305,6 +2307,30 @@ final class V2RunDetailViewTest extends TestCase
         $this->assertSame('sha256:detail-command-context', $detail['commands'][0]['request_fingerprint']);
         $this->assertSame('req-123', $detail['commands'][0]['request_id']);
         $this->assertSame('corr-123', $detail['commands'][0]['correlation_id']);
+        $this->assertSame('Operator supplied audit reason', $detail['commands'][0]['reason']);
+
+        $this->assertCount(1, $export['commands']);
+        $this->assertSame($detail['commands'][0]['context'], $export['commands'][0]['context']);
+        $this->assertSame('Webhook', $export['commands'][0]['caller_label']);
+        $this->assertSame('user', $export['commands'][0]['principal_type']);
+        $this->assertSame('42', $export['commands'][0]['principal_id']);
+        $this->assertSame('Taylor Otwell', $export['commands'][0]['principal_label']);
+        $this->assertSame('authorized', $export['commands'][0]['auth_status']);
+        $this->assertSame('token', $export['commands'][0]['auth_method']);
+        $this->assertSame('POST', $export['commands'][0]['request_method']);
+        $this->assertSame(
+            '/webhooks/instances/detail-command-context/signals/name-provided',
+            $export['commands'][0]['request_path'],
+        );
+        $this->assertSame('workflows.v2.signal', $export['commands'][0]['request_route_name']);
+        $this->assertSame('sha256:detail-command-context', $export['commands'][0]['request_fingerprint']);
+        $this->assertSame('req-123', $export['commands'][0]['request_id']);
+        $this->assertSame('corr-123', $export['commands'][0]['correlation_id']);
+        $this->assertSame('Operator supplied audit reason', $export['commands'][0]['reason']);
+        $this->assertArrayNotHasKey('request', $export['commands'][0]['context']);
+        $this->assertArrayNotHasKey('auth', $export['commands'][0]['context']);
+        $this->assertArrayNotHasKey('ip', $export['commands'][0]['context']);
+        $this->assertArrayNotHasKey('user_agent', $export['commands'][0]['context']);
     }
 
     public function testRunDetailViewIncludesInstanceRunNavigation(): void

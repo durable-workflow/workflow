@@ -1048,6 +1048,7 @@ final class HistoryExport
             'correlation_id' => $command->correlationId(),
             'status' => $command->status->value,
             'outcome' => $command->outcome?->value,
+            'reason' => $command->commandReason(),
             'rejection_reason' => $command->rejection_reason,
             'validation_errors' => $command->validationErrors(),
             'accepted_at' => self::timestamp($command->accepted_at),
