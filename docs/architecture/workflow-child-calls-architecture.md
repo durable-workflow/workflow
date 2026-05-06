@@ -125,7 +125,7 @@ CREATE TABLE workflow_child_calls (
 
 ## Parent-Close Policies
 
-When a parent workflow closes (completes, fails, or is cancelled), its parent-close policy determines how to handle open children.
+When a parent workflow closes (completes, fails, times out, is cancelled, or is terminated), its parent-close policy determines how to handle open children. Continue-as-new transfers still-open child links to the new run and does not enforce parent-close policy. The v2 runtime does not currently expose a standalone reset disposition; a future reset path must either transfer child ownership or invoke the same parent-close enforcer before the old run stops owning children.
 
 ### Policy: `Abandon`
 

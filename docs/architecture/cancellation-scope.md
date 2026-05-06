@@ -270,6 +270,23 @@ of the Phase 1 contract so replay sees it, and every subsequent
 `ChildRunStarted` on a continued child run still carries the
 original policy.
 
+### Parent disposition matrix
+
+Parent-close policy applies to every disposition that makes the
+parent run terminal. It stays inert when the parent remains live
+under a continued run or when the platform has not implemented a
+standalone reset disposition.
+
+| Parent disposition | Policy enforced? | Runtime path |
+| --- | --- | --- |
+| Completed | Yes | `WorkflowExecutor` records `WorkflowCompleted`, then calls `ParentClosePolicyEnforcer::enforce($run)`. Straight-line `child()` calls normally have no open child by this point because they waited for the child result, but the enforcer still runs as a safety pass. |
+| Failed | Yes | `WorkflowExecutor` records `WorkflowFailed`, then calls `ParentClosePolicyEnforcer::enforce($run)` for terminal workflow-task failure paths. |
+| Timed out | Yes | Timeout closure records the timeout failure through the run-failure path, then calls `ParentClosePolicyEnforcer::enforce($run)` before the run is left terminal. |
+| Cancelled | Yes | `WorkflowStub::attemptCancel()` records the accepted cancel, closes the parent as cancelled, and calls `ParentClosePolicyEnforcer::enforce($run)`. |
+| Terminated | Yes | `WorkflowStub::attemptTerminate()` records the accepted terminate, closes the parent as terminated, and calls `ParentClosePolicyEnforcer::enforce($run)`. |
+| Continue-as-new | No | The workflow instance stays active. Open child links are transferred to the continued run with their original `parent_close_policy`, so no parent-close command is sent. |
+| Reset | Not currently applicable | The v2 runtime does not expose a standalone reset command or reset terminal disposition. Any future reset or repair operation that closes or replaces a parent run must define whether the old run becomes terminal or transfers ownership; if it becomes terminal, it must call `ParentClosePolicyEnforcer::enforce($run)` before the old run stops owning open children. |
+
 ## History event surface
 
 The typed history events used by this contract:

@@ -66,6 +66,16 @@ final class CancellationScopeDocumentationTest extends TestCase
         "`ParentClosePolicy::Terminate` (`'terminate'`)",
     ];
 
+    private const REQUIRED_PARENT_DISPOSITIONS = [
+        'Completed',
+        'Failed',
+        'Timed out',
+        'Cancelled',
+        'Terminated',
+        'Continue-as-new',
+        'Reset',
+    ];
+
     private const REQUIRED_EXCEPTION_CLASSES = ['WorkflowCancelledException', 'WorkflowTerminatedException'];
 
     private const REQUIRED_HISTORY_EVENTS_PARENT = [
@@ -310,6 +320,31 @@ final class CancellationScopeDocumentationTest extends TestCase
             'ParentClosePolicyFailed',
             $contents,
             'Contract must name ParentClosePolicyFailed.',
+        );
+    }
+
+    public function testContractDocumentPinsParentDispositionMatrixIncludingReset(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertStringContainsString(
+            '### Parent disposition matrix',
+            $contents,
+            'Contract must include the parent-close disposition matrix.',
+        );
+
+        foreach (self::REQUIRED_PARENT_DISPOSITIONS as $disposition) {
+            $this->assertMatchesRegularExpression(
+                '/\|\s*'.preg_quote($disposition, '/').'\s*\|/i',
+                $contents,
+                sprintf('Parent-close disposition matrix must include %s.', $disposition),
+            );
+        }
+
+        $this->assertMatchesRegularExpression(
+            '/\|\s*Reset\s*\|\s*Not currently applicable\s*\|[^|]*does not expose a standalone reset command/i',
+            $contents,
+            'Reset row must state that v2 currently has no standalone reset disposition.',
         );
     }
 
