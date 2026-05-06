@@ -206,6 +206,7 @@ the first v2 product surface:
 | Sticky execution | `workflow_runs` and `workflow_tasks` sticky affinity fields | V1 did not freeze process-local replay caching as a supported optimization with cold-replay fallback. |
 | Standalone server distribution | server HTTP API, worker protocol, cluster manifests | V1 was PHP/Laravel embedded only. |
 | Embedded v2 history import | history-export bundles plus workflow run import marker columns | V1 migration remains finish-on-v1; this moves already-v2 embedded history into the standalone server. |
+| Compiled workflow IR and Serverless Workflow import | `CompiledWorkflowDefinition`, `ServerlessWorkflowCompiler`, `WorkflowDefinitionVersionSelector` | Builder-authored and Serverless Workflow SDK JSON definitions compile into one schema-pinned IR with stable step ids before a concrete definition version is selected for runtime or storage. |
 | Platform protocol specs | `PlatformProtocolSpecs`, `GET /api/cluster/info` `platform_protocol_specs` mirror | V1 did not publish one machine-readable catalog of normative server, worker, CLI, Waterline, and SDK specs. |
 | Platform conformance | fixture catalog and harness result contract | V1 did not publish a single cross-repo compatibility proof. |
 | Replay-debug bundles | `HistoryExport`, `WorkflowReplayer`, replay diff tooling | V1 relied on manual log inspection. |

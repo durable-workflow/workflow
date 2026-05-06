@@ -103,6 +103,7 @@ is either promoted to a `Contracts\*` interface or removed:
 
 - `Workflow\V2\Support\ActivityTimeoutEnforcer`
 - `Workflow\V2\Support\BundleIntegrityVerifier`
+- `Workflow\V2\Support\CompiledWorkflowDefinition`
 - `Workflow\V2\Support\ConfiguredV2Models`
 - `Workflow\V2\Support\EmbeddedV2HistoryImport`
 - `Workflow\V2\Support\EmbeddedV2ImportContract`
@@ -114,6 +115,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\ReplayState`
 - `Workflow\V2\Support\ScheduleManager`
 - `Workflow\V2\Support\ScheduleStartResult`
+- `Workflow\V2\Support\ServerlessWorkflowCompiler`
 - `Workflow\V2\Support\StructuralLimits`
 - `Workflow\V2\Support\SurfaceStabilityContract`
 - `Workflow\V2\Support\TaskRepairCandidates`
@@ -121,6 +123,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\WorkerCompatibilityFleet`
 - `Workflow\V2\Support\WorkerProtocolVersion`
 - `Workflow\V2\Support\WorkflowCommandNormalizer`
+- `Workflow\V2\Support\WorkflowDefinitionVersionSelector`
 - `Workflow\V2\Support\WorkflowReplayer`
 - `Workflow\V2\Support\WorkflowRunRetentionCleanup`
 - `Workflow\V2\Support\WorkflowTaskOwnership`
