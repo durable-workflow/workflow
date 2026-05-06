@@ -24,6 +24,12 @@ partition primitives frozen in `docs/architecture/task-matching.md`
 `compatibility` *are*; this document defines how they are *chosen*
 and when they are *re-chosen*.
 
+Cross-namespace service addressing is defined separately in
+`docs/architecture/cross-namespace-service-addressing.md`. That
+contract introduces `endpoint/service/operation` as a public
+capability address above the routing layer; it does not change the
+task-routing precedence frozen here.
+
 ## Scope
 
 The contract covers:
@@ -65,6 +71,10 @@ It does not cover:
   `docs/architecture/worker-compatibility.md`. This document names
   compatibility only where it travels alongside routing on the same
   durable row.
+- cross-namespace service addressing. That surface resolves a
+  logical `endpoint/service/operation` contract address to a concrete
+  handler binding before the chosen workflow, activity, or invocable
+  execution lane uses its normal routing rules.
 
 ## Terminology
 
@@ -449,6 +459,33 @@ guarantee is out of contract. Specifically:
   compatibility marker as documented in
   `docs/architecture/worker-compatibility.md`.
 
+## Interaction with cross-namespace service addressing
+
+Cross-namespace service addressing is additive over this routing
+contract. Namespaces still partition the poll surface, but service
+dispatch is not itself a task-routing rewrite.
+
+The cross-namespace service contract gives callers a stable
+`endpoint/service/operation` address owned by a target namespace.
+The runtime resolves that contract address through
+`workflow_service_endpoints`, `workflow_services`, and
+`workflow_service_operations` to one handler binding. Supported
+binding kinds include `start_workflow`, `signal_workflow`,
+`update_workflow`, `query_workflow`, `activity_execution`, and
+`invocable_http`.
+
+Only after the binding is chosen does execution enter an existing
+lane. A `start_workflow` binding uses the workflow-start resolution
+rules above; an `activity_execution` binding uses the activity
+resolution rules above; message-oriented workflow bindings use their
+existing signal, update, and query contracts. The caller-facing
+dispatch shape is the service contract address and payload, not raw
+`(namespace, connection, queue)` fields.
+
+Cross-namespace service addressing is therefore a contract boundary,
+not a queue-selection trick. The caller speaks in durable capability
+names, not worker topology.
+
 ## Config surface and defaults
 
 The runtime config surface for routing resolution is intentionally
@@ -485,9 +522,11 @@ follow-on phase:
 - **Retry-time routing rewrites.** Activity and workflow-task retries
   never re-resolve. A future roadmap item may add explicit re-route
   semantics for degraded queues; adding one is a protocol change.
-- **Cross-namespace routing.** Namespaces partition the poll surface
-  and are not part of the routing decision. Cross-namespace calls are
-  out of scope for this contract.
+- **Raw cross-namespace queue routing.** Namespaces partition the poll
+  surface and are not part of the routing decision. Public
+  cross-namespace calls use the service-addressing contract in
+  `docs/architecture/cross-namespace-service-addressing.md`; they do
+  not expose queue selection as the caller-facing boundary.
 - **Webhook and command-ingress routing.** Command-plane ingress
   routing is tracked in `docs/architecture/control-plane-split.md`
   (Phase 4) and in the webhook/command taxonomy. Ingress
@@ -549,10 +588,14 @@ roadmap issues rather than redefining them here:
   `docs/architecture/task-matching.md`.
 - retry-time rerouting and degraded-queue drainage, which require a
   new contract extension.
-- cross-namespace routing, which is out of scope for this contract.
+- raw cross-namespace queue routing. Public peer-to-peer calls use
+  the service-addressing contract and then enter the routing lane
+  selected by the resolved handler binding.
 
 See `docs/architecture/execution-guarantees.md`,
 `docs/architecture/worker-compatibility.md`,
 `docs/architecture/task-matching.md`, and
 `docs/architecture/rollout-safety.md` for the adjacent frozen
-contracts this document builds on.
+contracts this document builds on. See
+`docs/architecture/cross-namespace-service-addressing.md` for the
+service contract address that sits above these routing rules.

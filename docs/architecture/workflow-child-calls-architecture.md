@@ -4,6 +4,11 @@
 
 The workflow child calls system tracks parent-child workflow invocations, enabling hierarchical workflow orchestration. This document describes the architecture, data model, lifecycle semantics, and parent-close policies for child workflow execution.
 
+Cross-namespace service addressing is documented separately in
+`docs/architecture/cross-namespace-service-addressing.md`. Child
+workflow calls remain lineage-bearing orchestration; they are not the
+public peer-to-peer service surface.
+
 ## Purpose
 
 Child workflows enable:
@@ -12,6 +17,42 @@ Child workflows enable:
 - **Isolation**: Separate failure domains and execution contexts
 - **Coordination**: Synchronize multiple child workflows with parent lifecycle
 - **Policy Control**: Define how parent closure affects running children
+
+Child workflows do not define a public cross-namespace contract
+address. A different namespace calls a durable capability through
+`endpoint/service/operation`; a parent workflow calls a child workflow
+when it needs hierarchical orchestration, lineage, and parent-close
+policy.
+
+## Child Calls vs Cross-Namespace Service Addressing
+
+Child workflow calls and cross-namespace service calls solve different
+problems:
+
+| Surface | Public address | Primary contract |
+| --- | --- | --- |
+| Child workflow call | Child workflow type plus parent call site | Parent-child lineage, parent-close policy, cancellation, continue-as-new transfer, and child outcome tracking |
+| Cross-namespace service call | `endpoint/service/operation` | Peer-to-peer capability dispatch through endpoint indirection and handler binding resolution |
+
+The child-call record is part of workflow lineage. It records the
+parent workflow run, child workflow type, scheduling sequence,
+resolved child instance and run, snapped parent-close policy, snapped
+routing options, and outcome metadata. Those fields are not a service
+contract address and must not be exposed as the public boundary for a
+different namespace.
+
+The service-addressing contract may resolve a binding to
+`start_workflow`, `signal_workflow`, `update_workflow`,
+`query_workflow`, `activity_execution`, or `invocable_http`. A
+`start_workflow` service binding starts a peer workflow through the
+workflow-start lane; it does not make the caller the parent of that
+run unless a workflow explicitly uses the child-call API as part of
+its own orchestration. The service call remains addressed by
+`endpoint/service/operation`, and the workflow child-call relationship
+remains addressed by lineage.
+
+In short: child workflows remain lineage-bearing orchestration, not
+the public cross-namespace service surface.
 
 ## Database Schema
 
