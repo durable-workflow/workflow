@@ -34,6 +34,119 @@ V2 covers the current v1 product surface. This contract is complete when
 it stays present, names each mapped feature row below, and keeps the gap
 analysis explicit.
 
+## Managed Cloud Readiness
+
+Package, standalone server, and managed cloud are one product ladder.
+The package owns the durable kernel and the namespace-scoped runtime
+contract. The standalone server exposes that kernel over HTTP with the
+same worker protocol, control-plane commands, matching, history, and
+operator projections. Managed cloud adds hosted tenancy, IAM, regional
+placement, private connectivity, quota, metering, and provider
+operations without replacing the durable homes or changing the worker
+semantics named in this document.
+
+The readiness contracts are:
+
+- **Tenancy hierarchy.** Hosted tenancy is
+  `organization -> project -> environment -> namespace`. The package
+  persists and routes by namespace. The standalone server authenticates
+  namespace-scoped API and worker requests. Managed cloud maps
+  organizations, projects, and environments onto namespaces and carries
+  the higher-level scope as principal, policy, billing, and audit
+  metadata rather than as hidden workflow state.
+- **Control plane and data plane.** The hosted control plane owns
+  organization, project, environment, namespace, IAM, endpoint, region,
+  quota, billing, and lifecycle mutations. The namespace data plane owns
+  worker protocol, task matching, command execution, history,
+  visibility, and operator projections for a namespace. The control
+  plane may create durable commands and read projections through the
+  documented API, but it MUST NOT run workflow or activity code.
+- **Hosted IAM and machine identity.** Organization users, service
+  accounts, API keys, SSO, and SCIM are hosted IAM concepts. They map
+  to stable principal subjects, scopes, roles, and audit facts before a
+  request reaches the workflow control plane. Machine identities can be
+  scoped at organization, project, environment, or namespace level and
+  MUST NOT bypass namespace authorization.
+- **Reachability boundaries.** Control-plane APIs are reachable through
+  hosted regional or global control endpoints. Namespace data-plane
+  APIs are reachable only through the namespace endpoint, the selected
+  regional endpoint, or explicitly configured private connectivity.
+  Worker polling, completion, heartbeat, and task delivery use
+  data-plane reachability; hosted control-plane rate limits do not
+  decide worker dispatch eligibility.
+- **Namespace connectivity rules.** A namespace connectivity rule is an
+  allow-list policy for the namespace's accepted ingress paths,
+  private endpoints, worker-connectivity modes, certificate filters,
+  and approved egress targets. Rejections fail closed before revealing
+  whether a hidden namespace, service, queue, or endpoint exists.
+- **Namespace endpoint versus regional endpoint behavior.** A namespace
+  endpoint selects exactly one namespace from the endpoint hostname and
+  SNI value, then applies the namespace's mTLS and certificate-filter
+  policy before request authorization. A regional endpoint may route to
+  more than one namespace in the region only after the request
+  authenticates and names an allowed namespace. mTLS client
+  certificates are accepted only when their subject, issuer, SAN, or
+  fingerprint matches the namespace's configured certificate filters.
+- **Quota, fairness, and metering.** Quotas may attach at
+  organization, project, environment, and namespace levels; the
+  effective limit is the most specific applicable limit after inherited
+  ceilings are applied. Fairness is enforced at the namespace and task
+  queue boundaries named by the matching and admission contracts.
+  Metering records starts, tasks, activity attempts, worker minutes,
+  history bytes, payload storage, API calls, and retained data against
+  the same hierarchy so billing never depends on scanning user
+  payloads.
+- **APS/OPS throttling versus API rate limits.** APS/OPS throttles are
+  worker-plane dispatch and operations budgets: active leases,
+  dispatches per minute, repair passes, query-task admission, and
+  operator action concurrency. Control-plane API rate limits protect
+  hosted API ingress. A control-plane `429` MUST NOT consume worker
+  dispatch capacity, and an APS/OPS throttle MUST surface as namespace
+  backpressure rather than as a generic API quota failure.
+- **Region, residency, replication, backup, restore, and DR.** An
+  environment declares its allowed regions and residency boundary. A
+  namespace selects a primary region, optional replica regions, backup
+  policy, restore policy, and disaster-recovery objective inside that
+  boundary. Workflow history, payload references, backups, and
+  metering data MUST NOT replicate outside the declared residency
+  boundary unless the operator changes the environment policy first.
+- **Private connectivity and HA/DR networking.** Private connectivity
+  is namespace or environment scoped and does not alter namespace
+  identity, SNI routing, mTLS requirements, or authorization. HA and DR
+  networking declare which endpoints can fail over, which private
+  routes must exist in each region, and which DNS or control-plane
+  records change during failover. A failover cannot silently widen
+  reachability.
+- **Worker connectivity modes.** Supported modes are hosted workers,
+  customer-managed workers over public TLS, private-link workers, and
+  outbound tunnel or agent-based workers. Every mode registers the
+  same worker identity, namespace, task queue, compatibility,
+  heartbeat, and build information. No worker-connectivity mode grants
+  direct database access or an undocumented task-claim path.
+- **Provider-side support and admin plane.** The provider admin plane
+  may inspect health, topology, quota, metering, audit, and support
+  bundle metadata needed to operate the service. Payloads, history
+  bodies, and external payload objects remain customer data; provider
+  access requires an explicit support grant or documented emergency
+  procedure and is audited with the acting provider principal.
+- **Hosted control-plane API lifecycle.** Hosted control-plane APIs are
+  versioned independently from package internals but must preserve the
+  command outcomes, durable homes, and projection fields named by this
+  contract. Backwards-compatible additions may appear in the current
+  API version; removals, renames, narrower enum sets, or changed
+  meanings require a new API version and a published deprecation
+  window.
+- **Namespace lifecycle controls.** Namespace create, suspend, resume,
+  archive, restore, and delete are control-plane lifecycle operations.
+  Deletion protection blocks destructive operations until explicitly
+  disabled. Tags are non-authoritative metadata for search, billing,
+  and policy selection. Certificate filters are namespace lifecycle
+  state and are evaluated before mTLS-authenticated worker or API
+  requests enter the data plane. Destructive deletion requires the
+  namespace to be drained, retention/export policy to be satisfied,
+  private connectivity to be detached or reassigned, and active
+  support grants to be closed.
+
 ## Feature Compatibility Matrix
 
 | Feature | v1 surface | v2 durable home | v2 history events | command outcomes | visibility / projection surface | support boundary |
@@ -168,6 +281,10 @@ explicitly reserved for a future contract before support is advertised.
 - [`docs/architecture/control-plane-split.md`](../architecture/control-plane-split.md)
   defines role ownership for commands, matching, scheduler, history, and
   API ingress.
+- [`docs/deployment/ha-failover.md`](../deployment/ha-failover.md)
+  and [`docs/deployment/multi-region.md`](../deployment/multi-region.md)
+  define the self-serve HA, DR, region, replication, private-networking,
+  backup, and restore behavior consumed by managed-cloud deployments.
 - [`docs/workflow-messages-architecture.md`](../workflow-messages-architecture.md),
   [`docs/search-attributes-architecture.md`](../search-attributes-architecture.md),
   and [`docs/workflow-memos-architecture.md`](../workflow-memos-architecture.md)
@@ -181,6 +298,9 @@ Changing a durable home, removing a mapped feature row, changing a
 support boundary from supported to deferred, or claiming support for a
 deferred item requires updating this document and
 `tests/Unit/V2/FeatureMappingDocumentationTest.php` in the same change.
+Changing a managed-cloud readiness guarantee requires updating
+`tests/Unit/V2/ManagedCloudReadinessDocumentationTest.php` in the same
+change.
 If the change affects a frozen history-event field, update
 [`docs/api-stability.md`](../api-stability.md) and the corresponding
 payload contract tests as well.
