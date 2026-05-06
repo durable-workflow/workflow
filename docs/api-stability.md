@@ -143,8 +143,9 @@ major bump.
 ## `Workflow\V2\Workflow` authoring facade
 
 The abstract base class `Workflow\V2\Workflow` is the stable authoring API
-for v2 workflows. It exposes two surfaces, both covered by the semver
-guarantee:
+for v2 workflows. Its definition boundary is specified by
+[`docs/architecture/authoring-definition-boundary.md`](architecture/authoring-definition-boundary.md).
+It exposes two surfaces, both covered by the semver guarantee:
 
 - **Instance members** applications rely on inside a `handle()` method:
   `workflowId()`, `runId()`, `lastChild()`,
@@ -152,18 +153,25 @@ guarantee:
   `addCompensation()`, `setParallelCompensation()`,
   `setContinueWithError()`, `compensate()`, and the public properties
   `$run`, `$connection`, `$queue`.
-- **Static method facade** mirroring the helpers in
-  `Workflow\V2\functions.php`: `activity`, `executeActivity`, `child`,
-  `executeChildWorkflow`, `async`, `all`, `parallel`, `await`,
+- **Static method facade** wrapping the helpers in
+  `Workflow\V2\functions.php` plus Temporal-style aliases: `activity`,
+  `executeActivity`, `child`, `executeChildWorkflow`, `async`, `all`,
+  `parallel`, `await`, `now`,
   `awaitWithTimeout`, `awaitSignal`, `timer`, `sideEffect`, `uuid4`,
   `uuid7`, `continueAsNew`, `getVersion`, `patched`, `deprecatePatch`,
   `upsertMemo`, `upsertSearchAttributes`, and the timer sugar
   `seconds`/`minutes`/`hours`/`days`/`weeks`/`months`/`years`.
 
-The namespaced helper functions under `Workflow\V2\*` remain the
-equivalent functional-style surface and are equally stable. Choosing
-between the static facade and the namespaced helpers is a style
-preference; both produce identical `Support\*` Call value objects.
+The namespaced helper functions under `Workflow\V2\*` remain the primary
+straight-line authoring surface and are equally stable: `activity`,
+`child`, `async`, `all`, `parallel`, `await`, `signal`, `timer`,
+`sideEffect`, `uuid4`, `uuid7`, `continueAsNew`, `getVersion`, `patched`,
+`deprecatePatch`, `upsertMemo`, `upsertSearchAttributes`, `now`, and the
+timer sugar `seconds`/`minutes`/`hours`/`days`/`weeks`/`months`/`years`.
+Choosing between the static facade and the namespaced helpers is a style
+preference; both produce identical `Support\*` Call value objects or
+deterministic workflow-time values, and both route metadata upserts through
+the same command path.
 
 Adding new static methods to the facade is an additive (non-breaking)
 change. Removing or renaming a documented method is a major change.

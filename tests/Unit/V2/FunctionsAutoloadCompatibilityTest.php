@@ -16,7 +16,15 @@ final class FunctionsAutoloadCompatibilityTest extends TestCase
             '-r',
             <<<'PHP'
 require_once __DIR__ . '/src/functions.php';
-var_export(function_exists('Workflow\\V2\\signal'));
+$functions = [
+    'Workflow\\V2\\signal',
+    'Workflow\\V2\\parallel',
+];
+var_export(array_reduce(
+    $functions,
+    static fn (bool $ok, string $function): bool => $ok && function_exists($function),
+    true,
+));
 PHP
             ,
         ], dirname(__DIR__, 3));

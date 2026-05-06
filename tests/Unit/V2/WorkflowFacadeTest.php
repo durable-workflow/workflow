@@ -20,6 +20,8 @@ use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
+use function Workflow\V2\activity;
+use function Workflow\V2\parallel;
 
 /**
  * The static facade on Workflow\V2\Workflow is a thin delegate to the
@@ -167,6 +169,13 @@ class WorkflowFacadeTest extends TestCase
         $this->assertInstanceOf(AllCall::class, $call);
     }
 
+    public function testParallelHelperAliasesAll(): void
+    {
+        $call = parallel([activity('App\\Activities\\A')]);
+
+        $this->assertInstanceOf(AllCall::class, $call);
+    }
+
     public function testUpsertMemoSuspendsWithAnUpsertMemoCall(): void
     {
         // Outside a fiber, suspend returns the call instance; upsertMemo is
@@ -198,6 +207,7 @@ class WorkflowFacadeTest extends TestCase
     {
         $facadeMethods = [
             'activity',
+            'now',
             'executeActivity',
             'child',
             'executeChildWorkflow',

@@ -1310,7 +1310,7 @@ final class WorkflowExecutor
                 $run,
                 $task,
                 new UnsupportedWorkflowYieldException(sprintf(
-                    'Workflow %s yielded %s. v2 currently supports activity(), child(), async(), all(), await(), signal(), timer(), sideEffect(), continueAsNew(), getVersion(), patched(), deprecatePatch(), upsertMemo(), and upsertSearchAttributes() only.',
+                    'Workflow %s yielded %s. v2 currently supports activity(), child(), async(), all(), parallel(), await(), signal(), timer(), sideEffect(), continueAsNew(), getVersion(), patched(), deprecatePatch(), upsertMemo(), and upsertSearchAttributes() only.',
                     $run->workflow_class,
                     get_debug_type($current),
                 )),

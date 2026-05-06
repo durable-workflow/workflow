@@ -86,6 +86,13 @@ if (! function_exists(__NAMESPACE__ . '\\all')) {
     }
 }
 
+if (! function_exists(__NAMESPACE__ . '\\parallel')) {
+    function parallel(iterable $calls): mixed
+    {
+        return all($calls);
+    }
+}
+
 if (! function_exists(__NAMESPACE__ . '\\await')) {
     function await(
         callable|string $condition,

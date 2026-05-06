@@ -227,7 +227,7 @@ abstract class Workflow
      */
     public static function now(): \Carbon\CarbonInterface
     {
-        return \Workflow\V2\Support\WorkflowFiberContext::getTime();
+        return now();
     }
 
     /**
@@ -292,7 +292,7 @@ abstract class Workflow
      */
     public static function parallel(iterable $calls): mixed
     {
-        return all($calls);
+        return parallel($calls);
     }
 
     /**

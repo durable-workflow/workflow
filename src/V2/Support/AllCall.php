@@ -26,7 +26,7 @@ final class AllCall implements YieldedCommand
         foreach ($calls as $call) {
             if (! $call instanceof ActivityCall && ! $call instanceof ChildWorkflowCall && ! $call instanceof self) {
                 throw new LogicException(sprintf(
-                    'Workflow\\V2\\all() currently supports activity() calls, child() calls, or nested all() groups only. Received [%s].',
+                    'Workflow\\V2\\all()/parallel() currently supports activity() calls, child() calls, or nested all()/parallel() groups only. Received [%s].',
                     get_debug_type($call),
                 ));
             }
