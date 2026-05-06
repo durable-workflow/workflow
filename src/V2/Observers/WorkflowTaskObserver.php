@@ -6,8 +6,12 @@ namespace Workflow\V2\Observers;
 
 use Throwable;
 use Workflow\V2\Contracts\LongPollWakeStore;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CacheLongPollWakeStore;
+use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\StickyExecution;
 
 /**
  * Triggers long-poll wake signals when workflow tasks change.
@@ -21,6 +25,32 @@ class WorkflowTaskObserver
     public function __construct(
         private readonly LongPollWakeStore $wakeStore,
     ) {
+    }
+
+    public function creating(WorkflowTask $task): void
+    {
+        if ($task->task_type !== TaskType::Workflow && $task->task_type !== TaskType::Workflow->value) {
+            return;
+        }
+
+        if (is_string($task->sticky_worker_id) && trim($task->sticky_worker_id) !== '') {
+            return;
+        }
+
+        if (! is_string($task->workflow_run_id) || trim($task->workflow_run_id) === '') {
+            return;
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->find($task->workflow_run_id);
+
+        if (! $run instanceof WorkflowRun || ! StickyExecution::shouldInherit($run)) {
+            return;
+        }
+
+        $task->sticky_worker_id = $run->sticky_worker_id;
+        $task->sticky_until = $run->sticky_until;
     }
 
     public function created(WorkflowTask $task): void

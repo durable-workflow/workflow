@@ -22,7 +22,7 @@ interface WorkflowTaskBridge
      *
      * Returns an array of task summaries ordered by availability.
      * Each summary contains task_id, workflow_run_id, workflow_instance_id,
-     * workflow_type, connection, queue, compatibility, and available_at.
+     * workflow_type, connection, queue, compatibility, sticky affinity, and available_at.
      *
      * @param  list<string>  $workflowTypes
      * @return list<array{
@@ -34,6 +34,8 @@ interface WorkflowTaskBridge
      *     connection: string|null,
      *     queue: string|null,
      *     compatibility: string|null,
+     *     sticky_worker_id: string|null,
+     *     sticky_until: string|null,
      *     available_at: string|null,
      * }>
      */
@@ -63,6 +65,9 @@ interface WorkflowTaskBridge
      *     connection: string|null,
      *     queue: string|null,
      *     compatibility: string|null,
+     *     sticky_worker_id: string|null,
+     *     sticky_until: string|null,
+     *     sticky_replay_mode: string|null,
      *     lease_owner: string|null,
      *     lease_expires_at: string|null,
      *     reason: string|null,
@@ -86,6 +91,9 @@ interface WorkflowTaskBridge
      *     connection: string|null,
      *     queue: string|null,
      *     compatibility: string|null,
+     *     sticky_worker_id: string|null,
+     *     sticky_until: string|null,
+     *     sticky_replay_mode: string|null,
      *     lease_owner: string|null,
      *     lease_expires_at: string|null,
      * }|null
@@ -107,6 +115,9 @@ interface WorkflowTaskBridge
      *     payload_codec: string,
      *     arguments: string|null,
      *     run_status: string,
+     *     sticky_worker_id: string|null,
+     *     sticky_until: string|null,
+     *     sticky_replay_mode: string|null,
      *     last_history_sequence: int,
      *     history_events: list<array{
      *         id: string,
@@ -140,6 +151,9 @@ interface WorkflowTaskBridge
      *     arguments: string|null,
      *     run_status: string,
      *     last_history_sequence: int,
+     *     sticky_worker_id: string|null,
+     *     sticky_until: string|null,
+     *     sticky_replay_mode: string|null,
      *     after_sequence: int,
      *     page_size: int,
      *     has_more: bool,

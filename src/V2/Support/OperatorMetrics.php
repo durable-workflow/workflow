@@ -56,6 +56,7 @@ final class OperatorMetrics
             'update_wait' => UpdateWaitPolicy::snapshot(),
             'repair_policy' => TaskRepairPolicy::snapshot(),
             'matching_role' => MatchingRoleSnapshot::current(),
+            'sticky_execution' => self::stickyExecutionMetrics($now, $namespace),
         ];
     }
 
@@ -341,6 +342,89 @@ final class OperatorMetrics
             'active_workers_supporting_required' => count($supportingWorkerIds),
             'fleet' => $fleet,
         ];
+    }
+
+    /**
+     * @return array<string, int|float|bool|string|null>
+     */
+    private static function stickyExecutionMetrics(CarbonInterface $now, ?string $namespace): array
+    {
+        $windowStart = $now->copy()->subMinute();
+        $hitExpected = self::stickyReplayModeCount(
+            StickyExecution::MODE_STICKY_HIT_EXPECTED,
+            $windowStart,
+            $namespace,
+        );
+        $forcedColdReplay = self::stickyReplayModeCount(
+            StickyExecution::MODE_FORCED_COLD_REPLAY,
+            $windowStart,
+            $namespace,
+        );
+        $coldReplay = self::stickyReplayModeCount(StickyExecution::MODE_COLD_REPLAY, $windowStart, $namespace);
+        $routed = $hitExpected + $forcedColdReplay;
+
+        return [
+            'enabled' => StickyExecution::enabled(),
+            'ttl_seconds' => StickyExecution::ttlSeconds(),
+            'active_sticky_runs' => self::activeStickyRuns($now, $namespace),
+            'ready_sticky_tasks' => self::readyStickyTasks($now, $namespace),
+            'leased_sticky_tasks' => self::leasedStickyTasks($namespace),
+            'hit_expected_last_minute' => $hitExpected,
+            'miss_last_minute' => $forcedColdReplay,
+            'forced_cold_replay_last_minute' => $forcedColdReplay,
+            'cold_replay_last_minute' => $coldReplay,
+            'hit_rate_last_minute' => $routed === 0 ? 0.0 : $hitExpected / $routed,
+            'miss_rate_last_minute' => $routed === 0 ? 0.0 : $forcedColdReplay / $routed,
+            'capacity_pressure_tasks' => self::readyStickyTasks($now, $namespace),
+        ];
+    }
+
+    private static function activeStickyRuns(CarbonInterface $now, ?string $namespace): int
+    {
+        return self::runQuery($namespace)
+            ->whereNotNull('sticky_worker_id')
+            ->whereNotNull('sticky_until')
+            ->where('sticky_until', '>', $now)
+            ->whereNotIn('status', [
+                RunStatus::Completed->value,
+                RunStatus::Failed->value,
+                RunStatus::Cancelled->value,
+                RunStatus::Terminated->value,
+            ])
+            ->count();
+    }
+
+    private static function readyStickyTasks(CarbonInterface $now, ?string $namespace): int
+    {
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->whereNotNull('sticky_worker_id')
+            ->whereNotNull('sticky_until')
+            ->where('sticky_until', '>', $now)
+            ->count();
+    }
+
+    private static function leasedStickyTasks(?string $namespace): int
+    {
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Leased->value)
+            ->whereNotNull('sticky_worker_id')
+            ->count();
+    }
+
+    private static function stickyReplayModeCount(
+        string $mode,
+        CarbonInterface $windowStart,
+        ?string $namespace,
+    ): int {
+        return self::scopedRunModelQuery(self::taskModel(), $namespace)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('sticky_replay_mode', $mode)
+            ->whereNotNull('sticky_claimed_at')
+            ->where('sticky_claimed_at', '>=', $windowStart)
+            ->count();
     }
 
     /**

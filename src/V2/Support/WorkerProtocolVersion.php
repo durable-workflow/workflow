@@ -208,6 +208,7 @@ final class WorkerProtocolVersion
      *     history_pagination: array{default_page_size: int, max_page_size: int},
      *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      *     long_poll: array{default_timeout_seconds: int, min_timeout_seconds: int, max_timeout_seconds: int},
+     *     sticky_execution: array<string, mixed>,
      * }
      */
     public static function describe(): array
@@ -227,6 +228,7 @@ final class WorkerProtocolVersion
                 'compression_threshold' => self::COMPRESSION_THRESHOLD,
             ],
             'long_poll' => self::longPollSemantics(),
+            'sticky_execution' => StickyExecution::describe(),
         ];
     }
 }

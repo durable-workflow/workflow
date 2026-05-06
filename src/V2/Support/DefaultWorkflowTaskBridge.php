@@ -201,6 +201,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'connection' => self::nonEmptyString($task->connection),
                 'queue' => self::nonEmptyString($task->queue),
                 'compatibility' => self::nonEmptyString($task->compatibility),
+                'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
+                'sticky_until' => $task->sticky_until?->toJSON(),
                 'available_at' => $task->available_at?->toJSON(),
             ];
         })->values()
@@ -271,6 +273,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $resolvedLeaseOwner = $leaseOwner ?? $taskId;
             $leaseExpiresAt = now()
                 ->addSeconds(self::WORKFLOW_TASK_LEASE_SECONDS);
+            $stickyReplayMode = StickyExecution::claimReplayMode($task, $resolvedLeaseOwner);
 
             $task->forceFill([
                 'status' => TaskStatus::Leased,
@@ -278,6 +281,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'lease_owner' => $resolvedLeaseOwner,
                 'lease_expires_at' => $leaseExpiresAt,
                 'attempt_count' => $task->attempt_count + 1,
+                'sticky_replay_mode' => $stickyReplayMode,
+                'sticky_claimed_at' => now(),
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,
             ])->save();
@@ -295,6 +300,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'connection' => self::nonEmptyString($task->connection),
                 'queue' => self::nonEmptyString($task->queue),
                 'compatibility' => self::nonEmptyString($task->compatibility),
+                'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
+                'sticky_until' => $task->sticky_until?->toJSON(),
+                'sticky_replay_mode' => $stickyReplayMode,
                 'lease_owner' => $resolvedLeaseOwner,
                 'lease_expires_at' => $leaseExpiresAt->toJSON(),
                 'reason' => null,
@@ -321,6 +329,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'connection' => $result['connection'],
             'queue' => $result['queue'],
             'compatibility' => $result['compatibility'],
+            'sticky_worker_id' => $result['sticky_worker_id'] ?? null,
+            'sticky_until' => $result['sticky_until'] ?? null,
+            'sticky_replay_mode' => $result['sticky_replay_mode'] ?? StickyExecution::MODE_COLD_REPLAY,
             'lease_owner' => $result['lease_owner'],
             'lease_expires_at' => $result['lease_expires_at'],
         ];
@@ -358,6 +369,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'arguments' => self::nonEmptyString($run->arguments),
             'run_status' => $run->status->value,
+            'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
+            'sticky_until' => $task->sticky_until?->toJSON(),
+            'sticky_replay_mode' => self::nonEmptyString($task->sticky_replay_mode),
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
             'history_events' => $historyEvents->map(static fn (WorkflowHistoryEvent $event) => [
                 'id' => $event->id,
@@ -423,6 +437,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'arguments' => self::nonEmptyString($run->arguments),
             'run_status' => $run->status->value,
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
+            'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
+            'sticky_until' => $task->sticky_until?->toJSON(),
+            'sticky_replay_mode' => self::nonEmptyString($task->sticky_replay_mode),
             'after_sequence' => $afterSequence,
             'page_size' => $pageSize,
             'has_more' => $hasMore,
@@ -2960,6 +2977,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'lease_expires_at' => now()
                     ->addSeconds(self::WORKFLOW_TASK_LEASE_SECONDS),
                 'attempt_count' => $task->attempt_count + 1,
+                'sticky_replay_mode' => StickyExecution::claimReplayMode($task, $taskId),
+                'sticky_claimed_at' => now(),
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,
             ])->save();

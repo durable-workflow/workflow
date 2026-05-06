@@ -18,6 +18,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
@@ -147,6 +148,8 @@ final class RunWorkflowTask implements ShouldQueue
                 'lease_expires_at' => now()
                     ->addSeconds(DefaultWorkflowTaskBridge::WORKFLOW_TASK_LEASE_SECONDS),
                 'attempt_count' => $task->attempt_count + 1,
+                'sticky_replay_mode' => StickyExecution::claimReplayMode($task, $this->taskId),
+                'sticky_claimed_at' => now(),
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,
             ])->save();

@@ -36,6 +36,7 @@ class WorkflowRun extends Model
         'run_timeout_seconds' => 'integer',
         'execution_deadline_at' => 'datetime',
         'run_deadline_at' => 'datetime',
+        'sticky_until' => 'datetime',
         'started_at' => 'datetime',
         'closed_at' => 'datetime',
         'archived_at' => 'datetime',

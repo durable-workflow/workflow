@@ -30,6 +30,8 @@ class WorkflowTask extends Model
         'status' => TaskStatus::class,
         'payload' => 'array',
         'repair_count' => 'integer',
+        'sticky_until' => 'datetime',
+        'sticky_claimed_at' => 'datetime',
         'available_at' => 'datetime',
         'leased_at' => 'datetime',
         'lease_expires_at' => 'datetime',

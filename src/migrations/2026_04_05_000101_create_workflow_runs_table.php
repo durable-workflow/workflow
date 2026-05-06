@@ -40,6 +40,12 @@ return new class() extends Migration {
                 ->nullable();
             $table->string('queue')
                 ->nullable();
+            $table->string('sticky_worker_id')
+                ->nullable()
+                ->index();
+            $table->timestamp('sticky_until', 6)
+                ->nullable()
+                ->index();
             $table->unsignedInteger('last_history_sequence')
                 ->default(0);
             $table->unsignedInteger('last_command_sequence')

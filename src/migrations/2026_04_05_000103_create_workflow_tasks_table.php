@@ -27,6 +27,18 @@ return new class() extends Migration {
                 ->nullable();
             $table->string('queue')
                 ->nullable();
+            $table->string('sticky_worker_id')
+                ->nullable()
+                ->index();
+            $table->timestamp('sticky_until', 6)
+                ->nullable()
+                ->index();
+            $table->string('sticky_replay_mode')
+                ->nullable()
+                ->index();
+            $table->timestamp('sticky_claimed_at', 6)
+                ->nullable()
+                ->index();
             $table->timestamp('available_at', 6)
                 ->nullable();
             $table->timestamp('leased_at', 6)

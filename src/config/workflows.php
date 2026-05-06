@@ -229,6 +229,23 @@ return [
             ),
         ],
 
+        // Sticky execution is a replay performance feature. A worker may keep
+        // a process-local cache for a run it just executed, and matching may
+        // prefer that worker for follow-up workflow tasks until the affinity
+        // TTL expires. Cold replay remains the correctness fallback.
+        'sticky_execution' => [
+            'enabled' => (bool) Env::dw(
+                'DW_V2_STICKY_EXECUTION_ENABLED',
+                'WORKFLOW_V2_STICKY_EXECUTION_ENABLED',
+                true
+            ),
+            'ttl_seconds' => (int) Env::dw(
+                'DW_V2_STICKY_EXECUTION_TTL_SECONDS',
+                'WORKFLOW_V2_STICKY_EXECUTION_TTL_SECONDS',
+                Workflow\V2\Support\StickyExecution::DEFAULT_TTL_SECONDS
+            ),
+        ],
+
         'task_repair' => [
             'redispatch_after_seconds' => (int) Env::dw(
                 'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',

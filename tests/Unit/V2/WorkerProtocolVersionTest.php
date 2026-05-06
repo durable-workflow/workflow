@@ -185,5 +185,9 @@ final class WorkerProtocolVersionTest extends TestCase
 
         $this->assertArrayHasKey('long_poll', $summary);
         $this->assertSame(WorkerProtocolVersion::longPollSemantics(), $summary['long_poll']);
+
+        $this->assertArrayHasKey('sticky_execution', $summary);
+        $this->assertSame('sticky_execution', $summary['sticky_execution']['feature']);
+        $this->assertSame('cold_replay', $summary['sticky_execution']['correctness_fallback']);
     }
 }
