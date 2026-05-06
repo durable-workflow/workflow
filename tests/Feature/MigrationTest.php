@@ -111,6 +111,8 @@ class MigrationTest extends TestCase
         // Assert v2 data was created
         $this->assertIsString($runId);
         $this->assertSame('migration-test-v2-1', $result->instanceId());
+        $this->assertSame('migration-test-v2-1', $result->workflowId());
+        $this->assertSame('migration-test-v2-1', $workflow->workflowId());
 
         $instance = DB::table('workflow_instances')
             ->where('id', 'migration-test-v2-1')

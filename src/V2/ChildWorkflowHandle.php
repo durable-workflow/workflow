@@ -29,6 +29,23 @@ final class ChildWorkflowHandle
         return $this->workflowInstanceId;
     }
 
+    /**
+     * Stable logical workflow identifier for app-owned projections.
+     *
+     * Alias of {@see instanceId()} using the workflow authoring name.
+     *
+     * @api Stable v2 child workflow handle identity API.
+     */
+    public function workflowId(): string
+    {
+        return $this->instanceId();
+    }
+
+    /**
+     * Stable run identifier for the child execution generation, when known.
+     *
+     * @api Stable v2 child workflow handle identity API.
+     */
     public function runId(): ?string
     {
         return $this->workflowRunId;

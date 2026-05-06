@@ -632,6 +632,23 @@ final class WorkflowStub
         return $this->instance->id;
     }
 
+    /**
+     * Stable logical workflow identifier for app-owned projections.
+     *
+     * Alias of {@see id()} using the workflow authoring name.
+     *
+     * @api Stable v2 workflow handle identity API.
+     */
+    public function workflowId(): string
+    {
+        return $this->id();
+    }
+
+    /**
+     * Stable run identifier for the currently selected execution generation.
+     *
+     * @api Stable v2 workflow handle identity API.
+     */
     public function runId(): ?string
     {
         return $this->run?->id;

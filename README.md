@@ -79,6 +79,11 @@ The Durable Workflow package is sustained by the community via sponsors and volu
 ## Monitoring
 
 [Waterline](https://github.com/durable-workflow/waterline) is a separate UI that works nicely alongside Horizon. Think of Waterline as being to workflows what Horizon is to queues.
+Waterline is a technical runtime UI for operators: use it for fleet
+health, queues, waits, retries, failures, repair, and history
+diagnostics. Business dashboards should read app-owned milestone
+projections keyed by `workflow_id` and `run_id`, not Waterline data or
+workflow runtime tables.
 
 ### Dashboard View
 

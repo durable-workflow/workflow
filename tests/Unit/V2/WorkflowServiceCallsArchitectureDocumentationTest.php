@@ -81,6 +81,8 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
     private const REQUIRED_BINDING_KIND_PHRASES = [
         "`'workflow_run'`",
         "`'workflow_update'`",
+        "`'workflow_signal'`",
+        "`'workflow_query'`",
         "`'activity_execution'`",
         "`'invocable_carrier_request'`",
     ];
@@ -537,6 +539,8 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
 
         $this->assertSame('workflow_run', ServiceCallBindingKind::WorkflowRun->value);
         $this->assertSame('workflow_update', ServiceCallBindingKind::WorkflowUpdate->value);
+        $this->assertSame('workflow_signal', ServiceCallBindingKind::WorkflowSignal->value);
+        $this->assertSame('workflow_query', ServiceCallBindingKind::WorkflowQuery->value);
         $this->assertSame('activity_execution', ServiceCallBindingKind::ActivityExecution->value);
         $this->assertSame(
             'invocable_carrier_request',

@@ -176,6 +176,40 @@ the same command path.
 Adding new static methods to the facade is an additive (non-breaking)
 change. Removing or renaming a documented method is a major change.
 
+## Workflow and run identity for app projections
+
+V2 exposes stable workflow and run identifiers for application-owned
+read models. The identity vocabulary is:
+
+- `workflow_id` / `workflowId()` - the stable logical workflow id,
+  backed by `workflow_instance_id`, and stable across continue-as-new.
+- `run_id` / `runId()` - the execution-generation id, backed by
+  `workflow_run_id`, and bound to one run.
+
+The stable public identity accessors are:
+
+- `Workflow\V2\Workflow::workflowId()` and `::runId()` inside workflow
+  authoring code.
+- `Workflow\V2\WorkflowStub::workflowId()` and `::runId()` on app-side
+  workflow handles.
+- `Workflow\V2\CommandResult::workflowId()` and `::runId()`, inherited
+  by `StartResult`, `SignalWithStartResult`, `UpdateResult`, and the
+  signal, cancel, terminate, repair, and archive command results.
+- `Workflow\V2\ChildWorkflowHandle::workflowId()` and `::runId()` when
+  parent workflows need to reference child workflows in app projections.
+
+`instanceId()` remains a compatibility name for the logical workflow id
+on surfaces that already exposed it. New app projection code should
+prefer `workflowId()` beside `runId()` so product read models use the
+same vocabulary as workflow authoring code.
+
+These identifiers are correlation and idempotency surfaces; they do not
+make workflow runtime state the source of truth for business dashboards.
+Applications that need product, support, analytics, or finance read
+models should update app-owned projections at domain milestones and store
+`workflow_id` plus `run_id` beside those business rows. See
+[`docs/architecture/business-reporting-read-models.md`](architecture/business-reporting-read-models.md).
+
 ## Durable Message Stream Contract
 
 The v2 durable message service is the stable lower-level contract backing

@@ -30,6 +30,21 @@ enum ServiceCallBindingKind: string
     case WorkflowUpdate = 'workflow_update';
 
     /**
+     * The handler resolves to a workflow signal command against an existing
+     * workflow instance. The linked target reference is the accepted
+     * workflow_command_id, with the resolved run recorded alongside it when
+     * one is available.
+     */
+    case WorkflowSignal = 'workflow_signal';
+
+    /**
+     * The handler resolves to a workflow query against an existing workflow
+     * instance. The linked target reference is the queried workflow run id
+     * when one is available, or the workflow instance id otherwise.
+     */
+    case WorkflowQuery = 'workflow_query';
+
+    /**
      * The handler resolves to an activity execution. The linked target
      * reference is the activity_execution_id.
      */

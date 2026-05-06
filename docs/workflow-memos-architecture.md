@@ -23,6 +23,14 @@ Memos are:
 - **Operator-visible**: Not codec-protected secret-bearing payloads
 - **Larger values**: 10KB per memo (vs 2KB for search attributes)
 
+Memos are runtime visibility metadata, not business read models. Use
+them to give operators returned-only context on workflow detail views.
+If a field is needed by a product dashboard, support queue, analytics
+fact, or financial report, write it to an app-owned milestone projection
+keyed by `workflow_id` and `run_id`; do not make Waterline or memo
+payloads the reporting source. See
+`docs/architecture/business-reporting-read-models.md`.
+
 ## Schema
 
 ### workflow_memos Table

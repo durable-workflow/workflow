@@ -30,6 +30,23 @@ class CommandResult
         return $this->command->workflow_instance_id;
     }
 
+    /**
+     * Stable logical workflow identifier for app-owned projections.
+     *
+     * Alias of {@see instanceId()} using the workflow authoring name.
+     *
+     * @api Stable v2 command result identity API.
+     */
+    public function workflowId(): ?string
+    {
+        return $this->instanceId();
+    }
+
+    /**
+     * Stable run identifier for the execution generation selected by this command.
+     *
+     * @api Stable v2 command result identity API.
+     */
     public function runId(): ?string
     {
         return $this->command->workflow_run_id;

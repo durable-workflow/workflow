@@ -300,6 +300,15 @@ application code and external workers:
 | version marker | `change_id` on `VersionMarkerRecorded` | frozen per change id |
 | schedule trigger | `schedule_id` + `occurrence_time` | durable per occurrence |
 
+Application-owned read models should store `workflow_instance_id` as
+`workflow_id` and `workflow_run_id` as `run_id` when a workflow reaches a
+business milestone. The workflow id is the stable logical reference
+across continue-as-new; the run id identifies the execution generation
+that observed or produced the milestone. `Workflow::workflowId()`,
+`WorkflowStub::workflowId()`, and `CommandResult::workflowId()` expose the
+same stable logical id as `instanceId()` for app projection code. See
+`docs/architecture/business-reporting-read-models.md`.
+
 Application authors should prefer `activity_execution_id` as the
 idempotency key against external services that accept one, because it
 is stable across retries. Use `activity_attempt_id` only when the

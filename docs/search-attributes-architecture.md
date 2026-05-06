@@ -18,11 +18,13 @@ size/count limits for engine and Waterline visibility queries.
 
 2. **Searchable-field registry governance**, built-in diagnostic fields, and alias/collision behavior are explicit enough that custom metadata cannot silently shadow system operator semantics.
 
-3. **Waterline reads projections, not engine internals.** Search attributes are projected for visibility queries.
+3. **Waterline reads projections, not engine internals.** Search attributes are projected for operator visibility queries. They are not a business dashboard or app read-model source.
 
 4. **Operators can search, filter, and save durable fleet views** over versioned visibility contracts rather than relying on raw SQL.
 
 5. **Payload, history-transaction, metadata, and pending-fan-out limits fail through typed observable outcomes** rather than generic transport or worker errors.
+
+6. **Business reporting lives in app-owned read models.** Applications may copy correlation keys such as `workflow_id`, `run_id`, `business_key`, or tenant labels into search attributes so operators can find work, but product dashboards should read milestone-based app projections instead of Waterline or workflow runtime projections. See `docs/architecture/business-reporting-read-models.md`.
 
 ## Schema
 

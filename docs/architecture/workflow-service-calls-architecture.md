@@ -213,6 +213,8 @@ together name the durable execution the handler resolved to.
 |--------------|-------|-----------------------------|----------------|
 | WorkflowRun | `'workflow_run'` | `workflow_run_id` | `linked_workflow_run_id` and `linked_workflow_instance_id` |
 | WorkflowUpdate | `'workflow_update'` | `workflow_update_id` | `linked_workflow_update_id`, `linked_workflow_run_id`, and `linked_workflow_instance_id` for the parent instance |
+| WorkflowSignal | `'workflow_signal'` | accepted `workflow_command_id` | `linked_workflow_run_id` and `linked_workflow_instance_id` for the signaled instance when available |
+| WorkflowQuery | `'workflow_query'` | queried `workflow_run_id` or `workflow_instance_id` | `linked_workflow_run_id` and `linked_workflow_instance_id` for the queried instance when available |
 | ActivityExecution | `'activity_execution'` | `activity_execution_id` | (recorded in `metadata.activity_execution_id`; `linked_workflow_run_id` and `linked_workflow_instance_id` set for the owning workflow when the activity is hosted by a workflow run) |
 | InvocableCarrierRequest | `'invocable_carrier_request'` | carrier request id | (recorded in `metadata.carrier_request_id`; `linked_workflow_instance_id` set when the carrier request is bound to a workflow instance) |
 

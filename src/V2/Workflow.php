@@ -66,11 +66,21 @@ abstract class Workflow
     ) {
     }
 
+    /**
+     * Stable logical workflow identifier for app-owned projections.
+     *
+     * @api Stable v2 workflow authoring identity API.
+     */
     public function workflowId(): string
     {
         return $this->run->workflow_instance_id;
     }
 
+    /**
+     * Stable run identifier for this execution generation.
+     *
+     * @api Stable v2 workflow authoring identity API.
+     */
     public function runId(): string
     {
         return $this->run->id;

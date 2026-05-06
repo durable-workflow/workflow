@@ -485,9 +485,9 @@ becomes terminal:
 - **Linked-run columns**: `linked_workflow_instance_id`,
   `linked_workflow_run_id`, `linked_workflow_update_id`. These point
   to the in-namespace durable entity the boundary spawned to
-  service the call (a child workflow run, an activity execution
-  recorded against a run, or an update). Rejected calls leave
-  these null.
+  service the call (a workflow run, update, signal command, query,
+  activity execution recorded against a run, or carrier request).
+  Rejected calls leave these null.
 - **Payload columns**: `payload_codec`, `input_payload_reference`,
   `output_payload_reference`, `failure_payload_reference`,
   `failure_message`. These reuse the codec and external-payload
