@@ -27,7 +27,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.0';
+    public const VERSION = '1.1';
 
     /**
      * Default page size for paginated history responses.
