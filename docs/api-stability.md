@@ -117,6 +117,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\ScheduleManager`
 - `Workflow\V2\Support\ScheduleStartResult`
 - `Workflow\V2\Support\ServerlessWorkflowCompiler`
+- `Workflow\V2\Support\ServiceExecutionContract`
 - `Workflow\V2\Support\StructuralLimits`
 - `Workflow\V2\Support\SurfaceStabilityContract`
 - `Workflow\V2\Support\TaskRepairCandidates`
