@@ -194,6 +194,13 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
         'docs/architecture/cross-namespace-service-policy.md',
     ];
 
+    private const PRE_RESOLUTION_NULLABLE_MIGRATION_PATTERNS = [
+        'workflow_service_endpoint_id' => '/\\$table->string\(\'workflow_service_endpoint_id\', 26\)\s*->nullable\(\)\s*->index\(self::ENDPOINT_INDEX\);/s',
+        'workflow_service_id' => '/\\$table->string\(\'workflow_service_id\', 26\)\s*->nullable\(\)\s*->index\(self::SERVICE_INDEX\);/s',
+        'workflow_service_operation_id' => '/\\$table->string\(\'workflow_service_operation_id\', 26\)\s*->nullable\(\)\s*->index\(self::OPERATION_INDEX\);/s',
+        'resolved_binding_kind' => '/\\$table->string\(\'resolved_binding_kind\', 64\)\s*->nullable\(\)\s*->index\(self::BINDING_KIND_INDEX\);/s',
+    ];
+
     public function testContractDocumentExistsAndDeclaresFrozenSections(): void
     {
         $contents = $this->documentContents();
@@ -442,6 +449,17 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
         );
     }
 
+    public function testContractDocumentStatesPreResolutionRowsMayLeaveResolutionColumnsNull(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/Pending rows and Failed rows with\s*`ServiceCallFailureReason::ResolutionFailure` MAY leave\s*`workflow_service_endpoint_id`, `workflow_service_id`,\s*`workflow_service_operation_id`, `resolved_binding_kind`, and\s*`resolved_target_reference` null/i',
+            $contents,
+            'Contract must state that pending and resolution-failure rows may keep resolution columns null until admission commits.',
+        );
+    }
+
     public function testContractDocumentStatesReferenceBasedPayloadRule(): void
     {
         $contents = $this->documentContents();
@@ -645,6 +663,23 @@ final class WorkflowServiceCallsArchitectureDocumentationTest extends TestCase
                 $migration,
                 sprintf(
                     'Migration %s must declare column %s named by the contract.',
+                    self::MIGRATION,
+                    $column,
+                ),
+            );
+        }
+    }
+
+    public function testMigrationAllowsPreResolutionRowsToLeaveResolutionColumnsNull(): void
+    {
+        $migration = $this->migrationContents();
+
+        foreach (self::PRE_RESOLUTION_NULLABLE_MIGRATION_PATTERNS as $column => $pattern) {
+            $this->assertMatchesRegularExpression(
+                $pattern,
+                $migration,
+                sprintf(
+                    'Migration %s must leave %s nullable so Pending and resolution-failure rows can exist before registry or handler resolution commits.',
                     self::MIGRATION,
                     $column,
                 ),

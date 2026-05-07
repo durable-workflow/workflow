@@ -128,6 +128,12 @@ Notes on the transitions:
 - **Pending → Failed** is the resolution-failure path: the requested
   triple did not resolve to a registered operation in the target
   namespace. The `outcome` is `rejected_not_found`.
+- Pending rows and Failed rows with
+  `ServiceCallFailureReason::ResolutionFailure` MAY leave
+  `workflow_service_endpoint_id`, `workflow_service_id`,
+  `workflow_service_operation_id`, `resolved_binding_kind`, and
+  `resolved_target_reference` null because registry or handler
+  resolution never committed.
 - **Pending → Cancelled** is legal: a caller may withdraw a call that
   has not yet been admitted by the target namespace. The cancellation
   is still terminal and still records `cancelled_at`.

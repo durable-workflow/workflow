@@ -67,10 +67,13 @@ return new class() extends Migration {
             $table->string('id', 26)
                 ->primary();
             $table->string('workflow_service_endpoint_id', 26)
+                ->nullable()
                 ->index(self::ENDPOINT_INDEX);
             $table->string('workflow_service_id', 26)
+                ->nullable()
                 ->index(self::SERVICE_INDEX);
             $table->string('workflow_service_operation_id', 26)
+                ->nullable()
                 ->index(self::OPERATION_INDEX);
             $table->string('namespace', 255)
                 ->nullable()
@@ -107,6 +110,7 @@ return new class() extends Migration {
             $table->string('operation_mode', 32)
                 ->index(self::MODE_INDEX);
             $table->string('resolved_binding_kind', 64)
+                ->nullable()
                 ->index(self::BINDING_KIND_INDEX);
             $table->string('resolved_target_reference', 191)
                 ->nullable();
