@@ -72,6 +72,15 @@ admission:
 Fleet-specific routing uses plain capability strings such as
 `gpu:nvidia-l4`, `gpu:a100`, `fs:/mnt/models`, or `zone:us-east-1a`.
 
+Worker-session admission is fenced by the worker protocol version. Server
+nodes advertising a protocol below
+`WorkerProtocolVersion::workerSessionSemantics()['minimum_protocol_version']`
+must reject explicit session lifecycle calls, reject `schedule_activity`
+commands carrying `worker_session`, and avoid claiming existing
+worker-session activity tasks. This keeps rolling server upgrades from mixing
+nodes that understand the session lease protocol with nodes that can only
+lease ordinary activity tasks.
+
 ## Renewal And Expiry
 
 Activity heartbeats renew both the activity attempt lease and the session

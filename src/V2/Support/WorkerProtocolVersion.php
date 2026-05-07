@@ -29,7 +29,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.1';
+    public const VERSION = '1.2';
 
     /**
      * Stable fail-closed reason a worker or server must return when it
@@ -286,6 +286,7 @@ final class WorkerProtocolVersion
         return [
             'feature' => 'worker_sessions',
             'contract_version' => '1.0',
+            'minimum_protocol_version' => self::VERSION,
             'command_field' => 'worker_session',
             'activity_options_field' => 'worker_session',
             'verbs' => self::workerSessionVerbs(),
@@ -308,6 +309,12 @@ final class WorkerProtocolVersion
                 'requires_capabilities' => true,
                 'create_if_missing_default' => true,
                 'allow_reacquire_after_failure_default' => true,
+            ],
+            'rollout_safety' => [
+                'minimum_protocol_version' => self::VERSION,
+                'mixed_server_rollout_fenced_by_protocol_version' => true,
+                'servers_below_minimum_must_reject_worker_session_commands' => true,
+                'servers_below_minimum_must_not_claim_worker_session_activity_tasks' => true,
             ],
             'limits' => [
                 'max_concurrent_worker_sessions' => 'worker_registration',
