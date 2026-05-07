@@ -13,6 +13,8 @@ final class WorkflowStepHistory
 {
     public const ACTIVITY = 'activity';
 
+    public const LOCAL_ACTIVITY = 'local activity';
+
     public const CHILD_WORKFLOW = 'child workflow';
 
     public const CONDITION_WAIT = 'condition wait';
@@ -154,7 +156,17 @@ final class WorkflowStepHistory
                 HistoryEventType::ActivityFailed,
                 HistoryEventType::ActivityCancelled,
                 HistoryEventType::ActivityTimedOut,
-            ], true),
+            ], true) && ! self::isLocalActivityEvent($event),
+            self::LOCAL_ACTIVITY => in_array($event->event_type, [
+                HistoryEventType::ActivityScheduled,
+                HistoryEventType::ActivityStarted,
+                HistoryEventType::ActivityHeartbeatRecorded,
+                HistoryEventType::ActivityRetryScheduled,
+                HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
+                HistoryEventType::ActivityTimedOut,
+            ], true) && self::isLocalActivityEvent($event),
             self::CHILD_WORKFLOW => in_array($event->event_type, [
                 HistoryEventType::ChildWorkflowScheduled,
                 HistoryEventType::ChildRunStarted,
@@ -256,6 +268,12 @@ final class WorkflowStepHistory
             HistoryEventType::TimerFired,
             HistoryEventType::TimerCancelled,
         ], true);
+    }
+
+    private static function isLocalActivityEvent(WorkflowHistoryEvent $event): bool
+    {
+        return self::stringValue($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+            || ($event->payload['local_activity'] ?? null) === true;
     }
 
     private static function isConditionWaitEvent(WorkflowHistoryEvent $event): bool

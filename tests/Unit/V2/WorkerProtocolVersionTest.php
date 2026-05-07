@@ -191,6 +191,28 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame('cold_replay', $summary['sticky_execution']['correctness_fallback']);
     }
 
+    public function testDescribeIncludesLocalActivityContract(): void
+    {
+        $summary = WorkerProtocolVersion::describe();
+
+        $this->assertArrayHasKey('local_activities', $summary);
+        $this->assertSame(
+            'durable-workflow.v2.local-activity.contract',
+            $summary['local_activities']['schema'],
+        );
+        $this->assertSame(1, $summary['local_activities']['version']);
+        $this->assertSame('local', $summary['local_activities']['execution']['mode']);
+        $this->assertFalse($summary['local_activities']['execution']['ordinary_activity_task_created']);
+        $this->assertSame(
+            ['connection', 'queue', 'worker_session', 'schedule_to_start_timeout'],
+            $summary['local_activities']['routing']['rejected_options'],
+        );
+        $this->assertSame(
+            ['execution_mode' => 'local', 'local_activity' => true],
+            $summary['local_activities']['execution']['history_marker'],
+        );
+    }
+
     public function testDescribeIncludesWorkerSessionSemantics(): void
     {
         $summary = WorkerProtocolVersion::describe();

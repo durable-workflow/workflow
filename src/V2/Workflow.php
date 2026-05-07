@@ -266,6 +266,27 @@ abstract class Workflow
     }
 
     /**
+     * Invoke an activity in the current workflow worker process.
+     *
+     * The call records normal activity history with `execution_mode=local`
+     * and bypasses ordinary activity-task queueing.
+     *
+     * @see localActivity()
+     */
+    public static function localActivity(string $activity, mixed ...$arguments): mixed
+    {
+        return localActivity($activity, ...$arguments);
+    }
+
+    /**
+     * Alias for {@see localActivity()} matching Temporal's naming.
+     */
+    public static function executeLocalActivity(string $activity, mixed ...$arguments): mixed
+    {
+        return localActivity($activity, ...$arguments);
+    }
+
+    /**
      * Invoke a child workflow and wait for its result.
      *
      * @see child()

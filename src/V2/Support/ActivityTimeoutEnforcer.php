@@ -229,6 +229,7 @@ final class ActivityTimeoutEnforcer
             ? $retryAvailableAt->copy()
                 ->addSeconds($scheduleToStartTimeout)
             : null;
+        $isLocalActivity = LocalActivityRuntime::isExecution($execution);
 
         $execution->forceFill([
             'status' => ActivityStatus::Pending,
@@ -242,10 +243,16 @@ final class ActivityTimeoutEnforcer
         $retryTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'namespace' => $run->namespace,
-            'task_type' => TaskType::Activity->value,
+            'task_type' => $isLocalActivity ? TaskType::Workflow->value : TaskType::Activity->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $retryAvailableAt,
-            'payload' => [
+            'payload' => $isLocalActivity ? LocalActivityRuntime::workflowTaskPayload($execution, [
+                'retry_after_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
+                'retry_after_attempt' => $attemptCount,
+                'retry_backoff_seconds' => $backoffSeconds,
+                'retry_reason' => LocalActivityRuntime::RETRY_REASON_TIMEOUT,
+                'timeout_kind' => $timeoutKind,
+            ]) : [
                 'activity_execution_id' => $execution->id,
                 'retry_of_task_id' => $existingTask?->id,
                 'retry_after_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
@@ -255,13 +262,13 @@ final class ActivityTimeoutEnforcer
                 'retry_policy' => $execution->retry_policy,
                 'timeout_kind' => $timeoutKind,
             ],
-            'connection' => $execution->connection,
-            'queue' => $execution->queue,
+            'connection' => $isLocalActivity ? $run->connection : $execution->connection,
+            'queue' => $isLocalActivity ? $run->queue : $execution->queue,
             'compatibility' => $run->compatibility,
             'attempt_count' => $attemptCount,
         ]);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityRetryScheduled, array_merge([
+        $payload = [
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
             'activity_class' => $execution->activity_class,
@@ -273,12 +280,24 @@ final class ActivityTimeoutEnforcer
             'retry_backoff_seconds' => $backoffSeconds,
             'retry_after_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
             'retry_after_attempt' => $attemptCount,
+            'retry_reason' => $isLocalActivity
+                ? LocalActivityRuntime::RETRY_REASON_TIMEOUT
+                : null,
             'max_attempts' => $maxAttempts === PHP_INT_MAX ? null : $maxAttempts,
             'retry_policy' => $execution->retry_policy,
             'timeout_kind' => $timeoutKind,
             'message' => $message,
             'activity' => ActivitySnapshot::fromExecution($execution),
-        ]), $existingTask);
+        ];
+
+        if ($isLocalActivity) {
+            $payload = LocalActivityRuntime::eventPayload($payload);
+        }
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityRetryScheduled, array_filter(
+            $payload,
+            static fn (mixed $value): bool => $value !== null
+        ), $existingTask);
 
         self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
 
@@ -328,7 +347,7 @@ final class ActivityTimeoutEnforcer
         $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($run, (int) $execution->sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityTimedOut, array_merge([
+        $payload = [
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
             'activity_class' => $execution->activity_class,
@@ -345,7 +364,16 @@ final class ActivityTimeoutEnforcer
             'schedule_to_close_deadline_at' => $execution->schedule_to_close_deadline_at?->toIso8601String(),
             'heartbeat_deadline_at' => $execution->heartbeat_deadline_at?->toIso8601String(),
             'activity' => ActivitySnapshot::fromExecution($execution),
-        ], $parallelMetadata ?? []), $existingTask);
+        ];
+
+        if (LocalActivityRuntime::isExecution($execution)) {
+            $payload = LocalActivityRuntime::eventPayload($payload);
+        }
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityTimedOut, array_merge(
+            $payload,
+            $parallelMetadata ?? []
+        ), $existingTask);
 
         LifecycleEventDispatcher::activityFailed(
             $run,
@@ -391,7 +419,12 @@ final class ActivityTimeoutEnforcer
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $now,
-            'payload' => [],
+            'payload' => LocalActivityRuntime::isExecution($execution)
+                ? LocalActivityRuntime::workflowTaskPayload($execution, [
+                    'workflow_event_type' => HistoryEventType::ActivityTimedOut->value,
+                    'timeout_kind' => $timeoutKind,
+                ])
+                : [],
             'connection' => $run->connection,
             'queue' => $run->queue,
             'compatibility' => $run->compatibility,

@@ -197,6 +197,20 @@ final class WorkerProtocolVersion
     }
 
     /**
+     * Local-activity semantics advertised to workers and operators.
+     *
+     * The server does not receive a schedule command for a local activity:
+     * the SDK/runtime that owns workflow replay executes it inside the
+     * workflow task and records normal activity history with the local marker.
+     *
+     * @return array<string, mixed>
+     */
+    public static function localActivitySemantics(): array
+    {
+        return LocalActivityContract::manifest();
+    }
+
+    /**
      * Full summary of the protocol for capability negotiation or diagnostics.
      *
      * @return array{
@@ -208,6 +222,7 @@ final class WorkerProtocolVersion
      *     history_pagination: array{default_page_size: int, max_page_size: int},
      *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      *     long_poll: array{default_timeout_seconds: int, min_timeout_seconds: int, max_timeout_seconds: int},
+     *     local_activities: array<string, mixed>,
      *     worker_session_verbs: list<string>,
      *     sticky_execution: array<string, mixed>,
      *     worker_sessions: array<string, mixed>,
@@ -230,6 +245,7 @@ final class WorkerProtocolVersion
                 'compression_threshold' => self::COMPRESSION_THRESHOLD,
             ],
             'long_poll' => self::longPollSemantics(),
+            'local_activities' => self::localActivitySemantics(),
             'worker_session_verbs' => self::workerSessionVerbs(),
             'sticky_execution' => StickyExecution::describe(),
             'worker_sessions' => self::workerSessionSemantics(),

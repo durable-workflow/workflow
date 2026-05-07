@@ -237,6 +237,9 @@ final class RunActivityView
             'sequence' => $state['sequence'] ?? null,
             'type' => $state['type'] ?? null,
             'class' => $state['class'] ?? null,
+            'execution_mode' => self::stringValue($state['execution_mode'] ?? null),
+            'local_activity' => ($state['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                || ($state['local_activity'] ?? null) === true,
             'history_authority' => self::stringValue($state['history_authority'] ?? null),
             'diagnostic_only' => self::isDiagnosticOnly($state),
             'history_event_types' => is_array($state['history_event_types'] ?? null)

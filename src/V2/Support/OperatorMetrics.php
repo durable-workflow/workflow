@@ -189,17 +189,45 @@ final class OperatorMetrics
     {
         $oldestRetryingStartedAt = self::oldestRetryingActivityStartedAt($namespace);
         $oldestTimeoutOverdueAt = self::oldestActivityTimeoutOverdueAt($now, $namespace);
+        $openActivities = self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
+            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
+            ->count();
+        $pendingActivities = self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
+            ->where('status', ActivityStatus::Pending->value)
+            ->count();
+        $runningActivities = self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
+            ->where('status', ActivityStatus::Running->value)
+            ->count();
+        $localOpenActivities = self::localActivityExecutionQuery($namespace)
+            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
+            ->count();
+        $localPendingActivities = self::localActivityExecutionQuery($namespace)
+            ->where('status', ActivityStatus::Pending->value)
+            ->count();
+        $localRunningActivities = self::localActivityExecutionQuery($namespace)
+            ->where('status', ActivityStatus::Running->value)
+            ->count();
+        $failedAttempts = self::scopedRunModelQuery(self::activityAttemptModel(), $namespace)
+            ->where('status', ActivityAttemptStatus::Failed->value)
+            ->count();
+        $localFailedAttempts = self::localActivityAttemptQuery($namespace)
+            ->where('status', ActivityAttemptStatus::Failed->value)
+            ->count();
 
         return [
-            'open' => self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
-                ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
-                ->count(),
-            'pending' => self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
-                ->where('status', ActivityStatus::Pending->value)
-                ->count(),
-            'running' => self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
-                ->where('status', ActivityStatus::Running->value)
-                ->count(),
+            'open' => $openActivities,
+            'pending' => $pendingActivities,
+            'running' => $runningActivities,
+            'local' => self::localActivityExecutionQuery($namespace)->count(),
+            'local_open' => $localOpenActivities,
+            'local_pending' => $localPendingActivities,
+            'local_running' => $localRunningActivities,
+            'local_attempts' => self::localActivityAttemptQuery($namespace)->count(),
+            'local_failed_attempts' => $localFailedAttempts,
+            'queued_open' => max(0, $openActivities - $localOpenActivities),
+            'queued_pending' => max(0, $pendingActivities - $localPendingActivities),
+            'queued_running' => max(0, $runningActivities - $localRunningActivities),
+            'queued_failed_attempts' => max(0, $failedAttempts - $localFailedAttempts),
             'retrying' => self::retryingActivities($namespace),
             'oldest_retrying_started_at' => $oldestRetryingStartedAt?->toJSON(),
             'max_retrying_age_ms' => $oldestRetryingStartedAt === null
@@ -210,9 +238,7 @@ final class OperatorMetrics
             'max_timeout_overdue_age_ms' => $oldestTimeoutOverdueAt === null
                 ? 0
                 : (int) $oldestTimeoutOverdueAt->diffInMilliseconds($now),
-            'failed_attempts' => self::scopedRunModelQuery(self::activityAttemptModel(), $namespace)
-                ->where('status', ActivityAttemptStatus::Failed->value)
-                ->count(),
+            'failed_attempts' => $failedAttempts,
             'max_attempt_count' => (int) self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
                 ->max('attempt_count'),
         ];
@@ -1554,6 +1580,20 @@ final class OperatorMetrics
         }
 
         return $query;
+    }
+
+    private static function localActivityExecutionQuery(?string $namespace)
+    {
+        return self::scopedRunModelQuery(self::activityExecutionModel(), $namespace)
+            ->where('activity_options->execution_mode', LocalActivityRuntime::EXECUTION_MODE);
+    }
+
+    private static function localActivityAttemptQuery(?string $namespace)
+    {
+        return self::scopedRunModelQuery(self::activityAttemptModel(), $namespace)
+            ->whereHas('execution', static function ($query): void {
+                $query->where('activity_options->execution_mode', LocalActivityRuntime::EXECUTION_MODE);
+            });
     }
 
     /**

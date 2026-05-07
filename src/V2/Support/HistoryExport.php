@@ -1258,6 +1258,10 @@ final class HistoryExport
             'sequence' => $activity['sequence'] ?? ($state['sequence'] ?? null),
             'activity_type' => $activity['type'] ?? ($state['type'] ?? null),
             'activity_class' => $activity['class'] ?? ($state['class'] ?? null),
+            'execution_mode' => self::stringValue($activity['execution_mode'] ?? null)
+                ?? self::stringValue($state['execution_mode'] ?? null),
+            'local_activity' => ($activity['local_activity'] ?? null) === true
+                || ($state['local_activity'] ?? null) === true,
             'payload_codec' => $activity['payload_codec'] ?? ($state['payload_codec'] ?? null),
             'status' => $activity['status'] ?? ($state['status'] ?? 'pending'),
             'source_status' => self::stringValue($activity['row_status'] ?? null)
@@ -1325,7 +1329,18 @@ final class HistoryExport
 
         $snapshot = ActivitySnapshot::fromExecution($execution);
 
-        foreach (['sequence', 'type', 'class', 'payload_codec', 'retry_policy', 'connection', 'queue', 'arguments'] as $key) {
+        foreach ([
+            'sequence',
+            'type',
+            'class',
+            'execution_mode',
+            'local_activity',
+            'payload_codec',
+            'retry_policy',
+            'connection',
+            'queue',
+            'arguments',
+        ] as $key) {
             if (! array_key_exists($key, $state) && array_key_exists($key, $snapshot)) {
                 $state[$key] = $snapshot[$key];
             }
@@ -1376,6 +1391,8 @@ final class HistoryExport
             'sequence' => $activity['sequence'] ?? null,
             'activity_type' => $activity['activity_type'] ?? null,
             'activity_class' => $activity['activity_class'] ?? null,
+            'execution_mode' => $activity['execution_mode'] ?? null,
+            'local_activity' => (bool) ($activity['local_activity'] ?? false),
             'payload_codec' => $activity['payload_codec'] ?? null,
             'status' => $activity['status'] ?? null,
             'source_status' => $activity['source_status'] ?? ($activity['status'] ?? null),

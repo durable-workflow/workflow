@@ -10,6 +10,7 @@ use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -20,6 +21,7 @@ use Workflow\V2\Support\ActivityAttemptNormalizer;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\HeartbeatProgress;
+use Workflow\V2\Support\LocalActivityRuntime;
 
 abstract class Activity
 {
@@ -166,6 +168,29 @@ abstract class Activity
                 return;
             }
 
+            if ($this->ownsLocalWorkflowTask($execution, $attempt, $task)) {
+                $leaseExpiresAt = LocalActivityRuntime::renewWorkflowTask($task);
+
+                if ($attempt->status === ActivityAttemptStatus::Running) {
+                    $attempt->forceFill([
+                        'last_heartbeat_at' => $heartbeatAt,
+                        'lease_expires_at' => $leaseExpiresAt,
+                    ])->save();
+                }
+
+                $this->recordHeartbeat(
+                    $run,
+                    $execution,
+                    $attempt,
+                    $task,
+                    $heartbeatAt,
+                    $leaseExpiresAt,
+                    $normalizedProgress
+                );
+
+                return;
+            }
+
             if (
                 $task->workflow_run_id !== $execution->workflow_run_id
                 || $task->status !== TaskStatus::Leased
@@ -225,6 +250,12 @@ abstract class Activity
             return true;
         }
 
+        if (LocalActivityRuntime::isExecution($execution)) {
+            return $task->task_type === TaskType::Workflow
+                && $task->workflow_run_id === $execution->workflow_run_id
+                && $task->status === TaskStatus::Leased;
+        }
+
         return $task->workflow_run_id === $execution->workflow_run_id
             && $task->status === TaskStatus::Leased
             && ($task->payload['activity_execution_id'] ?? null) === $execution->id
@@ -253,8 +284,28 @@ abstract class Activity
             return true;
         }
 
+        if (LocalActivityRuntime::isExecution($execution)) {
+            return $task->task_type === TaskType::Workflow
+                && $task->workflow_run_id === $execution->workflow_run_id
+                && $attempt->workflow_task_id === $task->id
+                && $attempt->attempt_number === $execution->attempt_count;
+        }
+
         return $attempt->workflow_task_id === $task->id
             && $attempt->attempt_number === $task->attempt_count;
+    }
+
+    private function ownsLocalWorkflowTask(
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        WorkflowTask $task,
+    ): bool {
+        return LocalActivityRuntime::isExecution($execution)
+            && $task->task_type === TaskType::Workflow
+            && $task->workflow_run_id === $execution->workflow_run_id
+            && $task->status === TaskStatus::Leased
+            && $attempt->workflow_task_id === $task->id
+            && $attempt->attempt_number === $execution->attempt_count;
     }
 
     private function recordHeartbeat(
@@ -278,6 +329,11 @@ abstract class Activity
             'activity' => ActivitySnapshot::fromExecution($execution),
             'activity_attempt' => self::attemptSnapshot($attempt),
         ];
+
+        if (LocalActivityRuntime::isExecution($execution)) {
+            $payload = LocalActivityRuntime::eventPayload($payload);
+            $payload['workflow_task_id'] = $task?->id;
+        }
 
         if ($progress !== null) {
             $payload['progress'] = $progress;

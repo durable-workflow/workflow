@@ -56,7 +56,7 @@ final class ActivityCancellation
 
         $commandId = $command instanceof WorkflowCommand ? $command->id : (is_string($command) ? $command : null);
 
-        return WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCancelled, [
+        $payload = [
             'workflow_command_id' => $commandId,
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt?->id ?? $execution->current_attempt_id,
@@ -68,7 +68,14 @@ final class ActivityCancellation
                 ->toJSON(),
             'activity' => ActivitySnapshot::fromExecution($execution),
             'activity_attempt' => self::attemptSnapshot($attempt),
-        ], $task, $command);
+        ];
+
+        if (LocalActivityRuntime::isExecution($execution)) {
+            $payload = LocalActivityRuntime::eventPayload($payload);
+            $payload['workflow_task_id'] = $task?->id;
+        }
+
+        return WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCancelled, $payload, $task, $command);
     }
 
     private static function currentAttempt(ActivityExecution $execution): ?ActivityAttempt

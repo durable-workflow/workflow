@@ -17,6 +17,8 @@ use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Support\ContinueAsNewCall;
+use Workflow\V2\Support\LocalActivityCall;
+use Workflow\V2\Support\LocalActivityOptions;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
@@ -37,6 +39,21 @@ if (! function_exists(__NAMESPACE__ . '\\activity')) {
         }
 
         return WorkflowFiberContext::suspend(new ActivityCall($activity, $arguments, $options));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\localActivity')) {
+    function localActivity(string $activity, mixed ...$arguments): mixed
+    {
+        $options = null;
+
+        if (($arguments[0] ?? null) instanceof LocalActivityOptions) {
+            $options = array_shift($arguments);
+        } elseif (($arguments[0] ?? null) instanceof ActivityOptions) {
+            $options = LocalActivityOptions::fromActivityOptions(array_shift($arguments));
+        }
+
+        return WorkflowFiberContext::suspend(new LocalActivityCall($activity, $arguments, $options));
     }
 }
 

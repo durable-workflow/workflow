@@ -6,13 +6,15 @@ execution-model features explicit. It must not remain the long-term
 home for local-activity, worker-session, or sticky-execution language
 after those features have real runtime contracts.
 
-This is a tracking contract, not a runtime contract for any of the
-three primitives. It defines the evidence that must exist before the
-public docs can replace negative-support language with positive feature
-documentation. A runtime implementation that changes activity
-placement, affinity, or replay behavior must ship its own workflow-owned
-architecture contract and tests before the public docs move search and
-LLM discovery to the positive pages.
+This is a tracking contract, not a runtime contract for worker sessions
+or sticky execution. Local activities now have a workflow-owned runtime
+contract in `docs/architecture/local-activities.md`; this document still
+defines the evidence that must exist before the public docs can replace
+negative-support language with positive feature documentation for the
+remaining execution-model primitives. A runtime implementation that
+changes activity placement, affinity, or replay behavior must ship its
+own workflow-owned architecture contract and tests before the public docs
+move search and LLM discovery to the positive pages.
 
 ## Scope
 
@@ -38,12 +40,12 @@ can describe it as supported.
 
 ### Local Activities
 
-The local-activities contract must define execution semantics,
-timeouts, cancellation, heartbeating, failure detection, worker shutdown,
-and the exact rule for when an invocation bypasses ordinary task
-queueing. It must also explain how a local call records history, how a
-workflow task remains healthy while local work is running, and which
-activity options are accepted or rejected.
+The local-activities runtime contract is
+`docs/architecture/local-activities.md`. It defines the public API,
+execution semantics, timeouts, cancellation, heartbeating, failure
+detection, worker shutdown, retry and cold-replay behavior, routing and
+admission, visibility, metrics, history/export markers, and authoring
+guidance for when local activities are appropriate.
 
 ### Worker Sessions
 

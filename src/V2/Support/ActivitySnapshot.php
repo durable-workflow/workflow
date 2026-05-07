@@ -27,6 +27,8 @@ final class ActivitySnapshot
             'sequence' => $execution->sequence,
             'type' => $execution->activity_type,
             'class' => $execution->activity_class,
+            'execution_mode' => self::stringValue($execution->activity_options['execution_mode'] ?? null),
+            'local_activity' => ($execution->activity_options['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE,
             'attempt_id' => self::stringValue($execution->current_attempt_id),
             'status' => $execution->status?->value,
             'payload_codec' => self::stringValue($execution->payload_codec),
@@ -72,6 +74,9 @@ final class ActivitySnapshot
             'sequence' => self::intValue($payload['sequence'] ?? null),
             'type' => self::stringValue($payload['activity_type'] ?? null),
             'class' => self::stringValue($payload['activity_class'] ?? null),
+            'execution_mode' => self::stringValue($payload['execution_mode'] ?? null),
+            'local_activity' => ($payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                || ($payload['local_activity'] ?? null) === true,
             'parallel_group_kind' => self::stringValue($payload['parallel_group_kind'] ?? null),
             'parallel_group_id' => self::stringValue($payload['parallel_group_id'] ?? null),
             'parallel_group_base_sequence' => self::intValue($payload['parallel_group_base_sequence'] ?? null),
@@ -134,6 +139,9 @@ final class ActivitySnapshot
             'sequence' => self::intValue($snapshot['sequence'] ?? null),
             'type' => self::stringValue($snapshot['type'] ?? null),
             'class' => self::stringValue($snapshot['class'] ?? null),
+            'execution_mode' => self::stringValue($snapshot['execution_mode'] ?? null),
+            'local_activity' => ($snapshot['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                || ($snapshot['local_activity'] ?? null) === true,
             'parallel_group_kind' => self::stringValue($snapshot['parallel_group_kind'] ?? null),
             'parallel_group_id' => self::stringValue($snapshot['parallel_group_id'] ?? null),
             'parallel_group_base_sequence' => self::intValue($snapshot['parallel_group_base_sequence'] ?? null),

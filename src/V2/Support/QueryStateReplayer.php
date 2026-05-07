@@ -73,6 +73,43 @@ final class QueryStateReplayer
                 return new ReplayState($workflow, $sequence, null);
             }
 
+            if ($current instanceof LocalActivityCall) {
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::LOCAL_ACTIVITY);
+
+                $activityCompletion = $this->activityCompletionEvent($run, $sequence);
+
+                if ($activityCompletion !== null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
+                        $current = $workflowExecution->send(
+                            $this->activityResult($activityCompletion, $run),
+                            $activityCompletion->recorded_at,
+                        );
+                    } else {
+                        $current = $workflowExecution->throw(
+                            $this->activityException($activityCompletion, null, $run),
+                            $activityCompletion->recorded_at,
+                        );
+                    }
+
+                    ++$sequence;
+
+                    continue;
+                }
+
+                if ($this->activityOpenEvent($run, $sequence) !== null) {
+                    $this->applyRecordedUpdates($run, $workflow, $sequence);
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                $this->applyRecordedUpdates($run, $workflow, $sequence);
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                return new ReplayState($workflow, $sequence, $current);
+            }
+
             if ($current instanceof ActivityCall) {
                 WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::ACTIVITY);
 
@@ -694,6 +731,7 @@ final class QueryStateReplayer
                     HistoryEventType::ActivityCompleted,
                     HistoryEventType::ActivityFailed,
                     HistoryEventType::ActivityCancelled,
+                    HistoryEventType::ActivityTimedOut,
                 ],
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence

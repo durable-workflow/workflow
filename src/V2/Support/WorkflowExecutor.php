@@ -130,6 +130,80 @@ final class WorkflowExecutor
                 return null;
             }
 
+            if ($current instanceof LocalActivityCall) {
+                $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+
+                if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+                    return $this->restartAfterPendingUpdateFailure($run, $task);
+                }
+
+                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::LOCAL_ACTIVITY)) {
+                    return null;
+                }
+
+                $localOutcome = (new LocalActivityExecutor())->execute($run, $task, $sequence, $current);
+
+                if ($localOutcome['status'] === 'waiting') {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return $this->waitForNextResumeSource($run, $task);
+                }
+
+                $activityCompletion = $localOutcome['event'];
+
+                if (! $activityCompletion instanceof WorkflowHistoryEvent) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+
+                    return $this->waitForNextResumeSource($run, $task);
+                }
+
+                try {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    if ($activityCompletion->event_type === HistoryEventType::ActivityCompleted) {
+                        $current = $workflowExecution->send(
+                            $this->activityResult($activityCompletion, $run),
+                            $activityCompletion->recorded_at,
+                        );
+                    } else {
+                        $failureId = $activityCompletion->payload['failure_id'] ?? null;
+
+                        $current = $workflowExecution->throw(
+                            $this->activityException($activityCompletion, null, $run),
+                            $activityCompletion->recorded_at,
+                        );
+
+                        $this->recordFailureHandled(
+                            $run,
+                            $task,
+                            is_string($failureId) ? $failureId : null,
+                            $sequence,
+                            $activityCompletion->payload,
+                        );
+                    }
+                } catch (Throwable $throwable) {
+                    $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+
+                    return null;
+                }
+
+                $run->load([
+                    'instance',
+                    'activityExecutions',
+                    'timers',
+                    'failures',
+                    'tasks',
+                    'commands',
+                    'updates',
+                    'historyEvents',
+                    'childLinks.childRun.instance.currentRun',
+                    'childLinks.childRun.failures',
+                    'childLinks.childRun.historyEvents',
+                ]);
+
+                ++$sequence;
+                continue;
+            }
+
             if ($current instanceof ActivityCall) {
                 $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
 
@@ -4512,6 +4586,9 @@ final class WorkflowExecutor
     private function visibleSequenceForCurrent(WorkflowRun $run, mixed $current, int $sequence): int
     {
         return match (true) {
+            $current instanceof LocalActivityCall => (
+                $this->activityHistoryEvent($run, $sequence) !== null
+            ) ? $sequence + 1 : $sequence,
             $current instanceof ActivityCall => (
                 $this->activityHistoryEvent($run, $sequence) !== null
             ) ? $sequence + 1 : $sequence,

@@ -7,11 +7,14 @@ namespace Workflow\Tests\Unit\V2;
 use Orchestra\Testbench\TestCase;
 use ReflectionMethod;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\AllCall;
 use Workflow\V2\Support\AwaitCall;
 use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\ContinueAsNewCall;
+use Workflow\V2\Support\LocalActivityCall;
+use Workflow\V2\Support\LocalActivityOptions;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
@@ -23,7 +26,9 @@ use Workflow\V2\Support\WorkerSessionOptions;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 use function Workflow\V2\activity;
+use function Workflow\V2\localActivity;
 use function Workflow\V2\parallel;
+use function Workflow\V2\workerSession;
 
 /**
  * The static facade on Workflow\V2\Workflow is a thin delegate to the
@@ -48,6 +53,51 @@ class WorkflowFacadeTest extends TestCase
         $this->assertInstanceOf(ActivityCall::class, $call);
     }
 
+    public function testLocalActivityReturnsALocalActivityCall(): void
+    {
+        $call = Workflow::localActivity('App\\Activities\\Example', 'a', 'b');
+
+        $this->assertInstanceOf(LocalActivityCall::class, $call);
+        $this->assertSame(['a', 'b'], $call->arguments);
+    }
+
+    public function testExecuteLocalActivityAliasesLocalActivity(): void
+    {
+        $call = Workflow::executeLocalActivity('App\\Activities\\Example');
+
+        $this->assertInstanceOf(LocalActivityCall::class, $call);
+    }
+
+    public function testLocalActivityHelperAcceptsLocalActivityOptions(): void
+    {
+        $options = new LocalActivityOptions(maxAttempts: 3, heartbeatTimeout: 10);
+
+        $call = localActivity('App\\Activities\\Example', $options, 'payload');
+
+        $this->assertInstanceOf(LocalActivityCall::class, $call);
+        $this->assertSame($options, $call->options);
+        $this->assertSame(['payload'], $call->arguments);
+    }
+
+    public function testLocalActivityRejectsQueuedRoutingOptions(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Local activities do not accept connection, queue, worker session, or schedule-to-start routing options.');
+
+        localActivity('App\\Activities\\Example', new ActivityOptions(queue: 'imports'));
+    }
+
+    public function testLocalActivityRejectsWorkerSessionOptions(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Local activities do not accept connection, queue, worker session, or schedule-to-start routing options.');
+
+        localActivity(
+            'App\\Activities\\Example',
+            new ActivityOptions(workerSession: WorkerSessionOptions::named('gpu-render')),
+        );
+    }
+
     public function testWorkerSessionReturnsWorkerSessionHandle(): void
     {
         $session = Workflow::workerSession(
@@ -59,6 +109,14 @@ class WorkflowFacadeTest extends TestCase
         $this->assertSame('gpu-render', $session->options->sessionId);
         $this->assertSame('gpu-activities', $session->options->queue);
         $this->assertSame(['gpu:nvidia-l4'], $session->options->requirements);
+    }
+
+    public function testWorkerSessionHelperReturnsWorkerSessionHandle(): void
+    {
+        $session = workerSession('gpu-render');
+
+        $this->assertInstanceOf(WorkerSession::class, $session);
+        $this->assertSame('gpu-render', $session->options->sessionId);
     }
 
     public function testChildReturnsAChildWorkflowCall(): void
@@ -224,6 +282,9 @@ class WorkflowFacadeTest extends TestCase
             'activity',
             'now',
             'executeActivity',
+            'localActivity',
+            'executeLocalActivity',
+            'workerSession',
             'child',
             'executeChildWorkflow',
             'async',
