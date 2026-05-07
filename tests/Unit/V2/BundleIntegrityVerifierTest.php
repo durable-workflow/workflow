@@ -94,6 +94,20 @@ final class BundleIntegrityVerifierTest extends TestCase
         $this->assertContains('history_events.id_duplicate', $rules);
     }
 
+    public function testLastHistorySequenceBelowHighestEventSequenceIsWarned(): void
+    {
+        $bundle = self::wellFormedBundle();
+        $bundle['history_events'][1]['sequence'] = 3;
+        $bundle['workflow']['last_history_sequence'] = 2;
+        $bundle['integrity'] = self::buildIntegrity($bundle);
+
+        $report = BundleIntegrityVerifier::verify($bundle);
+
+        $rules = array_column($report['findings'], 'rule');
+        $this->assertContains('workflow.last_history_sequence_stale', $rules);
+        $this->assertSame(BundleIntegrityVerifier::STATUS_WARNING, $report['status']);
+    }
+
     public function testPayloadManifestMissingPayloadIsReported(): void
     {
         $bundle = self::wellFormedBundle();

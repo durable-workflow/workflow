@@ -11,6 +11,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\ReplayDiff;
+use Workflow\V2\Support\ReplayVerification;
 
 #[AsCommand(name: 'workflow:v2:replay-verify')]
 class V2ReplayVerifyCommand extends Command
@@ -25,9 +26,9 @@ class V2ReplayVerifyCommand extends Command
 
     protected $description = 'Verify a Workflow v2 history bundle: integrity, structure, and replay against current code';
 
-    private const REPORT_SCHEMA = 'durable-workflow.v2.replay-verify-report';
+    private const REPORT_SCHEMA = ReplayVerification::VERIFICATION_REPORT_SCHEMA;
 
-    private const REPORT_SCHEMA_VERSION = 1;
+    private const REPORT_SCHEMA_VERSION = ReplayVerification::VERIFICATION_REPORT_SCHEMA_VERSION;
 
     public function __construct(
         private readonly Filesystem $files,
@@ -105,12 +106,20 @@ class V2ReplayVerifyCommand extends Command
     private function compose(string $bundlePath, array $integrity, ?array $replayDiff): array
     {
         $verdict = $this->verdict($integrity, $replayDiff);
+        $evidence = ReplayVerification::verificationEvidence(
+            integrity: $integrity,
+            replayDiff: $replayDiff,
+            replaySkipped: (bool) $this->option('skip-replay'),
+            strictWarnings: (bool) $this->option('strict-warnings'),
+        );
 
         return [
             'schema' => self::REPORT_SCHEMA,
             'schema_version' => self::REPORT_SCHEMA_VERSION,
             'bundle_path' => $bundlePath,
             'verdict' => $verdict,
+            'promotion_decision' => ReplayVerification::promotionDecisionForReport($verdict, $evidence),
+            'evidence' => $evidence,
             'integrity' => $integrity,
             'replay_diff' => $replayDiff,
         ];
@@ -122,27 +131,11 @@ class V2ReplayVerifyCommand extends Command
      */
     private function verdict(array $integrity, ?array $replayDiff): string
     {
-        if ($integrity['status'] === BundleIntegrityVerifier::STATUS_FAILED) {
-            return 'failed';
-        }
-
-        if ($replayDiff !== null) {
-            $replayStatus = $replayDiff['status'] ?? null;
-
-            if ($replayStatus === ReplayDiff::STATUS_FAILED) {
-                return 'failed';
-            }
-
-            if ($replayStatus === ReplayDiff::STATUS_DRIFTED) {
-                return 'drifted';
-            }
-        }
-
-        if ($integrity['status'] === BundleIntegrityVerifier::STATUS_WARNING) {
-            return 'warning';
-        }
-
-        return 'ok';
+        return ReplayVerification::verdictFor(
+            $integrity,
+            $replayDiff,
+            (bool) $this->option('strict-warnings'),
+        );
     }
 
     /**
@@ -318,7 +311,14 @@ class V2ReplayVerifyCommand extends Command
             'schema' => self::REPORT_SCHEMA,
             'schema_version' => self::REPORT_SCHEMA_VERSION,
             'bundle_path' => (string) $this->argument('bundle'),
-            'verdict' => 'failed',
+            'verdict' => ReplayVerification::VERDICT_FAILED,
+            'promotion_decision' => ReplayVerification::PROMOTION_BLOCK_AND_INVESTIGATE,
+            'evidence' => ReplayVerification::verificationEvidence(
+                integrity: null,
+                replayDiff: null,
+                replaySkipped: (bool) $this->option('skip-replay'),
+                strictWarnings: (bool) $this->option('strict-warnings'),
+            ),
             'integrity' => null,
             'replay_diff' => null,
             'error' => $message,

@@ -113,7 +113,9 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\PayloadEnvelopeResolver`
 - `Workflow\V2\Support\PlatformProtocolSpecs`
 - `Workflow\V2\Support\ReplayDiff`
+- `Workflow\V2\Support\ReplaySimulation`
 - `Workflow\V2\Support\ReplayState`
+- `Workflow\V2\Support\ReplayVerification`
 - `Workflow\V2\Support\ScheduleManager`
 - `Workflow\V2\Support\ScheduleStartResult`
 - `Workflow\V2\Support\ServerlessWorkflowCompiler`

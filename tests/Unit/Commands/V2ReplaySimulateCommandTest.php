@@ -6,68 +6,74 @@ namespace Tests\Unit\Commands;
 
 use Illuminate\Support\Str;
 use Tests\TestCase;
-use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\ReplayVerification;
 
-final class V2ReplayVerifyCommandTest extends TestCase
+final class V2ReplaySimulateCommandTest extends TestCase
 {
-    public function testCommandSucceedsForWellFormedBundleWithSkipReplay(): void
+    public function testCommandAggregatesBundleDirectoryIntoSimulationReport(): void
     {
-        $bundle = self::wellFormedBundle();
-        $bundlePath = $this->writeBundle($bundle);
-        $reportPath = $this->ephemeralPath('replay-verify-out');
+        $directory = $this->ephemeralDirectory('replay-simulate-bundles');
+        $reportPath = $this->ephemeralPath('replay-simulate-out');
 
-        $this->artisan('workflow:v2:replay-verify', [
-            'bundle' => $bundlePath,
-            '--skip-replay' => true,
-            '--output' => $reportPath,
-        ])->assertSuccessful();
+        $good = self::wellFormedBundle('run-good');
+        $bad = self::wellFormedBundle('run-bad');
+        $bad['integrity']['checksum'] = str_repeat('0', 64);
 
-        $report = $this->readJson($reportPath);
+        $this->writeBundle($directory . '/good.json', $good);
+        $this->writeBundle($directory . '/bad.json', $bad);
 
-        $this->assertSame('durable-workflow.v2.replay-verification.report', $report['schema']);
-        $this->assertSame('ok', $report['verdict']);
-        $this->assertSame('review_before_promote', $report['promotion_decision']);
-        $this->assertSame([
-            'integrity_checked' => true,
-            'integrity_status' => BundleIntegrityVerifier::STATUS_OK,
-            'integrity_finding_count' => 0,
-            'replay_checked' => false,
-            'replay_status' => null,
-            'replay_skipped' => true,
-            'strict_warnings' => false,
-        ], $report['evidence']);
-        $this->assertSame(BundleIntegrityVerifier::STATUS_OK, $report['integrity']['status']);
-        $this->assertNull($report['replay_diff']);
-    }
-
-    public function testCommandFailsWhenChecksumMismatched(): void
-    {
-        $bundle = self::wellFormedBundle();
-        $bundle['integrity']['checksum'] = str_repeat('0', 64);
-        $bundlePath = $this->writeBundle($bundle);
-        $reportPath = $this->ephemeralPath('replay-verify-out');
-
-        $this->artisan('workflow:v2:replay-verify', [
-            'bundle' => $bundlePath,
+        $this->artisan('workflow:v2:replay-simulate', [
+            'directory' => $directory,
             '--skip-replay' => true,
             '--output' => $reportPath,
         ])->assertFailed();
 
         $report = $this->readJson($reportPath);
+
+        $this->assertSame(ReplayVerification::SIMULATION_REPORT_SCHEMA, $report['schema']);
         $this->assertSame('failed', $report['verdict']);
         $this->assertSame('block_and_investigate', $report['promotion_decision']);
-        $this->assertTrue($report['evidence']['integrity_checked']);
+        $this->assertSame(2, $report['summary']['total']);
+        $this->assertSame(1, $report['summary']['ok']);
+        $this->assertSame(1, $report['summary']['failed']);
+        $this->assertSame(2, $report['evidence']['bundle_count']);
+        $this->assertSame(0, $report['evidence']['missing_bundle_count']);
+        $this->assertSame(2, $report['evidence']['integrity_checked_count']);
+        $this->assertSame(0, $report['evidence']['replay_checked_count']);
         $this->assertTrue($report['evidence']['replay_skipped']);
-        $this->assertContains(
-            'integrity.checksum_mismatch',
-            array_column($report['integrity']['findings'], 'rule'),
-        );
+        $this->assertCount(2, $report['bundles']);
+        $this->assertTrue($report['bundles'][0]['evidence']['integrity_checked']);
+        $this->assertTrue($report['bundles'][0]['evidence']['replay_skipped']);
+        $this->assertSame([], $report['missing_bundles']);
     }
 
-    public function testStrictWarningsTreatsWarningsAsFailures(): void
+    public function testCommandFailsWhenDirectoryHasNoBundles(): void
     {
-        $bundle = self::wellFormedBundle();
+        $directory = $this->ephemeralDirectory('replay-simulate-empty');
+        $reportPath = $this->ephemeralPath('replay-simulate-out');
+
+        $this->artisan('workflow:v2:replay-simulate', [
+            'directory' => $directory,
+            '--output' => $reportPath,
+        ])->assertFailed();
+
+        $report = $this->readJson($reportPath);
+
+        $this->assertSame('failed', $report['verdict']);
+        $this->assertSame('block_and_investigate', $report['promotion_decision']);
+        $this->assertSame(0, $report['summary']['total']);
+        $this->assertSame(0, $report['evidence']['bundle_count']);
+        $this->assertSame(1, $report['evidence']['missing_bundle_count']);
+        $this->assertNotSame([], $report['missing_bundles']);
+    }
+
+    public function testStrictWarningsTreatsBundleWarningsAsFailures(): void
+    {
+        $directory = $this->ephemeralDirectory('replay-simulate-warning');
+        $reportPath = $this->ephemeralPath('replay-simulate-out');
+
+        $bundle = self::wellFormedBundle('run-warning');
         $bundle['commands'][] = [
             'id' => 'cmd-orphan',
             'sequence' => 9,
@@ -78,68 +84,51 @@ final class V2ReplayVerifyCommandTest extends TestCase
         ];
         $bundle['integrity'] = self::buildIntegrity($bundle);
 
-        $bundlePath = $this->writeBundle($bundle);
-        $reportPath = $this->ephemeralPath('replay-verify-out');
+        $this->writeBundle($directory . '/warning.json', $bundle);
 
-        $this->artisan('workflow:v2:replay-verify', [
-            'bundle' => $bundlePath,
+        $this->artisan('workflow:v2:replay-simulate', [
+            'directory' => $directory,
             '--skip-replay' => true,
             '--strict-warnings' => true,
             '--output' => $reportPath,
         ])->assertFailed();
 
         $report = $this->readJson($reportPath);
+
         $this->assertSame('failed', $report['verdict']);
-        $this->assertSame('block_and_investigate', $report['promotion_decision']);
+        $this->assertSame(1, $report['summary']['failed']);
+        $this->assertTrue($report['bundles'][0]['strict_warning_failure']);
         $this->assertTrue($report['evidence']['strict_warnings']);
-        $this->assertSame('warning', $report['evidence']['integrity_status']);
-    }
-
-    public function testCommandFailsWhenBundleFileMissing(): void
-    {
-        $reportPath = $this->ephemeralPath('replay-verify-out');
-
-        $this->artisan('workflow:v2:replay-verify', [
-            'bundle' => '/nonexistent/path/' . Str::ulid() . '.json',
-            '--output' => $reportPath,
-        ])->assertFailed();
-
-        $report = $this->readJson($reportPath);
-        $this->assertSame('failed', $report['verdict']);
-        $this->assertSame('block_and_investigate', $report['promotion_decision']);
-        $this->assertSame([
-            'integrity_checked' => false,
-            'integrity_status' => null,
-            'integrity_finding_count' => 0,
-            'replay_checked' => false,
-            'replay_status' => null,
-            'replay_skipped' => false,
-            'strict_warnings' => false,
-        ], $report['evidence']);
-        $this->assertNull($report['integrity']);
-    }
-
-    public function testJsonReportEmittedToStdoutWhenJsonFlagSet(): void
-    {
-        $bundle = self::wellFormedBundle();
-        $bundlePath = $this->writeBundle($bundle);
-
-        $this->artisan('workflow:v2:replay-verify', [
-            'bundle' => $bundlePath,
-            '--skip-replay' => true,
-            '--json' => true,
-        ])
-            ->expectsOutputToContain('"verdict": "ok"')
-            ->assertSuccessful();
+        $this->assertTrue($report['bundles'][0]['evidence']['strict_warnings']);
+        $this->assertSame('warning', $report['bundles'][0]['integrity']['status']);
     }
 
     /**
      * @param array<string, mixed> $bundle
      */
-    private function writeBundle(array $bundle): string
+    private function writeBundle(string $path, array $bundle): void
     {
-        $path = $this->ephemeralPath('replay-verify-bundle');
         file_put_contents($path, json_encode($bundle, JSON_THROW_ON_ERROR));
+    }
+
+    private function ephemeralDirectory(string $prefix): string
+    {
+        $path = sys_get_temp_dir() . '/' . $prefix . '-' . Str::ulid();
+        mkdir($path);
+
+        $this->beforeApplicationDestroyed(static function () use ($path): void {
+            if (! is_dir($path)) {
+                return;
+            }
+
+            foreach (glob($path . '/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+
+            rmdir($path);
+        });
 
         return $path;
     }
@@ -172,17 +161,17 @@ final class V2ReplayVerifyCommandTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private static function wellFormedBundle(): array
+    private static function wellFormedBundle(string $runId): array
     {
         $bundle = [
             'schema' => HistoryExport::SCHEMA,
             'schema_version' => HistoryExport::SCHEMA_VERSION,
             'exported_at' => '2026-04-09T12:05:00.000000Z',
-            'dedupe_key' => 'cli-test-run:2:2026-04-09T12:00:00.000000Z',
+            'dedupe_key' => "{$runId}:2:2026-04-09T12:00:00.000000Z",
             'history_complete' => true,
             'workflow' => [
-                'instance_id' => 'cli-test-instance',
-                'run_id' => 'cli-test-run',
+                'instance_id' => "{$runId}-instance",
+                'run_id' => $runId,
                 'run_number' => 1,
                 'workflow_type' => 'verifier.cli.test',
                 'workflow_class' => 'Tests\\Fixtures\\Cli',
@@ -196,16 +185,16 @@ final class V2ReplayVerifyCommandTest extends TestCase
             ],
             'history_events' => [
                 [
-                    'id' => 'evt-1',
+                    'id' => "{$runId}-evt-1",
                     'sequence' => 1,
                     'type' => 'WorkflowStarted',
-                    'workflow_command_id' => 'cmd-start',
+                    'workflow_command_id' => "{$runId}-cmd-start",
                     'workflow_task_id' => null,
                     'recorded_at' => '2026-04-09T12:00:00.000000Z',
                     'payload' => [],
                 ],
                 [
-                    'id' => 'evt-2',
+                    'id' => "{$runId}-evt-2",
                     'sequence' => 2,
                     'type' => 'WorkflowCompleted',
                     'workflow_command_id' => null,
@@ -220,7 +209,7 @@ final class V2ReplayVerifyCommandTest extends TestCase
             'linked_intakes' => [],
             'commands' => [
                 [
-                    'id' => 'cmd-start',
+                    'id' => "{$runId}-cmd-start",
                     'sequence' => 1,
                     'type' => 'workflow.start',
                     'status' => 'applied',

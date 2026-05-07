@@ -299,20 +299,20 @@ final class BundleIntegrityVerifier
         }
 
         $lastSequence = self::intValue($workflow['last_history_sequence'] ?? null);
-        $eventCount = self::eventCount($bundle);
+        $highestSequence = self::highestHistorySequence($bundle);
 
-        if ($lastSequence !== null && $eventCount > 0 && $lastSequence < $eventCount) {
+        if ($lastSequence !== null && $highestSequence !== null && $lastSequence < $highestSequence) {
             self::addFinding(
                 $findings,
                 'workflow.last_history_sequence_stale',
                 self::SEVERITY_WARNING,
                 sprintf(
-                    'Workflow last_history_sequence (%d) is below the recorded event count (%d); the bundle may be truncated.',
+                    'Workflow last_history_sequence (%d) is below the highest recorded event sequence (%d); the bundle may be truncated.',
                     $lastSequence,
-                    $eventCount,
+                    $highestSequence,
                 ),
                 'workflow.last_history_sequence',
-                ['last_history_sequence' => $lastSequence, 'history_event_count' => $eventCount],
+                ['last_history_sequence' => $lastSequence, 'highest_history_sequence' => $highestSequence],
             );
         }
     }
@@ -933,6 +933,26 @@ final class BundleIntegrityVerifier
         $events = $bundle['history_events'] ?? null;
 
         return is_array($events) ? count($events) : 0;
+    }
+
+    private static function highestHistorySequence(array $bundle): ?int
+    {
+        $events = is_array($bundle['history_events'] ?? null) ? $bundle['history_events'] : [];
+        $highest = null;
+
+        foreach ($events as $event) {
+            if (! is_array($event)) {
+                continue;
+            }
+
+            $sequence = self::intValue($event['sequence'] ?? null);
+
+            if ($sequence !== null && ($highest === null || $sequence > $highest)) {
+                $highest = $sequence;
+            }
+        }
+
+        return $highest;
     }
 
     private static function canonicalJson(mixed $value): string
