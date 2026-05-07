@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\Serializers\CodecRegistry;
+
 /**
  * Frozen versioned contract for the external workflow-worker protocol.
  *
@@ -28,6 +30,15 @@ final class WorkerProtocolVersion
      * optional fields, new non-terminal command types).
      */
     public const VERSION = '1.1';
+
+    /**
+     * Stable fail-closed reason a worker or server must return when it
+     * receives an input task whose payload codec is not in the universal
+     * advertised codec set or its declared engine-specific opt-in. The
+     * task must not be reinterpreted through another codec or silently
+     * dropped.
+     */
+    public const REASON_UNSUPPORTED_PAYLOAD_CODEC = 'unsupported_payload_codec';
 
     /**
      * Default page size for paginated history responses.
@@ -249,6 +260,9 @@ final class WorkerProtocolVersion
             'worker_session_verbs' => self::workerSessionVerbs(),
             'sticky_execution' => StickyExecution::describe(),
             'worker_sessions' => self::workerSessionSemantics(),
+            'payload_codecs_universal' => CodecRegistry::universal(),
+            'payload_codecs_engine_specific' => CodecRegistry::engineSpecific(),
+            'unsupported_payload_codec_reason' => self::REASON_UNSUPPORTED_PAYLOAD_CODEC,
         ];
     }
 

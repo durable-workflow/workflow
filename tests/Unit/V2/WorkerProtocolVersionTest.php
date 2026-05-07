@@ -83,6 +83,19 @@ final class WorkerProtocolVersionTest extends TestCase
             WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             $summary['history_pagination']['max_page_size']
         );
+        $this->assertSame(
+            \Workflow\Serializers\CodecRegistry::universal(),
+            $summary['payload_codecs_universal']
+        );
+        $this->assertSame(
+            \Workflow\Serializers\CodecRegistry::engineSpecific(),
+            $summary['payload_codecs_engine_specific']
+        );
+        $this->assertSame(
+            WorkerProtocolVersion::REASON_UNSUPPORTED_PAYLOAD_CODEC,
+            $summary['unsupported_payload_codec_reason']
+        );
+        $this->assertSame('unsupported_payload_codec', $summary['unsupported_payload_codec_reason']);
     }
 
     public function testDefaultHistoryPageSizeIsReasonable(): void
