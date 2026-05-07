@@ -27,7 +27,7 @@ final class HostedControlPlaneContract
 
     public const VERSION = 1;
 
-    public const AUTHORITY_DOC = 'docs/architecture/hosted-control-plane.md';
+    public const AUTHORITY_DOC = 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/hosted-control-plane.md';
 
     public const PROTOCOL_HEADER = 'X-Durable-Workflow-Hosted-Control-Plane-Version';
 

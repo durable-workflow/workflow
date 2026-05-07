@@ -20,7 +20,10 @@ final class HostedControlPlaneContractTest extends TestCase
 
         $this->assertSame('durable-workflow.v2.hosted-control-plane.contract', $manifest['schema']);
         $this->assertSame(1, $manifest['version']);
-        $this->assertSame('docs/architecture/hosted-control-plane.md', $manifest['authority_doc']);
+        $this->assertSame(
+            'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/hosted-control-plane.md',
+            $manifest['authority_doc'],
+        );
         $this->assertSame(
             'X-Durable-Workflow-Hosted-Control-Plane-Version',
             $manifest['protocol_header'],

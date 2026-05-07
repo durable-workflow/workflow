@@ -29,7 +29,7 @@ final class ServiceExecutionContractTest extends TestCase
         $this->assertSame('service_execution_contract', $manifest['cluster_info_key']);
         $this->assertSame('service_execution', $manifest['capability_flag']);
         $this->assertSame(
-            'docs/architecture/workflow-service-calls-architecture.md',
+            'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/workflow-service-calls-architecture.md',
             $manifest['authority_document'],
         );
     }
