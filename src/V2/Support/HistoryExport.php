@@ -632,6 +632,18 @@ final class HistoryExport
                     ]),
                     $paths,
                 );
+
+                self::redactField(
+                    $command,
+                    'reason',
+                    $callback,
+                    self::redactionContext($run, "commands.{$index}.reason", 'command_reason', [
+                        'command_id' => $command['id'] ?? null,
+                        'command_type' => $command['type'] ?? null,
+                        'sequence' => $command['sequence'] ?? null,
+                    ]),
+                    $paths,
+                );
             }
 
             unset($command);

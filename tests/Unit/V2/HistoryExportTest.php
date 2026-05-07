@@ -1544,6 +1544,9 @@ final class HistoryExportTest extends TestCase
         $this->assertContains('timeline.0.command.context', $bundle['redaction']['paths']);
         $this->assertContains('commands.0.payload', $bundle['redaction']['paths']);
         $this->assertContains('commands.0.context', $bundle['redaction']['paths']);
+        $this->assertContains('commands.0.reason', $bundle['redaction']['paths']);
+        $this->assertSame('command_reason', $bundle['commands'][0]['reason']['category']);
+        $this->assertSame('commands.0.reason', $bundle['commands'][0]['reason']['path']);
         $this->assertContains('signals.0.arguments', $bundle['redaction']['paths']);
         $this->assertContains('tasks.0.payload', $bundle['redaction']['paths']);
         $this->assertContains('activities.0.arguments', $bundle['redaction']['paths']);
