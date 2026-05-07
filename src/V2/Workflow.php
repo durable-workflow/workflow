@@ -11,6 +11,8 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildWorkflowHandles;
 use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\MessageService;
+use Workflow\V2\Support\WorkerSession;
+use Workflow\V2\Support\WorkerSessionOptions;
 
 /**
  * Base class for v2 workflows.
@@ -256,6 +258,11 @@ abstract class Workflow
     public static function executeActivity(string $activity, mixed ...$arguments): mixed
     {
         return activity($activity, ...$arguments);
+    }
+
+    public static function workerSession(string $sessionId, ?WorkerSessionOptions $options = null): WorkerSession
+    {
+        return workerSession($sessionId, $options);
     }
 
     /**

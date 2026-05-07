@@ -7,11 +7,13 @@ namespace Tests\Feature\V2;
 use Tests\Fixtures\V2\TestActivityOptionsWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestHistoryBudgetWorkflow;
+use Tests\Fixtures\V2\TestWorkerSessionWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Support\ActivityOptions;
+use Workflow\V2\Support\WorkerSessionOptions;
 use Workflow\V2\WorkflowStub;
 
 final class V2ActivityOptionsTest extends TestCase
@@ -120,6 +122,39 @@ final class V2ActivityOptionsTest extends TestCase
         $this->assertSame($options, $withOptions->options);
         $this->assertSame('App\\MyActivity', $withOptions->activity);
         $this->assertSame(['arg1'], $withOptions->arguments);
+    }
+
+    public function testWorkerSessionOptionsArePersistedOnScheduledActivity(): void
+    {
+        WorkflowStub::fake();
+        WorkflowStub::mock(TestGreetingActivity::class, 'Hello, Taylor!');
+
+        $workflow = WorkflowStub::make(TestWorkerSessionWorkflow::class, 'session-options-1');
+        $workflow->start('Taylor');
+
+        $this->assertTrue($workflow->refresh()->completed());
+
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->firstOrFail();
+
+        $this->assertSame('gpu-activities', $execution->queue);
+        $this->assertSame('gpu-render', $execution->activity_options['worker_session']['session_id']);
+        $this->assertSame(['gpu:nvidia-l4'], $execution->activity_options['worker_session']['requirements']);
+        $this->assertSame(120, $execution->activity_options['worker_session']['lease_seconds']);
+        $this->assertSame(600, $execution->activity_options['worker_session']['ttl_seconds']);
+        $this->assertSame(1, $execution->activity_options['worker_session']['max_concurrent_activities']);
+    }
+
+    public function testActivityOptionsExposeWorkerSessionRoutingOverrides(): void
+    {
+        $options = new ActivityOptions(workerSession: new WorkerSessionOptions(
+            sessionId: 'local-fs',
+            queue: 'filesystem-workers',
+        ));
+
+        $this->assertTrue($options->hasRoutingOverrides());
+        $this->assertSame('local-fs', $options->toSnapshot()['worker_session']['session_id']);
     }
 
     public function testActivityOptionsHasOverrideHelpers(): void

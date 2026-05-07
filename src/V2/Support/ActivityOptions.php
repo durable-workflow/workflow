@@ -32,6 +32,7 @@ final class ActivityOptions
         public readonly ?int $scheduleToCloseTimeout = null,
         public readonly ?int $heartbeatTimeout = null,
         public readonly array $nonRetryableErrorTypes = [],
+        public readonly ?WorkerSessionOptions $workerSession = null,
     ) {
     }
 
@@ -45,7 +46,8 @@ final class ActivityOptions
      *     schedule_to_start_timeout: int|null,
      *     schedule_to_close_timeout: int|null,
      *     heartbeat_timeout: int|null,
-     *     non_retryable_error_types: list<string>
+     *     non_retryable_error_types: list<string>,
+     *     worker_session: array<string, mixed>|null
      * }
      */
     public function toSnapshot(): array
@@ -60,12 +62,16 @@ final class ActivityOptions
             'schedule_to_close_timeout' => $this->scheduleToCloseTimeout,
             'heartbeat_timeout' => $this->heartbeatTimeout,
             'non_retryable_error_types' => $this->nonRetryableErrorTypes,
+            'worker_session' => $this->workerSession?->toSnapshot(),
         ];
     }
 
     public function hasRoutingOverrides(): bool
     {
-        return $this->connection !== null || $this->queue !== null;
+        return $this->connection !== null
+            || $this->queue !== null
+            || $this->workerSession?->connection !== null
+            || $this->workerSession?->queue !== null;
     }
 
     public function hasRetryOverrides(): bool
@@ -79,5 +85,21 @@ final class ActivityOptions
             || $this->scheduleToStartTimeout !== null
             || $this->scheduleToCloseTimeout !== null
             || $this->heartbeatTimeout !== null;
+    }
+
+    public function withWorkerSession(WorkerSessionOptions $workerSession): self
+    {
+        return new self(
+            connection: $this->connection,
+            queue: $this->queue,
+            maxAttempts: $this->maxAttempts,
+            backoff: $this->backoff,
+            startToCloseTimeout: $this->startToCloseTimeout,
+            scheduleToStartTimeout: $this->scheduleToStartTimeout,
+            scheduleToCloseTimeout: $this->scheduleToCloseTimeout,
+            heartbeatTimeout: $this->heartbeatTimeout,
+            nonRetryableErrorTypes: $this->nonRetryableErrorTypes,
+            workerSession: $workerSession,
+        );
     }
 }

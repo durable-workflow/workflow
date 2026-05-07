@@ -19,6 +19,7 @@ require_once __DIR__ . '/src/functions.php';
 $functions = [
     'Workflow\\V2\\signal',
     'Workflow\\V2\\parallel',
+    'Workflow\\V2\\workerSession',
 ];
 var_export(array_reduce(
     $functions,

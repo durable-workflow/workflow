@@ -61,6 +61,10 @@ final class RoutingResolver
             return $options->connection;
         }
 
+        if ($options?->workerSession?->connection !== null) {
+            return $options->workerSession->connection;
+        }
+
         $defaults = DefaultPropertyCache::for($activity);
 
         if (isset($defaults['connection']) && is_string($defaults['connection']) && $defaults['connection'] !== '') {
@@ -77,6 +81,10 @@ final class RoutingResolver
     {
         if ($options?->queue !== null) {
             return $options->queue;
+        }
+
+        if ($options?->workerSession?->queue !== null) {
+            return $options->workerSession->queue;
         }
 
         $defaults = DefaultPropertyCache::for($activity);

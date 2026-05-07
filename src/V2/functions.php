@@ -23,6 +23,8 @@ use Workflow\V2\Support\TimerCall;
 use Workflow\V2\Support\UpsertMemoCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
+use Workflow\V2\Support\WorkerSession;
+use Workflow\V2\Support\WorkerSessionOptions;
 use Workflow\V2\Support\WorkflowFiberContext;
 
 if (! function_exists(__NAMESPACE__ . '\\activity')) {
@@ -35,6 +37,13 @@ if (! function_exists(__NAMESPACE__ . '\\activity')) {
         }
 
         return WorkflowFiberContext::suspend(new ActivityCall($activity, $arguments, $options));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\workerSession')) {
+    function workerSession(string $sessionId, ?WorkerSessionOptions $options = null): WorkerSession
+    {
+        return new WorkerSession(($options ?? new WorkerSessionOptions())->withSessionId($sessionId));
     }
 }
 

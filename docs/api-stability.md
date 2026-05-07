@@ -162,8 +162,8 @@ It exposes two surfaces, both covered by the semver guarantee:
   `$run`, `$connection`, `$queue`.
 - **Static method facade** wrapping the helpers in
   `Workflow\V2\functions.php` plus Temporal-style aliases: `activity`,
-  `executeActivity`, `child`, `executeChildWorkflow`, `async`, `all`,
-  `parallel`, `await`, `now`,
+  `executeActivity`, `child`, `executeChildWorkflow`, `workerSession`,
+  `async`, `all`, `parallel`, `await`, `now`,
   `awaitWithTimeout`, `awaitSignal`, `timer`, `sideEffect`, `uuid4`,
   `uuid7`, `continueAsNew`, `getVersion`, `patched`, `deprecatePatch`,
   `upsertMemo`, `upsertSearchAttributes`, and the timer sugar
@@ -171,7 +171,7 @@ It exposes two surfaces, both covered by the semver guarantee:
 
 The namespaced helper functions under `Workflow\V2\*` remain the primary
 straight-line authoring surface and are equally stable: `activity`,
-`child`, `async`, `all`, `parallel`, `await`, `signal`, `timer`,
+`workerSession`, `child`, `async`, `all`, `parallel`, `await`, `signal`, `timer`,
 `sideEffect`, `uuid4`, `uuid7`, `continueAsNew`, `getVersion`, `patched`,
 `deprecatePatch`, `upsertMemo`, `upsertSearchAttributes`, `now`, and the
 timer sugar `seconds`/`minutes`/`hours`/`days`/`weeks`/`months`/`years`.
@@ -182,6 +182,13 @@ the same command path.
 
 Adding new static methods to the facade is an additive (non-breaking)
 change. Removing or renaming a documented method is a major change.
+
+Worker-session authoring uses stable support value objects:
+`Workflow\V2\Support\WorkerSession` and
+`Workflow\V2\Support\WorkerSessionOptions`. Their public constructor
+signatures, public methods, readonly property names and types, and
+`WorkerSessionOptions::toSnapshot()` field names are part of the v2
+authoring API.
 
 ## Workflow and run identity for app projections
 

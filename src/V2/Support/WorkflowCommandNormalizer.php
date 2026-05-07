@@ -60,6 +60,10 @@ final class WorkflowCommandNormalizer
             'allowed' => ['schedule_activity'],
             'guidance' => 'heartbeat_timeout limits the gap between activity heartbeats and only applies to a schedule_activity command.',
         ],
+        'worker_session' => [
+            'allowed' => ['schedule_activity'],
+            'guidance' => 'worker_session pins a sequence of activity attempts to one worker and only applies to a schedule_activity command.',
+        ],
         'execution_timeout_seconds' => [
             'allowed' => ['start_child_workflow'],
             'guidance' => 'execution_timeout_seconds limits the entire child workflow execution and only applies to a start_child_workflow command.',
@@ -156,6 +160,7 @@ final class WorkflowCommandNormalizer
                 $scheduleToStart = self::optionalPositiveInt($command, 'schedule_to_start_timeout', $index, $errors);
                 $scheduleToClose = self::optionalPositiveInt($command, 'schedule_to_close_timeout', $index, $errors);
                 $heartbeat = self::optionalPositiveInt($command, 'heartbeat_timeout', $index, $errors);
+                $workerSession = self::optionalWorkerSession($command, $index, $errors);
 
                 self::assertActivityTimeoutOrdering($startToClose, $scheduleToClose, $heartbeat, $index, $errors);
 
@@ -170,6 +175,7 @@ final class WorkflowCommandNormalizer
                     'schedule_to_start_timeout' => $scheduleToStart,
                     'schedule_to_close_timeout' => $scheduleToClose,
                     'heartbeat_timeout' => $heartbeat,
+                    'worker_session' => $workerSession,
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
@@ -581,6 +587,116 @@ final class WorkflowCommandNormalizer
         }
 
         return $policy === [] ? null : $policy;
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     * @return array<string, mixed>|null
+     */
+    private static function optionalWorkerSession(array $command, int $index, array &$errors): ?array
+    {
+        if (! array_key_exists('worker_session', $command) || $command['worker_session'] === null) {
+            return null;
+        }
+
+        if (! is_array($command['worker_session'])) {
+            $errors["commands.{$index}.worker_session"] = [
+                'Workflow task command field [worker_session] must be an object when provided.',
+            ];
+
+            return null;
+        }
+
+        $raw = $command['worker_session'];
+        $sessionId = $raw['session_id'] ?? null;
+
+        if (! is_string($sessionId) || trim($sessionId) === '') {
+            $errors["commands.{$index}.worker_session.session_id"] = [
+                'Worker session commands require a non-empty session_id.',
+            ];
+
+            return null;
+        }
+
+        $session = [
+            'session_id' => trim($sessionId),
+        ];
+
+        foreach (['connection', 'queue'] as $field) {
+            if (! array_key_exists($field, $raw) || $raw[$field] === null) {
+                continue;
+            }
+
+            if (! is_string($raw[$field]) || trim($raw[$field]) === '') {
+                $errors["commands.{$index}.worker_session.{$field}"] = [
+                    sprintf('Worker session field [%s] must be a non-empty string when provided.', $field),
+                ];
+
+                continue;
+            }
+
+            $session[$field] = trim($raw[$field]);
+        }
+
+        foreach (['lease_seconds', 'ttl_seconds', 'max_concurrent_activities'] as $field) {
+            if (! array_key_exists($field, $raw) || $raw[$field] === null) {
+                continue;
+            }
+
+            if (! is_int($raw[$field]) || (int) $raw[$field] < 1) {
+                $errors["commands.{$index}.worker_session.{$field}"] = [
+                    sprintf('Worker session field [%s] must be a positive integer when provided.', $field),
+                ];
+
+                continue;
+            }
+
+            $session[$field] = (int) $raw[$field];
+        }
+
+        foreach (['create_if_missing', 'allow_reacquire_after_failure'] as $field) {
+            if (! array_key_exists($field, $raw) || $raw[$field] === null) {
+                continue;
+            }
+
+            if (! is_bool($raw[$field])) {
+                $errors["commands.{$index}.worker_session.{$field}"] = [
+                    sprintf('Worker session field [%s] must be boolean when provided.', $field),
+                ];
+
+                continue;
+            }
+
+            $session[$field] = (bool) $raw[$field];
+        }
+
+        if (array_key_exists('requirements', $raw) && $raw['requirements'] !== null) {
+            if (! is_array($raw['requirements'])) {
+                $errors["commands.{$index}.worker_session.requirements"] = [
+                    'Worker session requirements must be a list of non-empty strings.',
+                ];
+            } else {
+                $requirements = [];
+                foreach (array_values($raw['requirements']) as $position => $requirement) {
+                    if (! is_string($requirement) || trim($requirement) === '') {
+                        $errors["commands.{$index}.worker_session.requirements.{$position}"] = [
+                            'Worker session requirements must be non-empty strings.',
+                        ];
+
+                        continue;
+                    }
+
+                    $requirements[] = trim($requirement);
+                }
+
+                if ($requirements !== []) {
+                    $session['requirements'] = array_values(array_unique($requirements));
+                }
+            }
+        }
+
+        return $session;
     }
 
     /**

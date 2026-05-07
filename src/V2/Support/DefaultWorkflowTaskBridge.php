@@ -1383,7 +1383,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             || array_key_exists('start_to_close_timeout', $command)
             || array_key_exists('schedule_to_start_timeout', $command)
             || array_key_exists('schedule_to_close_timeout', $command)
-            || array_key_exists('heartbeat_timeout', $command);
+            || array_key_exists('heartbeat_timeout', $command)
+            || array_key_exists('worker_session', $command);
 
         if (! $hasOptions) {
             return null;
@@ -1409,6 +1410,36 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             nonRetryableErrorTypes: is_array($retryPolicy['non_retryable_error_types'] ?? null)
                 ? $retryPolicy['non_retryable_error_types']
                 : [],
+            workerSession: self::workerSessionOptionsFromCommand($command['worker_session'] ?? null),
+        );
+    }
+
+    private static function workerSessionOptionsFromCommand(mixed $value): ?WorkerSessionOptions
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $sessionId = self::nonEmptyString($value['session_id'] ?? null);
+
+        if ($sessionId === null) {
+            return null;
+        }
+
+        return new WorkerSessionOptions(
+            sessionId: $sessionId,
+            connection: self::nonEmptyString($value['connection'] ?? null),
+            queue: self::nonEmptyString($value['queue'] ?? null),
+            requirements: is_array($value['requirements'] ?? null) ? array_values($value['requirements']) : [],
+            leaseSeconds: is_int($value['lease_seconds'] ?? null) ? (int) $value['lease_seconds'] : null,
+            ttlSeconds: is_int($value['ttl_seconds'] ?? null) ? (int) $value['ttl_seconds'] : null,
+            maxConcurrentActivities: is_int($value['max_concurrent_activities'] ?? null)
+                ? (int) $value['max_concurrent_activities']
+                : null,
+            createIfMissing: is_bool($value['create_if_missing'] ?? null) ? (bool) $value['create_if_missing'] : true,
+            allowReacquireAfterFailure: is_bool($value['allow_reacquire_after_failure'] ?? null)
+                ? (bool) $value['allow_reacquire_after_failure']
+                : true,
         );
     }
 
@@ -1423,7 +1454,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      *     start_to_close_timeout?: int,
      *     schedule_to_start_timeout?: int,
      *     schedule_to_close_timeout?: int,
-     *     heartbeat_timeout?: int
+     *     heartbeat_timeout?: int,
+     *     worker_session?: array<string, mixed>
      * } $command
      * @param list<string> $createdTaskIds
      */
@@ -2537,7 +2569,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      *     start_to_close_timeout?: int,
      *     schedule_to_start_timeout?: int,
      *     schedule_to_close_timeout?: int,
-     *     heartbeat_timeout?: int
+     *     heartbeat_timeout?: int,
+     *     worker_session?: array<string, mixed>
      * }|null
      */
     private static function normalizeScheduleActivityCommand(array $command): ?array
@@ -2581,7 +2614,60 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'schedule_to_start_timeout' => $scheduleToStartTimeout,
             'schedule_to_close_timeout' => $scheduleToCloseTimeout,
             'heartbeat_timeout' => $heartbeatTimeout,
+            'worker_session' => self::normalizeWorkerSessionCommand($command['worker_session'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeWorkerSessionCommand(mixed $value): ?array
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $sessionId = self::normalizeRequiredString($value['session_id'] ?? null);
+
+        if ($sessionId === null) {
+            return null;
+        }
+
+        return array_filter([
+            'session_id' => $sessionId,
+            'connection' => self::normalizeOptionalString($value['connection'] ?? null),
+            'queue' => self::normalizeOptionalString($value['queue'] ?? null),
+            'requirements' => self::normalizeStringList($value['requirements'] ?? null),
+            'lease_seconds' => self::normalizePositiveInt($value['lease_seconds'] ?? null),
+            'ttl_seconds' => self::normalizePositiveInt($value['ttl_seconds'] ?? null),
+            'max_concurrent_activities' => self::normalizePositiveInt($value['max_concurrent_activities'] ?? null),
+            'create_if_missing' => is_bool($value['create_if_missing'] ?? null)
+                ? (bool) $value['create_if_missing']
+                : null,
+            'allow_reacquire_after_failure' => is_bool($value['allow_reacquire_after_failure'] ?? null)
+                ? (bool) $value['allow_reacquire_after_failure']
+                : null,
+        ], static fn (mixed $item): bool => $item !== null);
+    }
+
+    /**
+     * @return list<string>|null
+     */
+    private static function normalizeStringList(mixed $value): ?array
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $strings = [];
+
+        foreach (array_values($value) as $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $strings[] = trim($item);
+            }
+        }
+
+        return $strings === [] ? null : array_values(array_unique($strings));
     }
 
     /**

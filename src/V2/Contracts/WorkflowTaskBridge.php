@@ -245,11 +245,23 @@ interface WorkflowTaskBridge
      *     start_to_close_timeout?: int,
      *     schedule_to_start_timeout?: int,
      *     schedule_to_close_timeout?: int,
-     *     heartbeat_timeout?: int
+     *     heartbeat_timeout?: int,
+     *     worker_session?: array{
+     *       session_id: string,
+     *       connection?: string|null,
+     *       queue?: string|null,
+     *       requirements?: list<string>,
+     *       lease_seconds?: int,
+     *       ttl_seconds?: int,
+     *       max_concurrent_activities?: int,
+     *       create_if_missing?: bool,
+     *       allow_reacquire_after_failure?: bool
+     *     }
      *   }
      *   Schedules an activity task for execution. activity_type is a registered type key.
      *   arguments is a codec-tagged serialized payload. connection and queue override run defaults.
      *   retry_policy accepts max_attempts, backoff_seconds, and non_retryable_error_types.
+     *   worker_session pins a sequence of activities to one worker-session lease.
      *
      * - start_timer: {type: 'start_timer', delay_seconds: int}
      *   Schedules a durable timer that fires after delay_seconds.

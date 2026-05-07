@@ -190,4 +190,40 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame('sticky_execution', $summary['sticky_execution']['feature']);
         $this->assertSame('cold_replay', $summary['sticky_execution']['correctness_fallback']);
     }
+
+    public function testDescribeIncludesWorkerSessionSemantics(): void
+    {
+        $summary = WorkerProtocolVersion::describe();
+
+        $this->assertSame(['create', 'heartbeat', 'close'], WorkerProtocolVersion::workerSessionVerbs());
+        $this->assertSame(WorkerProtocolVersion::workerSessionVerbs(), $summary['worker_session_verbs']);
+        $this->assertArrayHasKey('worker_sessions', $summary);
+        $this->assertSame('worker_sessions', $summary['worker_sessions']['feature']);
+        $this->assertSame('worker_session', $summary['worker_sessions']['command_field']);
+        $this->assertSame(['create', 'heartbeat', 'close'], $summary['worker_sessions']['verbs']);
+        $this->assertSame(
+            'lazy_create_on_first_admitted_activity_or_explicit_worker_create',
+            $summary['worker_sessions']['lifecycle']['creation'],
+        );
+        $this->assertTrue($summary['worker_sessions']['admission']['queue_routing_first']);
+        $this->assertSame(
+            'worker_registration',
+            $summary['worker_sessions']['limits']['max_concurrent_worker_sessions'],
+        );
+        $this->assertTrue(
+            $summary['worker_sessions']['holder_loss']['process_local_state_must_be_rebuilt_after_reacquire'],
+        );
+        $this->assertTrue(
+            $summary['worker_sessions']['cancellation']['session_lease_does_not_override_activity_cancel_requested'],
+        );
+        $this->assertContains('active', $summary['worker_sessions']['statuses']);
+        $this->assertContains('orphaned', $summary['worker_sessions']['visibility']);
+        $this->assertSame(['closed'], $summary['worker_sessions']['terminal_statuses']);
+        $this->assertContains('ttl_expired', $summary['worker_sessions']['terminal_conditions']);
+        $this->assertContains('registered_worker_heartbeat_staleness', $summary['worker_sessions']['failure_detection']);
+        $this->assertContains(
+            'prefer_ordinary_queued_activities_for_independent_steps',
+            $summary['worker_sessions']['authoring_guidance'],
+        );
+    }
 }

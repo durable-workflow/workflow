@@ -208,7 +208,9 @@ final class WorkerProtocolVersion
      *     history_pagination: array{default_page_size: int, max_page_size: int},
      *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      *     long_poll: array{default_timeout_seconds: int, min_timeout_seconds: int, max_timeout_seconds: int},
+     *     worker_session_verbs: list<string>,
      *     sticky_execution: array<string, mixed>,
+     *     worker_sessions: array<string, mixed>,
      * }
      */
     public static function describe(): array
@@ -228,7 +230,110 @@ final class WorkerProtocolVersion
                 'compression_threshold' => self::COMPRESSION_THRESHOLD,
             ],
             'long_poll' => self::longPollSemantics(),
+            'worker_session_verbs' => self::workerSessionVerbs(),
             'sticky_execution' => StickyExecution::describe(),
+            'worker_sessions' => self::workerSessionSemantics(),
+        ];
+    }
+
+    /**
+     * Worker-session lifecycle verbs exposed by the worker protocol.
+     *
+     * @return list<string>
+     */
+    public static function workerSessionVerbs(): array
+    {
+        return ['create', 'heartbeat', 'close'];
+    }
+
+    /**
+     * Published worker-session runtime contract.
+     *
+     * @return array<string, mixed>
+     */
+    public static function workerSessionSemantics(): array
+    {
+        return [
+            'feature' => 'worker_sessions',
+            'contract_version' => '1.0',
+            'command_field' => 'worker_session',
+            'activity_options_field' => 'worker_session',
+            'verbs' => self::workerSessionVerbs(),
+            'lifecycle' => [
+                'creation' => 'lazy_create_on_first_admitted_activity_or_explicit_worker_create',
+                'renewal' => 'activity_heartbeat_or_explicit_session_heartbeat',
+                'close' => 'explicit_holder_close',
+                'lease_expiry' => 'session_expires_when_lease_is_not_renewed',
+                'ttl_expiry' => 'absolute_session_ttl_is_terminal_for_that_session_id',
+            ],
+            'ownership' => 'single_worker_lease_owner',
+            'lease' => [
+                'scope' => 'namespace_session_id',
+                'owner' => 'registered_worker_id',
+                'activity_attempt_leases_remain_independent' => true,
+            ],
+            'admission' => [
+                'queue_routing_first' => true,
+                'requires_registered_worker' => true,
+                'requires_capabilities' => true,
+                'create_if_missing_default' => true,
+                'allow_reacquire_after_failure_default' => true,
+            ],
+            'limits' => [
+                'max_concurrent_worker_sessions' => 'worker_registration',
+                'max_concurrent_activities' => 'session',
+            ],
+            'default_max_concurrent_activities' => 1,
+            'renewal' => [
+                'activity_heartbeat_renews_session' => true,
+                'explicit_session_heartbeat' => true,
+            ],
+            'failure_detection' => [
+                'lease_expiry',
+                'registered_worker_heartbeat_staleness',
+            ],
+            'holder_loss' => [
+                'in_flight_activities_keep_at_least_once_attempt_semantics' => true,
+                'replacement_worker_must_reacquire_session' => true,
+                'process_local_state_must_be_rebuilt_after_reacquire' => true,
+            ],
+            'cancellation' => [
+                'workflow_cancellation_observed_through_activity_heartbeat' => true,
+                'session_lease_does_not_override_activity_cancel_requested' => true,
+                'planned_shutdown_should_close_sessions' => true,
+            ],
+            'routing' => [
+                'queue',
+                'connection',
+                'requirements',
+            ],
+            'visibility' => [
+                'active',
+                'closed',
+                'expired',
+                'failed',
+                'orphaned',
+            ],
+            'statuses' => [
+                'active',
+                'closed',
+                'expired',
+                'failed',
+                'orphaned',
+            ],
+            'terminal_statuses' => [
+                'closed',
+            ],
+            'terminal_conditions' => [
+                'explicit_close',
+                'ttl_expired',
+                'allow_reacquire_after_failure_false',
+            ],
+            'authoring_guidance' => [
+                'use_for_process_local_state_gpu_memory_or_filesystem_affinity',
+                'prefer_ordinary_queued_activities_for_independent_steps',
+                'prefer_one_larger_activity_for_atomic_side_effects',
+            ],
         ];
     }
 }

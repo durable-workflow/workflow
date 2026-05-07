@@ -18,6 +18,8 @@ use Workflow\V2\Support\TimerCall;
 use Workflow\V2\Support\UpsertMemoCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
+use Workflow\V2\Support\WorkerSession;
+use Workflow\V2\Support\WorkerSessionOptions;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 use function Workflow\V2\activity;
@@ -44,6 +46,19 @@ class WorkflowFacadeTest extends TestCase
         $call = Workflow::executeActivity('App\\Activities\\Example');
 
         $this->assertInstanceOf(ActivityCall::class, $call);
+    }
+
+    public function testWorkerSessionReturnsWorkerSessionHandle(): void
+    {
+        $session = Workflow::workerSession(
+            'gpu-render',
+            new WorkerSessionOptions(queue: 'gpu-activities', requirements: ['gpu:nvidia-l4']),
+        );
+
+        $this->assertInstanceOf(WorkerSession::class, $session);
+        $this->assertSame('gpu-render', $session->options->sessionId);
+        $this->assertSame('gpu-activities', $session->options->queue);
+        $this->assertSame(['gpu:nvidia-l4'], $session->options->requirements);
     }
 
     public function testChildReturnsAChildWorkflowCall(): void
