@@ -311,6 +311,55 @@ final class V2ActivityExceptionCodecTest extends TestCase
         $this->assertTrue($snapshot['exception_payload']['non_retryable'] ?? false);
     }
 
+    public function testNonRetryableWorkerFailureWithoutDetailsBypassesActivityRetry(): void
+    {
+        config()->set('workflows.serializer', 'avro');
+
+        [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
+            pinnedCodec: 'workflow-serializer-y',
+            maxAttempts: 3,
+            instanceId: 'worker-codec-nonretryable',
+        );
+
+        $outcome = ActivityOutcomeRecorder::record(
+            taskId: $task->id,
+            attemptId: $attempt->id,
+            attemptCount: 1,
+            result: null,
+            throwable: FailureFactory::restore([
+                'class' => RuntimeException::class,
+                'type' => 'ValueError',
+                'message' => "Unsupported payload codec 'zstd'.",
+                'non_retryable' => true,
+            ]),
+            maxAttempts: 3,
+            backoffSeconds: 1,
+            codec: null,
+        );
+
+        $this->assertTrue($outcome['recorded']);
+        $this->assertNull($outcome['next_task']);
+
+        $execution->refresh();
+        $this->assertSame(ActivityStatus::Failed, $execution->status);
+
+        /** @var WorkflowHistoryEvent $failed */
+        $failed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $this->assertTrue($failed->payload['non_retryable'] ?? false);
+        $this->assertSame('ValueError', $failed->payload['exception_type'] ?? null);
+        $this->assertSame("Unsupported payload codec 'zstd'.", $failed->payload['message'] ?? null);
+        $this->assertFalse(
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
+                ->exists(),
+        );
+    }
+
     /**
      * @return array{0: WorkflowRun, 1: ActivityExecution, 2: WorkflowTask, 3: ActivityAttempt}
      */

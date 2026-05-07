@@ -193,7 +193,11 @@ final class FailureFactory
         $normalized = self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode);
         $class = $normalized['class'];
 
-        if (array_key_exists('details', $normalized) || is_string($normalized['details_payload_codec'] ?? null)) {
+        if (
+            array_key_exists('details', $normalized)
+            || is_string($normalized['details_payload_codec'] ?? null)
+            || array_key_exists('non_retryable', $normalized)
+        ) {
             return new RestoredWorkflowException($normalized);
         }
 
