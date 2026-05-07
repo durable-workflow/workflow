@@ -160,7 +160,18 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ];
         }
 
-        $this->applyResolvedCatalog($call, $endpoint, $service, $operation, $namespace, $options);
+        $resolvedBindingKind = $this->resolvedBindingKind($operation);
+        $this->applyResolvedCatalog($call, $endpoint, $service, $operation, $namespace, $options, $resolvedBindingKind);
+
+        if ($resolvedBindingKind === null) {
+            $this->markUnknownBindingKind($call, $operation);
+
+            return $this->serialize($call) + [
+                'accepted' => false,
+                'idempotent_replay' => false,
+                'reason' => 'unknown_binding_kind',
+            ];
+        }
 
         $boundaryRequest = $this->boundaryRequest(
             $principal,
@@ -170,6 +181,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $service,
             $operation,
             $call,
+            $resolvedBindingKind,
         );
 
         $decision = $preAdmitted
@@ -544,6 +556,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         WorkflowServiceOperation $operation,
         ?string $namespace,
         array $options,
+        ?string $resolvedBindingKind,
     ): void {
         $call->workflow_service_endpoint_id = $endpoint->id;
         $call->workflow_service_id = $service->id;
@@ -554,7 +567,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $call->operation_name = $operation->operation_name;
         $call->target_namespace = $namespace;
         $call->operation_mode = $this->operationMode($operation, $options)->value;
-        $call->resolved_binding_kind = (string) $operation->handler_binding_kind;
+        $call->resolved_binding_kind = $resolvedBindingKind ?? self::UNRESOLVED;
         $call->resolved_target_reference = $operation->handler_target_reference;
         $call->deadline_policy = $operation->deadline_policy;
         $call->idempotency_policy = $operation->idempotency_policy;
@@ -571,6 +584,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         WorkflowService $service,
         WorkflowServiceOperation $operation,
         WorkflowServiceCall $call,
+        string $resolvedBindingKind,
     ): ServiceBoundaryRequest {
         return new ServiceBoundaryRequest(
             principal: $principal,
@@ -580,7 +594,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             serviceName: $service->service_name,
             operationName: $operation->operation_name,
             operationMode: $this->operationMode($operation, ['mode_override' => $call->operation_mode]),
-            resolvedBindingKind: (string) $operation->handler_binding_kind,
+            resolvedBindingKind: $resolvedBindingKind,
             resolvedTargetReference: $operation->handler_target_reference,
             callerWorkflowInstanceId: $call->caller_workflow_instance_id,
             callerWorkflowRunId: $call->caller_workflow_run_id,
@@ -607,9 +621,35 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $call->outcome_category = ServiceCallOutcome::RejectedNotFound->category();
         $call->outcome_reason = 'unknown_target';
         $call->outcome_message = $message;
+        $call->resolved_target_reference = null;
         $call->outcome_metadata = [
             'failure_reason' => ServiceCallFailureReason::ResolutionFailure->value,
             'resolution_failed_at' => $failedAt,
+        ];
+        $call->metadata = $this->mergeMetadata($call->metadata, $call->outcome_metadata);
+        $call->failure_message = $message;
+        $call->failed_at ??= now();
+        $call->save();
+    }
+
+    private function markUnknownBindingKind(WorkflowServiceCall $call, WorkflowServiceOperation $operation): void
+    {
+        $message = sprintf(
+            'Service operation [%s] has unknown handler binding kind [%s].',
+            $operation->operation_name,
+            $operation->handler_binding_kind,
+        );
+
+        $call->status = ServiceCallStatus::Failed->value;
+        $call->outcome = ServiceCallOutcome::RejectedNotFound->value;
+        $call->outcome_category = ServiceCallOutcome::RejectedNotFound->category();
+        $call->outcome_reason = 'unknown_binding_kind';
+        $call->outcome_message = $message;
+        $call->resolved_target_reference = null;
+        $call->outcome_metadata = [
+            'failure_reason' => ServiceCallFailureReason::ResolutionFailure->value,
+            'resolution_failed_at' => 'handler_binding_kind',
+            'handler_binding_kind' => (string) $operation->handler_binding_kind,
         ];
         $call->metadata = $this->mergeMetadata($call->metadata, $call->outcome_metadata);
         $call->failure_message = $message;
@@ -1183,6 +1223,11 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
     private function bindingKind(WorkflowServiceOperation $operation): string
     {
         return strtolower(trim((string) $operation->handler_binding_kind));
+    }
+
+    private function resolvedBindingKind(WorkflowServiceOperation $operation): ?string
+    {
+        return ServiceCallBindingKind::tryFromHandlerBindingKind($this->bindingKind($operation))?->value;
     }
 
     /**

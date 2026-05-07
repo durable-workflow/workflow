@@ -57,4 +57,23 @@ enum ServiceCallBindingKind: string
      * request id.
      */
     case InvocableCarrierRequest = 'invocable_carrier_request';
+
+    public static function tryFromHandlerBindingKind(string $kind): ?self
+    {
+        return match (strtolower(trim($kind))) {
+            self::WorkflowRun->value,
+            'start_workflow',
+            'workflow_class' => self::WorkflowRun,
+            self::WorkflowUpdate->value,
+            'update_workflow' => self::WorkflowUpdate,
+            self::WorkflowSignal->value,
+            'signal_workflow' => self::WorkflowSignal,
+            self::WorkflowQuery->value,
+            'query_workflow' => self::WorkflowQuery,
+            self::ActivityExecution->value => self::ActivityExecution,
+            self::InvocableCarrierRequest->value,
+            'invocable_http' => self::InvocableCarrierRequest,
+            default => null,
+        };
+    }
 }

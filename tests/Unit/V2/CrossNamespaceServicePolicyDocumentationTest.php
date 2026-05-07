@@ -77,6 +77,7 @@ final class CrossNamespaceServicePolicyDocumentationTest extends TestCase
         'WorkflowServiceOperation',
         'WorkflowServiceCall',
         'ServiceCallStatus',
+        'ServiceCallBindingKind',
         'ServiceCallOutcome',
         'PayloadEnvelopeResolver',
         'CodecRegistry',

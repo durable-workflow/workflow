@@ -87,6 +87,35 @@ final class ServiceExecutionContractTest extends TestCase
         $this->assertSame($expected, ServiceExecutionContract::resolvedTargetBindingKindValues());
     }
 
+    public function testRuntimeBindingKindEnumNormalizesHandlerAdapterAliases(): void
+    {
+        $this->assertSame(
+            ServiceCallBindingKind::WorkflowRun,
+            ServiceCallBindingKind::tryFromHandlerBindingKind('start_workflow'),
+        );
+        $this->assertSame(
+            ServiceCallBindingKind::WorkflowRun,
+            ServiceCallBindingKind::tryFromHandlerBindingKind('workflow_class'),
+        );
+        $this->assertSame(
+            ServiceCallBindingKind::WorkflowUpdate,
+            ServiceCallBindingKind::tryFromHandlerBindingKind('update_workflow'),
+        );
+        $this->assertSame(
+            ServiceCallBindingKind::WorkflowSignal,
+            ServiceCallBindingKind::tryFromHandlerBindingKind('signal_workflow'),
+        );
+        $this->assertSame(
+            ServiceCallBindingKind::WorkflowQuery,
+            ServiceCallBindingKind::tryFromHandlerBindingKind('query_workflow'),
+        );
+        $this->assertSame(
+            ServiceCallBindingKind::InvocableCarrierRequest,
+            ServiceCallBindingKind::tryFromHandlerBindingKind('invocable_http'),
+        );
+        $this->assertNull(ServiceCallBindingKind::tryFromHandlerBindingKind('unknown_handler'));
+    }
+
     public function testOperationModesFollowRuntimeEnumValues(): void
     {
         $manifest = ServiceExecutionContract::manifest();

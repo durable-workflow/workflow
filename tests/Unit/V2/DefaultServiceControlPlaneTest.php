@@ -148,6 +148,55 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertSame('run-service-1', $call->resolved_target_reference);
     }
 
+    public function testAcceptedLegacyHandlerBindingAliasSnapshotsRuntimeResolvedBindingKind(): void
+    {
+        $controlPlane = new DefaultServiceControlPlane(
+            new FakeServiceWorkflowControlPlane(),
+            new DefaultServiceBoundaryPolicy(),
+        );
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'handler_binding_kind' => 'start_workflow',
+            'handler_target_reference' => 'billing.invoice.create',
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+            'dispatch_handler' => false,
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Accepted->value, $result['status']);
+        $this->assertSame(ServiceCallBindingKind::WorkflowRun->value, $result['resolved_binding_kind']);
+        $this->assertSame('billing.invoice.create', $result['resolved_target_reference']);
+    }
+
+    public function testUnknownHandlerBindingKindFailsClosedBeforeAcceptance(): void
+    {
+        $fakeWorkflow = new FakeServiceWorkflowControlPlane();
+        $controlPlane = new DefaultServiceControlPlane($fakeWorkflow, new DefaultServiceBoundaryPolicy());
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'handler_binding_kind' => 'unsupported_handler',
+            'handler_target_reference' => 'billing.invoice.create',
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+        ]);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('unknown_binding_kind', $result['reason']);
+        $this->assertSame(ServiceCallStatus::Failed->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::RejectedNotFound->value, $result['outcome']);
+        $this->assertSame('unknown_binding_kind', $result['outcome_reason']);
+        $this->assertSame('unresolved', $result['resolved_binding_kind']);
+        $this->assertNull($result['resolved_target_reference']);
+        $this->assertCount(0, $fakeWorkflow->starts);
+    }
+
     public function testWorkflowSignalBindingDispatchesThroughWorkflowControlPlaneAndLinksCommand(): void
     {
         $fakeWorkflow = new FakeServiceWorkflowControlPlane();

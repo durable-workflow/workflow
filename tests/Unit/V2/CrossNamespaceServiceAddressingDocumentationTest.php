@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Enums\ServiceCallBindingKind;
 
 /**
  * Pins the v2 cross-namespace service-addressing contract documented
@@ -54,7 +55,7 @@ final class CrossNamespaceServiceAddressingDocumentationTest extends TestCase
         'Public service surface',
     ];
 
-    private const REQUIRED_BINDING_KINDS = [
+    private const REQUIRED_HANDLER_BINDING_KINDS = [
         'start_workflow',
         'signal_workflow',
         'update_workflow',
@@ -155,15 +156,31 @@ final class CrossNamespaceServiceAddressingDocumentationTest extends TestCase
         );
     }
 
-    public function testContractDocumentNamesEveryFrozenBindingKind(): void
+    public function testContractDocumentNamesEveryFrozenHandlerBindingKind(): void
     {
         $contents = $this->documentContents(self::DOCUMENT);
 
-        foreach (self::REQUIRED_BINDING_KINDS as $bindingKind) {
+        foreach (self::REQUIRED_HANDLER_BINDING_KINDS as $bindingKind) {
             $this->assertStringContainsString(
                 sprintf('`%s`', $bindingKind),
                 $contents,
-                sprintf('Cross-namespace service contract must pin binding kind %s.', $bindingKind),
+                sprintf('Cross-namespace service contract must pin handler binding kind %s.', $bindingKind),
+            );
+        }
+    }
+
+    public function testContractDocumentNamesEveryRuntimeResolvedBindingKind(): void
+    {
+        $contents = $this->documentContents(self::DOCUMENT);
+
+        foreach (ServiceCallBindingKind::cases() as $bindingKind) {
+            $this->assertStringContainsString(
+                sprintf('`%s`', $bindingKind->value),
+                $contents,
+                sprintf(
+                    'Cross-namespace service contract must pin runtime resolved binding kind %s.',
+                    $bindingKind->value,
+                ),
             );
         }
     }

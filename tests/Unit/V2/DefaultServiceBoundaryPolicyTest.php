@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Tests\TestCase;
+use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
@@ -249,7 +250,7 @@ final class DefaultServiceBoundaryPolicyTest extends TestCase
             serviceName: 'invoicing',
             operationName: 'create',
             operationMode: $mode,
-            resolvedBindingKind: 'update_workflow',
+            resolvedBindingKind: ServiceCallBindingKind::WorkflowUpdate->value,
             resolvedTargetReference: 'updates.invoice.create',
             endpointBoundaryPolicy: $endpointBoundaryPolicy,
             serviceBoundaryPolicy: $serviceBoundaryPolicy,

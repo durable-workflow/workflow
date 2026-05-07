@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Models\WorkflowService;
@@ -39,6 +40,7 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
         $this->assertSame('token', $call->caller_principal_method);
         $this->assertSame(['service.call'], $call->caller_principal_roles);
         $this->assertSame('acme', $call->caller_principal_tenant);
+        $this->assertSame(ServiceCallBindingKind::WorkflowUpdate->value, $call->resolved_binding_kind);
         $this->assertNotNull($call->accepted_at);
         $this->assertNull($call->failed_at);
         $this->assertSame($operation->id, $call->workflow_service_operation_id);
@@ -156,7 +158,7 @@ final class ServiceBoundaryAuditRecorderTest extends TestCase
             serviceName: 'invoicing',
             operationName: $operation->operation_name,
             operationMode: ServiceCallOperationMode::Sync,
-            resolvedBindingKind: 'update_workflow',
+            resolvedBindingKind: ServiceCallBindingKind::WorkflowUpdate->value,
             resolvedTargetReference: 'updates.invoice.create',
             callerWorkflowInstanceId: 'caller-wf-1',
             callerWorkflowRunId: '01HRR3M8GXXS0M5KGFFXQ4S6V0',

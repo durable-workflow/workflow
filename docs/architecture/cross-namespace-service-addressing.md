@@ -126,9 +126,11 @@ the call was accepted.
 
 `workflow_service_operations.handler_binding_kind` and
 `workflow_service_calls.resolved_binding_kind` are machine-readable
-codes. The frozen binding kinds are:
+codes, but they describe different phases of resolution.
+`handler_binding_kind` names the operation adapter configured in the
+service catalog. The frozen handler binding adapter codes are:
 
-| Binding kind | Resolution target |
+| Handler binding adapter code | Resolution target |
 | --- | --- |
 | `start_workflow` | Start a new workflow run through the workflow-start contract. |
 | `signal_workflow` | Send a signal to a target workflow instance or run. |
@@ -137,18 +139,33 @@ codes. The frozen binding kinds are:
 | `activity_execution` | Execute an activity through the activity execution lane. |
 | `invocable_http` | Execute an invocable HTTP carrier operation. |
 
+`workflow_service_calls.resolved_binding_kind` records the runtime
+target kind after the adapter resolves the call. It must use the
+`Workflow\V2\Enums\ServiceCallBindingKind` enum values:
+
+| Runtime resolved binding kind | Handler adapter codes that resolve to it |
+| --- | --- |
+| `workflow_run` | `start_workflow`, `workflow_class`, or `workflow_run` |
+| `workflow_update` | `update_workflow` or `workflow_update` |
+| `workflow_signal` | `signal_workflow` or `workflow_signal` |
+| `workflow_query` | `query_workflow` or `workflow_query` |
+| `activity_execution` | `activity_execution` |
+| `invocable_carrier_request` | `invocable_http` or `invocable_carrier_request` |
+
 The handler binding payload is intentionally binding-specific. The
 common fields are:
 
-- `handler_binding_kind` - one of the frozen binding kind codes.
+- `handler_binding_kind` - one of the frozen handler binding adapter
+  codes.
 - `handler_target_reference` - an optional operator-readable target
   reference, such as a workflow type, activity type, query name, update
   name, signal name, or carrier route.
 - `handler_binding` - a JSON object containing binding-specific
   details needed by the runtime adapter.
 
-Unknown binding kinds are out of contract for v2. A runtime that reads
-an unknown binding kind must fail closed before accepting the call.
+Unknown handler adapter codes and unknown runtime resolved binding
+kinds are out of contract for v2. A runtime that reads an unknown
+binding kind must fail closed before accepting the call.
 
 ## Caller-Facing Dispatch
 
@@ -312,7 +329,9 @@ The behaviour frozen above is covered by coordinated tests:
 - `tests/Unit/V2/CrossNamespaceServiceAddressingDocumentationTest.php`
   pins this contract document, the adjacent routing and child-call
   statements, every registry table, every model, and every frozen
-  binding kind named here.
+  handler binding kind named here. It derives runtime resolved binding
+  kinds from `Workflow\V2\Enums\ServiceCallBindingKind` so the
+  cross-namespace service contract cannot drift from the runtime enum.
 - migration tests cover creation and rollback of
   `workflow_service_endpoints`, `workflow_services`,
   `workflow_service_operations`, and `workflow_service_calls`.

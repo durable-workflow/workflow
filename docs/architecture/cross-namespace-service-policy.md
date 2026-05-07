@@ -192,11 +192,15 @@ The contract authorities are:
   `Workflow\V2\Enums\ServiceCallOutcome`; new outcomes are a protocol
   change.
 - **`workflow_service_calls.resolved_binding_kind`** — the durable
-  column recording which handler binding kind the boundary chose
-  when accepting the call. This column is required even on
-  rejections; for boundary rejections it carries the kind the
-  operation row declared at the time of rejection (or `unresolved`
-  when the operation itself failed to resolve).
+  column recording the runtime target kind the boundary resolved for
+  the call. The value is normalized from the operation row's
+  `handler_binding_kind` into
+  `Workflow\V2\Enums\ServiceCallBindingKind`, so handler adapter
+  aliases such as `start_workflow` snapshot as runtime values such as
+  `workflow_run`. This column is required even on rejections; for
+  boundary rejections it carries the runtime target kind derived from
+  the operation row at the time of rejection (or `unresolved` when
+  the operation or binding kind failed to resolve).
 - **`PayloadEnvelopeResolver`** — the existing payload codec
   authority frozen by `docs/architecture/execution-guarantees.md`.
   The boundary delegates `(codec, blob)` decoding to this class and
@@ -304,9 +308,10 @@ when the call does not pass:
    recent rolling count of `handler_failed` outcomes — it is not a
    second source of authority for those failures, only a debounce.
 7. **Handler dispatch.** Set `status = 'accepted'`, `outcome =
-   'accepted'`, populate `resolved_binding_kind` from the operation
-   row, and dispatch to the bound handler. The handler then drives
-   the call through `started` to a terminal status with outcome
+   'accepted'`, populate `resolved_binding_kind` with the runtime
+   `ServiceCallBindingKind` value derived from the operation row, and
+   dispatch to the bound handler. The handler then drives the call
+   through `started` to a terminal status with outcome
    `completed`, `handler_failed`, `cancelled`, `timed_out`, or
    `degraded`.
 
