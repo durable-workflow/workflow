@@ -544,6 +544,9 @@ these rules; this section is the durable-kernel authority they cite.
   define the durable metadata and message-stream homes named above.
 - [`docs/architecture/platform-conformance-suite.md`](../architecture/platform-conformance-suite.md)
   defines how implementations prove the mapped surfaces conform.
+- [`docs/architecture/testing-strategy.md`](../architecture/testing-strategy.md)
+  defines the supported testing API surface and the required test
+  buckets implementations must cover for each mapped feature row.
 - [`docs/architecture/business-reporting-read-models.md`](../architecture/business-reporting-read-models.md)
   defines the split between technical workflow state and
   application-owned business state, and the milestone-based

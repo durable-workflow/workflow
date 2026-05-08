@@ -78,8 +78,10 @@ The phase-linked adjacent contracts are inputs, not duplicates:
 
 - The operational liveness and transport repair contract owns repair,
   redelivery, and durable-next-resume behavior. Phases 1, 3, and 5 cite it.
-- The testing strategy contract owns contract tests, degraded-mode tests, and
-  cross-surface conformance coverage. Phase 1 aligns with it.
+- The testing strategy contract
+  ([`docs/architecture/testing-strategy.md`](testing-strategy.md))
+  owns contract tests, degraded-mode tests, and cross-surface
+  conformance coverage. Phase 1 aligns with it.
 - The documentation plan contract owns aligned product language across
   package, server, SDK, CLI, cloud, and Waterline. Phase 1 uses it.
 - The deployment modes contract owns routing and topology shapes. Phases 2
