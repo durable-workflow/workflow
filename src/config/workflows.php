@@ -125,6 +125,8 @@ return [
             ),
         ],
         'history_budget' => [
+            // Hard thresholds: when reached, continue-as-new is recommended
+            // (continue_as_new_recommended=true on the run summary).
             'continue_as_new_event_threshold' => (int) Env::dw(
                 'DW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD',
                 'WORKFLOW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD',
@@ -134,6 +136,35 @@ return [
                 'DW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD',
                 'WORKFLOW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD',
                 5242880
+            ),
+            // Hard threshold for parallel fan-out. Reaching it on any single
+            // parallel group (the largest `parallel_group_size` recorded in
+            // the run's history) flips continue_as_new_recommended on. Set to
+            // 0 to disable the dimension entirely.
+            'continue_as_new_fan_out_threshold' => (int) Env::dw(
+                'DW_V2_CONTINUE_AS_NEW_FAN_OUT_THRESHOLD',
+                'WORKFLOW_V2_CONTINUE_AS_NEW_FAN_OUT_THRESHOLD',
+                200
+            ),
+            // Soft (warning) thresholds: when reached, the run is reported
+            // as `pressure=approaching` so operators can spot growth before
+            // continue-as-new is mandatory. Each clamps to the hard
+            // threshold of the same dimension; set to 0 to disable that
+            // dimension's warning.
+            'event_warning_threshold' => (int) Env::dw(
+                'DW_V2_HISTORY_EVENT_WARNING_THRESHOLD',
+                'WORKFLOW_V2_HISTORY_EVENT_WARNING_THRESHOLD',
+                8000
+            ),
+            'size_bytes_warning_threshold' => (int) Env::dw(
+                'DW_V2_HISTORY_SIZE_BYTES_WARNING_THRESHOLD',
+                'WORKFLOW_V2_HISTORY_SIZE_BYTES_WARNING_THRESHOLD',
+                4194304
+            ),
+            'fan_out_warning_threshold' => (int) Env::dw(
+                'DW_V2_HISTORY_FAN_OUT_WARNING_THRESHOLD',
+                'WORKFLOW_V2_HISTORY_FAN_OUT_WARNING_THRESHOLD',
+                160
             ),
         ],
         // History export signing is opt-in. When signing_key is null, exports

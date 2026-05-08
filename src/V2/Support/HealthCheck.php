@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
-use Illuminate\Support\Facades\App;
 
 final class HealthCheck
 {
@@ -577,21 +575,27 @@ final class HealthCheck
             'reason' => null,
         ];
 
-        $cache = self::resolveCacheRepository();
+        $defaultStore = self::configuredDefaultCacheStore();
+        $configuredDriver = self::configuredCacheDriver($defaultStore);
 
-        if ($cache === null) {
+        if ($configuredDriver === null) {
+            $data['backend'] = null;
+            $data['capable'] = false;
+            $data['safe'] = false;
+            $data['reason'] = 'Cache backend is not resolvable; wake acceleration may be disabled. Durable discovery continues via bounded polling.';
+
             return self::check(
                 'long_poll_wake_acceleration',
                 'warning',
-                'Cache repository is not resolvable; wake acceleration may be disabled. Durable discovery continues via bounded polling.',
+                $data['reason'],
                 self::CATEGORY_ACCELERATION,
                 $data,
             );
         }
 
         $validator = new LongPollCacheValidator();
-        $capability = $validator->validateMultiNodeCapable($cache);
-        $safety = $validator->checkMultiNodeSafety($cache, $multiNode);
+        $capability = $validator->validateMultiNodeCapableFromDriver($configuredDriver);
+        $safety = $validator->checkMultiNodeSafetyFromDriver($configuredDriver, $multiNode);
 
         $data['backend'] = is_string($capability['backend'] ?? null) ? $capability['backend'] : null;
         $data['capable'] = (bool) ($capability['capable'] ?? false);
@@ -621,18 +625,53 @@ final class HealthCheck
         );
     }
 
-    private static function resolveCacheRepository(): ?CacheRepository
+    /**
+     * Read the currently configured default cache store name. The check
+     * deliberately reads `cache.default` (with a fall-through to the older
+     * `cache.driver` alias) every snapshot so operator-visible config is
+     * the source of truth, not a previously-resolved store memoized in the
+     * cache manager.
+     */
+    private static function configuredDefaultCacheStore(): ?string
     {
-        try {
-            // Resolve through the CacheManager so the check reflects the
-            // currently configured default store. The cache.store container
-            // singleton is bound on first access and does not reflect later
-            // changes to cache.default, which drifts from the advertised
-            // backend when operators reconfigure cache at runtime.
-            return App::make('cache')->store();
-        } catch (\Throwable) {
+        $value = config('cache.default') ?? config('cache.driver');
+
+        if (! is_string($value)) {
             return null;
         }
+
+        $normalized = trim($value);
+
+        return $normalized === '' ? null : $normalized;
+    }
+
+    /**
+     * Resolve the driver name configured for the given default cache store.
+     * Falls back to the store name itself when the driver entry is missing
+     * (Laravel's CacheManager does the same — the store key is the driver
+     * name when no explicit `driver` is configured).
+     */
+    private static function configuredCacheDriver(?string $store): ?string
+    {
+        if ($store === null) {
+            return null;
+        }
+
+        $driver = config(sprintf('cache.stores.%s.driver', $store));
+
+        if (is_string($driver)) {
+            $normalized = trim($driver);
+
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        if (config(sprintf('cache.stores.%s', $store)) !== null) {
+            return $store;
+        }
+
+        return null;
     }
 
     /**

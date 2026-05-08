@@ -524,12 +524,20 @@ final class OperatorMetrics
             'continue_as_new_recommended_runs' => self::summaryQuery($namespace)
                 ->where('continue_as_new_recommended', true)
                 ->count(),
+            'approaching_budget_runs' => self::summaryQuery($namespace)
+                ->where('history_budget_pressure', HistoryBudget::PRESSURE_APPROACHING)
+                ->count(),
             'events' => self::scopedRunModelQuery(self::historyEventModel(), $namespace)->count(),
             'history_orphan_total' => self::historyEventsMissingRun($namespace),
             'max_event_count' => (int) self::summaryQuery($namespace)->max('history_event_count'),
             'max_size_bytes' => (int) self::summaryQuery($namespace)->max('history_size_bytes'),
-            'event_threshold' => HistoryBudget::eventThreshold(),
-            'size_bytes_threshold' => HistoryBudget::sizeBytesThreshold(),
+            'max_fan_out' => (int) self::summaryQuery($namespace)->max('history_fan_out'),
+            'event_threshold' => HistoryBudget::eventHardThreshold(),
+            'size_bytes_threshold' => HistoryBudget::sizeBytesHardThreshold(),
+            'fan_out_threshold' => HistoryBudget::fanOutHardThreshold(),
+            'event_warning_threshold' => HistoryBudget::eventWarningThreshold(),
+            'size_bytes_warning_threshold' => HistoryBudget::sizeBytesWarningThreshold(),
+            'fan_out_warning_threshold' => HistoryBudget::fanOutWarningThreshold(),
         ];
     }
 

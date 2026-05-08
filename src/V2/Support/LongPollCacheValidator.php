@@ -31,25 +31,48 @@ class LongPollCacheValidator
      */
     public function validateMultiNodeCapable(CacheRepository $cache): array
     {
-        $backend = $this->detectBackend($cache);
+        return $this->describeMultiNodeCapability($this->detectBackend($cache));
+    }
 
-        return match ($backend) {
-            'file' => [
-                'capable' => false,
-                'backend' => 'file',
-                'reason' => 'File cache is per-node and cannot propagate wake signals across nodes. Use Redis, database cache, or Memcached for multi-node deployments.',
-            ],
-            'redis', 'database', 'memcached' => [
-                'capable' => true,
-                'backend' => $backend,
-                'reason' => null,
-            ],
-            default => [
-                'capable' => false,
-                'backend' => $backend,
-                'reason' => "Unknown cache backend '{$backend}'. Supported multi-node backends: redis, database, memcached.",
-            ],
-        };
+    /**
+     * Same multi-node capability decision as
+     * {@see self::validateMultiNodeCapable()} but driven from the configured
+     * driver name rather than a resolved {@see CacheRepository}. This is the
+     * source-of-truth path for the long-poll wake acceleration health check:
+     * it reads `cache.default` and `cache.stores.<default>.driver` directly,
+     * so the returned capability cannot drift from the operator-visible
+     * configuration even when an earlier resolution memoized a Repository
+     * wrapping a different store under the same name in the
+     * {@see \Illuminate\Cache\CacheManager} `$stores` array.
+     *
+     * @return array{
+     *     capable: bool,
+     *     backend: string,
+     *     reason: string|null
+     * }
+     */
+    public function validateMultiNodeCapableFromDriver(?string $driver): array
+    {
+        $backend = $this->normalizeDriverName($driver);
+
+        return $this->describeMultiNodeCapability($backend);
+    }
+
+    /**
+     * Variant of {@see self::checkMultiNodeSafety()} that decides safety from
+     * the configured driver name rather than a resolved cache repository.
+     * Use this from health-surface callers that want capability to track the
+     * operator-visible `cache.stores.<default>.driver` config without going
+     * through the {@see \Illuminate\Cache\CacheManager} memoization layer.
+     *
+     * @return array{
+     *     safe: bool,
+     *     message: string|null
+     * }
+     */
+    public function checkMultiNodeSafetyFromDriver(?string $driver, bool $multiNode): array
+    {
+        return $this->describeMultiNodeSafety($this->validateMultiNodeCapableFromDriver($driver), $multiNode);
     }
 
     /**
@@ -62,10 +85,16 @@ class LongPollCacheValidator
      */
     public function checkMultiNodeSafety(CacheRepository $cache, bool $multiNode): array
     {
-        $validation = $this->validateMultiNodeCapable($cache);
+        return $this->describeMultiNodeSafety($this->validateMultiNodeCapable($cache), $multiNode);
+    }
 
+    /**
+     * @param array{capable: bool, backend: string, reason: string|null} $validation
+     * @return array{safe: bool, message: string|null}
+     */
+    private function describeMultiNodeSafety(array $validation, bool $multiNode): array
+    {
         if (! $multiNode) {
-            // Single-node deployment, any cache backend is acceptable
             return [
                 'safe' => true,
                 'message' => null,
@@ -87,6 +116,45 @@ class LongPollCacheValidator
                 $validation['reason']
             ),
         ];
+    }
+
+    /**
+     * @return array{capable: bool, backend: string, reason: string|null}
+     */
+    private function describeMultiNodeCapability(string $backend): array
+    {
+        return match ($backend) {
+            'file' => [
+                'capable' => false,
+                'backend' => 'file',
+                'reason' => 'File cache is per-node and cannot propagate wake signals across nodes. Use Redis, database cache, or Memcached for multi-node deployments.',
+            ],
+            'redis', 'database', 'memcached' => [
+                'capable' => true,
+                'backend' => $backend,
+                'reason' => null,
+            ],
+            default => [
+                'capable' => false,
+                'backend' => $backend,
+                'reason' => "Unknown cache backend '{$backend}'. Supported multi-node backends: redis, database, memcached.",
+            ],
+        };
+    }
+
+    private function normalizeDriverName(?string $driver): string
+    {
+        if ($driver === null) {
+            return 'unknown';
+        }
+
+        $normalized = strtolower(trim($driver));
+
+        if ($normalized === '') {
+            return 'unknown';
+        }
+
+        return $normalized;
     }
 
     /**

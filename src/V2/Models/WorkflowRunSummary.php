@@ -42,6 +42,7 @@ class WorkflowRunSummary extends Model
         'projection_schema_version' => 'integer',
         'history_event_count' => 'integer',
         'history_size_bytes' => 'integer',
+        'history_fan_out' => 'integer',
         'continue_as_new_recommended' => 'bool',
         'started_at' => 'datetime',
         'sort_timestamp' => 'datetime',

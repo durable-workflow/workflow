@@ -19,7 +19,9 @@ final class TestHistoryBudgetWorkflow extends Workflow
             'greeting' => $greeting,
             'history_length' => $this->historyLength(),
             'history_size' => $this->historySize(),
+            'history_fan_out' => $this->historyFanOut(),
             'should_continue_as_new' => $this->shouldContinueAsNew(),
+            'history_budget_pressure' => $this->historyBudgetPressure(),
         ];
     }
 }

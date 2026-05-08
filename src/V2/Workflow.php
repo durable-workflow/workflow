@@ -126,9 +126,31 @@ abstract class Workflow
         return HistoryBudget::forRun($this->run)['history_size_bytes'];
     }
 
+    /**
+     * Maximum parallel-group breadth recorded in this run's history. Useful
+     * for workflows that fan out work and want to decide whether to continue
+     * as new before the next batch grows the active set.
+     */
+    public function historyFanOut(): int
+    {
+        return HistoryBudget::forRun($this->run)['history_fan_out'];
+    }
+
     public function shouldContinueAsNew(): bool
     {
         return HistoryBudget::forRun($this->run)['continue_as_new_recommended'];
+    }
+
+    /**
+     * Three-state pressure indicator derived from history budgets:
+     * `ok` (under all soft thresholds), `approaching` (at/above any soft
+     * threshold), or `continue_as_new_recommended` (at/above any hard
+     * threshold). Workflow code can branch on this directly to compact or
+     * continue-as-new without re-implementing the threshold ladder.
+     */
+    public function historyBudgetPressure(): string
+    {
+        return HistoryBudget::forRun($this->run)['pressure'];
     }
 
     /**

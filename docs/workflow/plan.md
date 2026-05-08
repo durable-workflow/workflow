@@ -275,6 +275,10 @@ explicitly reserved for a future contract before support is advertised.
   defines first-class deployment lifecycle and rollout blockage.
 - [`docs/architecture/sticky-execution.md`](../architecture/sticky-execution.md)
   defines sticky replay-cache routing and cold-replay fallback.
+- [`docs/architecture/history-budget.md`](../architecture/history-budget.md)
+  defines the soft and hard thresholds for history event count, payload
+  size, and parallel fan-out, and the `pressure` indicator that drives
+  `continue_as_new_recommended`.
 - [`docs/architecture/workflow-service-calls-architecture.md`](../architecture/workflow-service-calls-architecture.md)
   defines cross-namespace service-call lifecycle and outcome semantics.
 - [`docs/architecture/cross-namespace-service-policy.md`](../architecture/cross-namespace-service-policy.md)

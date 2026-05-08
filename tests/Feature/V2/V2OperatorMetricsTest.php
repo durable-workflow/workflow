@@ -349,6 +349,12 @@ final class V2OperatorMetricsTest extends TestCase
         $this->assertSame(4096, $snapshot['history']['max_size_bytes']);
         $this->assertSame(5, $snapshot['history']['event_threshold']);
         $this->assertSame(5000, $snapshot['history']['size_bytes_threshold']);
+        $this->assertArrayHasKey('approaching_budget_runs', $snapshot['history']);
+        $this->assertArrayHasKey('max_fan_out', $snapshot['history']);
+        $this->assertArrayHasKey('fan_out_threshold', $snapshot['history']);
+        $this->assertArrayHasKey('event_warning_threshold', $snapshot['history']);
+        $this->assertArrayHasKey('size_bytes_warning_threshold', $snapshot['history']);
+        $this->assertArrayHasKey('fan_out_warning_threshold', $snapshot['history']);
         $this->assertSame(4, $snapshot['projections']['run_summaries']['runs']);
         $this->assertSame(4, $snapshot['projections']['run_summaries']['summaries']);
         $this->assertSame(0, $snapshot['projections']['run_summaries']['missing']);

@@ -122,11 +122,11 @@ final class RunDetailView
         $determinismDiagnostics = WorkflowDeterminismDiagnostics::forRun($run);
         $historyBudget = $summary === null
             ? HistoryBudget::forRun($run)
-            : [
-                'history_event_count' => (int) $summary->history_event_count,
-                'history_size_bytes' => (int) $summary->history_size_bytes,
-                'continue_as_new_recommended' => (bool) $summary->continue_as_new_recommended,
-            ];
+            : HistoryBudget::fromCounters(
+                (int) $summary->history_event_count,
+                (int) $summary->history_size_bytes,
+                (int) ($summary->history_fan_out ?? 0),
+            );
         $timelineSnapshot = $selectedRun['timeline'];
         $timerSnapshot = $selectedRun['timers'];
         $lineageSnapshot = $selectedRun['lineage'];
@@ -230,8 +230,15 @@ final class RunDetailView
             'exceptions_count' => $summary?->exceptions_count ?? count($failureSnapshots),
             'history_event_count' => $historyBudget['history_event_count'],
             'history_size_bytes' => $historyBudget['history_size_bytes'],
-            'history_event_threshold' => HistoryBudget::eventThreshold(),
-            'history_size_bytes_threshold' => HistoryBudget::sizeBytesThreshold(),
+            'history_fan_out' => $historyBudget['history_fan_out'],
+            'history_event_threshold' => HistoryBudget::eventHardThreshold(),
+            'history_size_bytes_threshold' => HistoryBudget::sizeBytesHardThreshold(),
+            'history_fan_out_threshold' => HistoryBudget::fanOutHardThreshold(),
+            'history_event_warning_threshold' => HistoryBudget::eventWarningThreshold(),
+            'history_size_bytes_warning_threshold' => HistoryBudget::sizeBytesWarningThreshold(),
+            'history_fan_out_warning_threshold' => HistoryBudget::fanOutWarningThreshold(),
+            'history_budget_pressure' => $historyBudget['pressure'],
+            'history_budget_pressure_dimensions' => $historyBudget['pressure_dimensions'],
             'continue_as_new_recommended' => $historyBudget['continue_as_new_recommended'],
             'can_issue_terminal_commands' => $canIssueTerminalCommands,
             'can_query' => $canQuery,

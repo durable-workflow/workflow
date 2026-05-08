@@ -22,7 +22,7 @@ final class RunSummaryProjector
      * Summaries with a NULL or lower version are eligible for schema-upgrade
      * rebuild via `workflow:v2:rebuild-projections --needs-rebuild`.
      */
-    public const SCHEMA_VERSION = 1;
+    public const SCHEMA_VERSION = 2;
 
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
@@ -359,7 +359,9 @@ final class RunSummaryProjector
                 'exception_count' => count(FailureSnapshots::forRun($run)),
                 'history_event_count' => $historyBudget['history_event_count'],
                 'history_size_bytes' => $historyBudget['history_size_bytes'],
+                'history_fan_out' => $historyBudget['history_fan_out'],
                 'continue_as_new_recommended' => $historyBudget['continue_as_new_recommended'],
+                'history_budget_pressure' => $historyBudget['pressure'],
                 'created_at' => $run->created_at,
                 'updated_at' => $run->closed_at ?? $run->last_progress_at ?? $run->updated_at,
             ],

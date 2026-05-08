@@ -94,9 +94,18 @@ findings from historical definition drift.
 Workflow code may observe its current history budget without reading storage
 internals. `historyLength()` returns the current history event count,
 `historySize()` returns the serialized history size estimate, and
-`shouldContinueAsNew()` returns the continue-as-new suggestion flag. These are
-advisory authoring signals; workflow code still chooses when to call
-`continueAsNew()`.
+`historyFanOut()` returns the largest parallel-group breadth recorded in this
+run's history. `shouldContinueAsNew()` returns the continue-as-new suggestion
+flag, which is true when any dimension reaches its hard threshold.
+
+The budget is reported as a three-state pressure indicator:
+`historyBudgetPressure()` returns `ok`, `approaching`, or
+`continue_as_new_recommended`. Each dimension (event count, payload size,
+fan-out) has a soft (warning) threshold and a hard (continue-as-new) threshold.
+Reaching any soft threshold flips pressure to `approaching`; reaching any hard
+threshold flips it to `continue_as_new_recommended` and sets
+`shouldContinueAsNew()` to true. These are advisory authoring signals;
+workflow code still chooses when to call `continueAsNew()`.
 
 ## Activity idempotency surface
 

@@ -242,7 +242,9 @@ final class RunListItemViewTest extends TestCase
             'exception_count' => 3,
             'history_event_count' => 1500,
             'history_size_bytes' => 524288,
+            'history_fan_out' => 32,
             'continue_as_new_recommended' => false,
+            'history_budget_pressure' => 'ok',
         ]);
 
         $item = RunListItemView::fromSummary($summary);
@@ -250,7 +252,9 @@ final class RunListItemViewTest extends TestCase
         $this->assertSame(3, $item['exception_count']);
         $this->assertSame(1500, $item['history_event_count']);
         $this->assertSame(524288, $item['history_size_bytes']);
+        $this->assertSame(32, $item['history_fan_out']);
         $this->assertFalse($item['continue_as_new_recommended']);
+        $this->assertSame('ok', $item['history_budget_pressure']);
     }
 
     public function testFromSummaryExcludesInternalProjectionFields(): void
@@ -330,7 +334,9 @@ final class RunListItemViewTest extends TestCase
             'exception_count' => 0,
             'history_event_count' => 0,
             'history_size_bytes' => 0,
+            'history_fan_out' => 0,
             'continue_as_new_recommended' => false,
+            'history_budget_pressure' => 'ok',
             'projection_schema_version' => 1,
         ];
 

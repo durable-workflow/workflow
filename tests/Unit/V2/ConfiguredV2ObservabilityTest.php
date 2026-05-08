@@ -593,8 +593,12 @@ final class ConfiguredV2ObservabilityTest extends TestCase
                 ->default(0);
             $table->unsignedBigInteger('history_size_bytes')
                 ->default(0);
+            $table->unsignedInteger('history_fan_out')
+                ->default(0);
             $table->boolean('continue_as_new_recommended')
                 ->default(false);
+            $table->string('history_budget_pressure', 32)
+                ->default('ok');
             $table->timestamp('started_at', 6)
                 ->nullable();
             $table->timestamp('sort_timestamp', 6)

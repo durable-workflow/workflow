@@ -1006,7 +1006,11 @@ final class HistoryExport
             'exception_count' => (int) $summary->exception_count,
             'history_event_count' => (int) $summary->history_event_count,
             'history_size_bytes' => (int) $summary->history_size_bytes,
+            'history_fan_out' => (int) ($summary->history_fan_out ?? 0),
             'continue_as_new_recommended' => (bool) $summary->continue_as_new_recommended,
+            'history_budget_pressure' => is_string($summary->history_budget_pressure)
+                ? $summary->history_budget_pressure
+                : 'ok',
             'sort_timestamp' => self::timestamp($summary->sort_timestamp),
             'sort_key' => $summary->sort_key,
         ];

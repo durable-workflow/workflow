@@ -1109,6 +1109,54 @@ final class HealthCheckTest extends TestCase
         $this->assertArrayHasKey('backend', $wake['data']);
     }
 
+    /**
+     * Pin the wake-acceleration check to the operator-visible
+     * `cache.default` / `cache.stores.<default>.driver` config rather than
+     * to a previously resolved store memoized in the
+     * {@see \Illuminate\Cache\CacheManager} `$stores` array.
+     *
+     * Regression for an inter-test leak that flipped this check from
+     * `warning` to `ok` when an earlier Feature test resolved a
+     * multi-node-capable store before a Unit test reconfigured the default
+     * to `file` with `multi_node = true`. Reading config directly makes
+     * the check insensitive to the memoization layer: even when an
+     * unrelated Repository has already been memoized under the configured
+     * default-store name, the snapshot must report the backend named in
+     * `cache.stores.<default>.driver` at snapshot time, not whatever
+     * Repository the cache manager hands out for that name.
+     */
+    public function testLongPollWakeAccelerationTracksConfiguredDriverEvenAfterCacheManagerHasResolvedTheDefaultStore(): void
+    {
+        // Pre-populate the cache manager's `$stores` so the 'file' name
+        // resolves to an array-backed Repository — a multi-node-incapable
+        // store under a different driver name than the configured one.
+        // This stands in for any earlier test or service-provider boot
+        // that warmed the manager's memoization with a Repository that
+        // does not match the driver currently advertised in config.
+        config()->set('cache.stores.file.driver', 'array');
+        config()
+            ->set('cache.default', 'file');
+        \Illuminate\Support\Facades\Cache::store('file');
+
+        // Now flip the driver entry so config advertises the real file
+        // store, while keeping the manager's memoization untouched. The
+        // acceleration check must report the configured driver — `file`,
+        // not multi-node-capable — under `multi_node = true`.
+        config()->set('cache.stores.file.driver', 'file');
+        config()
+            ->set('workflows.v2.long_poll.multi_node', true);
+
+        $snapshot = HealthCheck::snapshot();
+        $wake = collect($snapshot['checks'])->firstWhere('name', 'long_poll_wake_acceleration');
+
+        $this->assertNotNull($wake);
+        $this->assertSame('warning', $wake['status']);
+        $this->assertSame('file', $wake['data']['backend']);
+        $this->assertFalse($wake['data']['capable']);
+        $this->assertFalse($wake['data']['safe']);
+        $this->assertNotNull($wake['data']['reason']);
+    }
+
     public function testWorkerCompatibilityCheckIsOkWhenNoMarkerIsRequired(): void
     {
         config()->set('queue.default', 'redis');
