@@ -32,6 +32,23 @@ final class FeatureMappingDocumentationTest extends TestCase
         '### Package and naming compatibility',
         '### Payload, config, and model compatibility',
         '### Adoption',
+        '## Adoption Operability',
+        '### Importer and finish-on-v1 strategy',
+        '### Retention, archive, and versioned history-export/replay-bundle guidance',
+        '### Export, archive, verification, health, monitoring, and HA-behavior guidance',
+        '### Supported-backend matrix, fail-fast validation, and health-check expectations',
+        '### Operator command and deletion policy',
+        '### Reset versus repair',
+        '### Upgrade guide and Waterline dual-read',
+        '### Event and webhook compatibility guidance',
+        '### Rollout playbooks (single-version v2 fleet)',
+        '### Orchestrated migration workflow guidance for environment cutovers',
+        '### Self-hosting, backup/restore, projection rebuild, and failure domains',
+        '### Benchmark methodology and operating envelope',
+        '### Security and governance guidance',
+        '### Migration and reference-architecture guidance',
+        '### First-party client and integration guidance',
+        '### Service-mode reference architecture and rollout',
         '## Relationship To Other Contracts',
         '## Changing This Contract',
     ];
@@ -279,12 +296,50 @@ final class FeatureMappingDocumentationTest extends TestCase
         'docs/architecture/cross-namespace-service-policy.md',
         'docs/architecture/control-plane-split.md',
         'docs/architecture/webhook-and-command-taxonomy.md',
+        'docs/architecture/rollout-safety.md',
+        'docs/architecture/security-governance.md',
+        'docs/architecture/hosted-control-plane.md',
         'docs/deployment/ha-failover.md',
         'docs/deployment/multi-region.md',
+        'docs/deployment/multi-node-requirements.md',
         'docs/workflow-messages-architecture.md',
         'docs/search-attributes-architecture.md',
         'docs/workflow-memos-architecture.md',
         'docs/architecture/platform-conformance-suite.md',
+    ];
+
+    private const REQUIRED_ADOPTION_OPERABILITY_POINTS = [
+        'workflow:v2:history-import',
+        'workflow:v2:history-export',
+        'workflow:v2:replay-verify',
+        'workflow:v2:replay-simulate',
+        'workflow:v2:doctor',
+        'workflow:v2:rebuild-projections',
+        'workflow:v2:repair-pass',
+        'WorkflowRunRetentionCleanup',
+        'HistoryExportRedactor',
+        'BundleIntegrityVerifier',
+        'ArchiveRequested',
+        'WorkflowArchived',
+        'BackendCapabilities',
+        'TaskBackendCapabilities',
+        'ReadinessContract',
+        'HealthCheck',
+        'OperatorObservabilityRepository',
+        'rollout-deliverable set is canary, drain, rollback, and replay-debug',
+        'There is no',
+        'mixed-fleet operation',
+        'v1↔v2 transition',
+        'finish-on-v1',
+        'all-or-none restore for a namespace',
+        'Repair never reissues',
+        'Reset is reserved as a later-phase command',
+        'workflow_runs.import_source',
+        'workflow_runs.import_id',
+        'workflow_runs.import_dedupe_key',
+        'workflow_runs.import_contract_version',
+        'workflow_runs.imported_at',
+        'service-mode',
     ];
 
     public function testContractDocumentExistsAndDeclaresFrozenSections(): void
@@ -406,6 +461,19 @@ final class FeatureMappingDocumentationTest extends TestCase
                 $point,
                 $contents,
                 sprintf('Feature mapping contract migration strategy must cover %s.', $point),
+            );
+        }
+    }
+
+    public function testContractDocumentDeclaresAdoptionOperability(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_ADOPTION_OPERABILITY_POINTS as $point) {
+            $this->assertStringContainsString(
+                $point,
+                $contents,
+                sprintf('Feature mapping contract adoption-operability section must cover %s.', $point),
             );
         }
     }

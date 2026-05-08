@@ -689,7 +689,348 @@ these rules; this section is the durable-kernel authority they cite.
   language remains meaningful is the v1→v2 transition itself: while v1
   workers finish v1 runs and v2 workers execute v2 runs, both fleets
   may be live at once, and that is the only sense in which a "mixed
-  fleet" is part of v2 adoption.
+  fleet" is part of v2 adoption. Mixed-fleet operation is therefore
+  not a deliverable of the single-version v2 rollout playbooks; the
+  rollout-deliverable set is canary, drain, rollback, and replay-debug.
+
+## Adoption Operability
+
+This section pins the operability contract that makes v2 adoption
+safe to run in production. The deliverables here cover migration
+tooling, retention and archive policy, fail-fast backend validation,
+operator commands, upgrade paths, dual-read for Waterline, event and
+webhook compatibility, rollout playbooks, environment cutovers,
+backup/restore and projection rebuild, benchmark methodology,
+security and governance, reference architectures, and service-mode
+distribution. They consume the durable homes named in the
+[Feature Compatibility Matrix](#feature-compatibility-matrix); they
+do not introduce new durable truth.
+
+### Importer and finish-on-v1 strategy
+
+- The default upgrade path is finish-on-v1: active v1 executions
+  finish on v1 and v2 starts route to v2 workers. The v1 tables stay
+  on disk for the v1 drain; v2 code MUST NOT read them as engine
+  truth.
+- `php artisan workflow:v2:history-import` accepts versioned
+  history-export bundles for both embedded v2 history and closed v1
+  history. Imported runs carry `workflow_runs.import_source`,
+  `workflow_runs.import_id`, `workflow_runs.import_dedupe_key`,
+  `workflow_runs.import_contract_version`, and
+  `workflow_runs.imported_at` markers so the run is visibly
+  "imported, not natively executed."
+- Embedded-to-server import preserves `workflow_instance_id`,
+  `workflow_run_id`, task-queue names, payload codec, and message
+  cursor positions. The importer rejects bundles whose contract
+  version, payload codec, or compatibility marker the server does
+  not declare support for, and `--dry-run` is the supported
+  rehearsal mode for cutover audits.
+- Cross-database import/export is the same `workflow:v2:history-export`
+  / `workflow:v2:history-import` round trip with the language-neutral
+  `avro` codec; the importer normalizes legacy `workflow-serializer-y`
+  and `workflow-serializer-base64` v1 envelopes into typed v2 payload
+  envelopes without invoking application-defined custom serializer
+  classes.
+
+### Retention, archive, and versioned history-export/replay-bundle guidance
+
+- Retention is enforced by `Workflow\V2\Support\WorkflowRunRetentionCleanup`
+  across run, history, activity, task, metadata, and projection rows.
+  Retention MUST NOT silently remove active truth: an export window
+  precedes deletion, and command rows tracking archive/delete intent
+  remain inspectable for the audit window the policy declares.
+- Archive is a typed operator command. `ArchiveRequested` and
+  `WorkflowArchived` history events name the `workflow_command_id`,
+  `workflow_instance_id`, `workflow_run_id`, archive command id, and
+  operator-readable reason. Archive timestamps and reasons project
+  onto run-detail and run-list views and are visible in Waterline.
+- History-export bundles are versioned by `import_contract_version`
+  and validated by `Workflow\V2\Support\BundleIntegrityVerifier`
+  before replay or import. Replay-bundle redaction goes through the
+  `Workflow\V2\Contracts\HistoryExportRedactor` contract so site-
+  specific redaction policy never has to fork the bundle format.
+- Replay-debug bundles, archive bundles, and import bundles share one
+  bundle format and one verifier. `workflow:v2:replay-simulate` and
+  `workflow:v2:replay-verify` are the supported tools for offline
+  replay; production correctness is never debugged in-band.
+
+### Export, archive, verification, health, monitoring, and HA-behavior guidance
+
+- `php artisan workflow:v2:replay-verify <bundle>` validates that a
+  bundle replays to the same terminal projection it shipped with;
+  mismatch, decode, and integrity outcomes are reported and never
+  mutate durable rows.
+- `Workflow\V2\Support\HealthCheck::snapshot()`,
+  `Workflow\V2\Support\ReadinessContract`, and
+  `php artisan workflow:v2:doctor` are the boot-time and operate-time
+  surfaces operators rely on. Doctor failures block unsafe configs
+  before they accept work; readiness exposes the schema version and
+  partial-migration shape so a load balancer can fail closed.
+- HA behavior is consumed from
+  [`docs/deployment/ha-failover.md`](../deployment/ha-failover.md),
+  [`docs/deployment/multi-region.md`](../deployment/multi-region.md),
+  and [`docs/deployment/multi-node-requirements.md`](../deployment/multi-node-requirements.md).
+  Export and archive bundles MUST NOT cross the residency boundary the
+  environment declared, and DR failover never silently widens
+  reachability.
+- Operator metrics for export/archive volume, retention pressure, and
+  projection lag are surfaced through
+  `Workflow\V2\Support\OperatorMetrics::snapshot()` and
+  `Workflow\V2\Support\OperatorQueueVisibility::forNamespace()`; they
+  are part of the rollout-safety contract in
+  [`docs/architecture/rollout-safety.md`](../architecture/rollout-safety.md).
+
+### Supported-backend matrix, fail-fast validation, and health-check expectations
+
+- `Workflow\V2\Support\BackendCapabilities` and
+  `Workflow\V2\Support\TaskBackendCapabilities` declare the supported
+  combinations of database, queue, cache, serializer, and migration
+  state. Unsupported combinations fail closed at boot rather than
+  accepting unsafe work.
+- The `DW_V2_*` admission and validation knobs documented in
+  [`docs/architecture/rollout-safety.md`](../architecture/rollout-safety.md)
+  govern strictness mode, fingerprint pinning, compatibility TTL, and
+  cache validation. The defaults are conservative; production
+  deployments inherit fail-closed behavior unless they opt out for a
+  named reason.
+- `php artisan workflow:v2:doctor` reports the active backend matrix,
+  flags unsupported settings (including `workflows.serializer` values
+  outside `avro`, `workflow-serializer-y`, and
+  `workflow-serializer-base64`), and lists the readiness checks the
+  cluster currently fails. Health endpoints surface the same shape so
+  external monitors do not depend on log archaeology.
+
+### Operator command and deletion policy
+
+- The first-release operator command taxonomy is `start`, `signal`,
+  `update`, `repair`, `cancel`, `terminate`, and `archive` per
+  [`docs/architecture/webhook-and-command-taxonomy.md`](../architecture/webhook-and-command-taxonomy.md).
+  Every operator action writes a typed `workflow_commands` row and
+  emits typed history; operators MUST NOT mutate durable rows
+  directly.
+- Deletion is bounded by retention policy and archive state. Run
+  deletion is permitted only after retention has expired or after
+  `WorkflowArchived` records the operator decision; namespace
+  deletion is blocked until the namespace is drained, retention/
+  export policy is satisfied, private connectivity is detached or
+  reassigned, and active support grants are closed.
+- `Workflow\V2\Support\WorkflowRunRetentionCleanup` is the single
+  durable surface that performs retention deletes; it never decides
+  policy. Policy lives in namespace lifecycle state.
+
+### Reset versus repair
+
+- Repair is the in-flight operator action and runs through
+  `php artisan workflow:v2:repair-pass` and the typed `repair`
+  command outcome. Repair never reissues completed activity, child,
+  signal, or update outcomes; it normalizes lease, scheduling, and
+  routing state so a stuck run can progress.
+- Reset is reserved as a later-phase command. Reset will require
+  typed history truncation/branch semantics, a transfer of child-link
+  ownership to the reset destination run, or a parent-close-policy
+  enforcement against the discarded run before the old run stops
+  owning children. It is intentionally not part of the v2.0
+  correctness core.
+- The two commands are not interchangeable. Reset rewrites the
+  timeline; repair keeps the timeline and corrects ancillary state.
+  Operators reach for repair first; they reach for reset only when
+  the contract above lands.
+
+### Upgrade guide and Waterline dual-read
+
+- The product upgrade guide cites this contract for engine users
+  (PHP package adoption) and for Waterline users (operator UI).
+  Engine adoption is "finish on v1, start new on v2"; Waterline
+  adoption is "dual-read across v1 legacy rows and v2 projection
+  surfaces during the cutover window."
+- Waterline v2 adapters consume
+  `Workflow\V2\Contracts\OperatorObservabilityRepository` and the v2
+  projection rows. They do not depend on a configured Eloquent
+  subclass to render run detail; swapping the subclass does not
+  require a Waterline change as long as the package column and key
+  contract is preserved.
+- During the cutover window Waterline shows v1 runs from legacy
+  rows and v2 runs from `workflow_run_summaries`/projection rows.
+  Once the v1 drain completes the v1 read path can be retired
+  without changing the v2 contract.
+
+### Event and webhook compatibility guidance
+
+- Webhook routes, payloads, and authentication follow
+  [`docs/architecture/webhook-and-command-taxonomy.md`](../architecture/webhook-and-command-taxonomy.md).
+  Operator and external commands enter the durable kernel as typed
+  `workflow_commands` rows; the alias-registry exposure rule keeps
+  webhook payloads stable when type aliases change.
+- Webhook authentication uses the package's
+  `WebhookAuthenticator`. Auth failures fail closed with the typed
+  rejection outcome named by the taxonomy and never silently consume
+  worker dispatch capacity.
+- v1 webhook listeners that customers ran against the legacy package
+  remain on v1; v2 webhooks are a separate ingress with a typed
+  command outcome and durable history. Mixing the two ingress paths
+  is not supported inside a single namespace.
+
+### Rollout playbooks (single-version v2 fleet)
+
+- The supported rollout-deliverable set is **canary**, **drain**,
+  **rollback**, and **replay-debug**. The mechanics of each are pinned
+  in the [Adoption](#adoption) subsection above. There is no
+  "mixed-fleet operation" rollout deliverable inside a v2 fleet;
+  v2 is one version and there is nothing to run mixed against within
+  v2.
+- Canary, drain, and rollback consume the compatibility marker fields,
+  `workflow_worker_build_id_rollouts`, and the deployment-blockage
+  vocabulary frozen by
+  [`docs/architecture/worker-compatibility.md`](../architecture/worker-compatibility.md)
+  and [`docs/architecture/worker-deployment.md`](../architecture/worker-deployment.md).
+  Rollout-safety admission gates and fail-closed reasons are pinned in
+  [`docs/architecture/rollout-safety.md`](../architecture/rollout-safety.md).
+- Replay-debug is the offline correctness lane. Production runs are
+  never paused or rerouted to debug them; an exported bundle plus
+  `workflow:v2:replay-verify` (or `workflow:v2:replay-simulate`)
+  reproduces the run on a separate process.
+- The v1↔v2 transition is a separate contract. If mixed-fleet
+  semantics are needed across that boundary (v1 workers finishing v1
+  runs alongside v2 workers running v2 runs), it is scoped explicitly
+  to the v1↔v2 transition and not a "v2 rollout" deliverable.
+
+### Orchestrated migration workflow guidance for environment cutovers
+
+- Environment cutovers (staging → production, embedded → server,
+  database engine swap) are themselves orchestrated as v2 workflows
+  whenever the cutover spans more than one operator action.
+- The orchestration uses typed engine commands (start, signal, repair,
+  cancel, terminate, archive) and durable child workflows for each
+  cutover step rather than ad-hoc scripts. Each step records its own
+  history so the cutover is replayable.
+- Bundle import/export, projection rebuild, retention sweep, and
+  doctor/readiness checks are each their own activity inside the
+  orchestration; failures are surfaced through the workflow's typed
+  failure events instead of out-of-band logs.
+
+### Self-hosting, backup/restore, projection rebuild, and failure domains
+
+- Self-hosted deployments back up the v2 durable rows together — the
+  `workflow_*` tables named in the [Feature Compatibility Matrix](#feature-compatibility-matrix).
+  Restoring any subset without the others corrupts replay; the
+  contract is "all-or-none restore for a namespace."
+- After a restore (or after a projection corruption incident),
+  `php artisan workflow:v2:rebuild-projections` rebuilds run summaries,
+  lineage, timeline, waits, timers, failures, commands, and metadata
+  projections from frozen `workflow_history_events`. The history
+  events themselves are not rebuilt; they are the authoritative
+  source.
+- Failure domains follow
+  [`docs/deployment/multi-node-requirements.md`](../deployment/multi-node-requirements.md),
+  [`docs/deployment/ha-failover.md`](../deployment/ha-failover.md), and
+  [`docs/deployment/multi-region.md`](../deployment/multi-region.md).
+  A namespace declares its primary region, replica regions, backup
+  policy, restore policy, and DR objective inside the environment's
+  residency boundary; failover never widens reachability.
+
+### Benchmark methodology and operating envelope
+
+- Operating envelope is documented per supported backend combination
+  named by `Workflow\V2\Support\BackendCapabilities`. The envelope
+  reports sustained throughput, history fan-out ceiling, and queue
+  depth that the combination is supported under.
+- Benchmark methodology is fixture-driven. The platform conformance
+  suite ([`docs/architecture/platform-conformance-suite.md`](../architecture/platform-conformance-suite.md))
+  pins the deterministic test buckets implementations must run; the
+  testing-strategy contract ([`docs/architecture/testing-strategy.md`](../architecture/testing-strategy.md))
+  pins the required test buckets per mapped feature row. Published
+  benchmarks cite the same fixtures and the
+  [`docs/architecture/history-budget.md`](../architecture/history-budget.md)
+  soft/hard thresholds so an operator can compare a deployment
+  against the envelope without inventing a load profile.
+- Benchmarks MUST run inside the supported backend matrix and MUST
+  declare the compatibility marker, payload codec, and sticky-cache
+  posture they ran under so the result is reproducible.
+
+### Security and governance guidance
+
+- Security and governance follow
+  [`docs/architecture/security-governance.md`](../architecture/security-governance.md):
+  namespace boundary authorization, IAM principals (organization
+  users, service accounts, API keys, SSO, SCIM), audit facts, mTLS
+  client certificates, and certificate filters are all evaluated
+  before requests reach the data plane.
+- Provider-side support access (managed cloud) requires an explicit
+  support grant or documented emergency procedure and is audited
+  with the acting provider principal. Customer payloads, history
+  bodies, and external payload objects remain customer data.
+- Hosted control-plane API lifecycle changes follow the additive-only
+  rule for the current API version; removals, renames, narrower enum
+  sets, or changed meanings require a new API version and a
+  published deprecation window.
+
+### Migration and reference-architecture guidance
+
+The reference architectures in [Adoption](#adoption) (Monolith,
+Multi-app, Microservice, Operator-heavy) are the supported deployment
+shapes. The v1 entry-point cutover guides cover the surfaces customers
+actually ran in production:
+
+- **Laravel queues and chains.** Map ad-hoc queued jobs and chained
+  jobs onto v2 activities and child workflows; use parallel
+  coordination for fan-out and the saga primitives for compensation.
+- **Batches.** Replace Laravel `Bus::batch` patterns with parallel
+  child workflows or activity fan-out under one parent run; child
+  outcomes are authoritative per
+  [`docs/architecture/child-outcome-source-of-truth.md`](../architecture/child-outcome-source-of-truth.md).
+- **Cron and scheduled workflows.** Move cron-driven starts onto
+  `workflow_schedules` and `workflow_schedule_history_events`; the
+  schedule row plus its audit stream is the durable home and triggered
+  runs record normal workflow history.
+- **Webhook-driven external ingress.** Route incoming webhooks through
+  the typed command taxonomy. The webhook payload becomes a `start`,
+  `signal`, `update`, or `repair` command with a durable
+  `workflow_commands` row.
+- **Multi-app adoption.** Stamp stable workflow/activity type keys
+  via `workflows.v2.types`; one namespace owns the durable kernel and
+  other apps participate as starters or workers using the type-alias
+  registry. PHP fully-qualified class names are not the durable
+  boundary across apps.
+
+### First-party client and integration guidance
+
+- The PHP package (`durable-workflow/workflow`) is the first-party
+  embedded engine and the first-party in-process worker. Authoring
+  uses the `Workflow\V2` namespace.
+- The standalone server (`durable-workflow/server`) exposes the same
+  durable kernel over HTTP with the same worker protocol, control-
+  plane commands, matching, history, and operator projections.
+  Embedded-to-server adoption is a configuration change, not a
+  protocol change.
+- Future SDKs participate over the stable worker protocol named by
+  the `Platform protocol specs` row of the
+  [New-In-V2 Capabilities](#new-in-v2-capabilities) section. Cross-
+  SDK workers cannot replay serialized PHP closures; portable
+  workflow boundaries are named workflow/activity types and durable
+  command payloads.
+- Waterline is the first-party operator UI. CLI tooling
+  (`dw run …`, `dw task-queue:drain`, `dw schedule …`, the
+  `workflow:v2:*` artisan suite) is the supported automation
+  surface.
+
+### Service-mode reference architecture and rollout
+
+- Service mode is the standalone-server distribution. The server owns
+  the durable kernel, exposes the worker protocol over HTTP, and
+  publishes the platform-protocol-specs catalog at
+  `GET /api/cluster/info`. Hosted control-plane behavior is described
+  in [`docs/architecture/hosted-control-plane.md`](../architecture/hosted-control-plane.md)
+  and [`docs/architecture/control-plane-split.md`](../architecture/control-plane-split.md).
+- Worker connectivity modes are hosted workers, customer-managed
+  workers over public TLS, private-link workers, and outbound tunnel
+  or agent-based workers. Every mode registers the same worker
+  identity, namespace, task queue, compatibility marker, heartbeat,
+  and build information; no mode grants direct database access or an
+  undocumented task-claim path.
+- Service-mode rollout uses the same single-version v2 rollout
+  deliverables (canary, drain, rollback, replay-debug). Cluster
+  manifest changes follow the platform-protocol-specs lifecycle so
+  worker-protocol additions are additive within a major version.
 
 ## Relationship To Other Contracts
 
@@ -724,10 +1065,22 @@ these rules; this section is the durable-kernel authority they cite.
   (`start`/`signal`/`update`/`repair`/`cancel`/`terminate`/`archive`),
   the canonical webhook route shape, the alias-registry exposure rule,
   the rejection outcomes, and the v1 legacy-bridge boundary.
-- [`docs/deployment/ha-failover.md`](../deployment/ha-failover.md)
-  and [`docs/deployment/multi-region.md`](../deployment/multi-region.md)
+- [`docs/architecture/rollout-safety.md`](../architecture/rollout-safety.md)
+  defines admission checks, fail-closed reason codes, routing drains,
+  coordination health metrics, and the `DW_V2_*` admission knobs that
+  the rollout playbooks named above consume.
+- [`docs/architecture/security-governance.md`](../architecture/security-governance.md)
+  defines namespace boundary authorization, IAM principals, audit
+  facts, and certificate-filter evaluation.
+- [`docs/architecture/hosted-control-plane.md`](../architecture/hosted-control-plane.md)
+  defines hosted control-plane behavior consumed by service-mode
+  deployments.
+- [`docs/deployment/ha-failover.md`](../deployment/ha-failover.md),
+  [`docs/deployment/multi-region.md`](../deployment/multi-region.md),
+  and [`docs/deployment/multi-node-requirements.md`](../deployment/multi-node-requirements.md)
   define the self-serve HA, DR, region, replication, private-networking,
-  backup, and restore behavior consumed by managed-cloud deployments.
+  backup, restore, and multi-node behavior consumed by managed-cloud
+  deployments.
 - [`docs/workflow-messages-architecture.md`](../workflow-messages-architecture.md),
   [`docs/search-attributes-architecture.md`](../search-attributes-architecture.md),
   and [`docs/workflow-memos-architecture.md`](../workflow-memos-architecture.md)
