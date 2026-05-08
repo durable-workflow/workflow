@@ -18,9 +18,9 @@ use Workflow\V2\Support\SurfaceStabilityContract;
  * Adding a neutrality rule, tightening an existing rule, adding a
  * required audit step, adding a surface family to the audit scope, or
  * changing the official-SDK breadth policy is a contract change.
- * Update the architecture doc, the static JSON mirror (when one is
- * published), and bump `SdkNeutralityContract::VERSION` in the same
- * change.
+ * Update the architecture doc, the static JSON mirror at
+ * `static/sdk-neutrality-contract.json` on the docs site, and bump
+ * `SdkNeutralityContract::VERSION` in the same change.
  */
 final class SdkNeutralityContractTest extends TestCase
 {

@@ -159,6 +159,8 @@ Adding a neutrality rule, tightening an existing rule, adding a
 required audit step, adding a surface family to the audit scope, or
 changing the official-SDK breadth policy is a contract change. Bump
 `SdkNeutralityContract::VERSION`, update this document, the static
-JSON mirror (when one is published), and the per-package stability
-documents in the same change. Removing a neutrality rule or audit
-step is a major change.
+JSON mirror at `static/sdk-neutrality-contract.json` on the
+`durable-workflow.github.io` docs site (the public mirror page is
+`docs/sdk-neutrality.md`), and the per-package stability documents in
+the same change. Removing a neutrality rule or audit step is a major
+change.
