@@ -305,7 +305,7 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertCount(1, $fakeWorkflow->starts);
     }
 
-    public function testActivityBindingMarksCallStartedWithGeneratedActivityExecutionReference(): void
+    public function testActivityBindingCommitsBindingResolutionAtAcceptanceWithoutFalselyMarkingStarted(): void
     {
         $controlPlane = new DefaultServiceControlPlane(
             new FakeServiceWorkflowControlPlane(),
@@ -330,7 +330,10 @@ final class DefaultServiceControlPlaneTest extends TestCase
         ]);
 
         $this->assertTrue($result['accepted']);
-        $this->assertSame(ServiceCallStatus::Started->value, $result['status']);
+        $this->assertSame(ServiceCallStatus::Accepted->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::Accepted->value, $result['outcome']);
+        $this->assertNotNull($result['accepted_at']);
+        $this->assertNull($result['started_at']);
         $this->assertSame(ServiceCallBindingKind::ActivityExecution->value, $result['resolved_binding_kind']);
         $this->assertNotNull($result['resolved_target_reference']);
         $this->assertSame($result['resolved_target_reference'], $result['handler']['activity_execution_id']);
@@ -340,8 +343,10 @@ final class DefaultServiceControlPlaneTest extends TestCase
 
         $call = WorkflowServiceCall::query()->firstOrFail();
 
-        $this->assertSame(ServiceCallStatus::Started->value, $call->status);
+        $this->assertSame(ServiceCallStatus::Accepted->value, $call->status);
         $this->assertSame(ServiceCallOutcome::Accepted, $call->outcome);
+        $this->assertNotNull($call->accepted_at);
+        $this->assertNull($call->started_at);
         $this->assertSame($result['resolved_target_reference'], $call->resolved_target_reference);
         $this->assertSame($result['resolved_target_reference'], $call->metadata['activity_execution_id']);
         $this->assertSame('App\\Activities\\IssueInvoice', $call->metadata['activity_class']);
@@ -373,7 +378,7 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertSame(ServiceCallOutcome::HandlerFailed->value, $result['outcome']);
     }
 
-    public function testInvocableCarrierBindingMarksCallStartedWithGeneratedCarrierRequestReference(): void
+    public function testInvocableCarrierBindingCommitsBindingResolutionAtAcceptanceWithoutFalselyMarkingStarted(): void
     {
         $controlPlane = new DefaultServiceControlPlane(
             new FakeServiceWorkflowControlPlane(),
@@ -398,7 +403,10 @@ final class DefaultServiceControlPlaneTest extends TestCase
         ]);
 
         $this->assertTrue($result['accepted']);
-        $this->assertSame(ServiceCallStatus::Started->value, $result['status']);
+        $this->assertSame(ServiceCallStatus::Accepted->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::Accepted->value, $result['outcome']);
+        $this->assertNotNull($result['accepted_at']);
+        $this->assertNull($result['started_at']);
         $this->assertSame(ServiceCallBindingKind::InvocableCarrierRequest->value, $result['resolved_binding_kind']);
         $this->assertNotNull($result['resolved_target_reference']);
         $this->assertSame($result['resolved_target_reference'], $result['handler']['carrier_request_id']);
@@ -409,8 +417,10 @@ final class DefaultServiceControlPlaneTest extends TestCase
 
         $call = WorkflowServiceCall::query()->firstOrFail();
 
-        $this->assertSame(ServiceCallStatus::Started->value, $call->status);
+        $this->assertSame(ServiceCallStatus::Accepted->value, $call->status);
         $this->assertSame(ServiceCallOutcome::Accepted, $call->outcome);
+        $this->assertNotNull($call->accepted_at);
+        $this->assertNull($call->started_at);
         $this->assertSame($result['resolved_target_reference'], $call->metadata['carrier_request_id']);
         $this->assertSame('https://carrier.billing.example/handle', $call->metadata['carrier_endpoint']);
         $this->assertSame('billing.invoice.issue', $call->metadata['carrier_handler']);

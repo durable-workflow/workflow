@@ -1039,7 +1039,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             }
         }
 
-        $this->markStarted(
+        $this->stampBindingResolution(
             $call,
             ServiceCallBindingKind::ActivityExecution->value,
             $activityExecutionId,
@@ -1103,7 +1103,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $metadata['carrier'] = $carrierName;
         }
 
-        $this->markStarted(
+        $this->stampBindingResolution(
             $call,
             ServiceCallBindingKind::InvocableCarrierRequest->value,
             $carrierRequestId,
@@ -1121,6 +1121,39 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'carrier_handler' => $carrierHandler,
             'carrier' => $carrierName,
         ];
+    }
+
+    /**
+     * Commit the resolved binding kind, target reference, linked workflow
+     * pointers, and binding-derived metadata to the durable row while leaving
+     * the call in Accepted.
+     *
+     * The Started transition belongs to the execution lane that actually picks
+     * up the activity execution or invocable carrier request; the control
+     * plane's contract for these binding kinds ends at admission. See
+     * docs/architecture/workflow-service-calls-architecture.md (Service-call
+     * lifecycle): Accepted is "Resolution committed, handler binding written,
+     * handler not yet started." Started is reserved for "Handler has begun
+     * executing the linked target reference."
+     *
+     * @param array<string, mixed> $metadata
+     */
+    private function stampBindingResolution(
+        WorkflowServiceCall $call,
+        string $bindingKind,
+        string $targetReference,
+        ?string $instanceId,
+        ?string $runId,
+        ?string $updateId,
+        array $metadata,
+    ): void {
+        $call->resolved_binding_kind = $bindingKind;
+        $call->resolved_target_reference = $targetReference;
+        $call->linked_workflow_instance_id = $instanceId;
+        $call->linked_workflow_run_id = $runId;
+        $call->linked_workflow_update_id = $updateId;
+        $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
+        $call->save();
     }
 
     /**
