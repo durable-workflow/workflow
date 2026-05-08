@@ -563,12 +563,26 @@ serving the snapshot — without re-aggregating metrics across the
 `matching_role` block. `wake_owner` is `worker_loop` on nodes that
 still run the in-worker broad-poll wake and `dedicated_repair_pass`
 on nodes that have opted out so the broad sweep runs as
-`php artisan workflow:v2:repair-pass` instead. Adding a new check
-is allowed; renaming or removing one is a protocol-level change.
-The canonical check names above match the strings emitted by
-`Workflow\V2\Support\HealthCheck::snapshot()` verbatim, and a runtime
-pinning test in the workflow package asserts the match so doc/code
-drift fails loudly.
+`php artisan workflow:v2:repair-pass` instead. The check also forwards
+`required_compatibility`, `active_workers`,
+`active_workers_supporting_required`, and the convenience boolean
+`fleet_supports_required` from the `workers` block so operators can
+tell whether a compatibility block reflects "no live worker advertises
+the required marker" (the canonical fail-closed admission case
+escalated under `DW_V2_FLEET_VALIDATION_MODE=fail`) vs a transient
+compatibility race that still has fleet coverage — without joining
+the `worker_compatibility` check separately.
+`fleet_supports_required` is `true` when no marker is required (the
+unscoped case) or at least one heartbeat advertises the required
+marker. When `compatibility_blocked_runs > 0` and
+`fleet_supports_required = false`, the check's `message` names the
+missing-coverage case explicitly so the operator action ("ensure a
+worker advertising the required marker rolls in") is unambiguous.
+Adding a new check is allowed; renaming or removing one is a
+protocol-level change. The canonical check names above match the
+strings emitted by `Workflow\V2\Support\HealthCheck::snapshot()`
+verbatim, and a runtime pinning test in the workflow package asserts
+the match so doc/code drift fails loudly.
 
 ### Queue visibility
 

@@ -810,6 +810,13 @@ final class HealthCheckTest extends TestCase
         $this->assertSame('queue', $routing['data']['task_dispatch_mode']);
         $this->assertTrue($routing['data']['queue_wake_enabled']);
         $this->assertSame(0, $routing['data']['active_worker_scopes']);
+        // No marker is required (fresh test config) and the fleet has no
+        // heartbeats yet, but `fleet_supports_required` is still true because
+        // the unscoped case never blocks routing.
+        $this->assertNull($routing['data']['required_compatibility']);
+        $this->assertSame(0, $routing['data']['active_workers']);
+        $this->assertSame(0, $routing['data']['active_workers_supporting_required']);
+        $this->assertTrue($routing['data']['fleet_supports_required']);
     }
 
     public function testSnapshotWarnsWhenRoutingHealthSeesCompatibilityDispatchAndClaimDrains(): void
@@ -934,6 +941,81 @@ final class HealthCheckTest extends TestCase
         $this->assertSame('dedicated_repair_pass', $routing['data']['wake_owner']);
         $this->assertSame('poll', $routing['data']['task_dispatch_mode']);
         $this->assertSame(0, $routing['data']['active_worker_scopes']);
+        $this->assertNull($routing['data']['required_compatibility']);
+        $this->assertSame(0, $routing['data']['active_workers']);
+        $this->assertSame(0, $routing['data']['active_workers_supporting_required']);
+        $this->assertTrue($routing['data']['fleet_supports_required']);
+    }
+
+    public function testRoutingHealthMessageNamesMissingFleetCoverageWhenCompatibilityBlocksHaveZeroSupportingWorkers(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('cache.default', 'array');
+        config()->set('cache.stores.array.driver', 'array');
+        config()->set('workflows.v2.compatibility.current', 'release-2026-04-09');
+
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'health-routing-fleet-instance',
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'id' => '01JHEALTHROUTINGFLEET0001',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'running',
+            'compatibility' => 'release-2026-04-09',
+            'started_at' => now()->subMinutes(8),
+            'last_progress_at' => now()->subMinute(),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        WorkflowRunSummary::query()->create([
+            'id' => $run->id,
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'is_current_run' => true,
+            'engine_source' => 'v2',
+            'class' => 'WorkflowClass',
+            'workflow_type' => 'workflow.test',
+            'status' => 'running',
+            'status_bucket' => 'running',
+            'compatibility' => 'release-2026-04-09',
+            'started_at' => now()->subMinutes(8),
+            'next_task_at' => now()->subMinutes(5),
+            'liveness_state' => 'workflow_task_waiting_for_compatible_worker',
+            'liveness_reason' => 'No active worker heartbeat advertises the required compatibility marker.',
+            'created_at' => now()->subMinutes(8),
+            'updated_at' => now(),
+        ]);
+
+        $snapshot = HealthCheck::snapshot();
+        $routing = collect($snapshot['checks'])->firstWhere('name', 'routing_health');
+
+        $this->assertNotNull($routing);
+        $this->assertSame('warning', $routing['status']);
+        $this->assertStringContainsString(
+            'no active worker heartbeat advertises the required compatibility marker',
+            $routing['message'],
+        );
+        $this->assertSame('release-2026-04-09', $routing['data']['required_compatibility']);
+        $this->assertSame(0, $routing['data']['active_workers']);
+        $this->assertSame(0, $routing['data']['active_workers_supporting_required']);
+        $this->assertFalse($routing['data']['fleet_supports_required']);
+        $this->assertSame(1, $routing['data']['compatibility_blocked_runs']);
     }
 
     public function testSnapshotClassifiesEveryCheckAsCorrectnessOrAcceleration(): void

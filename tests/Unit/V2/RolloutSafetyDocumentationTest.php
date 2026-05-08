@@ -608,6 +608,27 @@ final class RolloutSafetyDocumentationTest extends TestCase
         );
     }
 
+    public function testContractDocumentFreezesRoutingHealthFleetCoverageRollup(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/`routing_health`[\s\S]{0,1200}`required_compatibility`[\s\S]{0,200}`active_workers`[\s\S]{0,200}`active_workers_supporting_required`[\s\S]{0,200}`fleet_supports_required`/',
+            $contents,
+            'Rollout safety contract must pin the routing_health fleet-coverage rollup quad (required_compatibility, active_workers, active_workers_supporting_required, fleet_supports_required) so operators reading routing_health alone can tell whether a compatibility block reflects "no live worker advertises the required marker" — the canonical fail-closed admission case escalated under DW_V2_FLEET_VALIDATION_MODE=fail — without joining the worker_compatibility check separately.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/`fleet_supports_required` is `true` when no marker is required[\s\S]{0,200}or at least one heartbeat advertises the required\s+marker/i',
+            $contents,
+            'Rollout safety contract must define when fleet_supports_required is true (no marker required, or at least one heartbeat advertises the required marker) so operators can interpret the routing_health convenience boolean unambiguously.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/`compatibility_blocked_runs > 0`[\s\S]{0,200}`fleet_supports_required = false`[\s\S]{0,400}`message`[\s\S]{0,200}missing-coverage/i',
+            $contents,
+            'Rollout safety contract must require the routing_health message to name the missing-coverage case (compatibility_blocked_runs > 0 AND fleet_supports_required = false) explicitly so operators do not have to cross-reference worker_compatibility to understand the block.',
+        );
+    }
+
     public function testContractDocumentFreezesHealthCheckNames(): void
     {
         $contents = $this->documentContents();

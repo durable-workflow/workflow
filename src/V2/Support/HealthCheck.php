@@ -351,16 +351,28 @@ final class HealthCheck
             ? $matchingRole['task_dispatch_mode']
             : 'queue';
         $activeWorkerScopes = self::integer($workers['active_worker_scopes'] ?? 0);
+        $requiredCompatibility = is_string($workers['required_compatibility'] ?? null)
+            ? $workers['required_compatibility']
+            : null;
+        $activeWorkers = self::integer($workers['active_workers'] ?? 0);
+        $activeWorkersSupportingRequired = self::integer($workers['active_workers_supporting_required'] ?? 0);
+        // True when no marker is required (unscoped) or at least one heartbeat advertises it.
+        $fleetSupportsRequired = $requiredCompatibility === null
+            || $activeWorkersSupportingRequired > 0;
+
+        $compatibilityBlocked = $compatibilityBlockedRuns > 0;
+        $compatibilityBlockedWithoutFleetCoverage = $compatibilityBlocked && ! $fleetSupportsRequired;
 
         $message = 'No routing drains, compatibility blocks, or uncleared claim failures are currently projected.';
-        if ($compatibilityBlockedRuns > 0 || $dispatchOverdueTasks > 0 || $claimFailedTasks > 0) {
-            $signalCount = ($compatibilityBlockedRuns > 0 ? 1 : 0)
+        if ($compatibilityBlocked || $dispatchOverdueTasks > 0 || $claimFailedTasks > 0) {
+            $signalCount = ($compatibilityBlocked ? 1 : 0)
                 + ($dispatchOverdueTasks > 0 ? 1 : 0)
                 + ($claimFailedTasks > 0 ? 1 : 0);
 
             $message = match (true) {
                 $signalCount > 1 => 'Routing health is degraded: compatibility blocks, dispatch lag, or uncleared claim failures are visible in durable state.',
-                $compatibilityBlockedRuns > 0 => 'One or more runs are ready but waiting for a compatible worker in the active fleet.',
+                $compatibilityBlockedWithoutFleetCoverage => 'One or more runs are blocked because no active worker heartbeat advertises the required compatibility marker.',
+                $compatibilityBlocked => 'One or more runs are ready but waiting for a compatible worker in the active fleet.',
                 $dispatchOverdueTasks > 0 => 'One or more ready tasks have waited past the redispatch window without a successful dispatch wake.',
                 default => 'One or more ready tasks still carry an uncleared claim failure.',
             };
@@ -368,7 +380,7 @@ final class HealthCheck
 
         return self::check(
             'routing_health',
-            ($compatibilityBlockedRuns > 0 || $dispatchOverdueTasks > 0 || $claimFailedTasks > 0) ? 'warning' : 'ok',
+            ($compatibilityBlocked || $dispatchOverdueTasks > 0 || $claimFailedTasks > 0) ? 'warning' : 'ok',
             $message,
             self::CATEGORY_CORRECTNESS,
             [
@@ -394,6 +406,10 @@ final class HealthCheck
                 'wake_owner' => $wakeOwner,
                 'task_dispatch_mode' => $taskDispatchMode,
                 'active_worker_scopes' => $activeWorkerScopes,
+                'required_compatibility' => $requiredCompatibility,
+                'active_workers' => $activeWorkers,
+                'active_workers_supporting_required' => $activeWorkersSupportingRequired,
+                'fleet_supports_required' => $fleetSupportsRequired,
             ],
         );
     }
