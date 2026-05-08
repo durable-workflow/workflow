@@ -301,6 +301,12 @@ explicitly reserved for a future contract before support is advertised.
   define the durable metadata and message-stream homes named above.
 - [`docs/architecture/platform-conformance-suite.md`](../architecture/platform-conformance-suite.md)
   defines how implementations prove the mapped surfaces conform.
+- [`docs/architecture/business-reporting-read-models.md`](../architecture/business-reporting-read-models.md)
+  defines the split between technical workflow state and
+  application-owned business state, and the milestone-based
+  read-model pattern apps should use to build product reporting on
+  stable `workflow_id` and `run_id` references rather than on
+  Waterline, run summaries, or history exports.
 
 ## Changing This Contract
 

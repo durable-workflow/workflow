@@ -88,6 +88,18 @@ a workflow continues as new, the same app record keeps the same
 identifier. New app projection code should prefer `workflowId()` so the
 application vocabulary matches workflow authoring code.
 
+The engine's durable column names are `workflow_instance_id` (foreign
+key from a run row to its parent instance row) and `workflow_run_id`
+(foreign key from child rows such as tasks, activities, signals,
+updates, child calls, and commands to the run row). Applications should
+not reference those engine columns directly. They exist for engine
+joins and operator queries, not as a stable app projection contract.
+Use the public API surfaces `Workflow::workflowId()`,
+`WorkflowStub::workflowId()`, and `CommandResult::workflowId()` for the
+logical id, and `Workflow::runId()`, `WorkflowStub::runId()`, and
+`CommandResult::runId()` for the generation id, then store them on
+business records as `workflow_id` and `run_id`.
+
 ## Milestone-Based Read-Model Pattern
 
 Applications should update business read models at meaningful workflow
@@ -100,9 +112,10 @@ Recommended pattern:
    `claim_reviewed`, `case_escalated`.
 2. Cross each milestone through a deterministic workflow decision and a
    side-effect boundary that is legal under
-   `docs/architecture/execution-guarantees.md`. Workflow code must not
-   write external state directly; use an activity, command handler, or
-   application event consumer to perform the read-model write.
+   `docs/architecture/execution-guarantees.md`.
+   Workflow code must not write external state directly; use an activity,
+   command handler, or application event consumer to perform the
+   read-model write.
 3. Upsert app read-model rows idempotently. Choose a key such as
    `(workflow_id, milestone)` for latest-state projections or
    `(workflow_id, run_id, milestone, sequence)` for append-only audit
