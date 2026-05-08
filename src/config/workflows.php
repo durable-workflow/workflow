@@ -108,6 +108,21 @@ return [
                 'WORKFLOW_V2_PIN_TO_RECORDED_FINGERPRINT',
                 true
             ),
+            // When true, the worker-compatibility fleet bypasses the
+            // workflow_worker_compatibility_heartbeats table and reads/writes
+            // exclusively through the legacy cache fallback. The fleet
+            // already auto-detects a missing table and falls back to cache,
+            // so the default (false) is correct for almost every deployment.
+            // Set this to true when you need to force the cache-only path
+            // without dropping the table — operators who want to temporarily
+            // sideline the heartbeat table during a problematic schema
+            // transition, and tests that exercise the cache-fallback branch
+            // without mutating shared schema state.
+            'disable_heartbeat_table' => (bool) Env::dw(
+                'DW_V2_COMPATIBILITY_DISABLE_HEARTBEAT_TABLE',
+                'WORKFLOW_V2_COMPATIBILITY_DISABLE_HEARTBEAT_TABLE',
+                false
+            ),
         ],
         'history_budget' => [
             'continue_as_new_event_threshold' => (int) Env::dw(

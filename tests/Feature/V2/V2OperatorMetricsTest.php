@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CommandOutcome;
@@ -50,31 +49,26 @@ final class V2OperatorMetricsTest extends TestCase
             ->set('workflows.v2.compatibility.namespace', 'metrics-test');
 
         WorkerCompatibilityFleet::clear();
-        Schema::dropIfExists('workflow_worker_compatibility_heartbeats');
 
-        try {
-            WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
+        // Force the fleet onto the legacy cache-only path via configuration
+        // instead of dropping the heartbeats table. Dropping the table
+        // mutated shared schema state and depended on Testbench's per-test
+        // migrate:fresh in the next test to restore it, which raced when
+        // the file's tests ran back-to-back in a single PHPUnit process.
+        config()
+            ->set('workflows.v2.compatibility.disable_heartbeat_table', true);
 
-            $snapshot = OperatorMetrics::snapshot();
+        WorkerCompatibilityFleet::record(['build-a'], 'redis', 'default', 'worker-a');
 
-            $this->assertSame(1, $snapshot['workers']['active_workers']);
-            $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
-            $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
-            $this->assertCount(1, $snapshot['workers']['fleet']);
-            $this->assertSame('worker-a', $snapshot['workers']['fleet'][0]['worker_id']);
-            $this->assertSame('cache', $snapshot['workers']['fleet'][0]['source']);
-            $this->assertTrue($snapshot['workers']['fleet'][0]['supports_required']);
-        } finally {
-            // Restore the dropped table within this test so the next test
-            // does not depend on Testbench's per-test migrate:fresh racing
-            // to re-create it. Re-running the migration's up() keeps the
-            // restored schema in sync with the canonical definition.
-            if (! Schema::hasTable('workflow_worker_compatibility_heartbeats')) {
-                $migration = require __DIR__
-                    . '/../../../src/migrations/2026_04_08_000126_create_worker_compatibility_heartbeats_table.php';
-                $migration->up();
-            }
-        }
+        $snapshot = OperatorMetrics::snapshot();
+
+        $this->assertSame(1, $snapshot['workers']['active_workers']);
+        $this->assertSame(1, $snapshot['workers']['active_worker_scopes']);
+        $this->assertSame(1, $snapshot['workers']['active_workers_supporting_required']);
+        $this->assertCount(1, $snapshot['workers']['fleet']);
+        $this->assertSame('worker-a', $snapshot['workers']['fleet'][0]['worker_id']);
+        $this->assertSame('cache', $snapshot['workers']['fleet'][0]['source']);
+        $this->assertTrue($snapshot['workers']['fleet'][0]['supports_required']);
     }
 
     public function testWorkerFleetSnapshotUsesRequestedNamespaceInsteadOfConfiguredCompatibilityNamespace(): void

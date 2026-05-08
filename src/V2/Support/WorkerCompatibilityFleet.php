@@ -915,6 +915,10 @@ final class WorkerCompatibilityFleet
 
     private static function heartbeatTableExists(): bool
     {
+        if ((bool) config('workflows.v2.compatibility.disable_heartbeat_table', false)) {
+            return false;
+        }
+
         try {
             return Schema::hasTable((new WorkerCompatibilityHeartbeat())->getTable());
         } catch (Throwable) {

@@ -84,8 +84,13 @@ It does not cover:
 
 Every live worker maintains a heartbeat row under the
 `workflow_worker_compatibility_heartbeats` table (or the legacy fallback
-cache when the table is unavailable). The row is owned by one
-`worker_id` and carries:
+cache when the table is unavailable). The fleet auto-detects a missing
+table and routes to the cache; operators can also force the cache-only
+path by setting
+`workflows.v2.compatibility.disable_heartbeat_table`
+(`DW_V2_COMPATIBILITY_DISABLE_HEARTBEAT_TABLE`) to true without dropping
+the table — useful for sidelining the table during a problematic schema
+transition. The row is owned by one `worker_id` and carries:
 
 - **`worker_id`** — `hostname:pid:ulid`, generated on first heartbeat
   and stable for the life of the worker process. The ULID segment keeps
