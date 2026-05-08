@@ -156,7 +156,9 @@ It exposes two surfaces, both covered by the semver guarantee:
 
 - **Instance members** applications rely on inside a `handle()` method:
   `workflowId()`, `runId()`, `lastChild()`,
-  `children()`, `historyLength()`, `historySize()`, `shouldContinueAsNew()`,
+  `children()`, `historyLength()`, `historySize()`,
+  `historyFanOut()`, `shouldContinueAsNew()`, `historyBudgetPressure()`,
+  `messages()`, `inbox()`, `outbox()`,
   `addCompensation()`, `setParallelCompensation()`,
   `setContinueWithError()`, `compensate()`, and the public properties
   `$run`, `$connection`, `$queue`.
