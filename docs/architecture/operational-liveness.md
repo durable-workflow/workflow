@@ -631,6 +631,16 @@ liveness (sub-keys under the named groups):
   whose status is still `Leased`.
 - `tasks.unhealthy` — aggregate count across the above unhealthy
   sub-buckets.
+- `backlog.runnable_tasks` — ready tasks whose `available_at` is
+  in the past (actionable queue depth).
+- `backlog.tasks_added_last_minute` — distinct durable task rows
+  created in the trailing 60-second window; the queue-inflow rate
+  fact. Repeated redispatches of the same task do not increment
+  this count.
+- `backlog.tasks_dispatched_last_minute` — distinct durable task
+  rows whose latest successful `last_dispatched_at` falls in the
+  trailing 60-second window; the dispatch-throughput rate fact.
+  Repeated redispatches collapse to one count per task row.
 - `backlog.repair_needed_runs` — snapshot of the repair-needed
   backlog.
 - `backlog.claim_failed_runs` — snapshot of the claim-failed
