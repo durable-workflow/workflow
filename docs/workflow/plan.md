@@ -282,6 +282,11 @@ explicitly reserved for a future contract before support is advertised.
 - [`docs/architecture/control-plane-split.md`](../architecture/control-plane-split.md)
   defines role ownership for commands, matching, scheduler, history, and
   API ingress.
+- [`docs/architecture/webhook-and-command-taxonomy.md`](../architecture/webhook-and-command-taxonomy.md)
+  defines the first-release operator command taxonomy
+  (`start`/`signal`/`update`/`repair`/`cancel`/`terminate`/`archive`),
+  the canonical webhook route shape, the alias-registry exposure rule,
+  the rejection outcomes, and the v1 legacy-bridge boundary.
 - [`docs/deployment/ha-failover.md`](../deployment/ha-failover.md)
   and [`docs/deployment/multi-region.md`](../deployment/multi-region.md)
   define the self-serve HA, DR, region, replication, private-networking,

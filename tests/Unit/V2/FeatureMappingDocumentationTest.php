@@ -173,6 +173,7 @@ final class FeatureMappingDocumentationTest extends TestCase
         'docs/architecture/workflow-service-calls-architecture.md',
         'docs/architecture/cross-namespace-service-policy.md',
         'docs/architecture/control-plane-split.md',
+        'docs/architecture/webhook-and-command-taxonomy.md',
         'docs/deployment/ha-failover.md',
         'docs/deployment/multi-region.md',
         'docs/workflow-messages-architecture.md',

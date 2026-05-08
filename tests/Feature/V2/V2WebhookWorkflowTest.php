@@ -2422,6 +2422,124 @@ final class V2WebhookWorkflowTest extends TestCase
         $this->assertSame('Emergency maintenance window', $command->commandReason());
     }
 
+    // ── Archive webhooks ─────────────────────────────────────────────
+
+    public function testArchiveWebhookAcceptsTerminatedRun(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'archive-terminated');
+        $workflow->start(5);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $workflow->terminate();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->terminated());
+
+        $response = $this->postJson('/webhooks/instances/archive-terminated/archive');
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('outcome', 'archived')
+            ->assertJsonPath('workflow_id', 'archive-terminated')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('target_scope', 'instance')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('rejection_reason', null);
+
+        $this->assertDatabaseHas('workflow_commands', [
+            'id' => $response->json('command_id'),
+            'workflow_instance_id' => 'archive-terminated',
+            'workflow_run_id' => $workflow->runId(),
+            'command_type' => 'archive',
+            'status' => 'accepted',
+            'outcome' => 'archived',
+        ]);
+    }
+
+    public function testArchiveWebhookRejectsActiveRun(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'archive-active');
+        $workflow->start(5);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $response = $this->postJson('/webhooks/instances/archive-active/archive');
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('outcome', 'rejected_run_not_closed')
+            ->assertJsonPath('workflow_id', 'archive-active')
+            ->assertJsonPath('run_id', $workflow->runId())
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'run_not_closed');
+    }
+
+    public function testArchiveWebhookAcceptsReasonInRequestBody(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'archive-with-reason');
+        $workflow->start(5);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $workflow->terminate();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->terminated());
+
+        $response = $this->postJson('/webhooks/instances/archive-with-reason/archive', [
+            'reason' => 'Compliance: 90-day retention reached',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('outcome', 'archived')
+            ->assertJsonPath('reason', 'Compliance: 90-day retention reached')
+            ->assertJsonPath('workflow_id', 'archive-with-reason')
+            ->assertJsonPath('command_status', 'accepted');
+
+        $command = WorkflowCommand::query()->findOrFail($response->json('command_id'));
+
+        $this->assertSame('Compliance: 90-day retention reached', $command->commandReason());
+    }
+
+    public function testArchiveWebhookRunScopedTargetsExplicitRun(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'archive-run-scoped');
+        $workflow->start(5);
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->status() === 'waiting');
+
+        $workflow->terminate();
+
+        $this->waitFor(static fn (): bool => $workflow->refresh()->terminated());
+
+        $runId = $workflow->runId();
+
+        $response = $this->postJson("/webhooks/instances/archive-run-scoped/runs/{$runId}/archive");
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('outcome', 'archived')
+            ->assertJsonPath('workflow_id', 'archive-run-scoped')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('target_scope', 'run')
+            ->assertJsonPath('command_status', 'accepted');
+    }
+
+    public function testArchiveWebhookRejectsReservedInstanceThatHasNotStarted(): void
+    {
+        WorkflowStub::make(TestGreetingWorkflow::class, 'archive-reserved');
+
+        $response = $this->postJson('/webhooks/instances/archive-reserved/archive');
+
+        $response
+            ->assertStatus(409)
+            ->assertJsonPath('outcome', 'rejected_not_started')
+            ->assertJsonPath('workflow_id', 'archive-reserved')
+            ->assertJsonPath('run_id', null)
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('rejection_reason', 'instance_not_started');
+    }
+
     // ── Describe webhooks ────────────────────────────────────────────
 
     public function testDescribeWebhookReturnsActiveWorkflowState(): void

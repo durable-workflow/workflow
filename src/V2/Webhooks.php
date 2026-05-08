@@ -468,6 +468,36 @@ final class Webhooks
             }
         )->name('workflows.v2.terminate');
 
+        Route::post(
+            "{$basePath}/instances/{workflowId}/runs/{runId}/archive",
+            static function (Request $request, string $workflowId, string $runId) {
+                $request = self::validateAuth($request);
+
+                $reason = is_string($request->input('reason')) ? $request->input('reason') : null;
+
+                $result = self::selectionStub($workflowId, $runId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptArchive($reason);
+
+                return self::commandResponse($result, $result->accepted() ? 200 : 409);
+            }
+        )->name('workflows.v2.runs.archive');
+
+        Route::post(
+            "{$basePath}/instances/{workflowId}/archive",
+            static function (Request $request, string $workflowId) {
+                $request = self::validateAuth($request);
+
+                $reason = is_string($request->input('reason')) ? $request->input('reason') : null;
+
+                $result = self::selectionStub($workflowId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptArchive($reason);
+
+                return self::commandResponse($result, $result->accepted() ? 200 : 409);
+            }
+        )->name('workflows.v2.archive');
+
         Route::post("{$basePath}/control-plane/start", static function (Request $request) {
             $request = self::validateAuth($request);
 
