@@ -44,7 +44,7 @@ final class SdkNeutralityContract
 
     public const VERSION = 1;
 
-    public const AUTHORITY_DOC = 'docs/architecture/sdk-neutrality.md';
+    public const AUTHORITY_DOC = 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/sdk-neutrality.md';
 
     public const POSTURE_PRIORITY = 'priority';
 

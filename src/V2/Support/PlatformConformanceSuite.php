@@ -35,7 +35,7 @@ final class PlatformConformanceSuite
 
     public const RESULT_VERSION = 1;
 
-    public const AUTHORITY_DOC = 'docs/architecture/platform-conformance-suite.md';
+    public const AUTHORITY_DOC = 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md';
 
     public const CATEGORY_STATUS_STABLE = 'stable';
 
@@ -196,7 +196,7 @@ final class PlatformConformanceSuite
                         'path' => 'tests/fixtures/control-plane/',
                     ],
                 ],
-                'authority_doc' => 'durable-workflow.github.io/docs/polyglot/cli-python-parity.md',
+                'authority_doc' => 'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/polyglot/cli-python-parity.md',
             ],
             'worker_task_lifecycle' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
@@ -219,7 +219,7 @@ final class PlatformConformanceSuite
                         'path' => 'tests/fixtures/external-task-result/',
                     ],
                 ],
-                'authority_doc' => 'server/docs/contracts/external-task-input.md, server/docs/contracts/external-task-result.md',
+                'authority_doc' => 'https://github.com/durable-workflow/server/blob/main/docs/contracts/external-task-input.md, https://github.com/durable-workflow/server/blob/main/docs/contracts/external-task-result.md',
             ],
             'history_replay_bundles' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
@@ -234,7 +234,7 @@ final class PlatformConformanceSuite
                         'path' => 'tests/fixtures/golden_history/',
                     ],
                 ],
-                'authority_doc' => 'workflow/docs/api-stability.md (frozen history-event wire formats)',
+                'authority_doc' => 'https://github.com/durable-workflow/workflow/blob/v2/docs/api-stability.md',
             ],
             'failure_repair_actionability' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
@@ -249,7 +249,7 @@ final class PlatformConformanceSuite
                         'path' => 'docs/contracts/replay-verification.md',
                     ],
                 ],
-                'authority_doc' => 'server/docs/contracts/external-task-result.md',
+                'authority_doc' => 'https://github.com/durable-workflow/server/blob/main/docs/contracts/external-task-result.md',
             ],
             'cli_json_envelopes' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
@@ -264,7 +264,7 @@ final class PlatformConformanceSuite
                         'path' => 'schemas/',
                     ],
                 ],
-                'authority_doc' => 'durable-workflow.github.io/docs/polyglot/cli-reference.md',
+                'authority_doc' => 'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/polyglot/cli-reference.md',
             ],
             'waterline_observer_envelopes' => [
                 'status' => self::CATEGORY_STATUS_PROVISIONAL,
@@ -275,7 +275,7 @@ final class PlatformConformanceSuite
                         'path' => 'tests/fixtures/observer/ (planned)',
                     ],
                 ],
-                'authority_doc' => 'waterline/CONFORMANCE.md',
+                'authority_doc' => 'https://github.com/durable-workflow/waterline/blob/v2/CONFORMANCE.md',
             ],
             'mcp_discovery_envelopes' => [
                 'status' => self::CATEGORY_STATUS_PROVISIONAL,
@@ -294,7 +294,7 @@ final class PlatformConformanceSuite
                         'path' => 'tests/Feature/McpWorkflowServerTest.php',
                     ],
                 ],
-                'authority_doc' => 'durable-workflow.github.io/docs/mcp-workflows.md',
+                'authority_doc' => 'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/mcp-workflows.md',
             ],
         ];
     }

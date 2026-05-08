@@ -30,7 +30,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
         $this->assertSame(1, $manifest['version']);
         $this->assertSame(
-            'docs/architecture/platform-conformance-suite.md',
+            'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md',
             $manifest['authority_doc'],
         );
         $this->assertSame(
@@ -138,6 +138,26 @@ final class PlatformConformanceSuiteTest extends TestCase
         }
     }
 
+    public function testEveryFixtureCategoryAuthorityDocIsACustomerResolvableUrl(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+
+        foreach ($manifest['fixture_catalog'] as $name => $category) {
+            $this->assertArrayHasKey('authority_doc', $category, "$name needs authority_doc");
+
+            $authorityDoc = $category['authority_doc'];
+            $this->assertIsString($authorityDoc, "$name authority_doc must be a string");
+
+            foreach (preg_split('/,\s*/', $authorityDoc) as $entry) {
+                $this->assertMatchesRegularExpression(
+                    '#^https://#',
+                    $entry,
+                    "$name authority_doc entry `$entry` must be a customer-resolvable https:// URL",
+                );
+            }
+        }
+    }
+
     public function testMcpDiscoveryCategoryNamesCurrentReferenceSurface(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
@@ -149,7 +169,7 @@ final class PlatformConformanceSuiteTest extends TestCase
             'MCP conformance remains advisory until the public fixture set is promoted.',
         );
         $this->assertSame(
-            'durable-workflow.github.io/docs/mcp-workflows.md',
+            'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/mcp-workflows.md',
             $category['authority_doc'],
         );
         $this->assertContains(
