@@ -110,11 +110,14 @@ when it crosses category boundaries:
   receiving language observes the documented coerced type.
 - The sample app (`sample-app`) `polyglot/` smoke runs two scenarios
   end to end against the standalone server: a Python-authored workflow
-  on a separate Python image, and a protocol-driver workflow task that
-  schedules activities handled by a separate Python worker. Both
-  scenarios assert that activity arguments and results round-trip with
-  the documented codec envelope. The smoke is wired into the sample-app
-  `polyglot` GitHub Actions workflow on every push and pull request.
+  on a separate Python image, and a PHP-authored workflow on a real
+  Laravel + `durable-workflow/workflow` PHP worker that schedules
+  activities handled by a separate Python worker. Both scenarios
+  assert that activity arguments and results round-trip with the
+  documented codec envelope. The smoke is wired into the sample-app
+  `polyglot-validation` GitHub Actions workflow on every push and
+  pull request and fails fast if the PHP worker is removed or refuses
+  to register on the polyglot task queue.
 
 The sample app's polyglot smoke is a release gate alongside the
 sdk-python integration tests: a regression in either is a release
