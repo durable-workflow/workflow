@@ -237,6 +237,7 @@ final class WorkerProtocolVersion
      *     worker_session_verbs: list<string>,
      *     sticky_execution: array<string, mixed>,
      *     worker_sessions: array<string, mixed>,
+     *     invocable_carrier: array<string, mixed>,
      * }
      */
     public static function describe(): array
@@ -263,6 +264,67 @@ final class WorkerProtocolVersion
             'payload_codecs_universal' => CodecRegistry::universal(),
             'payload_codecs_engine_specific' => CodecRegistry::engineSpecific(),
             'unsupported_payload_codec_reason' => self::REASON_UNSUPPORTED_PAYLOAD_CODEC,
+            'invocable_carrier' => self::invocableCarrierSemantics(),
+        ];
+    }
+
+    /**
+     * Published invocable HTTP carrier wire-protocol contract.
+     *
+     * Surfaces the stable terms that activity-grade external handlers must
+     * implement: the carrier type, HTTP method, request and response content
+     * types, envelope schema identifiers, failure vocabulary, and the
+     * cluster-info discovery path under which the full carrier contract
+     * manifest is published.
+     *
+     * @return array<string, mixed>
+     */
+    public static function invocableCarrierSemantics(): array
+    {
+        return [
+            'feature' => 'invocable_http_carrier',
+            'contract_version' => '1.0',
+            'scope' => [ExternalTaskInput::KIND_ACTIVITY_TASK],
+            'explicit_non_goals' => [
+                'workflow_task_execution',
+                'workflow_replay',
+                'history_mutation',
+                'generic_webhook_ingress',
+            ],
+            'request' => [
+                'method' => 'POST',
+                'content_type' => 'application/vnd.durable-workflow.external-task-input+json',
+                'body_schema' => ExternalTaskInput::SCHEMA,
+                'body_schema_version' => ExternalTaskInput::VERSION,
+                'idempotency_key_source' => 'task.idempotency_key',
+            ],
+            'response' => [
+                'success_status' => 200,
+                'content_type' => InvocableHttpAdapter::RESULT_MEDIA_TYPE,
+                'body_schema' => InvocableActivityHandler::RESULT_SCHEMA,
+                'body_schema_version' => InvocableActivityHandler::RESULT_VERSION,
+            ],
+            'failure_kinds' => [
+                'application',
+                'timeout',
+                'cancellation',
+                'malformed_output',
+                'handler_crash',
+                'decode_failure',
+                'unsupported_payload',
+            ],
+            'failure_classifications' => [
+                'application_error',
+                'timeout',
+                'cancelled',
+                'deadline_exceeded',
+                'handler_crash',
+                'decode_failure',
+                'malformed_output',
+                'unsupported_payload_codec',
+                'unsupported_payload_reference',
+            ],
+            'cluster_info_path' => 'worker_protocol.invocable_carrier_contract',
         ];
     }
 

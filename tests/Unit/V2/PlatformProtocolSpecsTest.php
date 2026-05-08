@@ -28,7 +28,7 @@ final class PlatformProtocolSpecsTest extends TestCase
         $manifest = PlatformProtocolSpecs::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-protocol-specs.catalog', $manifest['schema']);
-        $this->assertSame(1, $manifest['version']);
+        $this->assertSame(10, $manifest['version']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs',
             $manifest['authority_url'],
@@ -109,15 +109,19 @@ final class PlatformProtocolSpecsTest extends TestCase
             'control_plane_api',
             'worker_protocol_api',
             'worker_protocol_stream',
+            'worker_sessions_runtime',
+            'local_activity_runtime',
             'history_event_payloads',
             'history_export_bundle',
             'replay_bundle',
             'waterline_read_api',
             'waterline_diagnostic_objects',
             'repair_actionability_objects',
+            'cli_json_envelopes',
             'mcp_discovery',
             'mcp_tool_results',
             'cluster_info_envelope',
+            'invocable_carrier_execution',
         ];
 
         $this->assertSame($expectedSpecs, array_keys($manifest['specs']));
@@ -140,6 +144,7 @@ final class PlatformProtocolSpecsTest extends TestCase
             'authority_manifest',
             'owner_repo',
             'owner_symbol',
+            'object_families',
             'evolution_rule',
             'breaking_change_release',
             'conformance_test',
@@ -187,6 +192,20 @@ final class PlatformProtocolSpecsTest extends TestCase
                 $spec['spec_path'],
                 "spec $name spec_path must live under static/platform-protocol-specs/ in the docs site",
             );
+
+            $this->assertIsArray($spec['object_families'], "spec $name object_families must be an array");
+            $this->assertNotEmpty($spec['object_families'], "spec $name must declare at least one object family");
+            foreach ($spec['object_families'] as $family) {
+                $this->assertArrayHasKey('name', $family, "spec $name object family is missing name");
+                $this->assertArrayHasKey('owner_repo', $family, "spec $name object family is missing owner_repo");
+                $this->assertArrayHasKey('schema_authority', $family, "spec $name object family is missing schema_authority");
+                $this->assertArrayHasKey('version_authority', $family, "spec $name object family is missing version_authority");
+                $this->assertContains(
+                    $family['owner_repo'],
+                    $allowedOwners,
+                    "spec $name object family owner_repo must be one of the known fleet repos",
+                );
+            }
         }
     }
 
@@ -217,6 +236,9 @@ final class PlatformProtocolSpecsTest extends TestCase
         $this->assertArrayHasKey('docs_authority_aligned', $check['gates']);
         $this->assertArrayHasKey('json_mirror_aligned', $check['gates']);
         $this->assertArrayHasKey('spec_path_published_when_status_published', $check['gates']);
+        $this->assertArrayHasKey('object_family_authority_declared', $check['gates']);
+        $this->assertArrayHasKey('breaking_change_release_consistent_with_evolution_rule', $check['gates']);
+        $this->assertArrayHasKey('deliverable_specs_published', $check['gates']);
 
         $this->assertStringContainsString(
             'check-platform-protocol-specs.js',

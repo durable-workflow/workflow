@@ -268,4 +268,43 @@ final class WorkerProtocolVersionTest extends TestCase
             $summary['worker_sessions']['authoring_guidance'],
         );
     }
+
+    public function testDescribeIncludesInvocableCarrierSemantics(): void
+    {
+        $summary = WorkerProtocolVersion::describe();
+
+        $this->assertArrayHasKey('invocable_carrier', $summary);
+        $carrier = $summary['invocable_carrier'];
+        $this->assertSame('invocable_http_carrier', $carrier['feature']);
+        $this->assertSame(['activity_task'], $carrier['scope']);
+        $this->assertSame('POST', $carrier['request']['method']);
+        $this->assertSame(
+            'application/vnd.durable-workflow.external-task-input+json',
+            $carrier['request']['content_type'],
+        );
+        $this->assertSame('durable-workflow.v2.external-task-input', $carrier['request']['body_schema']);
+        $this->assertSame(1, $carrier['request']['body_schema_version']);
+        $this->assertSame(200, $carrier['response']['success_status']);
+        $this->assertSame(
+            'application/vnd.durable-workflow.external-task-result+json',
+            $carrier['response']['content_type'],
+        );
+        $this->assertSame('durable-workflow.v2.external-task-result', $carrier['response']['body_schema']);
+        $this->assertSame(1, $carrier['response']['body_schema_version']);
+        $this->assertContains('application', $carrier['failure_kinds']);
+        $this->assertContains('unsupported_payload', $carrier['failure_kinds']);
+        $this->assertContains('application_error', $carrier['failure_classifications']);
+        $this->assertContains('unsupported_payload_codec', $carrier['failure_classifications']);
+        $this->assertContains('unsupported_payload_reference', $carrier['failure_classifications']);
+        $this->assertSame('worker_protocol.invocable_carrier_contract', $carrier['cluster_info_path']);
+    }
+
+    public function testInvocableCarrierSemanticsNonGoalsExcludeWorkflowReplay(): void
+    {
+        $carrier = WorkerProtocolVersion::invocableCarrierSemantics();
+
+        $this->assertContains('workflow_task_execution', $carrier['explicit_non_goals']);
+        $this->assertContains('workflow_replay', $carrier['explicit_non_goals']);
+        $this->assertContains('history_mutation', $carrier['explicit_non_goals']);
+    }
 }
