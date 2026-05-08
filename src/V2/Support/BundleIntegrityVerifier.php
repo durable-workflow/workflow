@@ -181,7 +181,7 @@ final class BundleIntegrityVerifier
                 'bundle.schema_version_unsupported',
                 self::SEVERITY_ERROR,
                 sprintf(
-                    'Bundle schema_version %d is not supported by this verifier (expected %d).',
+                    'Bundle schema_version %d is not the v2 history-export structural marker (%d); the v2 bundle shape is frozen and a different value indicates a parallel primitive that this verifier does not recognize.',
                     $version,
                     HistoryExport::SCHEMA_VERSION,
                 ),

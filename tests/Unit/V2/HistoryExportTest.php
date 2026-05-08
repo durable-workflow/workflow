@@ -44,6 +44,20 @@ use Workflow\V2\WorkflowStub;
 
 final class HistoryExportTest extends TestCase
 {
+    public function testV2HistoryExportSchemaIsDefinedOnceForV2(): void
+    {
+        $this->assertSame(
+            'durable-workflow.v2.history-export',
+            HistoryExport::SCHEMA,
+            'the schema id is the canonical version anchor for the v2 history-export bundle',
+        );
+        $this->assertSame(
+            1,
+            HistoryExport::SCHEMA_VERSION,
+            'schema_version is a frozen structural marker for v2; a breaking shape change requires a parallel primitive (a new schema id), not a bump within v2',
+        );
+    }
+
     public function testItDoesNotBackfillCommandContractsDuringExport(): void
     {
         $instance = WorkflowInstance::query()->create([

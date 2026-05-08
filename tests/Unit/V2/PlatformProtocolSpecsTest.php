@@ -28,7 +28,7 @@ final class PlatformProtocolSpecsTest extends TestCase
         $manifest = PlatformProtocolSpecs::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-protocol-specs.catalog', $manifest['schema']);
-        $this->assertSame(11, $manifest['version']);
+        $this->assertSame(12, $manifest['version']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs',
             $manifest['authority_url'],
@@ -222,6 +222,27 @@ final class PlatformProtocolSpecsTest extends TestCase
         $this->assertSame(
             'parallel_primitive_only',
             $entry['breaking_change_release'],
+        );
+    }
+
+    public function testHistoryExportBundleIsFrozenViaParallelPrimitiveRule(): void
+    {
+        $manifest = PlatformProtocolSpecs::manifest();
+
+        $entry = $manifest['specs']['history_export_bundle'];
+        $this->assertSame(
+            'parallel_primitive_only',
+            $entry['evolution_rule'],
+            'the v2 history-export bundle is defined once for v2; a breaking shape change must take the parallel-primitive route, not bump a schema_version ladder within v2',
+        );
+        $this->assertSame(
+            'parallel_primitive_only',
+            $entry['breaking_change_release'],
+        );
+        $this->assertSame(
+            'durable-workflow.v2.history-export',
+            $entry['object_families'][0]['version_authority'],
+            'the schema id is the canonical version anchor for the v2 history-export bundle; there is no separate schema_version ladder authority within v2',
         );
     }
 

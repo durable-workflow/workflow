@@ -38,7 +38,7 @@ final class PlatformProtocolSpecs
 {
     public const SCHEMA = 'durable-workflow.v2.platform-protocol-specs.catalog';
 
-    public const VERSION = 11;
+    public const VERSION = 12;
 
     public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs';
 
@@ -420,7 +420,7 @@ final class PlatformProtocolSpecs
                 'companion_doc' => 'docs/api-stability.md frozen-event tables in `durable-workflow/workflow`',
             ],
             'history_export_bundle' => [
-                'description' => 'JSON Schema for the history-export bundle that the server emits and that replay tooling consumes: ordered history events, payload references, payload codec metadata, lineage edges, and bundle manifest.',
+                'description' => 'JSON Schema for the history-export bundle that the server emits and that replay tooling consumes: ordered history events, payload references, payload codec metadata, lineage edges, and bundle manifest. The schema is defined once for the v2 release; the schema id `durable-workflow.v2.history-export` is the canonical version anchor and the only allowed breaking change is a parallel primitive (a new schema id alongside the existing one).',
                 'format' => self::FORMAT_JSON_SCHEMA,
                 'spec_id' => 'durable-workflow.v2.history-export-bundle',
                 'surface_family' => 'history_event_wire_formats',
@@ -432,11 +432,11 @@ final class PlatformProtocolSpecs
                         'name' => 'history_export_bundle',
                         'owner_repo' => 'durable-workflow/workflow',
                         'schema_authority' => 'Workflow\\V2\\Support\\HistoryExport::SCHEMA',
-                        'version_authority' => 'Workflow\\V2\\Support\\HistoryExport::SCHEMA_VERSION',
+                        'version_authority' => 'durable-workflow.v2.history-export',
                     ],
                 ],
-                'evolution_rule' => self::EVOLUTION_ADDITIVE_MINOR_BREAKING_MAJOR,
-                'breaking_change_release' => 'major',
+                'evolution_rule' => self::EVOLUTION_PARALLEL_PRIMITIVE_ONLY,
+                'breaking_change_release' => self::EVOLUTION_PARALLEL_PRIMITIVE_ONLY,
                 'conformance_test' => 'durable-workflow/workflow: tests/Unit/V2/HistoryExportTest.php',
                 'status' => self::STATUS_PUBLISHED,
                 'spec_path' => 'static/platform-protocol-specs/history-export-bundle.schema.json',

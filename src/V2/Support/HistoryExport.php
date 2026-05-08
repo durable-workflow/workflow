@@ -23,10 +23,27 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 
+/**
+ * Builds the v2 workflow history-export bundle.
+ *
+ * The schema is defined once for the v2 release. The schema id
+ * `durable-workflow.v2.history-export` is the canonical version anchor,
+ * and there is no schema_version ladder within v2: the bundle has a
+ * single, frozen shape for the lifetime of v2. The accompanying
+ * `schema_version` field is a structural marker that must remain `1`
+ * for the lifetime of v2; a breaking shape change requires a parallel
+ * primitive (a new schema id alongside the existing one) under the
+ * `parallel_primitive_only` evolution rule, never a bump within v2.
+ */
 final class HistoryExport
 {
     public const SCHEMA = 'durable-workflow.v2.history-export';
 
+    /**
+     * Frozen structural marker for the v2 history-export bundle. Do not
+     * bump this within v2 — see the class docblock for why a breaking
+     * shape change must take the parallel-primitive route instead.
+     */
     public const SCHEMA_VERSION = 1;
 
     private const INTEGRITY_CANONICALIZATION = 'json-recursive-ksort-v1';
