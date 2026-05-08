@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Workflow\Serializers;
 
 use Illuminate\Queue\SerializesAndRestoresModelIdentifiers;
+use InvalidArgumentException;
 use Laravel\SerializableClosure\SerializableClosure;
 use Throwable;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Support\ExternalPayloadStorage;
 
 final class Serializer
 {
@@ -143,6 +146,39 @@ final class Serializer
         }
 
         return CodecRegistry::canonicalize($preferred);
+    }
+
+    /**
+     * Encode a value and offload to external storage when the blob exceeds the threshold.
+     *
+     * Payloads whose encoded byte length is greater than $thresholdBytes are
+     * stored through $driver and returned as a {codec, external_storage} envelope
+     * so that workflow history carries a stable reference instead of the raw bytes.
+     * Payloads at or below the threshold are returned as the normal {codec, blob}
+     * inline envelope.
+     *
+     * @return array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}
+     */
+    public static function externalStorageEnvelope(
+        mixed $value,
+        string $codec,
+        ExternalPayloadStorageDriver $driver,
+        int $thresholdBytes,
+    ): array {
+        if ($thresholdBytes < 1) {
+            throw new InvalidArgumentException('External storage threshold must be at least 1 byte.');
+        }
+
+        $canonicalCodec = CodecRegistry::canonicalize($codec);
+        $blob = self::serializeWithCodec($canonicalCodec, $value);
+
+        if (strlen($blob) <= $thresholdBytes) {
+            return ['codec' => $canonicalCodec, 'blob' => $blob];
+        }
+
+        $reference = ExternalPayloadStorage::store($driver, $blob, $canonicalCodec);
+
+        return ['codec' => $canonicalCodec, 'external_storage' => $reference->toArray()];
     }
 
     /**
