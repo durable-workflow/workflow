@@ -25,6 +25,7 @@ final class FeatureMappingDocumentationTest extends TestCase
         '## New-In-V2 Capabilities',
         '## V2.0 Defaults',
         '## Child Parent-Close Policy Contract',
+        '## Time, Timer, and Schedule Determinism Contract',
         '## Gap Analysis',
         '## Migration Strategy',
         '### Storage compatibility',
@@ -56,6 +57,51 @@ final class FeatureMappingDocumentationTest extends TestCase
         'ParentClosePolicyApplied',
         'ParentClosePolicyFailed',
         'ParentClosePolicyEnforcer::enforce',
+    ];
+
+    private const REQUIRED_TIME_DETERMINISM_PINS = [
+        '### Virtual time',
+        '### Timer lifecycle and supersession',
+        '### Activity timeout taxonomy',
+        '### Workflow execution-timeout, run-timeout, and workflow-task-timeout',
+        '### Workflow-level retry first-release contract',
+        '### Named schedule lifecycle',
+        '### Replay tests for timeout helpers and timer ordering',
+        '`Workflow::now()`',
+        '`Workflow\\V2\\now()`',
+        '`Carbon::now()`',
+        '`Carbon::setTestNow()`',
+        '`workflow_run_timers`',
+        '`TimerScheduled`',
+        '`TimerFired`',
+        '`TimerCancelled`',
+        '`TimerTransportChunker`',
+        '`schedule_to_start`',
+        '`start_to_close`',
+        '`schedule_to_close`',
+        '`heartbeat`',
+        '`ActivityTimeoutEnforcer::enforce`',
+        '`execution_timeout`',
+        '`run_timeout`',
+        '`workflow_task_timeout_seconds`',
+        '`WorkflowExecutor::timeoutRun`',
+        'Top-level workflow runs do NOT retry',
+        '`ActivityOptions`',
+        '`ChildWorkflowRetryPolicy`',
+        '`ScheduleManager`',
+        '`ScheduleStatus::Active`',
+        '`ScheduleStatus::Paused`',
+        '`ScheduleOverlapPolicy::Skip`',
+        '`BufferOne`',
+        '`AllowAll`',
+        '`CancelOther`',
+        '`TerminateOther`',
+        'workflow:v2:schedule-tick',
+        'tests/Feature/V2/V2DeterministicTimeTest.php',
+        'tests/Feature/V2/V2DeterministicTimeReplayTest.php',
+        'tests/Feature/V2/V2ActivityTimeoutTest.php',
+        'tests/Feature/V2/V2ScheduleTest.php',
+        'tests/Unit/V2/WorkflowFiberContextTimeTest.php',
     ];
 
     private const REQUIRED_FEATURE_ROWS = [
@@ -315,6 +361,19 @@ final class FeatureMappingDocumentationTest extends TestCase
                 $pin,
                 $contents,
                 sprintf('Child parent-close policy contract must include %s.', $pin),
+            );
+        }
+    }
+
+    public function testContractDocumentPinsTimeTimerAndScheduleDeterminismContract(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_TIME_DETERMINISM_PINS as $pin) {
+            $this->assertStringContainsString(
+                $pin,
+                $contents,
+                sprintf('Time, Timer, and Schedule Determinism contract must include %s.', $pin),
             );
         }
     }

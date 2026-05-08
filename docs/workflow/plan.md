@@ -336,6 +336,196 @@ Continue-as-new lineage entries are deliberately unaffected; the
 continued run owns the open children and re-emits the relevant child
 history events on its own line.
 
+## Time, Timer, and Schedule Determinism Contract
+
+This section pins the determinism rules for time, timers, timeouts,
+and named schedules. It expands the `Timers and sleep`, `Schedules`,
+and timeout-bearing rows of the Feature Compatibility Matrix and is
+the normative reference for what every implementation must preserve
+so that replay is not coupled to ambient wall-clock time.
+
+### Virtual time
+
+Workflow code reads time through `Workflow::now()` (or the
+namespaced `Workflow\V2\now()` helper). The reading is durable: it
+returns the deterministic event time that the executor seeded onto
+the workflow fiber from the latest history event consumed before
+the resume, not ambient wall-clock time.
+
+The contract pins:
+
+- The first resume of a run reads `workflow_runs.started_at`.
+- After an activity, child, signal, update, side-effect, version,
+  memo, or search-attribute history event drives a resume, the
+  fiber-local time advances to that event's `recorded_at`. Timer
+  resumes use `fired_at`; condition-wait resumes use the resolution
+  event's `recorded_at`.
+- Successful parallel groups advance the fiber-local time to the
+  latest leaf-completion `recorded_at` so a resume after a fan-out
+  reads the most recent observable progress on the workflow line.
+- Outside a workflow fiber (CLI, tests, server jobs, the matching
+  role) `Workflow::now()` falls back to wall-clock `now()` so
+  non-workflow code is not coupled to a fiber-local clock.
+- Workflow code MUST NOT call `Carbon::now()`,
+  `Carbon::setTestNow()`, the global `now()` helper, `microtime()`,
+  `time()`, `date()`, `new DateTime()`, or any other ambient-clock
+  primitive. Replay must produce identical decisions regardless of
+  host wall-clock state.
+
+The exit criterion "replay never depends on ambient `Carbon::now()`"
+is verified by `tests/Feature/V2/V2DeterministicTimeReplayTest.php`,
+which freezes `Carbon::setTestNow()` to a value far from the
+recorded history before replaying the run and asserts the replayed
+`Workflow::now()` reading still matches the seeded event time. The
+matching live-execution behavior is pinned by
+`tests/Feature/V2/V2DeterministicTimeTest.php`, and fiber-local
+seeding is pinned by
+`tests/Unit/V2/WorkflowFiberContextTimeTest.php`.
+
+### Timer lifecycle and supersession
+
+Timers are durable rows in `workflow_run_timers`/`workflow_run_timer_entries`
+with one logical `timer_id` per wait. The lifecycle is:
+
+- **Scheduled.** The run records `TimerScheduled` with the durable
+  `timer_id`, `delay_seconds`, and `fire_at`. A `workflow_tasks`
+  row with `task_type=Timer` and `available_at=fire_at` is created.
+- **Fired.** When the timer task is dispatched the run records
+  `TimerFired` with the same `timer_id`, and the fiber resumes at
+  `fired_at`.
+- **Cancelled.** When workflow code cancels a pending timer (scope
+  rollback, satisfied condition wait, supersession by a later
+  command) the run records `TimerCancelled` with the same
+  `timer_id` and the open `workflow_tasks` row is closed.
+- **Repaired.** When the watchdog recreates a missing timer task
+  from typed timer history, the repaired task preserves the
+  timer's durable `fire_at`. Future timers MUST NOT be snapped to
+  current wall-clock time.
+- **Transport chunking.** `TimerTransportChunker` may split the
+  scheduling/wake hops for very long sleeps that the queue
+  transport cannot represent in one entry, but the durable timer
+  row, the typed history events, and the resume value all keep one
+  stable `timer_id` end-to-end.
+
+Cancel and terminate commands targeting the run cancel every open
+timer, condition timeout, and signal timeout the same way: the run
+records `TimerCancelled` (or the corresponding wait-resolution
+event), the open `workflow_tasks` row is closed, and the fiber
+wakes through the cancellation/termination path rather than the
+timer-fired path.
+
+### Activity timeout taxonomy
+
+Every `activity_executions` row carries the four timeout deadlines
+as durable columns:
+
+- **`schedule_to_start`** — fails the activity if no worker claims
+  the task before the deadline. Retriable per the activity's retry
+  policy.
+- **`start_to_close`** (column `close_deadline_at`) — fails the
+  activity if the running attempt does not return before the
+  deadline. Retriable.
+- **`schedule_to_close`** — fails the activity if the total
+  scheduling+running time crosses the deadline. NOT retriable; the
+  enforcer terminates the activity even when the retry policy still
+  has remaining attempts.
+- **`heartbeat`** — fails the running attempt if no heartbeat is
+  recorded before the deadline. Retriable.
+
+`ActivityTimeoutEnforcer::enforce` is the single durable path that
+turns an expired deadline into a typed `ActivityTimedOut` event with
+the matching `timeout_kind`. The enforcer is covered by
+`tests/Feature/V2/V2ActivityTimeoutTest.php`.
+
+### Workflow execution-timeout, run-timeout, and workflow-task-timeout
+
+Workflow-level timeouts share the same separation:
+
+- **`execution_timeout_seconds`** — limits the total lifetime of a
+  workflow instance across continue-as-new chains. Breach records
+  `WorkflowTimedOut` with `timeout_kind=execution_timeout`.
+- **`run_timeout_seconds`** — limits a single run's lifetime.
+  Continue-as-new resets the run-timeout deadline. Breach records
+  `WorkflowTimedOut` with `timeout_kind=run_timeout`.
+- **`workflow_task_timeout_seconds`** — limits how long a single
+  workflow-task lease may be held by a worker. Lease expiry is
+  reclaimed by the watchdog and does not record a workflow-level
+  terminal event; it surfaces as a worker-plane redelivery.
+
+Both `execution_timeout` and `run_timeout` flow through
+`WorkflowExecutor::timeoutRun` and call
+`ParentClosePolicyEnforcer::enforce` (see the parent-close matrix
+above) so child disposition is consistent across timeout kinds.
+
+### Workflow-level retry first-release contract
+
+Top-level workflow runs do NOT retry on failure or timeout in the
+first v2 release. A run that records `WorkflowFailed` or
+`WorkflowTimedOut` is terminal; restarting a new run is the
+operator's or owner's responsibility. This is the explicit
+"first-release unsupported" contract: the durable engine does not
+expose a top-level workflow retry policy, and adding one is a
+contract change that must be reviewed under the rules in
+"Changing This Contract" below.
+
+Retry policies remain a first-class authoring surface for
+**activities** through `ActivityOptions` (`maxAttempts`, `backoff`,
+`nonRetryableErrorTypes`) and for **child workflows** through the
+`ChildWorkflowRetryPolicy` snapshot carried on the child-start
+command. Both default to no retry unless an explicit policy is set,
+matching the V2.0 default above.
+
+### Named schedule lifecycle
+
+`workflow_schedules` is the durable home for named schedules.
+`ScheduleManager` exposes the full lifecycle:
+
+- `create` / `createFromSpec` — register a schedule with a cron
+  expression, timezone, overlap policy, and visibility.
+- `pause` / `resume` — toggle `ScheduleStatus::Active` and
+  `ScheduleStatus::Paused` without losing schedule history.
+- `update` — change the cron, timezone, overlap policy, or paused
+  state with the next-fire time recomputed deterministically.
+- `trigger` — start a manual run of the schedule's workflow,
+  gated by `ScheduleOverlapPolicy`.
+- `tick` — two-phase fire evaluation: drain the buffered run
+  queue first, then evaluate due fires.
+- `describe` / `findByScheduleId` — read the schedule's
+  projection and audit history.
+- `delete` — mark the schedule `Deleted`; the row remains for
+  audit and is filtered out of evaluation.
+- `backfill` — replay `computeNextFireAt` between two boundary
+  instants to mass-trigger missed fires under the overlap policy.
+
+`ScheduleOverlapPolicy::Skip`, `BufferOne`, `AllowAll`,
+`CancelOther`, and `TerminateOther` are the five supported
+policies. The schedule history events (`ScheduleCreated`,
+`SchedulePaused`, `ScheduleResumed`, `ScheduleUpdated`,
+`ScheduleTriggered`, `ScheduleTriggerSkipped`, `ScheduleDeleted`)
+are the durable audit truth; schedule projections are derived from
+those events. Schedule-fire evaluation runs through the
+`workflow:v2:schedule-tick` artisan command (and the equivalent
+server endpoint), which is covered by
+`tests/Feature/V2/V2ScheduleTest.php`.
+
+### Replay tests for timeout helpers and timer ordering
+
+Replay-test coverage is required and pinned for:
+
+- Workflow timer ordering across parallel and sequential branches
+  (`tests/Feature/V2/V2GoldenHistoryReplayTest.php`,
+  `tests/Feature/V2/V2WorkflowReplayerTest.php`).
+- Activity timeout helpers
+  (`tests/Feature/V2/V2ActivityTimeoutTest.php`).
+- Deterministic time across live execution
+  (`tests/Feature/V2/V2DeterministicTimeTest.php`) and across
+  replay (`tests/Feature/V2/V2DeterministicTimeReplayTest.php`).
+- Schedule lifecycle
+  (`tests/Feature/V2/V2ScheduleTest.php`).
+
+Adding a new time-, timer-, or schedule-affecting code path that
+does not extend one of these test buckets is a release-blocker.
+
 ## Gap Analysis
 
 | Item | Classification | Decision |
