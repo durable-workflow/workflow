@@ -24,9 +24,33 @@ final class FeatureMappingDocumentationTest extends TestCase
         '## Feature Compatibility Matrix',
         '## New-In-V2 Capabilities',
         '## V2.0 Defaults',
+        '## Child Parent-Close Policy Contract',
         '## Gap Analysis',
         '## Relationship To Other Contracts',
         '## Changing This Contract',
+    ];
+
+    private const REQUIRED_PARENT_CLOSE_POLICY_PINS = [
+        '### Snapshot and default',
+        '### Per-child override observability',
+        '### Parent disposition matrix',
+        '### Waterline observability',
+        'workflow_child_calls.parent_close_policy',
+        'workflow_links.parent_close_policy',
+        '`abandon`, `request_cancel`, or',
+        'ChildWorkflowOptions',
+        'Workflow::child(...)',
+        'Workflow::executeChildWorkflow(...)',
+        '| Completion |',
+        '| Failure |',
+        '| Timeout |',
+        '| Cancellation |',
+        '| Termination |',
+        '| Continue-as-new |',
+        '| Reset |',
+        'ParentClosePolicyApplied',
+        'ParentClosePolicyFailed',
+        'ParentClosePolicyEnforcer::enforce',
     ];
 
     private const REQUIRED_FEATURE_ROWS = [
@@ -139,6 +163,7 @@ final class FeatureMappingDocumentationTest extends TestCase
         'Workflow-mode guardrails ship early',
         'Indexed search attributes and non-indexed memo are separate',
         'Workflows default to no retry unless an explicit retry policy is set',
+        'Child workflows default to `ParentClosePolicy::Abandon`',
         'Supported backend combinations are validated early',
         'Operator actions are typed engine commands',
         'Cross-namespace service calls always write a durable service-call row',
@@ -243,6 +268,19 @@ final class FeatureMappingDocumentationTest extends TestCase
                 $default,
                 $contents,
                 sprintf('Feature mapping contract must pin v2.0 default: %s.', $default),
+            );
+        }
+    }
+
+    public function testContractDocumentPinsChildParentClosePolicyContract(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_PARENT_CLOSE_POLICY_PINS as $pin) {
+            $this->assertStringContainsString(
+                $pin,
+                $contents,
+                sprintf('Child parent-close policy contract must include %s.', $pin),
             );
         }
     }

@@ -227,6 +227,9 @@ release:
 - Indexed search attributes and non-indexed memo are separate
   first-release contracts.
 - Workflows default to no retry unless an explicit retry policy is set.
+- Child workflows default to `ParentClosePolicy::Abandon` so children
+  outlive a parent close unless the parent explicitly opts in to
+  request-cancel or terminate per child.
 - Supported backend combinations are validated early by doctor/readiness
   checks.
 - Operator actions are typed engine commands from first release.
@@ -237,6 +240,101 @@ release:
 - Reset is reserved as a later-phase command.
 - Local activities and worker sessions are deferred or opt-in only after
   they receive their own explicit runtime contracts.
+
+## Child Parent-Close Policy Contract
+
+This section pins the parent-close policy contract for child workflows.
+It expands the `Child workflows` row of the Feature Compatibility Matrix
+and is the normative reference for what every implementation must
+preserve when a parent run reaches a terminal disposition while open
+children still exist.
+
+### Snapshot and default
+
+Every child call snapshots a parent-close policy at scheduling time. The
+snapshot lives in two durable rows so the enforcer and projections never
+have to recompute it:
+
+- `workflow_child_calls.parent_close_policy` — the per-call snapshot
+  recorded when `ChildCallService::scheduleChild` writes the row.
+- `workflow_links.parent_close_policy` — the per-link snapshot copied
+  to every `child_workflow` link, including the link rewritten across
+  child continue-as-new so the active link still names the policy.
+
+The snapshot value is one of `abandon`, `request_cancel`, or
+`terminate`. When `ChildWorkflowOptions` is omitted the snapshot is
+`abandon`; this default is named in `ChildWorkflowOptions`,
+`Workflow::child(...)`, `Workflow::executeChildWorkflow(...)`, and the
+public authoring docs so source-compatible callers cannot accidentally
+inherit a different default.
+
+### Per-child override observability
+
+Per-child overrides are observable on three first-class surfaces:
+
+- **Typed history**. `ChildWorkflowScheduled` and `ChildRunStarted`
+  payloads carry the snapshotted `parent_close_policy`. When a child
+  continues-as-new, the re-emitted `ChildRunStarted` for the new child
+  run keeps the same policy field so replay never has to inspect the
+  link table to know the policy. `ParentClosePolicyApplied` and
+  `ParentClosePolicyFailed` events name the targeted `child_run_id`,
+  the applied policy, and the operator-readable reason or error.
+- **Projections**. `RunLineageView::continuedWorkflowsForRun` exposes
+  `parent_close_policy`, `parent_close_policy_outcome` (`applied`,
+  `failed`, or `null` while the parent still runs),
+  `parent_close_policy_reason`, and `parent_close_policy_error` per
+  child entry. `RunLineageProjector` persists those fields onto each
+  `workflow_run_lineage_entries` row's payload so the lineage surface
+  stays inspectable after history pruning.
+- **Operator commands**. The `ChildCallService` enforcement metadata
+  (`parent_close_cancel_requested`, `parent_close_terminate_requested`)
+  is preserved on the child-call row for operator reasoning when a
+  history event has not yet projected.
+
+### Parent disposition matrix
+
+Every terminal disposition of the parent must define how policy applies.
+The runtime path that performs each transition is the source of truth;
+projections and Waterline both read from the events those paths record.
+
+| Parent disposition | Runtime path | Policy applies | Notes |
+| --- | --- | --- | --- |
+| Completion | `WorkflowExecutor::completeRun` records `WorkflowCompleted` and calls `ParentClosePolicyEnforcer::enforce` | yes | Open children with `request_cancel` or `terminate` get the corresponding command; `abandon` children are left running. |
+| Failure | `WorkflowExecutor::failRun` records `WorkflowFailed` and calls `ParentClosePolicyEnforcer::enforce` | yes | Includes deterministic terminal failures and structural-limit failures. |
+| Timeout | `WorkflowExecutor::timeoutRun` records `WorkflowTimedOut` and calls `ParentClosePolicyEnforcer::enforce` | yes | Both run-deadline and execution-deadline timeouts share the same enforcement path. |
+| Cancellation | `WorkflowStub::attemptTerminalCommand` (cancel branch) records `WorkflowCancelled` and calls `ParentClosePolicyEnforcer::enforce` | yes | Cooperative cancel of the parent still applies the snapshotted child policy; children with `abandon` keep running. |
+| Termination | `WorkflowStub::attemptTerminalCommand` (terminate branch) records `WorkflowTerminated` and calls `ParentClosePolicyEnforcer::enforce` | yes | Terminate is immediate; children with `abandon` continue independently. |
+| Continue-as-new | `WorkflowExecutor::continueAsNew` rewrites every open `child_workflow` link onto the continued run with the same `parent_close_policy` and re-emits `ChildRunStarted` on the parent line, but does **not** call the enforcer | no | The new run owns the open children and keeps the policy snapshot; only a terminal disposition of the new run triggers enforcement. |
+| Reset | Reserved as a later-phase command (see V2.0 Defaults and Gap Analysis) | reserved | Reset is intentionally not part of the v2.0 correctness core. When reset lands it must either transfer child-link ownership to the reset destination run or call `ParentClosePolicyEnforcer::enforce` against the discarded run before the old run stops owning children, mirroring the continue-as-new and terminal paths respectively. |
+
+The enforcer records `ParentClosePolicyApplied` for each successfully
+delivered command and `ParentClosePolicyFailed` (with the throwable
+message) when the child rejects the command — for example because the
+child reached a terminal state between the parent's terminal commit and
+the enforcer's read. Both events name the `child_instance_id`,
+`child_run_id`, `policy`, and `reason`, and the failed event also names
+`error`. Operator surfaces must distinguish "policy applied" from
+"policy failed silently" using these typed events; the link row's
+metadata flags are diagnostic only.
+
+### Waterline observability
+
+Waterline reads the `RunLineageView` fields above and renders a child
+lineage badge that reflects the disposition:
+
+- "Closed by parent (cancelled)" or "Closed by parent (terminated)"
+  when `parent_close_policy_outcome` is `applied` and the snapshot is
+  `request_cancel` or `terminate`.
+- "Parent-close policy failed" when `parent_close_policy_outcome` is
+  `failed`, surfacing the recorded error reason for operator triage.
+- "Abandoned by parent on close" when the parent has closed and the
+  snapshot is `abandon`.
+- The standing snapshot ("Parent-close policy: abandon|request_cancel
+  |terminate") while the parent is still running.
+
+Continue-as-new lineage entries are deliberately unaffected; the
+continued run owns the open children and re-emits the relevant child
+history events on its own line.
 
 ## Gap Analysis
 

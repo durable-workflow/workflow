@@ -311,6 +311,12 @@ abstract class Workflow
     /**
      * Invoke a child workflow and wait for its result.
      *
+     * Pass a {@see \Workflow\V2\Support\ChildWorkflowOptions} as the first
+     * argument to override the parent-close policy or routing for this
+     * call. The default parent-close policy is
+     * {@see \Workflow\V2\Enums\ParentClosePolicy::Abandon}, which leaves
+     * the child running independently when the parent closes.
+     *
      * @see child()
      */
     public static function child(string $workflow, mixed ...$arguments): mixed
@@ -320,6 +326,10 @@ abstract class Workflow
 
     /**
      * Alias for {@see child()} matching Temporal's `executeChildWorkflow` name.
+     *
+     * Inherits the same {@see \Workflow\V2\Support\ChildWorkflowOptions}
+     * contract: the default parent-close policy is
+     * {@see \Workflow\V2\Enums\ParentClosePolicy::Abandon}.
      */
     public static function executeChildWorkflow(string $workflow, mixed ...$arguments): mixed
     {
