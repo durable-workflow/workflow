@@ -40,6 +40,7 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         '### Standalone server topology',
         '### Split control/execution topology',
         '## Migration path',
+        '## Durable kernel invariants',
         '## Protocol version coordination',
         '## Authority over worker registration',
         '## Operator-visible role state',
@@ -163,6 +164,15 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
         'current_roles',
         'matching_role',
         'shape_assignments',
+    ];
+
+    private const REQUIRED_KERNEL_INVARIANT_IDS = [
+        'single_persistence_engine',
+        'single_worker_protocol',
+        'single_history_writer',
+        'single_control_authority_per_run',
+        'embedded_topology_remains_supported',
+        'role_split_is_topology_only',
     ];
 
     public function testContractDocumentExistsAndDeclaresFrozenSections(): void
@@ -509,6 +519,49 @@ final class ControlPlaneSplitDocumentationTest extends TestCase
             '/MUST NOT make operations\s+harder to observe/i',
             $contents,
             'Control-plane split contract must state splitting a role out of process does not reduce operator observability.',
+        );
+    }
+
+    public function testContractDocumentNamesEveryKernelInvariant(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_KERNEL_INVARIANT_IDS as $invariantId) {
+            $this->assertStringContainsString(
+                $invariantId,
+                $contents,
+                sprintf(
+                    'Control-plane split contract must name the %s kernel invariant so the role split can be machine-verified to preserve one durable kernel.',
+                    $invariantId
+                ),
+            );
+        }
+    }
+
+    public function testContractDocumentStatesKernelInvariantsAreMachineReadable(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertStringContainsString(
+            'kernel_invariants',
+            $contents,
+            'Control-plane split contract must name the kernel_invariants manifest field so operators and rollout automation can read kernel invariants without re-deriving them from prose.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/durable-workflow\.v2\.role-topology[^.]*manifest/i',
+            $contents,
+            'Control-plane split contract must point operators at the durable-workflow.v2.role-topology manifest as the surface that carries the kernel invariants.',
+        );
+    }
+
+    public function testContractDocumentStatesRoleSplitIsNotAProductFork(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertMatchesRegularExpression(
+            '/topology change, not a product fork/i',
+            $contents,
+            'Control-plane split contract must state explicitly that role split is a topology change, not a product fork, so the migration path does not imply a second engine.',
         );
     }
 

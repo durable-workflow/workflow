@@ -538,6 +538,57 @@ each step independently.
 Each step is reversible; collapsing the roles back onto a single
 node is always a legal topology.
 
+## Durable kernel invariants
+
+Phase 4 separates roles without forking the engine. The following
+invariants hold across every supported topology and every step in
+the migration path. They are the explicit answer to the acceptance
+criterion that the split must not imply a second engine or an
+incompatible product fork.
+
+- **Single persistence engine.** One workflow database backs every
+  topology shape. Embedded mode, standalone server, and split
+  control/execution all read and write the same SQL schema through
+  the same Eloquent models. Splitting roles MUST NOT introduce a
+  second persistence engine, a parallel store, or a "v2-split"
+  schema variant.
+- **Single worker protocol.** One HTTP worker protocol carries
+  workflow-task and activity-task claim, complete, fail, and
+  heartbeat traffic across every topology, frozen by the Phase 2
+  contract in `docs/architecture/worker-compatibility.md`.
+  Splitting roles MUST NOT introduce a second worker protocol or a
+  topology-specific dialect.
+- **Single history writer.** `history_events` has exactly one
+  durable writer per logical event regardless of where the
+  history/projection role runs, per the Phase 1 contract in
+  `docs/architecture/execution-guarantees.md`. Out-of-process
+  history is a physical move, not a second writer.
+- **Single control authority per run.** Every mutation of a given
+  workflow run routes through one control-plane authority for that
+  run. Splitting roles MUST NOT allow two control planes to mutate
+  the same run concurrently; the per-run row locks frozen by the
+  Phase 1 contract continue to serialise transitions even when the
+  control plane scales horizontally.
+- **Embedded topology remains supported.** The embedded shape
+  where one process fills every role MUST stay legal. Existing
+  embedded hosts are never required to migrate to standalone
+  server or split control/execution to keep working.
+- **Role split is topology-only.** Splitting roles is a deployment
+  topology change, not a product fork. Collapsing the roles back
+  onto a single process is always a legal topology, and SDKs, CLI,
+  Waterline, and Cloud read the same contracts regardless of
+  which topology the cluster is currently running.
+
+These invariants are surfaced as a machine-readable
+`kernel_invariants` block on the `durable-workflow.v2.role-topology`
+manifest. Operators and rollout automation MAY rely on the named
+invariant identifiers (`single_persistence_engine`,
+`single_worker_protocol`, `single_history_writer`,
+`single_control_authority_per_run`,
+`embedded_topology_remains_supported`,
+`role_split_is_topology_only`) to assert that a candidate topology
+preserves the kernel before applying a shape change.
+
 ## Protocol version coordination
 
 The split multiplies the number of protocol-version surfaces. Each

@@ -51,4 +51,63 @@ final class RoleTopologySnapshotTest extends TestCase
             $snapshot['supported_topologies']['split_control_execution']['process_classes']['execution_node']['roles'],
         );
     }
+
+    public function testItPublishesEveryKernelInvariantSoRoleSplitDoesNotImplyASecondEngine(): void
+    {
+        $snapshot = RoleTopologySnapshot::current();
+
+        $this->assertArrayHasKey('kernel_invariants', $snapshot);
+
+        $this->assertIsArray($snapshot['kernel_invariants']);
+
+        $invariantIds = array_map(
+            static fn (array $entry): string => $entry['id'],
+            $snapshot['kernel_invariants'],
+        );
+
+        $this->assertSame(
+            [
+                'single_persistence_engine',
+                'single_worker_protocol',
+                'single_history_writer',
+                'single_control_authority_per_run',
+                'embedded_topology_remains_supported',
+                'role_split_is_topology_only',
+            ],
+            $invariantIds,
+        );
+
+        foreach ($snapshot['kernel_invariants'] as $invariant) {
+            $this->assertNotEmpty(
+                $invariant['summary'],
+                sprintf('Kernel invariant %s must publish a non-empty summary.', $invariant['id']),
+            );
+            $this->assertSame(
+                ['embedded', 'standalone_server', 'split_control_execution'],
+                $invariant['applies_to'],
+                sprintf(
+                    'Kernel invariant %s must apply to every supported topology shape so the split does not imply a second engine.',
+                    $invariant['id'],
+                ),
+            );
+        }
+    }
+
+    public function testItPublishesReversibleMigrationPathSteps(): void
+    {
+        $snapshot = RoleTopologySnapshot::current();
+
+        $this->assertNotEmpty($snapshot['migration_path']);
+
+        foreach ($snapshot['migration_path'] as $step) {
+            $this->assertArrayHasKey('reversible', $step);
+            $this->assertTrue(
+                $step['reversible'],
+                sprintf(
+                    'Migration step %s must be reversible so collapsing the roles back onto a single node is always a legal topology.',
+                    $step['step'],
+                ),
+            );
+        }
+    }
 }

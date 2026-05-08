@@ -57,6 +57,7 @@ final class RoleTopologySnapshot
             'scaling_boundaries' => self::scalingBoundaries(),
             'supported_topologies' => self::supportedTopologies(),
             'migration_path' => self::migrationPath(),
+            'kernel_invariants' => self::kernelInvariants(),
         ];
     }
 
@@ -516,7 +517,8 @@ final class RoleTopologySnapshot
     /**
      * @return list<array{
      *     step: string,
-     *     result: string
+     *     result: string,
+     *     reversible: bool
      * }>
      */
     private static function migrationPath(): array
@@ -525,26 +527,75 @@ final class RoleTopologySnapshot
             [
                 'step' => 'audit_role_boundaries',
                 'result' => 'tooling flags cross-role writes before runtime shape changes',
+                'reversible' => true,
             ],
             [
                 'step' => 'expose_role_bindings',
                 'result' => 'container seams allow out-of-process adapters without patching the package',
+                'reversible' => true,
             ],
             [
                 'step' => 'introduce_dedicated_matching_shape',
                 'result' => 'matching can run as its own process class without changing the claim contract',
+                'reversible' => true,
             ],
             [
                 'step' => 'split_history_projection',
                 'result' => 'history and projections can move out of process without introducing a second writer',
+                'reversible' => true,
             ],
             [
                 'step' => 'split_scheduler',
                 'result' => 'schedule firing can move behind leader election while single-replica deployments stay legal',
+                'reversible' => true,
             ],
             [
                 'step' => 'optional_execution_partitioning',
                 'result' => 'workers can partition by namespace, connection, queue, and compatibility',
+                'reversible' => true,
+            ],
+        ];
+    }
+
+    /**
+     * @return list<array{
+     *     id: string,
+     *     summary: string,
+     *     applies_to: list<string>
+     * }>
+     */
+    private static function kernelInvariants(): array
+    {
+        return [
+            [
+                'id' => 'single_persistence_engine',
+                'summary' => 'one workflow database backs every topology shape; role split does not introduce a second persistence engine',
+                'applies_to' => ['embedded', 'standalone_server', 'split_control_execution'],
+            ],
+            [
+                'id' => 'single_worker_protocol',
+                'summary' => 'one HTTP worker protocol carries claim, complete, fail, and heartbeat traffic across every topology; role split does not fork the worker contract',
+                'applies_to' => ['embedded', 'standalone_server', 'split_control_execution'],
+            ],
+            [
+                'id' => 'single_history_writer',
+                'summary' => 'history_events has exactly one durable writer per logical event regardless of where the history/projection role runs',
+                'applies_to' => ['embedded', 'standalone_server', 'split_control_execution'],
+            ],
+            [
+                'id' => 'single_control_authority_per_run',
+                'summary' => 'every mutation of a given workflow run routes through one control-plane authority; per-run row locks serialise transitions across replicas',
+                'applies_to' => ['embedded', 'standalone_server', 'split_control_execution'],
+            ],
+            [
+                'id' => 'embedded_topology_remains_supported',
+                'summary' => 'the embedded shape where one process fills every role MUST stay legal; existing embedded hosts are never forced to migrate',
+                'applies_to' => ['embedded', 'standalone_server', 'split_control_execution'],
+            ],
+            [
+                'id' => 'role_split_is_topology_only',
+                'summary' => 'splitting roles is a topology change, not a product fork; collapsing the roles back onto a single process is always a legal topology',
+                'applies_to' => ['embedded', 'standalone_server', 'split_control_execution'],
             ],
         ];
     }
