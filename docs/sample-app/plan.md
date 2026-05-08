@@ -30,12 +30,15 @@ this document only describes the contract and phase plan.
 
 This plan covers:
 
-- the four phases of sample-app evolution, from "small Laravel demo"
-  to "first-class upstream feedback loop";
+- the five phases of sample-app evolution, from "small Laravel demo"
+  through "first-class upstream feedback loop" to "discoverable
+  ecosystem-fit reference";
 - the deliverables and exit criteria for each phase;
 - how the sample app stays in sync with workflow-package releases;
 - how upstream features get sample coverage and how missing coverage is
-  surfaced.
+  surfaced;
+- how the sample app is linked, cited, and discovered from the docs
+  site, release notes, and external contributions.
 
 It does not cover:
 
@@ -61,6 +64,7 @@ of the sample-app repository.
 | 2 | Multi-pattern coverage and codespace flow | done |
 | 3 | Operator surfaces and MCP | done |
 | 4 | Upstream feedback loop | done |
+| 5 | Ecosystem fit | in progress |
 
 ## Phase 1 — Foundational samples
 
@@ -170,6 +174,85 @@ instead of implicit.
 - README "Reporting Bugs and Requesting Samples" section — operator-
   visible entry point that explains both flows in one place.
 
+## Phase 5 — Ecosystem fit
+
+**Goal.** The sample app is discoverable, linked, and treated as the
+default place an engineer points a newcomer who asks "how do I learn
+Durable Workflow?". Phases 1–4 made the sample app correct and current;
+Phase 5 makes it visible.
+
+**Deliverables.**
+
+- prominent, in-content links from the docs-site quickstart pages
+  (`introduction.md`, `installation.md`) and from the pattern pages most
+  newcomers reach first (sagas, signals, message streams,
+  child-workflows) into the sample-app reference page on the docs site;
+- a release-note-feature contract that names the bar a sample must meet
+  to be cited in upstream release notes, plus a sample-app-side anchor
+  that maintainers consult before tagging a release;
+- a "contribute a sample" guide for external contributors who have a
+  real durable-workflow pattern to share, hosted on the docs site and
+  cross-linked from the sample-app repository;
+- a Waterline gallery on the docs-site sample-app page that names every
+  registered sample, the artisan command that exercises it, and the
+  Waterline screen that proves the run, so a reader can decide whether
+  the sample is the one they want before cloning the repo;
+- a blog post anchored on a sample-app workflow rather than an isolated
+  snippet, demonstrating the "read the sample, run the sample, change
+  the sample" loop end to end.
+
+**Exit criteria.**
+
+- the sample-app reference page is reachable from the docs-site
+  introduction and installation pages and from at least one feature
+  page per major pattern surface (sagas, signals, message streams,
+  child-workflows) without requiring a sidebar hunt;
+- upstream release notes for the workflow package cite the sample-app
+  workflow class and artisan command for any feature whose
+  release-notes-feature contract entry is `required`;
+- the docs-site sample-app gallery section names every entry in the
+  sample index and the Waterline screen that demonstrates it, and the
+  sample index lints for parity with the gallery so a new sample cannot
+  ship without a gallery row;
+- external contributors land sample workflows on a predictable cadence
+  through the published "contribute a sample" guide, not through ad-hoc
+  maintainer back-and-forth on individual issues.
+
+**Anchors in the docs-site repository (`durable-workflow.github.io`).**
+
+- `docs/sample-app.md` — sample-app reference page, with a "Sample
+  gallery" section that names each sample, command, and Waterline
+  screen.
+- `docs/contribute-a-sample.md` — published "contribute a sample"
+  guide, linked from the sample-app reference page and the docs-site
+  sidebar.
+- `docs/introduction.md` and `docs/installation.md` — quickstart
+  surfaces that point at the sample-app reference page in their first
+  screenful.
+- pattern pages under `docs/features/` (sagas, signals, message
+  streams, child-workflows) — each links to the matching sample-app
+  workflow class so readers can leave the snippet and run it.
+
+**Anchors in the sample-app repository.**
+
+- `CONTRIBUTING.md` — repository-side mirror of the "contribute a
+  sample" guide; it tracks the published guide and stays the entry
+  point a reader hits when they land in the repo without going through
+  the docs site first.
+- `docs/release-notes-feature-contract.md` — the bar a sample must
+  meet to be cited in upstream release notes, plus the maintainer
+  checklist for tagging a release.
+- README "Sample Index" — the sample-index table is the source of
+  truth that the docs-site gallery mirrors; it stays in sync with the
+  gallery rows on the docs site.
+
+**Anchors in the workflow repository.**
+
+- `docs/sample-app/plan.md` — this phase plan.
+- release notes / `CHANGELOG.md` — entries that introduce a sample-
+  worthy feature follow the release-notes-feature contract and cite
+  the sample-app workflow class plus artisan command.
+
 ## Cadence Contract
 
 The sample-app pinned `durable-workflow/workflow` version moves within
@@ -217,6 +300,13 @@ phase, or relaxing the cadence contract requires updating this document
 and the corresponding artifacts in the sample-app repository in the same
 change. In particular, marking Phase 4 deliverables as done requires the
 linked anchors above to exist on `main` of the sample-app repository.
+Marking Phase 5 deliverables as done requires the corresponding pages
+to exist on `main` of `durable-workflow.github.io` (the
+sample-app reference page with a gallery section, the
+contribute-a-sample guide, and the cross-links from quickstart and
+pattern pages) and the matching artifacts to exist on `main` of the
+sample-app repository (`CONTRIBUTING.md` and the release-notes-feature
+contract).
 
 Removing a sample from the sample app or replacing it with a different
 demonstration of the same feature surface is a manifest update, not a
