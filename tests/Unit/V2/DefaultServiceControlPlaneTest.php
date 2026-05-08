@@ -305,6 +305,142 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertCount(1, $fakeWorkflow->starts);
     }
 
+    public function testActivityBindingMarksCallStartedWithGeneratedActivityExecutionReference(): void
+    {
+        $controlPlane = new DefaultServiceControlPlane(
+            new FakeServiceWorkflowControlPlane(),
+            new DefaultServiceBoundaryPolicy(),
+        );
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'handler_binding_kind' => ServiceCallBindingKind::ActivityExecution->value,
+            'handler_target_reference' => 'billing.invoice.activity',
+            'handler_binding' => [
+                'activity_class' => 'App\\Activities\\IssueInvoice',
+                'activity_type' => 'billing.invoice.issue',
+                'queue' => 'invoices-priority',
+            ],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+            'principal_subject' => 'user:operator',
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Started->value, $result['status']);
+        $this->assertSame(ServiceCallBindingKind::ActivityExecution->value, $result['resolved_binding_kind']);
+        $this->assertNotNull($result['resolved_target_reference']);
+        $this->assertSame($result['resolved_target_reference'], $result['handler']['activity_execution_id']);
+        $this->assertSame('App\\Activities\\IssueInvoice', $result['handler']['activity_class']);
+        $this->assertSame('billing.invoice.issue', $result['handler']['activity_type']);
+        $this->assertSame(ServiceCallBindingKind::ActivityExecution->value, $result['handler']['kind']);
+
+        $call = WorkflowServiceCall::query()->firstOrFail();
+
+        $this->assertSame(ServiceCallStatus::Started->value, $call->status);
+        $this->assertSame(ServiceCallOutcome::Accepted, $call->outcome);
+        $this->assertSame($result['resolved_target_reference'], $call->resolved_target_reference);
+        $this->assertSame($result['resolved_target_reference'], $call->metadata['activity_execution_id']);
+        $this->assertSame('App\\Activities\\IssueInvoice', $call->metadata['activity_class']);
+        $this->assertSame('billing.invoice.issue', $call->metadata['activity_type']);
+        $this->assertSame('invoices-priority', $call->metadata['queue']);
+    }
+
+    public function testActivityBindingFailsWhenActivityClassAndReferenceMissing(): void
+    {
+        $controlPlane = new DefaultServiceControlPlane(
+            new FakeServiceWorkflowControlPlane(),
+            new DefaultServiceBoundaryPolicy(),
+        );
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'handler_binding_kind' => ServiceCallBindingKind::ActivityExecution->value,
+            'handler_target_reference' => null,
+            'handler_binding' => [],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+        ]);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('handler_target_missing', $result['reason']);
+        $this->assertSame(ServiceCallStatus::Failed->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::HandlerFailed->value, $result['outcome']);
+    }
+
+    public function testInvocableCarrierBindingMarksCallStartedWithGeneratedCarrierRequestReference(): void
+    {
+        $controlPlane = new DefaultServiceControlPlane(
+            new FakeServiceWorkflowControlPlane(),
+            new DefaultServiceBoundaryPolicy(),
+        );
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'handler_binding_kind' => 'invocable_http',
+            'handler_target_reference' => 'https://carrier.billing.example/handle',
+            'handler_binding' => [
+                'carrier' => 'php-invocable',
+                'carrier_handler' => 'billing.invoice.issue',
+                'workflow_instance_id' => 'invoice-42',
+            ],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+            'principal_subject' => 'user:operator',
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Started->value, $result['status']);
+        $this->assertSame(ServiceCallBindingKind::InvocableCarrierRequest->value, $result['resolved_binding_kind']);
+        $this->assertNotNull($result['resolved_target_reference']);
+        $this->assertSame($result['resolved_target_reference'], $result['handler']['carrier_request_id']);
+        $this->assertSame('https://carrier.billing.example/handle', $result['handler']['carrier_endpoint']);
+        $this->assertSame('billing.invoice.issue', $result['handler']['carrier_handler']);
+        $this->assertSame('php-invocable', $result['handler']['carrier']);
+        $this->assertSame('invoice-42', $result['linked_workflow_instance_id']);
+
+        $call = WorkflowServiceCall::query()->firstOrFail();
+
+        $this->assertSame(ServiceCallStatus::Started->value, $call->status);
+        $this->assertSame(ServiceCallOutcome::Accepted, $call->outcome);
+        $this->assertSame($result['resolved_target_reference'], $call->metadata['carrier_request_id']);
+        $this->assertSame('https://carrier.billing.example/handle', $call->metadata['carrier_endpoint']);
+        $this->assertSame('billing.invoice.issue', $call->metadata['carrier_handler']);
+        $this->assertSame('php-invocable', $call->metadata['carrier']);
+    }
+
+    public function testInvocableCarrierBindingFailsWhenEndpointAndReferenceMissing(): void
+    {
+        $controlPlane = new DefaultServiceControlPlane(
+            new FakeServiceWorkflowControlPlane(),
+            new DefaultServiceBoundaryPolicy(),
+        );
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'handler_binding_kind' => 'invocable_http',
+            'handler_target_reference' => null,
+            'handler_binding' => [],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+        ]);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('handler_target_missing', $result['reason']);
+        $this->assertSame(ServiceCallStatus::Failed->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::HandlerFailed->value, $result['outcome']);
+    }
+
     public function testCancelCallHonorsCancellationPolicy(): void
     {
         $controlPlane = new DefaultServiceControlPlane(

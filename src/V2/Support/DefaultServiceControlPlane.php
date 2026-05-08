@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use DateTimeInterface;
+use Illuminate\Support\Str;
 use Throwable;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
@@ -733,6 +734,18 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $request,
                 $options,
             ),
+            ServiceCallBindingKind::ActivityExecution->value => $this->dispatchActivityExecution(
+                $call,
+                $operation,
+                $request,
+                $options,
+            ),
+            ServiceCallBindingKind::InvocableCarrierRequest->value, 'invocable_http' => $this->dispatchInvocableCarrierRequest(
+                $call,
+                $operation,
+                $request,
+                $options,
+            ),
             default => null,
         };
     }
@@ -977,6 +990,137 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $this->stringFrom($result['message'] ?? null),
             ['control_plane' => $this->publicResult($result)],
         );
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function dispatchActivityExecution(
+        WorkflowServiceCall $call,
+        WorkflowServiceOperation $operation,
+        ServiceBoundaryRequest $request,
+        array $options,
+    ): array {
+        $binding = $this->handlerBinding($operation);
+        $activityClass = $this->bindingString($binding, ['activity_class', 'class'])
+            ?? $this->filledString($operation->handler_target_reference);
+        $activityType = $this->bindingString($binding, ['activity_type', 'type'])
+            ?? $activityClass;
+
+        if ($activityType === null) {
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'handler_target_missing',
+                'Activity binding has no activity class or type.',
+            );
+        }
+
+        $activityExecutionId = $this->bindingString($binding, ['activity_execution_id'])
+            ?? $this->stringOption($options, 'activity_execution_id')
+            ?? (string) Str::ulid();
+
+        $linkedInstanceId = $this->bindingString($binding, ['workflow_instance_id', 'owning_workflow_instance_id'])
+            ?? $this->stringOption($options, 'owning_workflow_instance_id');
+        $linkedRunId = $this->bindingString($binding, ['workflow_run_id', 'owning_workflow_run_id'])
+            ?? $this->stringOption($options, 'owning_workflow_run_id');
+
+        $metadata = [
+            'activity_execution_id' => $activityExecutionId,
+            'activity_class' => $activityClass,
+            'activity_type' => $activityType,
+        ];
+
+        foreach (['connection', 'queue'] as $key) {
+            $value = $this->bindingString($binding, [$key]) ?? $this->stringOption($options, $key);
+            if ($value !== null) {
+                $metadata[$key] = $value;
+            }
+        }
+
+        $this->markStarted(
+            $call,
+            ServiceCallBindingKind::ActivityExecution->value,
+            $activityExecutionId,
+            $linkedInstanceId,
+            $linkedRunId,
+            null,
+            $metadata,
+        );
+
+        return [
+            'accepted' => true,
+            'kind' => ServiceCallBindingKind::ActivityExecution->value,
+            'activity_execution_id' => $activityExecutionId,
+            'activity_class' => $activityClass,
+            'activity_type' => $activityType,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function dispatchInvocableCarrierRequest(
+        WorkflowServiceCall $call,
+        WorkflowServiceOperation $operation,
+        ServiceBoundaryRequest $request,
+        array $options,
+    ): array {
+        $binding = $this->handlerBinding($operation);
+        $carrierEndpoint = $this->bindingString($binding, ['carrier_endpoint', 'endpoint', 'url'])
+            ?? $this->filledString($operation->handler_target_reference);
+        $carrierHandler = $this->bindingString($binding, ['carrier_handler', 'handler', 'handler_name']);
+        $carrierName = $this->bindingString($binding, ['carrier', 'carrier_name']);
+
+        if ($carrierEndpoint === null) {
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'handler_target_missing',
+                'Invocable carrier binding has no endpoint or carrier reference.',
+            );
+        }
+
+        $carrierRequestId = $this->bindingString($binding, ['carrier_request_id'])
+            ?? $this->stringOption($options, 'carrier_request_id')
+            ?? (string) Str::ulid();
+
+        $linkedInstanceId = $this->bindingString($binding, ['workflow_instance_id', 'bound_workflow_instance_id'])
+            ?? $this->stringOption($options, 'bound_workflow_instance_id');
+
+        $metadata = [
+            'carrier_request_id' => $carrierRequestId,
+            'carrier_endpoint' => $carrierEndpoint,
+        ];
+
+        if ($carrierHandler !== null) {
+            $metadata['carrier_handler'] = $carrierHandler;
+        }
+
+        if ($carrierName !== null) {
+            $metadata['carrier'] = $carrierName;
+        }
+
+        $this->markStarted(
+            $call,
+            ServiceCallBindingKind::InvocableCarrierRequest->value,
+            $carrierRequestId,
+            $linkedInstanceId,
+            null,
+            null,
+            $metadata,
+        );
+
+        return [
+            'accepted' => true,
+            'kind' => ServiceCallBindingKind::InvocableCarrierRequest->value,
+            'carrier_request_id' => $carrierRequestId,
+            'carrier_endpoint' => $carrierEndpoint,
+            'carrier_handler' => $carrierHandler,
+            'carrier' => $carrierName,
+        ];
     }
 
     /**
