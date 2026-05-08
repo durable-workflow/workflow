@@ -26,6 +26,11 @@ final class FeatureMappingDocumentationTest extends TestCase
         '## V2.0 Defaults',
         '## Child Parent-Close Policy Contract',
         '## Gap Analysis',
+        '## Migration Strategy',
+        '### Storage compatibility',
+        '### Package and naming compatibility',
+        '### Payload, config, and model compatibility',
+        '### Adoption',
         '## Relationship To Other Contracts',
         '## Changing This Contract',
     ];
@@ -187,6 +192,35 @@ final class FeatureMappingDocumentationTest extends TestCase
         'Unsupported backend combinations',
     ];
 
+    private const REQUIRED_MIGRATION_POINTS = [
+        'V2 does not interpret v1 tables as native runtime truth',
+        'Active v1 executions finish on v1',
+        'workflow:v2:history-import',
+        'PHP_INT_MAX',
+        'finish on v1, start new on v2',
+        'durable-workflow/workflow',
+        'Workflow\\V2',
+        'workflows.v2.types',
+        'embedded-to-server',
+        'avro',
+        'workflow-serializer-y',
+        'workflow-serializer-base64',
+        'SerializableClosure',
+        'WorkflowMetadata',
+        'ModelIdentifier',
+        'OperatorObservabilityRepository',
+        'Monolith',
+        'Multi-app',
+        'Microservice',
+        'Operator-heavy',
+        'Canary',
+        'Drain',
+        'Rollback',
+        'Replay-debug',
+        '"Mixed-fleet" is not a v2-internal rollout primitive',
+        'v1→v2 transition',
+    ];
+
     private const REQUIRED_RELATED_CONTRACTS = [
         'docs/api-stability.md',
         'docs/architecture/query-and-live-debug.md',
@@ -302,6 +336,19 @@ final class FeatureMappingDocumentationTest extends TestCase
             $contents,
             'Feature mapping contract must state the v1 parity conclusion explicitly.',
         );
+    }
+
+    public function testContractDocumentDeclaresMigrationStrategy(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (self::REQUIRED_MIGRATION_POINTS as $point) {
+            $this->assertStringContainsString(
+                $point,
+                $contents,
+                sprintf('Feature mapping contract migration strategy must cover %s.', $point),
+            );
+        }
     }
 
     public function testContractDocumentCitesRelatedContracts(): void

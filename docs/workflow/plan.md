@@ -357,6 +357,150 @@ There are no known current v1 product features left without a v2 home.
 Items listed as deferred are either not v1 parity requirements or are
 explicitly reserved for a future contract before support is advertised.
 
+## Migration Strategy
+
+V2 ships as a new product surface beside the v1 PHP package. The migration
+contract below frames how the durable kernel, the package and naming
+boundary, payload/config/model compatibility, and the adoption rollout fit
+together. The customer-facing migration guide on the docs site implements
+these rules; this section is the durable-kernel authority they cite.
+
+### Storage compatibility
+
+- V2 does not interpret v1 tables as native runtime truth. The v2 durable
+  homes named in the [Feature Compatibility Matrix](#feature-compatibility-matrix)
+  are the only source of replay authority for v2 runs. The v1 tables
+  (`workflows`, `workflow_logs`, `workflow_signals`, `workflow_timers`,
+  `workflow_exceptions`, `workflow_relationships`) remain on disk for the
+  v1 finish-on-v1 path; v2 code MUST NOT read them as engine truth.
+- Active v1 executions finish on v1. They are not rewritten into v2
+  `workflow_runs` mid-flight, and there is no automatic in-place migration
+  of leased v1 work.
+- Completed v1 executions may be imported into v2 archive/history form
+  through the same `workflow:v2:history-import` contract that handles
+  embedded v2 imports. The importer maps v1 generic logs and
+  `PHP_INT_MAX` sentinels into v2 event/link payloads, and writes the
+  result into the durable rows named by the matrix above.
+- The importer detects pruned or partial v1 executions, normalizes v1
+  schema inconsistencies, and marks records as partial when source rows
+  are missing rather than fabricating durable history. Imported runs
+  carry the `workflow_runs.import_source`, `import_id`,
+  `import_dedupe_key`, `import_contract_version`, and `imported_at`
+  markers so the run is visibly "imported, not natively executed."
+- The default upgrade path is "finish on v1, start new on v2." Importing
+  closed v1 history is opt-in archive support, not the standard cutover
+  path.
+
+### Package and naming compatibility
+
+- The Composer rename `laravel-workflow/laravel-workflow` →
+  `durable-workflow/workflow` is a packaging boundary. The v1 package
+  keeps its name on Packagist; v2 ships under the new name with the
+  `Workflow\V2` namespace.
+- Waterline reads from both v1 and v2 durable rows during the cutover
+  window. It is not part of the standalone-server distribution and does
+  not require its package coordinates to change for the v2 cutover.
+- Microservice upgrade guidance: existing PHP microservices that share
+  the same v1 package upgrade together by adopting the v2 type-alias
+  registry (`workflows.v2.types`), the language-neutral payload codec,
+  and the v2 task-id transport. Stable workflow/activity type keys are
+  the durable boundary across services; PHP fully-qualified class names
+  are not.
+- Laravel embedded-to-server upgrade path: an embedded v2 deployment
+  that wants to move new work onto the standalone server keeps the same
+  durable identities (`workflow_instance_id`, `run_id`), the same task
+  queue names, and the same payload codec, while pointing the
+  application at the server's HTTP API as an explicit remote dependency.
+  Existing embedded runs drain in place; new starts route to the server.
+- Remote-endpoint configuration is explicit. The server base URL,
+  namespace, task queue, and auth material are configured directly
+  rather than inferred from Laravel-app-local settings, so the cutover
+  does not depend on hidden defaults.
+
+### Payload, config, and model compatibility
+
+- Every durable v2 payload carries a payload-envelope codec name (and,
+  where applicable, a version) so a worker, importer, or replay tool can
+  decode it without inspecting deployment-local config. The
+  package-level default codec is the language-neutral `avro` codec; the
+  legacy `workflow-serializer-y` and `workflow-serializer-base64` codecs
+  remain resolvable only as drain/import codecs for v1 history.
+- The importer accepts `SerializableClosure`-wrapped payloads, mixed
+  serializer formats inside one v1 history, `WorkflowMetadata` envelopes,
+  and `ModelIdentifier`-only payloads. Identifier-only payloads stay
+  identifier-only on import; the importer does not eagerly hydrate
+  application models it cannot prove still exist.
+- Custom serializer classes from v1 are not a v2 runtime contract.
+  `php artisan workflow:v2:doctor` flags any `workflows.serializer`
+  setting that is not `avro`, `workflow-serializer-y`, or
+  `workflow-serializer-base64` as migration debt; default-codec
+  resolution silently falls back to `avro` for new runs so encode does
+  not fail, and the configured custom class is never invoked.
+- Custom model-subclass compatibility is a frozen support matrix.
+  Subclassing `WorkflowInstance`, `WorkflowRun`, `WorkflowTask`,
+  history-event/projection/schedule/activity/failure/link/messages
+  models, and the search-attribute/memo/child-call models is supported
+  when the subclass keeps the package's column names, primary keys, and
+  foreign keys. Custom table names with custom foreign-key column names
+  are out of contract.
+- Waterline v2 adapters consume the
+  `Workflow\V2\Contracts\OperatorObservabilityRepository` contract and
+  the v2 projection rows. They do not depend on a configured Eloquent
+  subclass to render run detail; swapping the subclass does not require
+  a Waterline change as long as the package column and key contract is
+  preserved.
+
+### Adoption
+
+- Cutover migration guides exist for the v1 surfaces customers actually
+  ran in production: Laravel queues and chains, batches, scheduled
+  workflows (cron-driven starts), webhook-driven external ingress, and
+  PHP microservices. Each guide maps v1 entry points to the v2
+  primitives named in the matrix and points at the durable home where
+  the new run's truth lives.
+- Reference architectures cover the deployment shapes adopters actually
+  run:
+  - **Monolith.** One Laravel app embedding the workflow package owns
+    durable rows, workers, and Waterline. Adoption is a same-app
+    package upgrade plus a cutover window for active v1 runs.
+  - **Multi-app.** Several Laravel apps share a database or a server
+    deployment. Each app stamps stable workflow/activity type keys; one
+    namespace owns the durable kernel, and other apps participate as
+    starters or workers using the type-alias registry.
+  - **Microservice.** Workers are split across services and possibly
+    languages. The standalone server owns the durable kernel; PHP, and
+    later Python or other SDK workers, register against the same
+    namespace, task queue, payload codec, and worker protocol.
+  - **Operator-heavy.** Deployments that lean on schedules, repair,
+    archive, terminate, and replay-debug surface adopt v2 by exercising
+    the operator command taxonomy from
+    [`docs/architecture/webhook-and-command-taxonomy.md`](../architecture/webhook-and-command-taxonomy.md)
+    and the deployment lifecycle controls from
+    [`docs/architecture/worker-deployment.md`](../architecture/worker-deployment.md)
+    rather than by editing durable rows directly.
+- Single-version rollout mechanics that apply inside a v2 fleet:
+  - **Canary.** Stamp newly-started runs with a new compatibility
+    marker on a small worker cohort before flipping the starter
+    process's default marker.
+  - **Drain.** `dw task-queue:drain` flips a worker cohort's drain
+    intent; pinned runs finish on the cohort that started them or
+    continue-as-new onto the new marker.
+  - **Rollback.** Resume a previously drained cohort and re-point
+    starter processes at the old marker. In-flight runs on the new
+    cohort keep running on the new cohort; nothing is silently
+    rerouted.
+  - **Replay-debug.** Versioned history-export bundles plus
+    `workflow:v2:replay-verify` reproduce a closed run on a separate
+    process so production correctness is debugged out-of-band.
+- "Mixed-fleet" is not a v2-internal rollout primitive. There is no
+  v2-alpha-to-v2 backwards-compatibility lane and no mixed-build
+  correctness contract that lives outside the compatibility-marker
+  story above. The only cross-generation surface where mixed-fleet
+  language remains meaningful is the v1→v2 transition itself: while v1
+  workers finish v1 runs and v2 workers execute v2 runs, both fleets
+  may be live at once, and that is the only sense in which a "mixed
+  fleet" is part of v2 adoption.
+
 ## Relationship To Other Contracts
 
 - [`docs/api-stability.md`](../api-stability.md) freezes public API and
@@ -368,7 +512,8 @@ explicitly reserved for a future contract before support is advertised.
 - [`docs/architecture/scheduler-correctness.md`](../architecture/scheduler-correctness.md)
   defines schedule and timer correctness boundaries.
 - [`docs/architecture/worker-compatibility.md`](../architecture/worker-compatibility.md)
-  defines mixed-fleet worker compatibility.
+  defines worker build identity, compatibility markers, and routing of
+  in-flight runs across coexisting builds.
 - [`docs/architecture/worker-deployment.md`](../architecture/worker-deployment.md)
   defines first-class deployment lifecycle and rollout blockage.
 - [`docs/architecture/sticky-execution.md`](../architecture/sticky-execution.md)
