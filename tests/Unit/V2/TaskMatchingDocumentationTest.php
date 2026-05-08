@@ -102,6 +102,7 @@ final class TaskMatchingDocumentationTest extends TestCase
         'CacheLongPollWakeStore',
         'OperatorMetrics',
         'OperatorQueueVisibility',
+        'HealthCheck',
         'RunSummaryProjector',
         'LifecycleEventDispatcher',
         'ActivityLease',
@@ -490,6 +491,83 @@ final class TaskMatchingDocumentationTest extends TestCase
                 sprintf(
                     'Task matching contract must cite %s as the source-of-truth for the matching-role discovery limit.',
                     $sourceConst,
+                ),
+            );
+        }
+    }
+
+    public function testContractDocumentNamesRoutingHealthAggregate(): void
+    {
+        $contents = $this->documentContents();
+
+        $this->assertStringContainsString(
+            '`routing_health`',
+            $contents,
+            'Task matching contract must name the routing_health health check as the matching role aggregate health surface.',
+        );
+        $this->assertStringContainsString(
+            'HealthCheck::snapshot()',
+            $contents,
+            'Task matching contract must cite HealthCheck::snapshot() as the source of the routing_health aggregate.',
+        );
+
+        foreach ([
+            '`backlog.compatibility_blocked_runs`',
+            '`tasks.dispatch_overdue`',
+            '`tasks.claim_failed`',
+        ] as $rolledKey) {
+            $this->assertStringContainsString(
+                $rolledKey,
+                $contents,
+                sprintf(
+                    'Task matching contract must name the %s metric key rolled into routing_health so the drain signals are reviewable as a single aggregate.',
+                    $rolledKey,
+                ),
+            );
+        }
+
+        foreach ([
+            '`required_compatibility`',
+            '`active_workers`',
+            '`active_workers_supporting_required`',
+            '`fleet_supports_required`',
+        ] as $coverageField) {
+            $this->assertStringContainsString(
+                $coverageField,
+                $contents,
+                sprintf(
+                    'Task matching contract must name the %s field on the routing_health worker-coverage triple so operators can read fleet capability without re-aggregating worker_compatibility.',
+                    $coverageField,
+                ),
+            );
+        }
+
+        $this->assertMatchesRegularExpression(
+            '/active_workers_supporting_required = 0[\s\S]{0,300}compatibility_blocked_runs[\s\S]{0,300}canonical[\s\S]{0,300}fleet cannot take this work/i',
+            $contents,
+            'Task matching contract must name the canonical "the fleet cannot take this work" reading on the routing surface (active_workers_supporting_required = 0 paired with a non-zero compatibility_blocked_runs count).',
+        );
+
+        $this->assertMatchesRegularExpression(
+            '/sole owner of fleet-admission escalation/i',
+            $contents,
+            'Task matching contract must state that worker_compatibility remains the sole owner of fleet-admission escalation so routing_health does not duplicate escalation logic.',
+        );
+
+        foreach ([
+            '`tasks.oldest_dispatch_overdue_since`',
+            '`tasks.max_dispatch_overdue_age_ms`',
+            '`tasks.oldest_claim_failed_at`',
+            '`tasks.max_claim_failed_age_ms`',
+            '`backlog.oldest_compatibility_blocked_started_at`',
+            '`backlog.max_compatibility_blocked_age_ms`',
+        ] as $ageKey) {
+            $this->assertStringContainsString(
+                $ageKey,
+                $contents,
+                sprintf(
+                    'Task matching contract must name the %s age metric key forwarded onto routing_health so wake-latency is observable as an age, not just a count.',
+                    $ageKey,
                 ),
             );
         }

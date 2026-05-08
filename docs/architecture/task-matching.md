@@ -481,6 +481,30 @@ layer healthy" without reading task rows directly:
   poller heartbeats, and stale-worker detection.
 - The standalone server exposes the metrics snapshot at
   `GET /api/system/metrics`.
+- `Workflow\V2\Support\HealthCheck::snapshot()` returns the
+  `routing_health` check as the matching role's aggregate health
+  surface. The check rolls `backlog.compatibility_blocked_runs`,
+  `tasks.dispatch_overdue`, and `tasks.claim_failed` together with
+  the matching-role shape fields above (`queue_wake_enabled`,
+  `matching_shape`, `wake_owner`, `task_dispatch_mode`) and the
+  worker-fleet coverage triple (`required_compatibility`,
+  `active_workers`, `active_workers_supporting_required`) plus the
+  derived `fleet_supports_required` flag (true when no marker is
+  required, or when at least one active worker advertises the
+  required marker). Operators read this single check to tell
+  whether work is blocked on compatibility coverage, dispatch wake
+  latency, or claim churn — and whether the active fleet can take
+  the required marker at all — without re-aggregating the
+  matching-role metrics by hand. The check escalates only on
+  visible drain signals (`compatibility_blocked_runs`,
+  `dispatch_overdue`, `claim_failed`); the worker-coverage triple
+  is observability so the dedicated `worker_compatibility` check
+  stays the sole owner of fleet-admission escalation. An
+  `active_workers_supporting_required = 0` reading paired with a
+  non-zero `compatibility_blocked_runs` count is the canonical
+  "the fleet cannot take this work" reading on the matching
+  surface, mirroring the dedicated `worker_compatibility` check
+  without duplicating its escalation logic.
 
 Guarantees:
 
@@ -496,6 +520,21 @@ Guarantees:
   populated `last_dispatch_error` is reported through
   `tasks.dispatch_failed` and remains discoverable to pollers, so
   a transport outage does not drop work.
+- Wake-latency on the dispatch path is visible without walking
+  task rows. `tasks.oldest_dispatch_overdue_since` /
+  `tasks.max_dispatch_overdue_age_ms` and the symmetric
+  `tasks.oldest_claim_failed_at` / `tasks.max_claim_failed_age_ms`
+  pair are forwarded onto `routing_health` as
+  `oldest_dispatch_overdue_since` /
+  `max_dispatch_overdue_age_ms` and `oldest_claim_failed_at` /
+  `max_claim_failed_age_ms` so a stuck dispatch wake or stuck
+  claim error is observable as an age, not just a count.
+- Compatibility-block age on the routing path is visible the same
+  way. `backlog.oldest_compatibility_blocked_started_at` and
+  `backlog.max_compatibility_blocked_age_ms` are forwarded onto
+  `routing_health` as `oldest_compatibility_blocked_started_at`
+  and `max_compatibility_blocked_age_ms` so operators can size
+  the block by age, not only by count.
 
 ## Coupling boundaries with durable history
 
