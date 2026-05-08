@@ -38,7 +38,7 @@ final class PlatformProtocolSpecs
 {
     public const SCHEMA = 'durable-workflow.v2.platform-protocol-specs.catalog';
 
-    public const VERSION = 10;
+    public const VERSION = 11;
 
     public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs';
 
@@ -650,7 +650,7 @@ final class PlatformProtocolSpecs
                 'spec_path' => 'static/platform-protocol-specs/mcp-tool-results.schema.json',
             ],
             'cluster_info_envelope' => [
-                'description' => 'JSON Schema for the `GET /api/cluster/info` envelope: identity, capability, topology, coordination-health, and the nested protocol manifests (`client_compatibility`, `control_plane`, `worker_protocol`, `surface_stability_contract`, `platform_protocol_specs`, `platform_conformance_suite`, `auth_composition_contract`, `bridge_adapter_outcome_contract`, `replay_verification_contract`). The envelope is the discovery surface that every other catalog entry can be reached from.',
+                'description' => 'JSON Schema for the `GET /api/cluster/info` envelope: identity, capability, topology, coordination-health, and the nested protocol manifests (`client_compatibility`, `control_plane`, `worker_protocol`, `surface_stability_contract`, `platform_protocol_specs`, `platform_conformance_suite`, `sdk_neutrality_contract`, `auth_composition_contract`, `bridge_adapter_outcome_contract`, `replay_verification_contract`). The envelope is the discovery surface that every other catalog entry can be reached from.',
                 'format' => self::FORMAT_JSON_SCHEMA,
                 'spec_id' => 'durable-workflow.v2.cluster-info-envelope',
                 'surface_family' => 'cluster_info_manifests',
@@ -687,6 +687,12 @@ final class PlatformProtocolSpecs
                         'owner_repo' => 'durable-workflow/workflow',
                         'schema_authority' => 'Workflow\\V2\\Support\\PlatformConformanceSuite::SCHEMA',
                         'version_authority' => 'Workflow\\V2\\Support\\PlatformConformanceSuite::VERSION',
+                    ],
+                    [
+                        'name' => 'sdk_neutrality_contract',
+                        'owner_repo' => 'durable-workflow/workflow',
+                        'schema_authority' => 'Workflow\\V2\\Support\\SdkNeutralityContract::SCHEMA',
+                        'version_authority' => 'Workflow\\V2\\Support\\SdkNeutralityContract::VERSION',
                     ],
                 ],
                 'evolution_rule' => self::EVOLUTION_ADDITIVE_MINOR_BREAKING_MAJOR,

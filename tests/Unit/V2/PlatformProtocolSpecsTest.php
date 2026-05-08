@@ -28,7 +28,7 @@ final class PlatformProtocolSpecsTest extends TestCase
         $manifest = PlatformProtocolSpecs::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-protocol-specs.catalog', $manifest['schema']);
-        $this->assertSame(10, $manifest['version']);
+        $this->assertSame(11, $manifest['version']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs',
             $manifest['authority_url'],
