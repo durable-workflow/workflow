@@ -125,6 +125,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\TaskRepairCandidates`
 - `Workflow\V2\Support\TaskRepairPolicy`
 - `Workflow\V2\Support\WorkerCompatibilityFleet`
+- `Workflow\V2\Support\WorkerHeartbeatTelemetry`
 - `Workflow\V2\Support\WorkerProtocolVersion`
 - `Workflow\V2\Support\WorkflowCommandNormalizer`
 - `Workflow\V2\Support\WorkflowDefinitionVersionSelector`
