@@ -1049,6 +1049,74 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('test-greeting-workflow', $results[0]['workflow_type']);
     }
 
+    public function testPollByWorkflowTypeDeliversTaskForUnconfiguredPolyglotTypeOnSharedQueue(): void
+    {
+        // Polyglot routing contract: a worker filters its workflow-task
+        // poll by an exact-string workflow_type, and the bridge must
+        // return matching ready tasks regardless of whether the type-key
+        // resolves to a loadable workflow class. The smoke that exposed
+        // this on a real MySQL backend was a PHP-authored workflow whose
+        // type-key is dotted and language-neutral. The cross-language
+        // smoke runs against MySQL while this test runs against the
+        // backends in CI; both must surface the matching task with the
+        // same query so a regression here is caught at the package level
+        // before the server image is published.
+        $instance = WorkflowInstance::query()->create([
+            // workflow_class is an unloadable string on purpose — mirrors
+            // the polyglot smoke shape where the workflow class lives on
+            // the PHP worker, not the server.
+            'workflow_class' => 'polyglot.contract.PhpToPythonWorkflow',
+            'workflow_type' => 'polyglot.contract.PhpToPythonWorkflow',
+            'namespace' => 'default',
+            'run_count' => 1,
+            'reserved_at' => now()->subMinute(),
+            'started_at' => now()->subMinute(),
+        ]);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'polyglot.contract.PhpToPythonWorkflow',
+            'workflow_type' => 'polyglot.contract.PhpToPythonWorkflow',
+            'namespace' => 'default',
+            'status' => RunStatus::Pending->value,
+            'arguments' => Serializer::serialize(['polyglot']),
+            'connection' => 'redis',
+            'queue' => 'polyglot-contract-shared',
+            'compatibility' => null,
+            'started_at' => now()->subMinute(),
+            'last_progress_at' => now()->subSeconds(30),
+            'last_history_sequence' => 0,
+        ]);
+
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => 'default',
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now()->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'polyglot-contract-shared',
+            'compatibility' => null,
+        ]);
+
+        $results = $this->bridge->poll(
+            null,
+            'polyglot-contract-shared',
+            10,
+            null,
+            'default',
+            ['polyglot.contract.PhpToPythonWorkflow'],
+        );
+
+        $this->assertCount(1, $results);
+        $this->assertSame($run->id, $results[0]['workflow_run_id']);
+        $this->assertSame('polyglot.contract.PhpToPythonWorkflow', $results[0]['workflow_type']);
+        $this->assertSame('polyglot-contract-shared', $results[0]['queue']);
+    }
+
     // --- complete() ---
 
     public function testCompleteWithWorkflowCompletionClosesRun(): void

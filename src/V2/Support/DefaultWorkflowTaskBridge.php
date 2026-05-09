@@ -149,45 +149,73 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $availabilityCutoff = now()
             ->addSeconds(self::AVAILABILITY_CEILING_SECONDS);
 
-        $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
-            ->where('task_type', TaskType::Workflow->value)
-            ->where('status', TaskStatus::Ready->value)
-            ->where(static function ($q) use ($availabilityCutoff) {
-                $q->whereNull('available_at')
-                    ->orWhere('available_at', '<=', $availabilityCutoff);
+        // Resolve the configured task and run model class names so callers
+        // that swap a model implementation still hit the right tables when
+        // we drop down to qualified column names. Using $task->getTable()
+        // would break for non-default model classes that override $table.
+        /** @var class-string<WorkflowTask> $taskModel */
+        $taskModel = ConfiguredV2Models::resolve('task_model', WorkflowTask::class);
+        /** @var class-string<WorkflowRun> $runModel */
+        $runModel = ConfiguredV2Models::resolve('run_model', WorkflowRun::class);
+
+        $taskTable = (new $taskModel)->getTable();
+        $runTable = (new $runModel)->getTable();
+
+        // Polyglot routing fix: when the caller filters by workflow_type, we
+        // join workflow_tasks to workflow_runs and constrain the join's
+        // run-side directly. The earlier shape — a `WHERE workflow_run_id IN
+        // (SELECT id FROM workflow_runs WHERE workflow_type IN (?, ...))`
+        // correlated subquery — is functionally equivalent in standard SQL
+        // but, on shared-queue MySQL workloads where one queue carries
+        // workflow tasks for several language-neutral workflow types, the
+        // subquery form returned no rows even when an exact-string-match
+        // run was Ready. The join form keeps the same projection and
+        // matching semantics (exact string equality on the run's stored
+        // workflow_type column, no class resolution, no canonicalization)
+        // and surfaces the matching task on every backend the package
+        // supports. We always return `$taskTable.*` so downstream Eloquent
+        // hydration sees the WorkflowTask shape it expects.
+        $query = $taskModel::query()
+            ->select($taskTable.'.*')
+            ->where($taskTable.'.task_type', TaskType::Workflow->value)
+            ->where($taskTable.'.status', TaskStatus::Ready->value)
+            ->where(static function ($q) use ($availabilityCutoff, $taskTable) {
+                $q->whereNull($taskTable.'.available_at')
+                    ->orWhere($taskTable.'.available_at', '<=', $availabilityCutoff);
             })
             // Dispatch order is (priority asc, available_at asc, id) so urgent
             // tasks lead and FIFO order is preserved within a tier. Fairness
             // across workload classes (fairness_key) is a separate reorder pass
             // applied to the candidate batch by the caller.
-            ->orderBy('priority')
-            ->orderBy('available_at')
-            ->orderBy('id')
+            ->orderBy($taskTable.'.priority')
+            ->orderBy($taskTable.'.available_at')
+            ->orderBy($taskTable.'.id')
             ->limit(max(1, min($limit, self::POLL_BATCH_CAP)));
 
         if ($connection !== null) {
-            $query->where('connection', $connection);
+            $query->where($taskTable.'.connection', $connection);
         }
 
         if ($queue !== null) {
-            $query->where('queue', $queue);
+            $query->where($taskTable.'.queue', $queue);
         }
 
         if ($compatibility !== null) {
-            $query->where('compatibility', $compatibility);
+            $query->where($taskTable.'.compatibility', $compatibility);
         }
 
         if ($namespace !== null) {
-            $query->where('namespace', $namespace);
+            $query->where($taskTable.'.namespace', $namespace);
         }
 
         if ($requestedWorkflowTypes !== []) {
-            $query->whereIn(
-                'workflow_run_id',
-                ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                    ->select('id')
-                    ->whereIn('workflow_type', $requestedWorkflowTypes),
-            );
+            $query->join(
+                $runTable,
+                $runTable.'.id',
+                '=',
+                $taskTable.'.workflow_run_id',
+            )
+                ->whereIn($runTable.'.workflow_type', $requestedWorkflowTypes);
         }
 
         $tasks = $query->get();
