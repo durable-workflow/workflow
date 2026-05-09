@@ -186,7 +186,72 @@ final class StandaloneWorkerVisibility
             'supported_activity_types' => self::stringList(data_get($worker, 'supported_activity_types')),
             'max_concurrent_workflow_tasks' => max(0, (int) data_get($worker, 'max_concurrent_workflow_tasks', 0)),
             'max_concurrent_activity_tasks' => max(0, (int) data_get($worker, 'max_concurrent_activity_tasks', 0)),
+            'available_workflow_slots' => self::nonNegativeIntOrNull(data_get($worker, 'available_workflow_slots')),
+            'available_activity_slots' => self::nonNegativeIntOrNull(data_get($worker, 'available_activity_slots')),
+            'available_session_slots' => self::nonNegativeIntOrNull(data_get($worker, 'available_session_slots')),
+            'process_metrics' => self::processMetrics(data_get($worker, 'process_metrics')),
         ];
+    }
+
+    private static function nonNegativeIntOrNull(mixed $value): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_int($value)) {
+            return max(0, $value);
+        }
+
+        if (is_string($value) && ctype_digit($value)) {
+            return max(0, (int) $value);
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, float|int|string>|null
+     */
+    private static function processMetrics(mixed $value): ?array
+    {
+        if (is_string($value) && trim($value) !== '') {
+            $decoded = json_decode($value, true);
+            $value = is_array($decoded) ? $decoded : null;
+        }
+
+        if (! is_array($value) || $value === []) {
+            return null;
+        }
+
+        $allowed = ['cpu_percent', 'memory_bytes', 'process_uptime_seconds', 'process_id', 'host'];
+        $clean = [];
+
+        foreach ($allowed as $key) {
+            if (! array_key_exists($key, $value) || $value[$key] === null) {
+                continue;
+            }
+
+            if ($key === 'host' && is_string($value[$key]) && trim($value[$key]) !== '') {
+                $clean[$key] = mb_substr(trim($value[$key]), 0, 255);
+
+                continue;
+            }
+
+            if ($key === 'cpu_percent' && (is_int($value[$key]) || is_float($value[$key]))) {
+                $clean[$key] = max(0.0, (float) $value[$key]);
+
+                continue;
+            }
+
+            if (is_int($value[$key])) {
+                $clean[$key] = max(0, $value[$key]);
+            } elseif (is_string($value[$key]) && ctype_digit($value[$key])) {
+                $clean[$key] = max(0, (int) $value[$key]);
+            }
+        }
+
+        return $clean === [] ? null : $clean;
     }
 
     private static function stringValue(mixed $value): ?string
