@@ -66,8 +66,12 @@ final class WorkerHeartbeatTelemetry
      * runtime APIs that PHP exposes everywhere (no extension required).
      *
      * The optional `$startedAt` argument is a Unix timestamp captured at
-     * worker boot; it is used to derive `process_uptime_seconds`. When
-     * `$startedAt` is null the uptime entry is omitted.
+     * worker boot; it is used to derive `process_uptime_seconds` and to
+     * anchor the wall-clock denominator for `cpu_percent` so long-running
+     * workers see the lifetime average rather than a value inflated by
+     * the first telemetry call. When `$startedAt` is null the uptime
+     * entry is omitted and `cpu_percent` falls back to a denominator
+     * cached on the first call.
      *
      * @return array<string, float|int|string>
      */
@@ -78,7 +82,7 @@ final class WorkerHeartbeatTelemetry
             'process_id' => self::processId(),
         ];
 
-        $cpuPercent = self::cpuPercent();
+        $cpuPercent = self::cpuPercent($startedAt);
         if ($cpuPercent !== null) {
             $metrics['cpu_percent'] = $cpuPercent;
         }
@@ -109,8 +113,15 @@ final class WorkerHeartbeatTelemetry
      * Approximate CPU percent for the current process across the runtime
      * since the process started. Returns null when the runtime does not
      * expose `getrusage()` on this platform.
+     *
+     * When `$startedAt` is provided it anchors the wall-clock denominator
+     * to the worker's actual boot time, so the ratio reflects the
+     * lifetime average. Without it, the first call's wall-clock is cached
+     * and used as the denominator — fine for short-lived processes but
+     * inflates the value on long-running workers whose first heartbeat
+     * fires after non-trivial CPU has accumulated.
      */
-    private static function cpuPercent(): ?float
+    private static function cpuPercent(?int $startedAt = null): ?float
     {
         if (! function_exists('getrusage')) {
             return null;
@@ -127,7 +138,10 @@ final class WorkerHeartbeatTelemetry
             + ((int) ($usage['ru_stime.tv_usec'] ?? 0)) / 1_000_000;
         $cpuSeconds = $userSeconds + $systemSeconds;
 
-        $wallSeconds = max(0.001, microtime(true) - (float) self::processStart());
+        $wallStart = $startedAt !== null
+            ? (float) $startedAt
+            : self::processStart();
+        $wallSeconds = max(0.001, microtime(true) - $wallStart);
 
         return round(min(100.0, max(0.0, ($cpuSeconds / $wallSeconds) * 100.0)), 2);
     }
