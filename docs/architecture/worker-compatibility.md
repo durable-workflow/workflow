@@ -156,11 +156,16 @@ Guarantees:
 
 Compatibility flows through the run lifecycle as follows:
 
-- **Start** — a new run is stamped with
-  `WorkerCompatibility::current()` on the starter process and the
-  value is written to `workflow_runs.compatibility` in the same
+- **Start** — a new run is stamped with the start-time pin in this
+  resolution order: the explicit `build_id` (or its `compatibility`
+  alias) supplied in the start options wins; otherwise the value of
+  `WorkerCompatibility::current()` on the starter process is used.
+  The marker is written to `workflow_runs.compatibility` in the same
   transaction as `WorkflowStarted`. See `DefaultWorkflowControlPlane`
-  for the dispatch site.
+  for the dispatch site. The explicit option is the surface a server
+  or external orchestrator uses to bind a new run to whichever build
+  the operator has routed new starts to, without requiring the
+  starter process to also advertise that build.
 - **Workflow tasks** — each `workflow_tasks` row carries a
   `compatibility` column. Existing tasks are synced to the owning run's
   compatibility on claim via `TaskCompatibility::sync()` so repair and

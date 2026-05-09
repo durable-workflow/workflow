@@ -55,6 +55,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         $duplicatePolicy = ($options['duplicate_start_policy'] ?? null) === 'return_existing_active'
             ? DuplicateStartPolicy::ReturnExistingActive
             : DuplicateStartPolicy::RejectDuplicate;
+        $pinnedCompatibility = self::normalizeCompatibilityOption($options);
 
         $workflowClass = $resolvedClass ?? $workflowType;
 
@@ -81,6 +82,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $runTimeoutSeconds,
             $duplicatePolicy,
             $payloadCodec,
+            $pinnedCompatibility,
             &$command,
             &$task,
             &$instance,
@@ -220,7 +222,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'execution_deadline_at' => $executionDeadlineAt,
                     'run_deadline_at' => $runDeadlineAt,
                     'status' => RunStatus::Pending->value,
-                    'compatibility' => WorkerCompatibility::current(),
+                    'compatibility' => $pinnedCompatibility ?? WorkerCompatibility::current(),
                     'payload_codec' => $payloadCodec,
                     'arguments' => is_string($arguments) ? $arguments : null,
                     'connection' => $connection,
@@ -288,6 +290,10 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
                 'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
                 'workflow_definition_fingerprint' => $fingerprint,
+                // Pinned compatibility marker — the run is bound to this
+                // worker build at start, so replay only dispatches to
+                // workers that advertise the same build.
+                'compatibility' => $run->compatibility,
             ], static fn (mixed $v): bool => $v !== null);
 
             if ($commandContract !== null) {
@@ -1059,5 +1065,32 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     private static function visibilityMetadataPayload(?array $values): ?array
     {
         return is_array($values) && $values !== [] ? $values : null;
+    }
+
+    /**
+     * Resolve the start-time pinning marker the caller wants stamped on
+     * the run. Operators (or the server's start-time router) pass the
+     * marker as `build_id` or `compatibility`; either name is honored
+     * so SDKs can pick whichever feels natural without bespoke logic.
+     *
+     * @param array<string, mixed> $options
+     */
+    private static function normalizeCompatibilityOption(array $options): ?string
+    {
+        foreach (['build_id', 'compatibility'] as $key) {
+            $value = $options[$key] ?? null;
+
+            if (! is_string($value)) {
+                continue;
+            }
+
+            $value = trim($value);
+
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
     }
 }

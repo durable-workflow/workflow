@@ -38,6 +38,13 @@ interface WorkflowControlPlane
      * - memo: array<string, mixed>|null — non-indexed metadata
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - duplicate_start_policy: 'reject_duplicate'|'return_existing_active'
+     * - build_id: string|null — pin the new run to a specific worker build
+     *     so replay only dispatches to workers advertising the same build.
+     *     Accepted as `compatibility` too. When omitted, the run inherits
+     *     the {@see WorkerCompatibility::current()} marker from the calling
+     *     worker context (legacy behavior); a server-driven start should
+     *     resolve the active build from its rollout state and pass it here
+     *     so subsequent versioned worker pools cannot break replay.
      *
      * @return array{
      *     started: bool,
