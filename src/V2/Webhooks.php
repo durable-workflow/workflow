@@ -18,10 +18,18 @@ use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge as WorkflowTaskBridgeContract;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\DuplicateStartPolicy;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CommandResponse;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\QueryResponse;
+use Workflow\V2\Support\TaskFairnessKey;
+use Workflow\V2\Support\TaskFairnessScheduler;
+use Workflow\V2\Support\TaskFairnessState;
+use Workflow\V2\Support\TaskPriority;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateWaitPolicy;
 use Workflow\V2\Support\WorkflowInstanceId;
@@ -522,6 +530,15 @@ final class Webhooks
 
             return self::describeResponse($workflowId, $runId);
         })->name('workflows.v2.runs.describe');
+
+        Route::get("{$basePath}/task-queues/{queue}/priority-fairness", static function (
+            Request $request,
+            string $queue,
+        ) {
+            $request = self::validateAuth($request);
+
+            return self::taskQueuePriorityFairnessResponse($queue);
+        })->name('workflows.v2.task-queues.priority-fairness');
     }
 
     /**
@@ -1148,6 +1165,7 @@ final class Webhooks
         ?string $compatibility,
     ) {
         $tasks = ActivityTaskBridge::poll($connection, $queue, $limit, $compatibility);
+        $tasks = self::applyFairnessReorder(self::FAIRNESS_BUCKET_ACTIVITY_TASK, $queue, $tasks);
 
         return response()->json([
             'tasks' => $tasks,
@@ -1161,10 +1179,173 @@ final class Webhooks
         ?string $compatibility,
     ) {
         $tasks = self::workflowTaskBridge()->poll($connection, $queue, $limit, $compatibility);
+        $tasks = self::applyFairnessReorder(self::FAIRNESS_BUCKET_WORKFLOW_TASK, $queue, $tasks);
 
         return response()->json([
             'tasks' => $tasks,
         ]);
+    }
+
+    /**
+     * Reorder a polled batch by fairness across workload classes within each
+     * priority tier and record the chosen dispatches against the shared state
+     * store so subsequent polls naturally yield to under-served classes.
+     *
+     * Workflow-task and activity-task dispatches keep separate fairness
+     * buckets (the namespace dimension on TaskFairnessState) so a noisy
+     * workflow class does not borrow against an activity class budget on the
+     * same queue.
+     *
+     * @param  list<array{task_id?: string, priority?: int, fairness_key?: ?string, fairness_weight?: int}>  $tasks
+     * @return list<array{task_id?: string, priority?: int, fairness_key?: ?string, fairness_weight?: int}>
+     */
+    private static function applyFairnessReorder(string $bucket, ?string $queue, array $tasks): array
+    {
+        if (count($tasks) <= 1) {
+            return $tasks;
+        }
+
+        $bucketQueue = is_string($queue) && $queue !== '' ? $queue : '';
+
+        /** @var TaskFairnessState $state */
+        $state = app(TaskFairnessState::class);
+        $scheduler = new TaskFairnessScheduler($state);
+
+        $reordered = $scheduler->reorder($bucket, $bucketQueue, $tasks);
+
+        foreach ($reordered as $entry) {
+            $class = TaskFairnessKey::classFor(
+                isset($entry['fairness_key']) && is_string($entry['fairness_key']) ? $entry['fairness_key'] : null,
+            );
+            $weight = isset($entry['fairness_weight']) && is_int($entry['fairness_weight']) && $entry['fairness_weight'] >= 1
+                ? $entry['fairness_weight']
+                : 1;
+
+            $state->recordDispatch($bucket, $bucketQueue, $class, $weight);
+        }
+
+        return $reordered;
+    }
+
+    private const FAIRNESS_BUCKET_WORKFLOW_TASK = 'workflow_task';
+
+    private const FAIRNESS_BUCKET_ACTIVITY_TASK = 'activity_task';
+
+    /**
+     * Operator-facing snapshot of the priority + fairness state for a task
+     * queue. Returns the current ready-task counts grouped by priority tier
+     * and fairness class, plus the recent-dispatch breakdown so an operator
+     * can confirm both that priority is honored under saturation (urgent
+     * tiers dominate dispatch counts) and that fairness is applied across
+     * classes (counts are roughly balanced subject to declared weights).
+     *
+     * The workflow-task and activity-task surfaces are reported separately
+     * because they keep separate fairness buckets on the dispatch path.
+     */
+    private static function taskQueuePriorityFairnessResponse(string $queue)
+    {
+        if ($queue === '') {
+            return response()->json([
+                'message' => 'The queue path segment must be a non-empty string.',
+            ], 422);
+        }
+
+        return response()->json([
+            'queue' => $queue,
+            'workflow_task' => self::priorityFairnessSurface(
+                $queue,
+                TaskType::Workflow->value,
+                self::FAIRNESS_BUCKET_WORKFLOW_TASK,
+            ),
+            'activity_task' => self::priorityFairnessSurface(
+                $queue,
+                TaskType::Activity->value,
+                self::FAIRNESS_BUCKET_ACTIVITY_TASK,
+            ),
+        ]);
+    }
+
+    /**
+     * @return array{
+     *     ready_tasks: int,
+     *     priority_tiers: list<array{
+     *         priority: int,
+     *         count: int,
+     *         classes: list<array{fairness_key: ?string, count: int, fairness_weight: int}>,
+     *     }>,
+     *     recent_dispatch: list<array{fairness_key: ?string, score: float}>,
+     * }
+     */
+    private static function priorityFairnessSurface(string $queue, string $taskType, string $bucket): array
+    {
+        $rows = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('queue', $queue)
+            ->where('task_type', $taskType)
+            ->where('status', TaskStatus::Ready->value)
+            ->get(['priority', 'fairness_key', 'fairness_weight']);
+
+        /** @var array<int, array<string, array{fairness_key: ?string, count: int, fairness_weight: int}>> $byPriority */
+        $byPriority = [];
+        $classKeys = [];
+        $total = 0;
+
+        foreach ($rows as $row) {
+            $priority = is_int($row->priority) ? $row->priority : TaskPriority::DEFAULT;
+            $fairnessKey = is_string($row->fairness_key) && $row->fairness_key !== ''
+                ? $row->fairness_key
+                : null;
+            $weight = is_int($row->fairness_weight) && $row->fairness_weight >= 1
+                ? $row->fairness_weight
+                : 1;
+
+            $classKey = TaskFairnessKey::classFor($fairnessKey);
+            $classKeys[$classKey] = true;
+            $byPriority[$priority] ??= [];
+            $byPriority[$priority][$classKey] ??= [
+                'fairness_key' => $fairnessKey,
+                'count' => 0,
+                'fairness_weight' => $weight,
+            ];
+            $byPriority[$priority][$classKey]['count']++;
+            $total++;
+        }
+
+        ksort($byPriority);
+
+        $tiers = [];
+        foreach ($byPriority as $priority => $classes) {
+            ksort($classes);
+            $tierCount = 0;
+            foreach ($classes as $class) {
+                $tierCount += $class['count'];
+            }
+
+            $tiers[] = [
+                'priority' => $priority,
+                'count' => $tierCount,
+                'classes' => array_values($classes),
+            ];
+        }
+
+        $recent = [];
+        if ($classKeys !== []) {
+            /** @var TaskFairnessState $state */
+            $state = app(TaskFairnessState::class);
+            $snapshot = $state->snapshot($bucket, $queue, array_keys($classKeys));
+
+            foreach ($snapshot as $class => $score) {
+                $recent[] = [
+                    'fairness_key' => $class === TaskFairnessKey::DEFAULT_CLASS ? null : $class,
+                    'score' => $score,
+                ];
+            }
+        }
+
+        return [
+            'ready_tasks' => $total,
+            'priority_tiers' => $tiers,
+            'recent_dispatch' => $recent,
+        ];
     }
 
     /**

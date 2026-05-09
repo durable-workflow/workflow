@@ -59,6 +59,11 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
                 $q->whereNull('available_at')
                     ->orWhere('available_at', '<=', $availabilityCutoff);
             })
+            // Dispatch order is (priority asc, available_at asc, id) so urgent
+            // tasks lead and FIFO order is preserved within a tier. Fairness
+            // across workload classes (fairness_key) is a separate reorder pass
+            // applied to the candidate batch by the caller.
+            ->orderBy('priority')
             ->orderBy('available_at')
             ->orderBy('id')
             ->limit(max(1, min($limit, DefaultWorkflowTaskBridge::POLL_BATCH_CAP)));
@@ -117,6 +122,9 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
                 'queue' => self::nonEmptyString($task->queue),
                 'compatibility' => self::nonEmptyString($task->compatibility),
                 'available_at' => $task->available_at?->toJSON(),
+                'priority' => is_int($task->priority) ? $task->priority : TaskPriority::DEFAULT,
+                'fairness_key' => self::nonEmptyString($task->fairness_key),
+                'fairness_weight' => is_int($task->fairness_weight) ? $task->fairness_weight : 1,
             ];
         })->values()
             ->all();

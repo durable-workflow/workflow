@@ -18,7 +18,9 @@ interface ActivityTaskBridge
     /**
      * Find ready activity tasks matching the given queue criteria.
      *
-     * Returns an array of task summaries ordered by availability.
+     * Returns an array of task summaries ordered by (priority asc, available_at asc, id).
+     * Fairness across workload classes is applied as a separate reorder pass on the
+     * candidate batch — see TaskFairnessKey and the dispatch fairness scheduler.
      *
      * @return list<array{
      *     task_id: string,
@@ -31,6 +33,9 @@ interface ActivityTaskBridge
      *     queue: string|null,
      *     compatibility: string|null,
      *     available_at: string|null,
+     *     priority: int,
+     *     fairness_key: string|null,
+     *     fairness_weight: int,
      * }>
      */
     /**

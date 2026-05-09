@@ -20,9 +20,12 @@ interface WorkflowTaskBridge
     /**
      * Find ready workflow tasks matching the given queue criteria.
      *
-     * Returns an array of task summaries ordered by availability.
+     * Returns an array of task summaries ordered by (priority asc, available_at asc, id).
      * Each summary contains task_id, workflow_run_id, workflow_instance_id,
-     * workflow_type, connection, queue, compatibility, sticky affinity, and available_at.
+     * workflow_type, connection, queue, compatibility, sticky affinity, available_at,
+     * and the dispatch-shaping fields priority + fairness_key + fairness_weight.
+     * Fairness across workload classes is applied as a separate reorder pass on the
+     * candidate batch — see TaskFairnessKey and the dispatch fairness scheduler.
      *
      * @param  list<string>  $workflowTypes
      * @return list<array{
@@ -37,6 +40,9 @@ interface WorkflowTaskBridge
      *     sticky_worker_id: string|null,
      *     sticky_until: string|null,
      *     available_at: string|null,
+     *     priority: int,
+     *     fairness_key: string|null,
+     *     fairness_weight: int,
      * }>
      */
     public function poll(

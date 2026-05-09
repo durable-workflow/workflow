@@ -6,6 +6,8 @@ namespace Workflow\V2;
 
 use LogicException;
 use Workflow\V2\Enums\DuplicateStartPolicy;
+use Workflow\V2\Support\TaskFairnessKey;
+use Workflow\V2\Support\TaskPriority;
 use Workflow\V2\Support\WorkflowInstanceId;
 
 final class StartOptions
@@ -40,6 +42,25 @@ final class StartOptions
     public readonly ?int $runTimeoutSeconds;
 
     /**
+     * Dispatch priority for the workflow's tasks. Lower numbers run first
+     * when workers on a shared task queue are saturated.
+     */
+    public readonly int $priority;
+
+    /**
+     * Workload-class identifier used to rebalance dispatch across distinct
+     * classes under contention. Tasks without a fairness key share one class.
+     */
+    public readonly ?string $fairnessKey;
+
+    /**
+     * Relative weight of this workload class. Higher weights receive a
+     * proportionally larger share of dispatch attention versus other classes
+     * with smaller weights.
+     */
+    public readonly int $fairnessWeight;
+
+    /**
      * @param array<string, scalar|null> $labels
      * @param array<string, mixed> $memo
      * @param array<string, scalar|null> $searchAttributes
@@ -52,6 +73,9 @@ final class StartOptions
         array $searchAttributes = [],
         ?int $executionTimeoutSeconds = null,
         ?int $runTimeoutSeconds = null,
+        ?int $priority = null,
+        ?string $fairnessKey = null,
+        ?int $fairnessWeight = null,
     ) {
         $this->duplicateStartPolicy = $duplicateStartPolicy;
         $this->businessKey = self::normalizeBusinessKey($businessKey);
@@ -60,6 +84,9 @@ final class StartOptions
         $this->searchAttributes = self::normalizeSearchAttributes($searchAttributes);
         $this->executionTimeoutSeconds = self::normalizeTimeout($executionTimeoutSeconds, 'execution');
         $this->runTimeoutSeconds = self::normalizeTimeout($runTimeoutSeconds, 'run');
+        $this->priority = TaskPriority::normalize($priority);
+        $this->fairnessKey = TaskFairnessKey::normalize($fairnessKey);
+        $this->fairnessWeight = TaskFairnessKey::normalizeWeight($fairnessWeight);
     }
 
     public static function rejectDuplicate(): self
@@ -85,15 +112,7 @@ final class StartOptions
 
     public function withBusinessKey(?string $businessKey): self
     {
-        return new self(
-            $this->duplicateStartPolicy,
-            $businessKey,
-            $this->labels,
-            $this->memo,
-            $this->searchAttributes,
-            $this->executionTimeoutSeconds,
-            $this->runTimeoutSeconds
-        );
+        return $this->cloneWith(['businessKey' => $businessKey]);
     }
 
     /**
@@ -101,15 +120,7 @@ final class StartOptions
      */
     public function withLabels(array $labels): self
     {
-        return new self(
-            $this->duplicateStartPolicy,
-            $this->businessKey,
-            $labels,
-            $this->memo,
-            $this->searchAttributes,
-            $this->executionTimeoutSeconds,
-            $this->runTimeoutSeconds
-        );
+        return $this->cloneWith(['labels' => $labels]);
     }
 
     /**
@@ -117,15 +128,7 @@ final class StartOptions
      */
     public function withMemo(array $memo): self
     {
-        return new self(
-            $this->duplicateStartPolicy,
-            $this->businessKey,
-            $this->labels,
-            $memo,
-            $this->searchAttributes,
-            $this->executionTimeoutSeconds,
-            $this->runTimeoutSeconds
-        );
+        return $this->cloneWith(['memo' => $memo]);
     }
 
     /**
@@ -133,40 +136,48 @@ final class StartOptions
      */
     public function withSearchAttributes(array $searchAttributes): self
     {
-        return new self(
-            $this->duplicateStartPolicy,
-            $this->businessKey,
-            $this->labels,
-            $this->memo,
-            $searchAttributes,
-            $this->executionTimeoutSeconds,
-            $this->runTimeoutSeconds
-        );
+        return $this->cloneWith(['searchAttributes' => $searchAttributes]);
     }
 
     public function withExecutionTimeout(?int $seconds): self
     {
-        return new self(
-            $this->duplicateStartPolicy,
-            $this->businessKey,
-            $this->labels,
-            $this->memo,
-            $this->searchAttributes,
-            $seconds,
-            $this->runTimeoutSeconds
-        );
+        return $this->cloneWith(['executionTimeoutSeconds' => $seconds]);
     }
 
     public function withRunTimeout(?int $seconds): self
     {
+        return $this->cloneWith(['runTimeoutSeconds' => $seconds]);
+    }
+
+    public function withPriority(?int $priority): self
+    {
+        return $this->cloneWith(['priority' => $priority]);
+    }
+
+    public function withFairness(?string $fairnessKey, ?int $fairnessWeight = null): self
+    {
+        return $this->cloneWith([
+            'fairnessKey' => $fairnessKey,
+            'fairnessWeight' => $fairnessWeight,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     */
+    private function cloneWith(array $overrides): self
+    {
         return new self(
-            $this->duplicateStartPolicy,
-            $this->businessKey,
-            $this->labels,
-            $this->memo,
-            $this->searchAttributes,
-            $this->executionTimeoutSeconds,
-            $seconds
+            $overrides['duplicateStartPolicy'] ?? $this->duplicateStartPolicy,
+            array_key_exists('businessKey', $overrides) ? $overrides['businessKey'] : $this->businessKey,
+            array_key_exists('labels', $overrides) ? $overrides['labels'] : $this->labels,
+            array_key_exists('memo', $overrides) ? $overrides['memo'] : $this->memo,
+            array_key_exists('searchAttributes', $overrides) ? $overrides['searchAttributes'] : $this->searchAttributes,
+            array_key_exists('executionTimeoutSeconds', $overrides) ? $overrides['executionTimeoutSeconds'] : $this->executionTimeoutSeconds,
+            array_key_exists('runTimeoutSeconds', $overrides) ? $overrides['runTimeoutSeconds'] : $this->runTimeoutSeconds,
+            array_key_exists('priority', $overrides) ? $overrides['priority'] : $this->priority,
+            array_key_exists('fairnessKey', $overrides) ? $overrides['fairnessKey'] : $this->fairnessKey,
+            array_key_exists('fairnessWeight', $overrides) ? $overrides['fairnessWeight'] : $this->fairnessWeight,
         );
     }
 

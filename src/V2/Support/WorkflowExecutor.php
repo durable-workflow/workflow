@@ -1482,6 +1482,7 @@ final class WorkflowExecutor
             'connection' => $execution->connection,
             'queue' => $execution->queue,
             'compatibility' => $run->compatibility,
+            ...TaskSchedulingFields::forActivity($run, $execution),
         ]);
 
         if ($parkRun) {

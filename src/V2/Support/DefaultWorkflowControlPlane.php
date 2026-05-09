@@ -56,6 +56,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             ? DuplicateStartPolicy::ReturnExistingActive
             : DuplicateStartPolicy::RejectDuplicate;
         $pinnedCompatibility = self::normalizeCompatibilityOption($options);
+        $priority = TaskPriority::normalize($options['priority'] ?? null);
+        $fairnessKey = TaskFairnessKey::normalize($options['fairness_key'] ?? null);
+        $fairnessWeight = TaskFairnessKey::normalizeWeight($options['fairness_weight'] ?? null);
 
         $workflowClass = $resolvedClass ?? $workflowType;
 
@@ -83,6 +86,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $duplicatePolicy,
             $payloadCodec,
             $pinnedCompatibility,
+            $priority,
+            $fairnessKey,
+            $fairnessWeight,
             &$command,
             &$task,
             &$instance,
@@ -227,6 +233,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'arguments' => is_string($arguments) ? $arguments : null,
                     'connection' => $connection,
                     'queue' => $queue,
+                    'priority' => $priority,
+                    'fairness_key' => $fairnessKey,
+                    'fairness_weight' => $fairnessWeight,
                     'started_at' => $startedAt,
                     'last_progress_at' => $startedAt,
                     'last_history_sequence' => 0,
@@ -322,6 +331,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'connection' => $run->connection,
                     'queue' => $run->queue,
                     'compatibility' => $run->compatibility,
+                    'priority' => $run->priority ?? $priority,
+                    'fairness_key' => $run->fairness_key ?? $fairnessKey,
+                    'fairness_weight' => $run->fairness_weight ?? $fairnessWeight,
                 ]);
         });
 

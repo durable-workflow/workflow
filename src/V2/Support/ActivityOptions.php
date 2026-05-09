@@ -22,6 +22,12 @@ final class ActivityOptions
      * @param int|null $heartbeatTimeout Maximum seconds between heartbeats before the activity is considered unresponsive.
      * @param list<string> $nonRetryableErrorTypes Error type or class names that should bypass retries.
      */
+    public readonly ?int $priority;
+
+    public readonly ?string $fairnessKey;
+
+    public readonly ?int $fairnessWeight;
+
     public function __construct(
         public readonly ?string $connection = null,
         public readonly ?string $queue = null,
@@ -33,7 +39,13 @@ final class ActivityOptions
         public readonly ?int $heartbeatTimeout = null,
         public readonly array $nonRetryableErrorTypes = [],
         public readonly ?WorkerSessionOptions $workerSession = null,
+        ?int $priority = null,
+        ?string $fairnessKey = null,
+        ?int $fairnessWeight = null,
     ) {
+        $this->priority = $priority === null ? null : TaskPriority::normalize($priority);
+        $this->fairnessKey = TaskFairnessKey::normalize($fairnessKey);
+        $this->fairnessWeight = $fairnessWeight === null ? null : TaskFairnessKey::normalizeWeight($fairnessWeight);
     }
 
     /**
@@ -47,7 +59,10 @@ final class ActivityOptions
      *     schedule_to_close_timeout: int|null,
      *     heartbeat_timeout: int|null,
      *     non_retryable_error_types: list<string>,
-     *     worker_session: array<string, mixed>|null
+     *     worker_session: array<string, mixed>|null,
+     *     priority: int|null,
+     *     fairness_key: string|null,
+     *     fairness_weight: int|null
      * }
      */
     public function toSnapshot(): array
@@ -63,6 +78,9 @@ final class ActivityOptions
             'heartbeat_timeout' => $this->heartbeatTimeout,
             'non_retryable_error_types' => $this->nonRetryableErrorTypes,
             'worker_session' => $this->workerSession?->toSnapshot(),
+            'priority' => $this->priority,
+            'fairness_key' => $this->fairnessKey,
+            'fairness_weight' => $this->fairnessWeight,
         ];
     }
 
@@ -100,6 +118,54 @@ final class ActivityOptions
             heartbeatTimeout: $this->heartbeatTimeout,
             nonRetryableErrorTypes: $this->nonRetryableErrorTypes,
             workerSession: $workerSession,
+            priority: $this->priority,
+            fairnessKey: $this->fairnessKey,
+            fairnessWeight: $this->fairnessWeight,
         );
+    }
+
+    public function withPriority(?int $priority): self
+    {
+        return new self(
+            connection: $this->connection,
+            queue: $this->queue,
+            maxAttempts: $this->maxAttempts,
+            backoff: $this->backoff,
+            startToCloseTimeout: $this->startToCloseTimeout,
+            scheduleToStartTimeout: $this->scheduleToStartTimeout,
+            scheduleToCloseTimeout: $this->scheduleToCloseTimeout,
+            heartbeatTimeout: $this->heartbeatTimeout,
+            nonRetryableErrorTypes: $this->nonRetryableErrorTypes,
+            workerSession: $this->workerSession,
+            priority: $priority,
+            fairnessKey: $this->fairnessKey,
+            fairnessWeight: $this->fairnessWeight,
+        );
+    }
+
+    public function withFairness(?string $fairnessKey, ?int $fairnessWeight = null): self
+    {
+        return new self(
+            connection: $this->connection,
+            queue: $this->queue,
+            maxAttempts: $this->maxAttempts,
+            backoff: $this->backoff,
+            startToCloseTimeout: $this->startToCloseTimeout,
+            scheduleToStartTimeout: $this->scheduleToStartTimeout,
+            scheduleToCloseTimeout: $this->scheduleToCloseTimeout,
+            heartbeatTimeout: $this->heartbeatTimeout,
+            nonRetryableErrorTypes: $this->nonRetryableErrorTypes,
+            workerSession: $this->workerSession,
+            priority: $this->priority,
+            fairnessKey: $fairnessKey,
+            fairnessWeight: $fairnessWeight,
+        );
+    }
+
+    public function hasSchedulingOverrides(): bool
+    {
+        return $this->priority !== null
+            || $this->fairnessKey !== null
+            || $this->fairnessWeight !== null;
     }
 }

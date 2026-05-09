@@ -53,8 +53,10 @@ use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
+use Workflow\V2\Support\InMemoryTaskFairnessState;
 use Workflow\V2\Support\LongPollCacheValidator;
 use Workflow\V2\Support\PhpClassScheduleStarter;
+use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowModeGuard;
 use Workflow\Watchdog;
@@ -114,6 +116,12 @@ final class WorkflowServiceProvider extends ServiceProvider
         if (! $this->app->bound(LongPollWakeStore::class)) {
             $this->app->singleton(LongPollWakeStore::class, CacheLongPollWakeStore::class);
         }
+
+        $this->app->singletonIf(TaskFairnessState::class, static function (): TaskFairnessState {
+            $halfLife = (float) config('workflows.v2.fairness.half_life_seconds', 30.0);
+
+            return new InMemoryTaskFairnessState($halfLife > 0.0 ? $halfLife : 30.0);
+        });
     }
 
     public function boot(): void
