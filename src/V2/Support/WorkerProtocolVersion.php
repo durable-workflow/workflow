@@ -222,6 +222,16 @@ final class WorkerProtocolVersion
     }
 
     /**
+     * Published task-queue priority and fairness wire contract.
+     *
+     * @return array<string, mixed>
+     */
+    public static function taskQueuePriorityFairnessSemantics(): array
+    {
+        return TaskQueuePriorityFairnessContract::manifest();
+    }
+
+    /**
      * Full summary of the protocol for capability negotiation or diagnostics.
      *
      * @return array{
@@ -238,6 +248,7 @@ final class WorkerProtocolVersion
      *     sticky_execution: array<string, mixed>,
      *     worker_sessions: array<string, mixed>,
      *     invocable_carrier: array<string, mixed>,
+     *     task_queue_priority_fairness: array<string, mixed>,
      * }
      */
     public static function describe(): array
@@ -265,6 +276,7 @@ final class WorkerProtocolVersion
             'payload_codecs_engine_specific' => CodecRegistry::engineSpecific(),
             'unsupported_payload_codec_reason' => self::REASON_UNSUPPORTED_PAYLOAD_CODEC,
             'invocable_carrier' => self::invocableCarrierSemantics(),
+            'task_queue_priority_fairness' => self::taskQueuePriorityFairnessSemantics(),
         ];
     }
 
