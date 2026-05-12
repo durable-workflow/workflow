@@ -7,6 +7,8 @@ namespace Tests\Unit\V2;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Support\CommandPayloadPreview;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
 
 final class CommandPayloadPreviewTest extends TestCase
 {
@@ -86,6 +88,24 @@ final class CommandPayloadPreviewTest extends TestCase
         $this->assertSame([
             'legacy' => true,
         ], CommandPayloadPreview::previewWithCodec($jsonBlob, null),);
+    }
+
+    public function testPreviewWithCodecReturnsExternalPayloadEnvelopeForStoredReferences(): void
+    {
+        $envelope = [
+            'codec' => 'avro',
+            'external_storage' => [
+                'schema' => ExternalPayloadReference::SCHEMA,
+                'uri' => 'local://command-preview-test/payload',
+                'sha256' => hash('sha256', 'payload'),
+                'size_bytes' => 7,
+                'codec' => 'avro',
+            ],
+        ];
+        $stored = ExternalPayloads::encodeStoredEnvelope($envelope);
+
+        $this->assertSame($envelope, CommandPayloadPreview::previewWithCodec($stored, 'avro'));
+        $this->assertSame($envelope, CommandPayloadPreview::preview($stored));
     }
 
     public function testPreviewWithCodecReturnsNullForEmptyOrNonStringInput(): void

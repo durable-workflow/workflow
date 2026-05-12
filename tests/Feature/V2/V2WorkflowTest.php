@@ -1304,7 +1304,16 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame('activity-bridge-complete', $claim['workflow_instance_id']);
         $this->assertSame('external-worker-1', $claim['lease_owner']);
         $this->assertSame(1, $claim['attempt_number']);
-        $this->assertSame(['Taylor'], Serializer::unserialize($claim['arguments']));
+        $this->assertIsString($claim['arguments']);
+        $this->assertSame(['Taylor'], Serializer::unserializeWithCodec(
+            $claim['payload_codec'],
+            $claim['arguments'],
+        ));
+        $this->assertIsArray($claim['arguments_envelope']);
+        $this->assertSame(['Taylor'], Serializer::unserializeWithCodec(
+            $claim['arguments_envelope']['codec'],
+            $claim['arguments_envelope']['blob'],
+        ));
 
         /** @var ActivityAttempt $startedAttempt */
         $startedAttempt = ActivityAttempt::query()

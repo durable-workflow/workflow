@@ -341,7 +341,12 @@ first-party SDK workers, and future non-PHP workers is:
   PHP class names may be present for local diagnostics, but non-PHP
   workers route and replay by type key, not by PHP class name.
 - **Codec envelopes.** Every worker-facing payload is codec-tagged by
-  `payload_codec` or a `{codec, blob}` envelope.
+  `payload_codec`, a `{codec, blob}` envelope, or a `{codec, external_storage}`
+  envelope. Bridge responses preserve the legacy `arguments` string field
+  and expose structured argument payloads through the additive
+  `arguments_envelope` field so external payload references stay structured
+  at the protocol edge. Worker webhook responses project that envelope into
+  `arguments` for HTTP clients.
   `CodecRegistry::universal()` is the language-neutral advertised codec
   set; PHP-only codecs are advertised separately under
   `payload_codecs_engine_specific` and must not be required of non-PHP

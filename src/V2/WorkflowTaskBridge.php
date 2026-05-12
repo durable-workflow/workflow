@@ -95,6 +95,7 @@ final class WorkflowTaskBridge
      *     workflow_class: string|null,
      *     payload_codec: string,
      *     arguments: string|null,
+     *     arguments_envelope: array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null,
      *     run_status: string,
      *     last_history_sequence: int,
      *     history_events: list<array{

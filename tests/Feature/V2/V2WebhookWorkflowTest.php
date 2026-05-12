@@ -15,6 +15,7 @@ use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -22,6 +23,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -30,6 +32,10 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\WorkflowInstanceId;
@@ -38,6 +44,8 @@ use Workflow\V2\WorkflowStub;
 
 final class V2WebhookWorkflowTest extends TestCase
 {
+    private ?string $storageRoot = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -58,6 +66,18 @@ final class V2WebhookWorkflowTest extends TestCase
             TestSignalThenUpdateWorkflow::class,
             TestUpdateWorkflow::class,
         ]);
+    }
+
+    protected function tearDown(): void
+    {
+        ExternalPayloadStorage::flushVerifiedCache();
+
+        if ($this->storageRoot !== null) {
+            $this->removeDirectory($this->storageRoot);
+            $this->storageRoot = null;
+        }
+
+        parent::tearDown();
     }
 
     public function testMakeReusesCallerSuppliedInstanceIdAcrossRequests(): void
@@ -162,6 +182,46 @@ final class V2WebhookWorkflowTest extends TestCase
             'workflow_run_id' => $workflow->runId(),
             'event_type' => 'ActivityStarted',
         ]);
+    }
+
+    public function testActivityTaskClaimWebhookWrapsExternalizedArgumentsAsEnvelope(): void
+    {
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'activity-task-claim-external-payload');
+        $workflow->start('Taylor');
+
+        $task = $this->stageFirstActivityTask($workflow);
+        $executionId = $task->payload['activity_execution_id'] ?? null;
+
+        $this->assertIsString($executionId);
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()->findOrFail($executionId);
+        $codec = CodecRegistry::defaultCodec();
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $execution->forceFill([
+            'payload_codec' => $codec,
+            'arguments' => ExternalPayloads::externalize(
+                Serializer::serializeWithCodec($codec, ['Taylor']),
+                $codec,
+                $driver,
+                1,
+            ),
+        ])->save();
+
+        $response = $this->postJson("/webhooks/activity-tasks/{$task->id}/claim", [
+            'lease_owner' => 'payments-worker-1',
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('arguments.codec', $codec)
+            ->assertJsonPath('arguments.external_storage.schema', ExternalPayloadReference::SCHEMA);
+
+        $arguments = $response->json('arguments');
+
+        $this->assertIsArray($arguments);
+        $this->assertArrayHasKey('external_storage', $arguments);
+        $this->assertArrayNotHasKey('blob', $arguments);
     }
 
     public function testActivityTaskClaimWebhookReturnsRetryAfterForFutureTask(): void
@@ -2723,6 +2783,51 @@ final class V2WebhookWorkflowTest extends TestCase
         $this->assertSame('StartAccepted', $events[0]['event_type']);
     }
 
+    public function testWorkflowTaskHistoryWebhookWrapsExternalizedArgumentsAsEnvelope(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'wf-task-history-external-payload');
+        $workflow->start('Taylor');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $codec = CodecRegistry::defaultCodec();
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $run->forceFill([
+            'payload_codec' => $codec,
+            'arguments' => ExternalPayloads::externalize(
+                Serializer::serializeWithCodec($codec, ['Taylor']),
+                $codec,
+                $driver,
+                1,
+            ),
+        ])->save();
+
+        $response = $this->getJson("/webhooks/workflow-tasks/{$task->id}/history");
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('arguments.codec', $codec)
+            ->assertJsonPath('arguments.external_storage.schema', ExternalPayloadReference::SCHEMA);
+
+        $arguments = $response->json('arguments');
+
+        $this->assertIsArray($arguments);
+        $this->assertArrayHasKey('external_storage', $arguments);
+        $this->assertArrayNotHasKey('blob', $arguments);
+    }
+
     public function testWorkflowTaskHistoryWebhookReturns404ForMissingTask(): void
     {
         $response = $this->getJson('/webhooks/workflow-tasks/nonexistent-task-id/history');
@@ -3255,6 +3360,42 @@ final class V2WebhookWorkflowTest extends TestCase
             ->firstOrFail();
 
         return $activityTask;
+    }
+
+    private function makeStorageRoot(): string
+    {
+        $this->storageRoot = sys_get_temp_dir().'/dw-webhook-worker-payloads-'.bin2hex(random_bytes(6));
+
+        return $this->storageRoot;
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory.DIRECTORY_SEPARATOR.$item;
+
+            if (is_dir($path)) {
+                $this->removeDirectory($path);
+            } else {
+                @unlink($path);
+            }
+        }
+
+        @rmdir($directory);
     }
 
     private function drainReadyTasks(): void

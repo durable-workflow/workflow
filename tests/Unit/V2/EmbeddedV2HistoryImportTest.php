@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -16,15 +17,23 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\EmbeddedV2ImportContract;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunSignalView;
+use Workflow\V2\Support\RunUpdateView;
 
 final class EmbeddedV2HistoryImportTest extends TestCase
 {
@@ -124,6 +133,195 @@ final class EmbeddedV2HistoryImportTest extends TestCase
             array_column($report['eligibility']['errors'], 'rule'),
         );
         $this->assertFalse(WorkflowRun::query()->whereKey($runId)->exists());
+    }
+
+    public function testItImportsExternalizedActivityPayloadEnvelopesWithoutDroppingReferences(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $codec = is_string($bundle['payloads']['codec'] ?? null)
+            ? $bundle['payloads']['codec']
+            : CodecRegistry::defaultCodec();
+        $arguments = $this->externalStorageEnvelope($codec, 'import-activity-arguments');
+        $result = $this->externalStorageEnvelope($codec, 'import-activity-result');
+        $bundle['activities'][0]['payload_codec'] = $codec;
+        $bundle['activities'][0]['arguments'] = $arguments;
+        $bundle['activities'][0]['result'] = $result;
+        $runId = $bundle['workflow']['run_id'];
+        $this->clearWorkflowState();
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertSame('imported', $report['status']);
+
+        /** @var ActivityExecution $activity */
+        $activity = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+
+        $this->assertIsString($activity->arguments);
+        $this->assertIsString($activity->result);
+        $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $activity->arguments);
+        $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $activity->result);
+        $this->assertSame($arguments, ExternalPayloads::storedEnvelope($activity->arguments));
+        $this->assertSame($result, ExternalPayloads::storedEnvelope($activity->result));
+
+        $export = HistoryExport::forRun(WorkflowRun::query()->findOrFail($runId));
+
+        $this->assertSame($arguments, $export['activities'][0]['arguments']);
+        $this->assertSame($result, $export['activities'][0]['result']);
+    }
+
+    public function testItImportsExternalizedRunCommandSignalAndUpdatePayloadEnvelopesWithoutDroppingReferences(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $codec = is_string($bundle['payloads']['codec'] ?? null)
+            ? $bundle['payloads']['codec']
+            : CodecRegistry::defaultCodec();
+        $runArguments = $this->externalStorageEnvelope($codec, 'import-run-arguments');
+        $commandPayload = $this->externalStorageEnvelope($codec, 'import-command-payload');
+        $signalArguments = $this->externalStorageEnvelope($codec, 'import-signal-arguments');
+        $updateArguments = $this->externalStorageEnvelope($codec, 'import-update-arguments');
+        $updateResult = $this->externalStorageEnvelope($codec, 'import-update-result');
+        $runId = $bundle['workflow']['run_id'];
+        $commandId = (string) Str::ulid();
+        $signalCommandId = (string) Str::ulid();
+        $updateCommandId = (string) Str::ulid();
+        $now = now()->toJSON();
+
+        $bundle['payloads']['arguments']['data'] = $runArguments;
+        $bundle['commands'] = [
+            [
+                'id' => $commandId,
+                'sequence' => 1,
+                'type' => 'start',
+                'target_scope' => 'instance',
+                'payload_codec' => $codec,
+                'payload' => $commandPayload,
+                'source' => 'embedded',
+                'status' => 'accepted',
+                'outcome' => 'started_new',
+                'accepted_at' => $now,
+                'applied_at' => $now,
+            ],
+            [
+                'id' => $signalCommandId,
+                'sequence' => 2,
+                'type' => 'signal',
+                'target_scope' => 'instance',
+                'payload_codec' => $codec,
+                'payload' => $this->externalStorageEnvelope($codec, 'import-signal-command-payload'),
+                'source' => 'embedded',
+                'status' => 'accepted',
+                'outcome' => 'signal_received',
+                'accepted_at' => $now,
+                'applied_at' => $now,
+            ],
+            [
+                'id' => $updateCommandId,
+                'sequence' => 3,
+                'type' => 'update',
+                'target_scope' => 'instance',
+                'payload_codec' => $codec,
+                'payload' => $this->externalStorageEnvelope($codec, 'import-update-command-payload'),
+                'source' => 'embedded',
+                'status' => 'accepted',
+                'outcome' => 'update_completed',
+                'accepted_at' => $now,
+                'applied_at' => $now,
+            ],
+        ];
+        $bundle['signals'] = [
+            [
+                'id' => (string) Str::ulid(),
+                'command_id' => $signalCommandId,
+                'command_sequence' => 2,
+                'workflow_sequence' => 1,
+                'name' => 'external-signal',
+                'target_scope' => 'instance',
+                'status' => 'applied',
+                'outcome' => 'signal_received',
+                'payload_codec' => $codec,
+                'arguments' => $signalArguments,
+                'received_at' => $now,
+                'applied_at' => $now,
+                'closed_at' => $now,
+            ],
+        ];
+        $bundle['updates'] = [
+            [
+                'id' => (string) Str::ulid(),
+                'command_id' => $updateCommandId,
+                'command_sequence' => 3,
+                'workflow_sequence' => 2,
+                'name' => 'external-update',
+                'target_scope' => 'instance',
+                'status' => 'completed',
+                'outcome' => 'update_completed',
+                'payload_codec' => $codec,
+                'arguments' => $updateArguments,
+                'result' => $updateResult,
+                'accepted_at' => $now,
+                'applied_at' => $now,
+                'closed_at' => $now,
+            ],
+        ];
+        $this->clearWorkflowState();
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertSame('imported', $report['status']);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+        /** @var WorkflowCommand $command */
+        $command = WorkflowCommand::query()->findOrFail($commandId);
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()->where('workflow_command_id', $signalCommandId)->firstOrFail();
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->where('workflow_command_id', $updateCommandId)->firstOrFail();
+
+        $this->assertSame($runArguments, ExternalPayloads::storedEnvelope($run->arguments));
+        $this->assertSame($commandPayload, ExternalPayloads::storedEnvelope($command->payload));
+        $this->assertSame($signalArguments, ExternalPayloads::storedEnvelope($signal->arguments));
+        $this->assertSame($updateArguments, ExternalPayloads::storedEnvelope($update->arguments));
+        $this->assertSame($updateResult, ExternalPayloads::storedEnvelope($update->result));
+
+        $detail = RunDetailView::forRun($run->fresh());
+        $detailCommand = collect($detail['commands'])->firstWhere('id', $commandId);
+        $detailSignalCommand = collect($detail['commands'])->firstWhere('id', $signalCommandId);
+        $detailUpdateCommand = collect($detail['commands'])->firstWhere('id', $updateCommandId);
+        $detailSignal = collect($detail['signals'])->firstWhere('command_id', $signalCommandId);
+        $detailUpdate = collect($detail['updates'])->firstWhere('command_id', $updateCommandId);
+
+        $this->assertIsArray($detailCommand);
+        $this->assertIsArray($detailSignalCommand);
+        $this->assertIsArray($detailUpdateCommand);
+        $this->assertIsArray($detailSignal);
+        $this->assertIsArray($detailUpdate);
+        $this->assertSame($runArguments, $detail['arguments']);
+        $this->assertSame($commandPayload, $detailCommand['payload']);
+        $this->assertNull($detailCommand['target_name']);
+        $this->assertSame([], $detailCommand['validation_errors']);
+        $this->assertSame($this->externalStorageEnvelope($codec, 'import-signal-command-payload'), $detailSignalCommand['payload']);
+        $this->assertSame($this->externalStorageEnvelope($codec, 'import-update-command-payload'), $detailUpdateCommand['payload']);
+        $this->assertSame($signalArguments, $detailSignal['arguments']);
+        $this->assertSame($updateArguments, $detailUpdate['arguments']);
+        $this->assertSame($updateResult, $detailUpdate['result']);
+
+        WorkflowSignal::query()->where('workflow_command_id', $signalCommandId)->delete();
+        WorkflowUpdate::query()->where('workflow_command_id', $updateCommandId)->delete();
+
+        $fallbackSignal = collect(RunSignalView::forRun($run->fresh()))->firstWhere('command_id', $signalCommandId);
+        $fallbackUpdate = collect(RunUpdateView::forRun($run->fresh()))->firstWhere('command_id', $updateCommandId);
+
+        $this->assertIsArray($fallbackSignal);
+        $this->assertIsArray($fallbackUpdate);
+        $this->assertSame($this->externalStorageEnvelope($codec, 'import-signal-command-payload'), $fallbackSignal['arguments']);
+        $this->assertNull($fallbackSignal['name']);
+        $this->assertSame([], $fallbackSignal['validation_errors']);
+        $this->assertSame($this->externalStorageEnvelope($codec, 'import-update-command-payload'), $fallbackUpdate['arguments']);
+        $this->assertNull($fallbackUpdate['name']);
+        $this->assertSame([], $fallbackUpdate['validation_errors']);
     }
 
     /**
@@ -256,5 +454,22 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         ] as $table) {
             DB::table($table)->delete();
         }
+    }
+
+    /**
+     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
+     */
+    private function externalStorageEnvelope(string $codec, string $label): array
+    {
+        return [
+            'codec' => $codec,
+            'external_storage' => [
+                'schema' => ExternalPayloadReference::SCHEMA,
+                'uri' => 'local://embedded-history-import-test/' . $label,
+                'sha256' => hash('sha256', $label),
+                'size_bytes' => strlen($label),
+                'codec' => $codec,
+            ],
+        ];
     }
 }

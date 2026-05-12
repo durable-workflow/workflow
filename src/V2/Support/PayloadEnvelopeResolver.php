@@ -13,12 +13,15 @@ use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 /**
  * Resolves `input` request fields into a concrete `(codec, blob)` envelope.
  *
- * The worker protocol carries every payload as `{codec, blob}`. Clients may
- * send `input` in two shapes on the HTTP API:
+ * The worker protocol carries every payload as either `{codec, blob}` or
+ * `{codec, external_storage}`. Clients may
+ * send `input` in three shapes on the HTTP API:
  *
  *   1. A plain array of arguments  →  encoded with the final v2 default codec (Avro)
  *   2. An explicit envelope object `{codec: "<name>", blob: "<opaque>"}`
  *      →  codec = the declared name, blob = the opaque string as-is
+ *   3. An explicit external envelope `{codec: "<name>", external_storage: {...}}`
+ *      →  codec = the declared name, blob = fetched from the external reference
  *
  * Shape 2 lets PHP clients that already have SerializableClosure-encoded
  * payloads (or any other codec) preserve the exact bytes they produced.
@@ -36,11 +39,12 @@ final class PayloadEnvelopeResolver
      *
      * Used for control-plane surfaces (signal, query, update) where the
      * package API expects a PHP array, not a codec-tagged blob. Accepts
-     * either a plain array of positional arguments or a {codec, blob}
-     * envelope. When an envelope is received, the blob is decoded using
-     * the declared codec — any codec in the {@see CodecRegistry} that can
-     * round-trip an array is accepted (json, avro, and the legacy PHP
-     * closure codecs). The decoded value must be an array.
+     * either a plain array of positional arguments, a {codec, blob}
+     * envelope, or a {codec, external_storage} envelope. When an envelope is
+     * received, the payload bytes are decoded using the declared codec — any
+     * codec in the {@see CodecRegistry} that can round-trip an array is
+     * accepted (json, avro, and the legacy PHP closure codecs). The decoded
+     * value must be an array.
      *
      * @param  mixed  $input  the `input` field from a validated request
      * @return array<int|string, mixed>  arguments (positional or named)
@@ -90,7 +94,8 @@ final class PayloadEnvelopeResolver
 
     /**
      * Resolve a worker-protocol command payload field (result or arguments)
-     * that may be either a raw value or a {codec, blob} envelope.
+     * that may be either a raw value, a {codec, blob} envelope, or a
+     * {codec, external_storage} envelope.
      *
      * When an envelope is detected, the blob string is returned directly
      * (the bridge stores codec-tagged serialized payloads). When a raw

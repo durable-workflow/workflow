@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\SignalStatus;
@@ -139,10 +140,10 @@ final class RunSignalView
             'outcome' => $command->outcome?->value,
             'source' => $command->source,
             'rejection_reason' => $command->rejection_reason,
-            'validation_errors' => $command->validationErrors(),
+            'validation_errors' => self::commandValidationErrors($command),
             'payload_codec' => $command->payload_codec,
-            'arguments_available' => true,
-            'arguments' => $command->payloadArguments(),
+            'arguments_available' => CommandPayloadPreview::available($command->payload),
+            'arguments' => self::commandArguments($command),
             'received_at' => self::timestamp($command->accepted_at),
             'applied_at' => self::timestamp($command->applied_at),
             'rejected_at' => self::timestamp($command->rejected_at),
@@ -177,7 +178,7 @@ final class RunSignalView
             }
         }
 
-        return $command->targetName();
+        return self::commandTargetName($command);
     }
 
     private static function signalWaitId(?WorkflowHistoryEvent $received, ?WorkflowHistoryEvent $applied): ?string
@@ -219,11 +220,47 @@ final class RunSignalView
             return $value;
         }
 
-        if (is_string($codec) && $codec !== '') {
-            return Serializer::unserializeWithCodec($codec, $value);
+        if (ExternalPayloads::isStoredReference($value)) {
+            return ExternalPayloads::storedEnvelope($value);
         }
 
-        return Serializer::unserialize($value);
+        try {
+            if (is_string($codec) && $codec !== '') {
+                return Serializer::unserializeWithCodec($codec, $value);
+            }
+
+            return Serializer::unserialize($value);
+        } catch (Throwable) {
+            return $value;
+        }
+    }
+
+    private static function commandTargetName(WorkflowCommand $command): ?string
+    {
+        return self::commandPayloadStoredExternally($command) ? null : $command->targetName();
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private static function commandValidationErrors(WorkflowCommand $command): array
+    {
+        return self::commandPayloadStoredExternally($command) ? [] : $command->validationErrors();
+    }
+
+    private static function commandArguments(WorkflowCommand $command): mixed
+    {
+        if (is_string($command->payload) && ExternalPayloads::isStoredReference($command->payload)) {
+            return ExternalPayloads::storedEnvelope($command->payload);
+        }
+
+        return $command->payloadArguments();
+    }
+
+    private static function commandPayloadStoredExternally(WorkflowCommand $command): bool
+    {
+        return is_string($command->payload)
+            && ExternalPayloads::isStoredReference($command->payload);
     }
 
     private static function timestamp(mixed $value): ?string

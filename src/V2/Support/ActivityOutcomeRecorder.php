@@ -123,6 +123,11 @@ final class ActivityOutcomeRecorder
                     $codec,
                     self::preferredPayloadCodec($lockedExecution, $runCodec),
                 );
+                $encodedSuccessfulResult['blob'] = ExternalPayloads::externalizeForNamespace(
+                    $encodedSuccessfulResult['blob'],
+                    $encodedSuccessfulResult['codec'],
+                    is_string($run->namespace) ? $run->namespace : null,
+                );
 
                 StructuralLimits::logWarning(
                     StructuralLimits::warnApproachingPayloadSize($encodedSuccessfulResult['blob']),
@@ -197,7 +202,11 @@ final class ActivityOutcomeRecorder
                     'activity_type' => $lockedExecution->activity_type,
                     'sequence' => $lockedExecution->sequence,
                     'attempt_number' => $attemptCount,
-                    'result' => $lockedExecution->result,
+                    'result' => ExternalPayloads::historyValue(
+                        $lockedExecution->result,
+                        $encodedSuccessfulResult['codec'],
+                        is_string($run->namespace) ? $run->namespace : null,
+                    ),
                     'payload_codec' => $encodedSuccessfulResult['codec'],
                     'activity' => ActivitySnapshot::fromExecution($lockedExecution),
                 ], $parallelMetadata ?? []), $task);

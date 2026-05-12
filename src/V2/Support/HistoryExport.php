@@ -125,11 +125,11 @@ final class HistoryExport
                 'codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
                 'arguments' => [
                     'available' => $run->arguments !== null,
-                    'data' => $run->arguments,
+                    'data' => self::payloadValue($run->arguments),
                 ],
                 'output' => [
                     'available' => $run->output !== null,
-                    'data' => $run->output,
+                    'data' => self::payloadValue($run->output),
                 ],
             ],
             'summary' => self::summary($summary),
@@ -372,7 +372,21 @@ final class HistoryExport
             return;
         }
 
-        if (! is_string($payload) || $payload === '') {
+        $externalEnvelope = self::externalStorageEnvelope($payload);
+
+        if ($externalEnvelope !== null) {
+            $codec = self::stringValue($externalEnvelope['codec'] ?? null) ?? $codec;
+            $entry['codec'] = $codec;
+            $entry['encoding'] = 'external-storage-reference';
+            $entry['diagnostic'] = 'external_storage_reference';
+            $entries[] = $entry;
+
+            return;
+        }
+
+        $payload = self::payloadBlob($payload);
+
+        if ($payload === null) {
             $entry['diagnostic'] = 'payload_missing';
             $entries[] = $entry;
 
@@ -403,7 +417,74 @@ final class HistoryExport
 
     private static function payloadAvailable(mixed $payload): bool
     {
-        return is_string($payload) && $payload !== '';
+        return self::payloadBlob($payload) !== null || self::externalStorageEnvelope($payload) !== null;
+    }
+
+    private static function payloadValue(mixed $payload): mixed
+    {
+        $externalEnvelope = self::externalStorageEnvelope($payload);
+
+        if ($externalEnvelope !== null) {
+            return $externalEnvelope;
+        }
+
+        if (self::payloadBlob($payload) !== null) {
+            return $payload;
+        }
+
+        return null;
+    }
+
+    private static function normalizeStoredPayloadReferences(mixed $value): mixed
+    {
+        if (is_string($value) && $value !== '' && ExternalPayloads::isStoredReference($value)) {
+            return ExternalPayloads::storedEnvelope($value);
+        }
+
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $normalized = [];
+
+        foreach ($value as $key => $nested) {
+            $normalized[$key] = self::normalizeStoredPayloadReferences($nested);
+        }
+
+        return $normalized;
+    }
+
+    private static function payloadBlob(mixed $payload): ?string
+    {
+        if (is_string($payload) && $payload !== '') {
+            if (ExternalPayloads::isStoredReference($payload)) {
+                return null;
+            }
+
+            return $payload;
+        }
+
+        if (is_array($payload) && isset($payload['blob']) && is_string($payload['blob']) && $payload['blob'] !== '') {
+            return $payload['blob'];
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function externalStorageEnvelope(mixed $payload): ?array
+    {
+        if (is_string($payload) && $payload !== '') {
+            return ExternalPayloads::storedEnvelope($payload);
+        }
+
+        if (! is_array($payload) || ! isset($payload['external_storage']) || ! is_array($payload['external_storage'])) {
+            return null;
+        }
+
+        return $payload;
     }
 
     /**
@@ -1045,7 +1126,7 @@ final class HistoryExport
             'workflow_task_id' => $event->workflow_task_id,
             'workflow_command_id' => $event->workflow_command_id,
             'recorded_at' => self::timestamp($event->recorded_at),
-            'payload' => $event->payload ?? [],
+            'payload' => self::normalizeStoredPayloadReferences($event->payload ?? []),
         ];
     }
 
@@ -1062,9 +1143,9 @@ final class HistoryExport
             'target_scope' => $command->target_scope,
             'requested_run_id' => $command->requestedRunId(),
             'resolved_run_id' => $command->resolvedRunId(),
-            'target_name' => $command->targetName(),
+            'target_name' => self::commandPayloadStoredExternally($command) ? null : $command->targetName(),
             'payload_codec' => $command->payload_codec,
-            'payload' => $command->payload,
+            'payload' => self::payloadValue($command->payload),
             'source' => $command->source,
             'context' => $command->publicContext(),
             'caller_label' => $command->callerLabel(),
@@ -1081,13 +1162,20 @@ final class HistoryExport
             'correlation_id' => $command->correlationId(),
             'status' => $command->status->value,
             'outcome' => $command->outcome?->value,
-            'reason' => $command->commandReason(),
+            'reason' => self::commandPayloadStoredExternally($command) ? null : $command->commandReason(),
             'rejection_reason' => $command->rejection_reason,
-            'validation_errors' => $command->validationErrors(),
+            'validation_errors' => self::commandPayloadStoredExternally($command) ? [] : $command->validationErrors(),
             'accepted_at' => self::timestamp($command->accepted_at),
             'applied_at' => self::timestamp($command->applied_at),
             'rejected_at' => self::timestamp($command->rejected_at),
         ];
+    }
+
+    private static function commandPayloadStoredExternally(WorkflowCommand $command): bool
+    {
+        $payload = self::stringValue($command->payload);
+
+        return $payload !== null && ExternalPayloads::isStoredReference($payload);
     }
 
     /**
@@ -1111,8 +1199,8 @@ final class HistoryExport
             'rejected_at' => self::timestamp($update->rejected_at),
             'closed_at' => self::timestamp($update->closed_at),
             'payload_codec' => $update->payload_codec,
-            'arguments' => $update->arguments,
-            'result' => $update->result,
+            'arguments' => self::payloadValue($update->arguments),
+            'result' => self::payloadValue($update->result),
         ];
     }
 
@@ -1140,7 +1228,7 @@ final class HistoryExport
             'rejected_at' => self::timestamp($signal->rejected_at),
             'closed_at' => self::timestamp($signal->closed_at),
             'payload_codec' => $signal->payload_codec,
-            'arguments' => $signal->arguments,
+            'arguments' => self::payloadValue($signal->arguments),
         ];
     }
 
@@ -1281,7 +1369,7 @@ final class HistoryExport
     private static function activityState(array $activity, array $state = []): array
     {
         $unsupportedReason = self::stringValue($activity['history_unsupported_reason'] ?? null);
-        $rawResult = self::stringValue($state['result'] ?? null);
+        $rawResult = self::payloadValue($state['result'] ?? null);
         $historyAuthority = self::stringValue($activity['history_authority'] ?? null)
             ?? self::stringValue($state['history_authority'] ?? null);
 
@@ -1327,7 +1415,7 @@ final class HistoryExport
                 ?? self::intValue($state['attempt_count'] ?? null)
                 ?? 0,
             'current_attempt_id' => $activity['attempt_id'] ?? ($state['attempt_id'] ?? null),
-            'arguments' => self::stringValue($state['arguments'] ?? null),
+            'arguments' => self::payloadValue($state['arguments'] ?? null),
             'result' => $unsupportedReason === RunActivityView::UNSUPPORTED_TERMINAL_REASON
                 ? null
                 : $rawResult,

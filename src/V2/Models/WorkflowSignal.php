@@ -11,6 +11,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExternalPayloads;
 
 class WorkflowSignal extends Model
 {
@@ -68,9 +69,18 @@ class WorkflowSignal extends Model
             return [];
         }
 
+        $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->whereKey($this->workflow_run_id)
+            ->value('namespace');
+        $blob = ExternalPayloads::resolveStoredPayload(
+            $this->arguments,
+            is_string($this->payload_codec) ? $this->payload_codec : null,
+            is_string($namespace) ? $namespace : null,
+        );
+
         $arguments = is_string($this->payload_codec) && $this->payload_codec !== ''
-            ? Serializer::unserializeWithCodec($this->payload_codec, $this->arguments)
-            : Serializer::unserialize($this->arguments);
+            ? Serializer::unserializeWithCodec($this->payload_codec, $blob)
+            : Serializer::unserialize($blob);
 
         return is_array($arguments)
             ? array_values($arguments)

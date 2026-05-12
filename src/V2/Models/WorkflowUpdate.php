@@ -13,6 +13,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExternalPayloads;
 
 class WorkflowUpdate extends Model
 {
@@ -89,9 +90,18 @@ class WorkflowUpdate extends Model
             return [];
         }
 
+        $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->whereKey($this->workflow_run_id)
+            ->value('namespace');
+        $blob = ExternalPayloads::resolveStoredPayload(
+            $this->arguments,
+            is_string($this->payload_codec) ? $this->payload_codec : null,
+            is_string($namespace) ? $namespace : null,
+        );
+
         $arguments = is_string($this->payload_codec) && $this->payload_codec !== ''
-            ? Serializer::unserializeWithCodec($this->payload_codec, $this->arguments)
-            : Serializer::unserialize($this->arguments);
+            ? Serializer::unserializeWithCodec($this->payload_codec, $blob)
+            : Serializer::unserialize($blob);
 
         return is_array($arguments)
             ? array_values($arguments)
@@ -104,13 +114,22 @@ class WorkflowUpdate extends Model
             return null;
         }
 
+        $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->whereKey($this->workflow_run_id)
+            ->value('namespace');
+        $blob = ExternalPayloads::resolveStoredPayload(
+            $this->result,
+            is_string($this->payload_codec) ? $this->payload_codec : null,
+            is_string($namespace) ? $namespace : null,
+        );
+
         return is_string($this->payload_codec) && $this->payload_codec !== ''
-            ? Serializer::unserializeWithCodec($this->payload_codec, $this->result)
-            : Serializer::unserialize($this->result);
+            ? Serializer::unserializeWithCodec($this->payload_codec, $blob)
+            : Serializer::unserialize($blob);
     }
 
     /**
-     * @return array{codec: string, blob: string}|null
+     * @return array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null
      */
     public function resultEnvelope(): ?array
     {
@@ -120,10 +139,11 @@ class WorkflowUpdate extends Model
 
         $run = $this->run;
 
-        return [
-            'codec' => $run?->payload_codec ?? CodecRegistry::defaultCodec(),
-            'blob' => $this->result,
-        ];
+        return ExternalPayloads::wireEnvelope(
+            $this->result,
+            $run?->payload_codec ?? CodecRegistry::defaultCodec(),
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
     }
 
     /**

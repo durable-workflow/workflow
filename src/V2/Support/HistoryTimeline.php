@@ -548,8 +548,11 @@ final class HistoryTimeline
 
         $payloadCodec = self::stringValue($snapshot['payload_codec'] ?? null)
             ?? (is_string($command?->payload_codec ?? null) ? $command->payload_codec : null);
+        $snapshotPayloadEnvelope = self::externalStorageEnvelope($snapshot['payload'] ?? null);
         $payloadBlob = self::stringValue($snapshot['payload'] ?? null)
             ?? (is_string($command?->payload ?? null) ? $command->payload : null);
+        $payloadStoredExternally = $snapshotPayloadEnvelope !== null
+            || ($payloadBlob !== null && ExternalPayloads::isStoredReference($payloadBlob));
 
         return [
             'id' => $resolvedCommandId,
@@ -564,12 +567,12 @@ final class HistoryTimeline
             'resolved_run_id' => self::stringValue($snapshot['resolved_run_id'] ?? null)
                 ?? $command?->resolvedRunId(),
             'target_name' => self::stringValue($snapshot['target_name'] ?? null)
-                ?? $command?->targetName()
+                ?? ($payloadStoredExternally ? null : $command?->targetName())
                 ?? self::stringValue($payload['signal_name'] ?? null)
                 ?? self::stringValue($payload['update_name'] ?? null),
             'payload_codec' => $payloadCodec,
-            'payload_available' => CommandPayloadPreview::available($payloadBlob),
-            'payload' => CommandPayloadPreview::previewWithCodec($payloadBlob, $payloadCodec),
+            'payload_available' => $snapshotPayloadEnvelope !== null || CommandPayloadPreview::available($payloadBlob),
+            'payload' => $snapshotPayloadEnvelope ?? CommandPayloadPreview::previewWithCodec($payloadBlob, $payloadCodec),
             'source' => self::stringValue($snapshot['source'] ?? null) ?? $command?->source,
             'context' => self::arrayValue(
                 $snapshot['context'] ?? null
@@ -599,6 +602,18 @@ final class HistoryTimeline
                 $command?->rejected_at
             ),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function externalStorageEnvelope(mixed $payload): ?array
+    {
+        if (! is_array($payload) || ! isset($payload['external_storage']) || ! is_array($payload['external_storage'])) {
+            return null;
+        }
+
+        return $payload;
     }
 
     /**

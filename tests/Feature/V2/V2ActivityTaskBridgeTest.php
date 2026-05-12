@@ -8,8 +8,11 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -23,12 +26,21 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityRecovery;
+use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
+use Workflow\V2\Support\RunActivityView;
 
 final class V2ActivityTaskBridgeTest extends TestCase
 {
     private ActivityTaskBridge $bridge;
+
+    private ?string $storageRoot = null;
 
     protected function setUp(): void
     {
@@ -40,6 +52,18 @@ final class V2ActivityTaskBridgeTest extends TestCase
             ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         $this->bridge = $this->app->make(ActivityTaskBridge::class);
+    }
+
+    protected function tearDown(): void
+    {
+        ExternalPayloadStorage::flushVerifiedCache();
+
+        if ($this->storageRoot !== null) {
+            $this->removeDirectory($this->storageRoot);
+            $this->storageRoot = null;
+        }
+
+        parent::tearDown();
     }
 
     public function testBridgeIsResolvableFromContainer(): void
@@ -212,6 +236,16 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertNotNull($result['activity_attempt_id']);
         $this->assertSame(1, $result['attempt_number']);
         $this->assertSame('server-worker-1', $result['lease_owner']);
+        $this->assertIsString($result['arguments']);
+        $this->assertSame(['World'], Serializer::unserializeWithCodec(
+            $result['payload_codec'],
+            $result['arguments'],
+        ));
+        $this->assertIsArray($result['arguments_envelope']);
+        $this->assertSame(['World'], Serializer::unserializeWithCodec(
+            $result['arguments_envelope']['codec'],
+            $result['arguments_envelope']['blob'],
+        ));
         $this->assertNotNull($result['lease_expires_at']);
         $this->assertNull($result['reason']);
     }
@@ -301,6 +335,105 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertSame(1, $result['attempt_number']);
         $this->assertSame('server-worker-1', $result['lease_owner']);
         $this->assertArrayNotHasKey('reason', $result);
+    }
+
+    public function testClaimSurfacesExternalizedArgumentsAsResolvableEnvelope(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+
+        [, $execution, $task] = $this->createActivityTask();
+        $this->externalizeActivityArguments($execution, $driver);
+
+        $status = $this->bridge->claimStatus($task->id, 'server-worker-1');
+
+        $this->assertTrue($status['claimed']);
+        $this->assertSame($execution->arguments, $status['arguments']);
+        $this->assertExternalArgumentsEnvelope($status['arguments_envelope']);
+
+        [, $execution, $task] = $this->createActivityTask();
+        $this->externalizeActivityArguments($execution, $driver);
+
+        $claim = $this->bridge->claim($task->id, 'server-worker-2');
+
+        $this->assertIsArray($claim);
+        $this->assertSame($execution->arguments, $claim['arguments']);
+        $this->assertExternalArgumentsEnvelope($claim['arguments_envelope']);
+    }
+
+    public function testActivityRecoveryPreservesExternalizedArgumentsFromHistory(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+
+        [$run, $execution] = $this->createActivityExecution();
+        $this->externalizeActivityArguments($execution, $driver);
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'payload_codec' => $execution->payload_codec,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ]);
+
+        $activityId = $execution->id;
+        $payloadCodec = $execution->payload_codec;
+        $storedArguments = $execution->arguments;
+        $execution->delete();
+
+        $restored = ActivityRecovery::restore($run->fresh(['historyEvents', 'activityExecutions']), $activityId);
+
+        $this->assertInstanceOf(ActivityExecution::class, $restored);
+        $this->assertSame($payloadCodec, $restored->payload_codec);
+        $this->assertSame($storedArguments, $restored->arguments);
+        $this->assertExternalArgumentsEnvelope(
+            ExternalPayloads::historyValue($restored->arguments, $restored->payload_codec, null),
+        );
+    }
+
+    public function testRunActivityViewDecodesExternalizedActivityPayloads(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->bindExternalPayloadPolicy($driver);
+
+        [$run, $execution] = $this->createActivityExecution();
+        $codec = CodecRegistry::defaultCodec();
+        $result = 'Hello, World!';
+
+        $execution->forceFill([
+            'payload_codec' => $codec,
+            'arguments' => ExternalPayloads::externalize(
+                Serializer::serializeWithCodec($codec, ['World']),
+                $codec,
+                $driver,
+                1,
+            ),
+            'result' => ExternalPayloads::externalize(
+                Serializer::serializeWithCodec($codec, $result),
+                $codec,
+                $driver,
+                1,
+            ),
+            'status' => ActivityStatus::Completed->value,
+            'attempt_count' => 1,
+            'closed_at' => now(),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityCompleted, [
+            'activity_execution_id' => $execution->id,
+            'activity_class' => $execution->activity_class,
+            'activity_type' => $execution->activity_type,
+            'sequence' => $execution->sequence,
+            'attempt_number' => 1,
+            'payload_codec' => $codec,
+            'activity' => ActivitySnapshot::fromExecution($execution),
+        ]);
+
+        $activities = RunActivityView::activitiesForRun($run->fresh(['historyEvents', 'activityExecutions.attempts']));
+
+        $this->assertCount(1, $activities);
+        $this->assertSame(['World'], $activities[0]['arguments']);
+        $this->assertSame($result, $activities[0]['result']);
     }
 
     public function testCompleteRecordsActivityResult(): void
@@ -761,6 +894,8 @@ final class V2ActivityTaskBridgeTest extends TestCase
     {
         $run = $this->createWaitingRun();
 
+        $codec = CodecRegistry::defaultCodec();
+
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
@@ -768,7 +903,8 @@ final class V2ActivityTaskBridgeTest extends TestCase
             'activity_type' => 'test-greeting-activity',
             'sequence' => 1,
             'status' => ActivityStatus::Pending->value,
-            'arguments' => Serializer::serialize(['World']),
+            'payload_codec' => $codec,
+            'arguments' => Serializer::serializeWithCodec($codec, ['World']),
             'connection' => 'redis',
             'queue' => 'default',
             'attempt_count' => 0,
@@ -854,5 +990,90 @@ final class V2ActivityTaskBridgeTest extends TestCase
         ])->save();
 
         return $run;
+    }
+
+    private function externalizeActivityArguments(
+        ActivityExecution $execution,
+        LocalFilesystemExternalPayloadStorage $driver,
+    ): void {
+        $codec = CodecRegistry::defaultCodec();
+
+        $execution->forceFill([
+            'payload_codec' => $codec,
+            'arguments' => ExternalPayloads::externalize(
+                Serializer::serializeWithCodec($codec, ['World']),
+                $codec,
+                $driver,
+                1,
+            ),
+        ])->save();
+    }
+
+    private function bindExternalPayloadPolicy(ExternalPayloadStorageDriver $driver): void
+    {
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new class($driver) implements ExternalPayloadStoragePolicy {
+                public function __construct(
+                    private readonly ExternalPayloadStorageDriver $driver,
+                ) {
+                }
+
+                public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+                {
+                    return $this->driver;
+                }
+
+                public function thresholdBytesFor(?string $namespace): ?int
+                {
+                    return 1;
+                }
+            },
+        );
+    }
+
+    private function assertExternalArgumentsEnvelope(mixed $arguments): void
+    {
+        $this->assertIsArray($arguments);
+        $this->assertSame(CodecRegistry::defaultCodec(), $arguments['codec']);
+        $this->assertArrayHasKey('external_storage', $arguments);
+        $this->assertArrayNotHasKey('blob', $arguments);
+        $this->assertSame(ExternalPayloadReference::SCHEMA, $arguments['external_storage']['schema']);
+    }
+
+    private function makeStorageRoot(): string
+    {
+        $this->storageRoot = sys_get_temp_dir().'/dw-activity-task-bridge-'.bin2hex(random_bytes(6));
+
+        return $this->storageRoot;
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory.DIRECTORY_SEPARATOR.$item;
+
+            if (is_dir($path)) {
+                $this->removeDirectory($path);
+            } else {
+                @unlink($path);
+            }
+        }
+
+        @rmdir($directory);
     }
 }

@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 
 class WorkflowHistoryEvent extends Model
@@ -135,6 +136,7 @@ class WorkflowHistoryEvent extends Model
     private static function commandSnapshot(WorkflowCommand $command): array
     {
         $publicContext = $command->publicContext();
+        $payloadStoredExternally = self::commandPayloadStoredExternally($command);
 
         return array_filter([
             'id' => $command->id,
@@ -144,9 +146,11 @@ class WorkflowHistoryEvent extends Model
             'target_scope' => $command->target_scope,
             'requested_run_id' => $command->requestedRunId(),
             'resolved_run_id' => $command->resolvedRunId(),
-            'target_name' => $command->targetName(),
+            'target_name' => $payloadStoredExternally ? null : $command->targetName(),
             'payload_codec' => $command->payload_codec,
-            'payload' => $command->payload,
+            'payload' => $payloadStoredExternally && is_string($command->payload)
+                ? ExternalPayloads::storedEnvelope($command->payload)
+                : $command->payload,
             'source' => $command->source,
             'context' => $publicContext === [] ? null : $publicContext,
             'caller_label' => $command->callerLabel(),
@@ -168,6 +172,13 @@ class WorkflowHistoryEvent extends Model
             'applied_at' => self::timestamp($command->applied_at),
             'rejected_at' => self::timestamp($command->rejected_at),
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    private static function commandPayloadStoredExternally(WorkflowCommand $command): bool
+    {
+        return is_string($command->payload)
+            && $command->payload !== ''
+            && ExternalPayloads::isStoredReference($command->payload);
     }
 
     private static function timestamp(mixed $value): ?string

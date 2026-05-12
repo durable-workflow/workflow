@@ -168,9 +168,9 @@ final class RunUpdateView
                 ?? $update->rejection_reason,
             'validation_errors' => self::validationErrors($rejected) ?: $update->normalizedValidationErrors(),
             'payload_codec' => $update->payload_codec,
-            'arguments_available' => is_string($arguments),
+            'arguments_available' => self::payloadAvailable($arguments),
             'arguments' => self::normalizeTypedValue($arguments, $update->payload_codec),
-            'result_available' => is_string($result) && $failureId === null,
+            'result_available' => self::payloadAvailable($result) && $failureId === null,
             'result' => $failureId === null ? self::normalizeTypedValue($result, $update->payload_codec) : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot)
@@ -229,11 +229,11 @@ final class RunUpdateView
                 : $command->outcome?->value,
             'source' => $command->source,
             'rejection_reason' => $command->rejection_reason,
-            'validation_errors' => $command->validationErrors(),
+            'validation_errors' => self::commandValidationErrors($command),
             'payload_codec' => $command->payload_codec,
-            'arguments_available' => true,
-            'arguments' => $command->payloadArguments(),
-            'result_available' => is_string($result) && $failureId === null,
+            'arguments_available' => CommandPayloadPreview::available($command->payload),
+            'arguments' => self::commandArguments($command),
+            'result_available' => self::payloadAvailable($result) && $failureId === null,
             'result' => $failureId === null ? self::normalizeTypedValue($result, $command->payload_codec) : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot),
@@ -291,12 +291,12 @@ final class RunUpdateView
             'rejection_reason' => self::stringValue($rejected?->payload['rejection_reason'] ?? null),
             'validation_errors' => self::validationErrors($rejected),
             'payload_codec' => self::stringValue($commandSnapshot['payload_codec'] ?? null),
-            'arguments_available' => is_string($arguments),
+            'arguments_available' => self::payloadAvailable($arguments),
             'arguments' => self::normalizeTypedValue(
                 $arguments,
                 self::stringValue($commandSnapshot['payload_codec'] ?? null)
             ),
-            'result_available' => is_string($result) && $failureId === null,
+            'result_available' => self::payloadAvailable($result) && $failureId === null,
             'result' => $failureId === null
                 ? self::normalizeTypedValue($result, self::stringValue($commandSnapshot['payload_codec'] ?? null))
                 : null,
@@ -343,7 +343,9 @@ final class RunUpdateView
             }
         }
 
-        return $command?->targetName();
+        return $command instanceof WorkflowCommand && self::commandPayloadStoredExternally($command)
+            ? null
+            : $command?->targetName();
     }
 
     private static function workflowSequence(
@@ -627,6 +629,10 @@ final class RunUpdateView
             return $value;
         }
 
+        if (ExternalPayloads::isStoredReference($value)) {
+            return ExternalPayloads::storedEnvelope($value);
+        }
+
         if ($codec === null || $codec === '') {
             return Serializer::unserialize($value);
         }
@@ -636,6 +642,35 @@ final class RunUpdateView
         } catch (\Throwable) {
             return $value;
         }
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private static function commandValidationErrors(WorkflowCommand $command): array
+    {
+        return self::commandPayloadStoredExternally($command) ? [] : $command->validationErrors();
+    }
+
+    private static function commandArguments(WorkflowCommand $command): mixed
+    {
+        if (is_string($command->payload) && ExternalPayloads::isStoredReference($command->payload)) {
+            return ExternalPayloads::storedEnvelope($command->payload);
+        }
+
+        return $command->payloadArguments();
+    }
+
+    private static function commandPayloadStoredExternally(WorkflowCommand $command): bool
+    {
+        return is_string($command->payload)
+            && ExternalPayloads::isStoredReference($command->payload);
+    }
+
+    private static function payloadAvailable(mixed $value): bool
+    {
+        return is_string($value)
+            || (is_array($value) && isset($value['external_storage']) && is_array($value['external_storage']));
     }
 
     private static function timestamp(mixed $value): ?string

@@ -49,6 +49,9 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         $memo = $options['memo'] ?? null;
         $searchAttributes = $options['search_attributes'] ?? null;
         $namespace = $this->resolveNamespace($options);
+        if (is_string($arguments)) {
+            $arguments = ExternalPayloads::externalizeForNamespace($arguments, $payloadCodec, $namespace);
+        }
         $commandContext = $this->commandContext($options);
         $executionTimeoutSeconds = isset($options['execution_timeout_seconds']) ? (int) $options['execution_timeout_seconds'] : null;
         $runTimeoutSeconds = isset($options['run_timeout_seconds']) ? (int) $options['run_timeout_seconds'] : null;
@@ -299,10 +302,6 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
                 'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
                 'workflow_definition_fingerprint' => $fingerprint,
-                // Pinned compatibility marker — the run is bound to this
-                // worker build at start, so replay only dispatches to
-                // workers that advertise the same build.
-                'compatibility' => $run->compatibility,
             ], static fn (mixed $v): bool => $v !== null);
 
             if ($commandContract !== null) {

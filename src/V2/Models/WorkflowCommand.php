@@ -15,6 +15,7 @@ use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Support\CommandSequence;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\MessageStreamCursor;
 
 class WorkflowCommand extends Model
@@ -456,9 +457,20 @@ class WorkflowCommand extends Model
             ? $this->payload_codec
             : null;
 
+        $namespace = null;
+
+        if ($this->workflow_run_id !== null) {
+            $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->whereKey($this->workflow_run_id)
+                ->value('namespace');
+            $namespace = is_string($namespace) ? $namespace : null;
+        }
+
+        $blob = ExternalPayloads::resolveStoredPayload($this->payload, $codec, $namespace);
+
         $payload = $codec !== null
-            ? Serializer::unserializeWithCodec($codec, $this->payload)
-            : Serializer::unserialize($this->payload);
+            ? Serializer::unserializeWithCodec($codec, $blob)
+            : Serializer::unserialize($blob);
 
         return is_array($payload)
             ? $payload

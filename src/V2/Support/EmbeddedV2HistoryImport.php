@@ -322,7 +322,7 @@ final class EmbeddedV2HistoryImport
                 'workflow_class' => self::stringValue($workflow['workflow_class'] ?? null),
                 'workflow_type' => self::stringValue($workflow['workflow_type'] ?? null),
                 'payload_codec' => self::stringValue($command['payload_codec'] ?? null),
-                'payload' => self::stringValue($command['payload'] ?? null),
+                'payload' => self::payloadRowValue($command['payload'] ?? null),
                 'rejection_reason' => self::stringValue($command['rejection_reason'] ?? null),
                 'command_sequence' => self::intValue($command['sequence'] ?? null),
                 'message_sequence' => self::intValue($command['message_sequence'] ?? null),
@@ -370,7 +370,7 @@ final class EmbeddedV2HistoryImport
                 'command_sequence' => self::intValue($signal['command_sequence'] ?? null),
                 'workflow_sequence' => self::intValue($signal['workflow_sequence'] ?? null),
                 'payload_codec' => self::stringValue($signal['payload_codec'] ?? null),
-                'arguments' => self::stringValue($signal['arguments'] ?? null),
+                'arguments' => self::payloadRowValue($signal['arguments'] ?? null),
                 'received_at' => $receivedAt,
                 'applied_at' => self::timestamp($signal['applied_at'] ?? null),
                 'rejected_at' => self::timestamp($signal['rejected_at'] ?? null),
@@ -410,8 +410,8 @@ final class EmbeddedV2HistoryImport
                 'command_sequence' => self::intValue($update['command_sequence'] ?? null),
                 'workflow_sequence' => self::intValue($update['workflow_sequence'] ?? null),
                 'payload_codec' => self::stringValue($update['payload_codec'] ?? null),
-                'arguments' => self::stringValue($update['arguments'] ?? null),
-                'result' => self::stringValue($update['result'] ?? null),
+                'arguments' => self::payloadRowValue($update['arguments'] ?? null),
+                'result' => self::payloadRowValue($update['result'] ?? null),
                 'validation_errors' => self::arrayValue($update['validation_errors'] ?? null) ?? [],
                 'rejection_reason' => self::stringValue($update['rejection_reason'] ?? null),
                 'failure_id' => self::stringValue($update['failure_id'] ?? null),
@@ -497,8 +497,8 @@ final class EmbeddedV2HistoryImport
                     ?? 'imported-activity',
                 'status' => $status,
                 'payload_codec' => self::stringValue($activity['payload_codec'] ?? null) ?? $runCodec,
-                'arguments' => self::stringValue($activity['arguments'] ?? null),
-                'result' => self::stringValue($activity['result'] ?? null),
+                'arguments' => self::payloadRowValue($activity['arguments'] ?? null),
+                'result' => self::payloadRowValue($activity['result'] ?? null),
                 'exception' => self::stringValue($activity['exception'] ?? null),
                 'connection' => self::stringValue($activity['connection'] ?? null),
                 'queue' => self::stringValue($activity['queue'] ?? null),
@@ -1091,6 +1091,31 @@ final class EmbeddedV2HistoryImport
             return null;
         }
 
-        return self::stringValue($payload['data'] ?? null);
+        return self::payloadRowValue($payload['data'] ?? null);
+    }
+
+    private static function payloadRowValue(mixed $value): ?string
+    {
+        $string = self::stringValue($value);
+
+        if ($string !== null) {
+            return $string;
+        }
+
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $blob = self::stringValue($value['blob'] ?? null);
+
+        if ($blob !== null) {
+            return $blob;
+        }
+
+        if (isset($value['external_storage']) && is_array($value['external_storage'])) {
+            return ExternalPayloads::encodeStoredEnvelope($value);
+        }
+
+        return null;
     }
 }

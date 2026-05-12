@@ -50,6 +50,7 @@ use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\CurrentRunResolver;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\MemoUpsertService;
 use Workflow\V2\Support\ParallelChildGroup;
@@ -1028,6 +1029,12 @@ final class WorkflowStub
                 ? $startedAt->copy()
                     ->addSeconds($runTimeoutSeconds)
                 : null;
+            $payloadCodec = CodecRegistry::defaultCodec();
+            $serializedArguments = ExternalPayloads::externalizeForNamespace(
+                Serializer::serializeWithCodec($payloadCodec, $metadata->arguments),
+                $payloadCodec,
+                is_string($instance->namespace) ? $instance->namespace : null,
+            );
 
             /** @var WorkflowRun $run */
             $run = self::runQuery()->create([
@@ -1042,11 +1049,8 @@ final class WorkflowStub
                 'run_deadline_at' => $runDeadlineAt,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
-                'payload_codec' => CodecRegistry::defaultCodec(),
-                'arguments' => \Workflow\Serializers\Serializer::serializeWithCodec(
-                    CodecRegistry::defaultCodec(),
-                    $metadata->arguments
-                ),
+                'payload_codec' => $payloadCodec,
+                'arguments' => $serializedArguments,
                 'connection' => $connection,
                 'queue' => $queue,
                 'started_at' => $startedAt,
@@ -1062,11 +1066,8 @@ final class WorkflowStub
                 'target_scope' => 'instance',
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::StartedNew->value,
-                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                'payload' => Serializer::serializeWithCodec(
-                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                    $metadata->arguments
-                ),
+                'payload_codec' => $payloadCodec,
+                'payload' => $serializedArguments,
                 'accepted_at' => now(),
                 'applied_at' => now(),
             ]));
@@ -2692,6 +2693,12 @@ final class WorkflowStub
                 ? $startedAt->copy()
                     ->addSeconds($runTimeoutSeconds)
                 : null;
+            $payloadCodec = CodecRegistry::defaultCodec();
+            $serializedArguments = ExternalPayloads::externalizeForNamespace(
+                Serializer::serializeWithCodec($payloadCodec, $metadata->arguments),
+                $payloadCodec,
+                is_string($instance->namespace) ? $instance->namespace : null,
+            );
 
             /** @var WorkflowRun $run */
             $run = self::runQuery()->create([
@@ -2706,8 +2713,8 @@ final class WorkflowStub
                 'run_deadline_at' => $runDeadlineAt,
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
-                'payload_codec' => CodecRegistry::defaultCodec(),
-                'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), $metadata->arguments),
+                'payload_codec' => $payloadCodec,
+                'arguments' => $serializedArguments,
                 'connection' => $connection,
                 'queue' => $queue,
                 'started_at' => $startedAt,
@@ -2725,11 +2732,8 @@ final class WorkflowStub
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Accepted->value,
                     'outcome' => CommandOutcome::StartedNew->value,
-                    'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                    'payload' => Serializer::serializeWithCodec(
-                        $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                        $metadata->arguments
-                    ),
+                    'payload_codec' => $payloadCodec,
+                    'payload' => $serializedArguments,
                     'accepted_at' => now(),
                     'applied_at' => now(),
                 ],

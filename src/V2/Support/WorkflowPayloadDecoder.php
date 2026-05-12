@@ -20,11 +20,16 @@ final class WorkflowPayloadDecoder
     public static function unserializeWithRun(string $serialized, ?WorkflowRun $run, array $context): mixed
     {
         $codec = self::stringValue($run?->payload_codec);
+        $payload = ExternalPayloads::resolveStoredPayload(
+            $serialized,
+            $codec,
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
 
         try {
             return $codec !== null
-                ? Serializer::unserializeWithCodec($codec, $serialized)
-                : Serializer::unserialize($serialized);
+                ? Serializer::unserializeWithCodec($codec, $payload)
+                : Serializer::unserialize($payload);
         } catch (Throwable $throwable) {
             throw self::failure($throwable, $context, $codec, $serialized);
         }

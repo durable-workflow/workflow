@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Throwable;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
@@ -169,7 +170,7 @@ final class RunDetailView
             'compatibility_supported_in_fleet' => $fleetCompatibility['supported'],
             'compatibility_fleet_reason' => $fleetCompatibility['reason'],
             'compatibility_fleet' => $compatibilityFleet,
-            'arguments' => $run->workflowArguments(),
+            'arguments' => self::workflowArguments($run),
             'connection' => $run->connection,
             'queue' => $run->queue,
             'execution_timeout_seconds' => $run->instance?->execution_timeout_seconds !== null
@@ -180,7 +181,7 @@ final class RunDetailView
                 : null,
             'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
             'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
-            'output' => $run->output === null ? null : $run->workflowOutput(),
+            'output' => self::workflowOutput($run),
             'status' => $run->status->value,
             'is_terminal' => $run->status->isTerminal(),
             'declared_queries' => $commandContract['queries'],
@@ -304,7 +305,7 @@ final class RunDetailView
                         'target_scope' => $command->target_scope,
                         'requested_run_id' => $command->requestedRunId(),
                         'resolved_run_id' => $command->resolvedRunId(),
-                        'target_name' => $command->targetName(),
+                        'target_name' => self::commandTargetName($command),
                         'payload_codec' => $command->payload_codec,
                         'payload_available' => CommandPayloadPreview::available($command->payload),
                         'payload' => CommandPayloadPreview::previewWithCodec(
@@ -327,9 +328,9 @@ final class RunDetailView
                         'correlation_id' => $command->correlationId(),
                         'status' => $command->status->value,
                         'outcome' => $command->outcome?->value,
-                        'reason' => $command->commandReason(),
+                        'reason' => self::commandReason($command),
                         'rejection_reason' => $command->rejection_reason,
-                        'validation_errors' => $command->validationErrors(),
+                        'validation_errors' => self::commandValidationErrors($command),
                         'workflow_type' => $command->workflow_type,
                         'workflow_class' => $command->workflow_class,
                         'accepted_at' => $command->accepted_at,
@@ -411,6 +412,64 @@ final class RunDetailView
         return $summary !== null
             ? $summary->getTypedSearchAttributes()
             : $run->typedSearchAttributes();
+    }
+
+    private static function workflowArguments(WorkflowRun $run): mixed
+    {
+        if ($run->arguments === null) {
+            return [];
+        }
+
+        if (is_string($run->arguments) && ExternalPayloads::isStoredReference($run->arguments)) {
+            return ExternalPayloads::storedEnvelope($run->arguments);
+        }
+
+        try {
+            return $run->workflowArguments();
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    private static function workflowOutput(WorkflowRun $run): mixed
+    {
+        if ($run->output === null) {
+            return null;
+        }
+
+        if (is_string($run->output) && ExternalPayloads::isStoredReference($run->output)) {
+            return ExternalPayloads::storedEnvelope($run->output);
+        }
+
+        try {
+            return $run->workflowOutput();
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    private static function commandTargetName(WorkflowCommand $command): ?string
+    {
+        return self::commandPayloadStoredExternally($command) ? null : $command->targetName();
+    }
+
+    private static function commandReason(WorkflowCommand $command): ?string
+    {
+        return self::commandPayloadStoredExternally($command) ? null : $command->commandReason();
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private static function commandValidationErrors(WorkflowCommand $command): array
+    {
+        return self::commandPayloadStoredExternally($command) ? [] : $command->validationErrors();
+    }
+
+    private static function commandPayloadStoredExternally(WorkflowCommand $command): bool
+    {
+        return is_string($command->payload)
+            && ExternalPayloads::isStoredReference($command->payload);
     }
 
     /**

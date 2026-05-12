@@ -390,6 +390,15 @@ omitted a null value. Consumers must continue to accept missing optional
 keys indefinitely. Producers must not rename, remove, or change the type
 or meaning of an existing key.
 
+Payload-bearing history keys such as `arguments`, `result`, and `output` may
+carry either the inline serialized string used by older rows or a codec
+envelope. Envelopes are shaped as `{codec, blob}` for inline bytes or
+`{codec, external_storage}` for externally stored payload references. Worker
+bridge responses keep the legacy `arguments` field as `string|null` and expose
+the structured codec payload in the additive `arguments_envelope` field. Worker
+webhook responses project that envelope into the public `arguments` field so
+HTTP clients always receive a codec-tagged payload object.
+
 ## Durable Message Stream Authoring API
 
 The first-class v2 inbox/outbox surface is `Workflow\V2\MessageStream`, opened

@@ -29,7 +29,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.2';
+    public const VERSION = '1.3';
 
     /**
      * Stable fail-closed reason a worker or server must return when it

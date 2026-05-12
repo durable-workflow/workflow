@@ -672,13 +672,16 @@ final class QueryStateReplayer
 
     private function activityResult(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed
     {
-        $serialized = $event->payload['result'] ?? null;
+        $codec = $this->stringValue($event->payload['payload_codec'] ?? null);
+        $serialized = ExternalPayloads::payloadBlob(
+            $event->payload['result'] ?? null,
+            $codec ?? $this->stringValue($run?->payload_codec ?? null),
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
 
-        if (! is_string($serialized)) {
+        if ($serialized === null) {
             return null;
         }
-
-        $codec = $this->stringValue($event->payload['payload_codec'] ?? null);
 
         if ($codec !== null) {
             return Serializer::unserializeWithCodec($codec, $serialized);
@@ -689,9 +692,13 @@ final class QueryStateReplayer
 
     private function sideEffectResult(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed
     {
-        $serialized = $event->payload['result'] ?? null;
+        $serialized = ExternalPayloads::payloadBlob(
+            $event->payload['result'] ?? null,
+            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue($run?->payload_codec ?? null),
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
 
-        if (! is_string($serialized)) {
+        if ($serialized === null) {
             return null;
         }
 
@@ -700,6 +707,12 @@ final class QueryStateReplayer
 
     private function unserializeWithRun(string $serialized, ?WorkflowRun $run): mixed
     {
+        $serialized = ExternalPayloads::resolveStoredPayload(
+            $serialized,
+            is_string($run?->payload_codec) ? $run->payload_codec : null,
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
+
         if ($run !== null && is_string($run->payload_codec) && $run->payload_codec !== '') {
             return Serializer::unserializeWithCodec($run->payload_codec, $serialized);
         }
@@ -890,6 +903,12 @@ final class QueryStateReplayer
 
     private function unserializeExceptionWithRun(string $serialized, ?WorkflowRun $run): mixed
     {
+        $serialized = ExternalPayloads::resolveStoredPayload(
+            $serialized,
+            is_string($run?->payload_codec) ? $run->payload_codec : null,
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
+
         if ($run !== null && is_string($run->payload_codec) && $run->payload_codec !== '') {
             return Serializer::unserializeWithCodec($run->payload_codec, $serialized);
         }

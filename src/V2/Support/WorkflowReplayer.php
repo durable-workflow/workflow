@@ -74,10 +74,10 @@ final class WorkflowReplayer
             'last_history_sequence' => self::intValue($workflow['last_history_sequence'] ?? null)
                 ?? count(self::arrayValue($historyExport['history_events'] ?? null)),
             'arguments' => ($arguments['available'] ?? false) === true
-                ? self::requiredString($arguments, 'data', 'payloads.arguments.data')
+                ? self::requiredPayloadRowValue($arguments, 'data', 'payloads.arguments.data')
                 : null,
             'output' => ($output['available'] ?? false) === true
-                ? self::requiredString($output, 'data', 'payloads.output.data')
+                ? self::requiredPayloadRowValue($output, 'data', 'payloads.output.data')
                 : null,
             'payload_codec' => $codec,
             'started_at' => self::timestamp($workflow['started_at'] ?? null),
@@ -169,7 +169,7 @@ final class WorkflowReplayer
                     'requested_workflow_run_id' => self::stringValue($command['requested_run_id'] ?? null),
                     'resolved_workflow_run_id' => self::stringValue($command['resolved_run_id'] ?? null),
                     'payload_codec' => self::stringValue($command['payload_codec'] ?? null),
-                    'payload' => self::stringValue($command['payload'] ?? null),
+                    'payload' => self::payloadRowValue($command['payload'] ?? null),
                     'source' => self::stringValue($command['source'] ?? null),
                     'context' => self::jsonValue(self::arrayValue($command['context'] ?? null)),
                     'status' => self::stringValue($command['status'] ?? null),
@@ -206,8 +206,8 @@ final class WorkflowReplayer
                     'activity_class' => self::stringValue($activity['activity_class'] ?? null),
                     'status' => self::stringValue($activity['source_status'] ?? null)
                         ?? self::stringValue($activity['status'] ?? null),
-                    'arguments' => self::stringValue($activity['arguments'] ?? null),
-                    'result' => self::stringValue($activity['result'] ?? null),
+                    'arguments' => self::payloadRowValue($activity['arguments'] ?? null),
+                    'result' => self::payloadRowValue($activity['result'] ?? null),
                     'connection' => self::stringValue($activity['connection'] ?? null),
                     'queue' => self::stringValue($activity['queue'] ?? null),
                     'retry_policy' => self::jsonValue(self::arrayValue($activity['retry_policy'] ?? null)),
@@ -347,6 +347,23 @@ final class WorkflowReplayer
         return $value;
     }
 
+    /**
+     * @param array<string, mixed> $values
+     */
+    private static function requiredPayloadRowValue(array $values, string $key, ?string $path = null): string
+    {
+        $value = self::payloadRowValue($values[$key] ?? null);
+
+        if ($value === null) {
+            throw new InvalidArgumentException(sprintf(
+                'History export field [%s] must be a non-empty payload string or external storage envelope.',
+                $path ?? $key
+            ));
+        }
+
+        return $value;
+    }
+
     private static function stringValue(mixed $value): ?string
     {
         return is_string($value) && $value !== ''
@@ -357,6 +374,31 @@ final class WorkflowReplayer
     private static function intValue(mixed $value): ?int
     {
         return is_int($value) ? $value : null;
+    }
+
+    private static function payloadRowValue(mixed $value): ?string
+    {
+        $string = self::stringValue($value);
+
+        if ($string !== null) {
+            return $string;
+        }
+
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $blob = self::stringValue($value['blob'] ?? null);
+
+        if ($blob !== null) {
+            return $blob;
+        }
+
+        if (isset($value['external_storage']) && is_array($value['external_storage'])) {
+            return ExternalPayloads::encodeStoredEnvelope($value);
+        }
+
+        return null;
     }
 
     /**

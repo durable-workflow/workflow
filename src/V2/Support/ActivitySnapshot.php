@@ -40,9 +40,21 @@ final class ActivitySnapshot
             'created_at' => self::timestamp($execution->created_at),
             'started_at' => self::timestamp($execution->started_at),
             'closed_at' => self::timestamp($execution->closed_at),
-            'arguments' => self::stringValue($execution->arguments),
-            'result' => self::stringValue($execution->result),
-            'exception' => self::stringValue($execution->exception),
+            'arguments' => ExternalPayloads::historyValue(
+                self::stringValue($execution->arguments),
+                self::stringValue($execution->payload_codec),
+                self::executionNamespace($execution),
+            ),
+            'result' => ExternalPayloads::historyValue(
+                self::stringValue($execution->result),
+                self::stringValue($execution->payload_codec),
+                self::executionNamespace($execution),
+            ),
+            'exception' => ExternalPayloads::historyValue(
+                self::stringValue($execution->exception),
+                self::stringValue($execution->payload_codec),
+                self::executionNamespace($execution),
+            ),
             ...$parallelMetadata,
         ], static fn (mixed $value): bool => $value !== null);
     }
@@ -84,7 +96,7 @@ final class ActivitySnapshot
             'parallel_group_index' => self::intValue($payload['parallel_group_index'] ?? null),
             'parallel_group_path' => self::parallelGroupPath($payload),
             'retry_policy' => self::arrayValue($payload['retry_policy'] ?? null),
-            'result' => self::stringValue($payload['result'] ?? null),
+            'result' => self::payloadValue($payload['result'] ?? null),
             'last_heartbeat_progress' => HeartbeatProgress::fromStored($payload['progress'] ?? null),
             'created_at' => $event->event_type === HistoryEventType::ActivityScheduled
                 ? self::timestamp($event->recorded_at)
@@ -159,9 +171,9 @@ final class ActivitySnapshot
             'created_at' => self::stringValue($snapshot['created_at'] ?? null),
             'started_at' => self::stringValue($snapshot['started_at'] ?? null),
             'closed_at' => self::stringValue($snapshot['closed_at'] ?? null),
-            'arguments' => self::stringValue($snapshot['arguments'] ?? null),
-            'result' => self::stringValue($snapshot['result'] ?? null),
-            'exception' => self::stringValue($snapshot['exception'] ?? null),
+            'arguments' => self::payloadValue($snapshot['arguments'] ?? null),
+            'result' => self::payloadValue($snapshot['result'] ?? null),
+            'exception' => self::payloadValue($snapshot['exception'] ?? null),
             'last_heartbeat_progress' => HeartbeatProgress::fromStored($snapshot['last_heartbeat_progress'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);
     }
@@ -230,6 +242,28 @@ final class ActivitySnapshot
         }
 
         return $attemptCount > 0 ? $attemptCount : 1;
+    }
+
+    private static function executionNamespace(ActivityExecution $execution): ?string
+    {
+        if ($execution->relationLoaded('run') && $execution->run instanceof \Workflow\V2\Models\WorkflowRun) {
+            return is_string($execution->run->namespace) ? $execution->run->namespace : null;
+        }
+
+        return null;
+    }
+
+    private static function payloadValue(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return $value;
+        }
+
+        if (is_array($value)) {
+            return $value;
+        }
+
+        return null;
     }
 
     private static function timestamp(mixed $value): ?string

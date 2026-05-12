@@ -107,8 +107,15 @@ final class RunLinkedIntakeView
             'target_scope' => $command->target_scope,
             'requested_run_id' => $command->requestedRunId(),
             'resolved_run_id' => $command->resolvedRunId(),
-            'target_name' => $command->targetName(),
+            'target_name' => self::commandPayloadStoredExternally($command) ? null : $command->targetName(),
         ];
+    }
+
+    private static function commandPayloadStoredExternally(WorkflowCommand $command): bool
+    {
+        return is_string($command->payload)
+            && $command->payload !== ''
+            && ExternalPayloads::isStoredReference($command->payload);
     }
 
     /**

@@ -166,7 +166,12 @@ final class RunActivityView
         foreach ($states as $activityId => $state) {
             /** @var ActivityExecution|null $execution */
             $execution = $executions->get($activityId);
-            $activities[] = self::presentActivity($state, $execution, $attemptsByActivityId[$activityId] ?? []);
+            $activities[] = self::presentActivity(
+                $state,
+                $run,
+                $execution,
+                $attemptsByActivityId[$activityId] ?? [],
+            );
         }
 
         usort($activities, static function (array $left, array $right): int {
@@ -216,6 +221,7 @@ final class RunActivityView
      */
     private static function presentActivity(
         array $state,
+        WorkflowRun $run,
         ?ActivityExecution $execution = null,
         array $attemptStates = [],
     ): array {
@@ -230,6 +236,10 @@ final class RunActivityView
         $status = $unsupportedReason === self::UNSUPPORTED_TERMINAL_REASON
             ? 'unsupported'
             : ($state['status'] ?? 'pending');
+        $payloadCodec = self::stringValue($state['payload_codec'] ?? null)
+            ?? self::stringValue($execution?->payload_codec)
+            ?? self::stringValue($run->payload_codec);
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
 
         return [
             'id' => $state['id'] ?? null,
@@ -269,9 +279,11 @@ final class RunActivityView
             'created_at' => $state['created_at'] ?? null,
             'started_at' => $state['started_at'] ?? ($latestAttempt['started_at'] ?? null),
             'closed_at' => self::activityClosedAt($status, $state, $latestAttempt),
-            'arguments' => self::publicTypedValue($state['arguments'] ?? null, []),
+            'arguments' => self::publicTypedValue($state['arguments'] ?? null, $payloadCodec, $namespace, []),
             'result' => self::publicTypedValue(
                 $unsupportedReason === null ? ($state['result'] ?? null) : null,
+                $payloadCodec,
+                $namespace,
                 null,
             ),
             'attempts' => $attempts,
@@ -507,17 +519,30 @@ final class RunActivityView
         return null;
     }
 
-    private static function publicTypedValue(mixed $value, mixed $default): mixed
+    private static function publicTypedValue(mixed $value, ?string $codec, ?string $namespace, mixed $default): mixed
     {
-        if (! is_string($value) || $value === '') {
+        if ($value === null || $value === '') {
             return $default;
         }
 
         try {
-            return Serializer::unserialize($value);
+            $blob = ExternalPayloads::payloadBlob($value, $codec, $namespace);
+
+            if ($blob === null || $blob === '') {
+                return $default;
+            }
+
+            return $codec === null || $codec === ''
+                ? Serializer::unserialize($blob)
+                : Serializer::unserializeWithCodec($codec, $blob);
         } catch (Throwable) {
-            return $default;
+            return self::isExternalStorageEnvelope($value) ? $value : $default;
         }
+    }
+
+    private static function isExternalStorageEnvelope(mixed $value): bool
+    {
+        return is_array($value) && isset($value['external_storage']) && is_array($value['external_storage']);
     }
 
     private static function timestampToMilliseconds(mixed $timestamp): int

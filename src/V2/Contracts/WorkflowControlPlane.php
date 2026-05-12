@@ -29,7 +29,7 @@ interface WorkflowControlPlane
      * to the worker that claims the first task.
      *
      * Options:
-     * - arguments: string|null — codec-tagged serialized arguments
+     * - arguments: ?string — codec-tagged serialized arguments; large payloads may be stored as external references
      * - connection: string|null — queue connection override
      * - queue: string|null — queue name override
      * - namespace: string|null — execution namespace for multi-namespace isolation (falls back to config)

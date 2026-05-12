@@ -363,7 +363,7 @@ final class BundleIntegrityVerifier
                 );
             }
 
-            if ($codec === 'avro' && $available && ! $redacted) {
+            if ($codec === 'avro' && $available && ! $redacted && $diagnostic !== 'external_storage_reference') {
                 $framing = self::stringValue($entry['avro_framing'] ?? null);
 
                 if ($framing === null) {

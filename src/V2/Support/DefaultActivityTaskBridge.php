@@ -151,6 +151,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
                 'idempotency_key' => null,
                 'payload_codec' => null,
                 'arguments' => null,
+                'arguments_envelope' => null,
                 'retry_policy' => null,
                 'connection' => null,
                 'queue' => null,
@@ -167,6 +168,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         $task = $claim->task;
         $run = $claim->run;
         $execution = $claim->execution;
+        $payloadCodec = $execution->payload_codec ?? $run->payload_codec ?? CodecRegistry::defaultCodec();
 
         return [
             'claimed' => true,
@@ -179,8 +181,13 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             'activity_type' => self::nonEmptyString($execution->activity_type),
             'activity_class' => self::nonEmptyString($execution->activity_class),
             'idempotency_key' => $execution->id,
-            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+            'payload_codec' => $payloadCodec,
             'arguments' => self::nonEmptyString($execution->arguments),
+            'arguments_envelope' => ExternalPayloads::wireEnvelope(
+                self::nonEmptyString($execution->arguments),
+                $payloadCodec,
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
             'retry_policy' => is_array($execution->retry_policy) ? $execution->retry_policy : null,
             'connection' => self::nonEmptyString($execution->connection),
             'queue' => self::nonEmptyString($execution->queue),
@@ -214,6 +221,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
             'idempotency_key' => $claim['idempotency_key'],
             'payload_codec' => $claim['payload_codec'],
             'arguments' => $claim['arguments'],
+            'arguments_envelope' => $claim['arguments_envelope'],
             'retry_policy' => $claim['retry_policy'],
             'connection' => $claim['connection'],
             'queue' => $claim['queue'],

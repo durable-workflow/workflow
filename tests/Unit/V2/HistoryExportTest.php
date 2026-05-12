@@ -10,6 +10,7 @@ use RuntimeException;
 use Tests\Fixtures\V2\TestCommandTargetWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Avro;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Enums\ActivityStatus;
@@ -37,6 +38,8 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunLineageProjector;
 use Workflow\V2\Support\RunSummaryProjector;
@@ -1066,6 +1069,204 @@ final class HistoryExportTest extends TestCase
         $this->assertNull($bundle['activities'][0]['attempts'][0]['lease_expires_at']);
     }
 
+    public function testItPreservesExternalizedActivityPayloadEnvelopesInExports(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:15:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createMinimalCompletedRun('history-export-activity-external-payloads');
+        $codec = CodecRegistry::defaultCodec();
+        $arguments = $this->storedPayloadEnvelope($codec, 'activity-arguments');
+        $result = $this->storedPayloadEnvelope($codec, 'activity-result');
+
+        /** @var ActivityExecution $activity */
+        $activity = ActivityExecution::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $run->id,
+            'sequence' => 4,
+            'activity_class' => 'App\\Activities\\ExternalPayloadActivity',
+            'activity_type' => 'external.payload.activity',
+            'status' => ActivityStatus::Completed->value,
+            'payload_codec' => $codec,
+            'arguments' => $arguments,
+            'result' => $result,
+            'connection' => 'redis',
+            'queue' => 'activities',
+            'attempt_count' => 1,
+            'closed_at' => now(),
+        ]);
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::ActivityCompleted, [
+            'activity_execution_id' => $activity->id,
+            'activity_class' => $activity->activity_class,
+            'activity_type' => $activity->activity_type,
+            'sequence' => $activity->sequence,
+            'attempt_number' => 1,
+            'payload_codec' => $codec,
+            'activity' => ActivitySnapshot::fromExecution($activity),
+        ]);
+
+        $bundle = HistoryExport::forRun($run->fresh(['historyEvents', 'activityExecutions.attempts']));
+        $activityExport = $bundle['activities'][0];
+
+        $this->assertIsArray($activityExport['arguments']);
+        $this->assertIsArray($activityExport['result']);
+        $this->assertSame($codec, $activityExport['arguments']['codec']);
+        $this->assertSame($codec, $activityExport['result']['codec']);
+        $this->assertSame(ExternalPayloadReference::SCHEMA, $activityExport['arguments']['external_storage']['schema']);
+        $this->assertSame(ExternalPayloadReference::SCHEMA, $activityExport['result']['external_storage']['schema']);
+
+        $argumentEntry = collect($bundle['payload_manifest']['entries'])->firstWhere('path', 'activities.0.arguments');
+        $resultEntry = collect($bundle['payload_manifest']['entries'])->firstWhere('path', 'activities.0.result');
+
+        $this->assertIsArray($argumentEntry);
+        $this->assertTrue($argumentEntry['available']);
+        $this->assertSame('external-storage-reference', $argumentEntry['encoding']);
+        $this->assertSame('external_storage_reference', $argumentEntry['diagnostic']);
+        $this->assertIsArray($resultEntry);
+        $this->assertTrue($resultEntry['available']);
+        $this->assertSame('external-storage-reference', $resultEntry['encoding']);
+        $this->assertSame('external_storage_reference', $resultEntry['diagnostic']);
+    }
+
+    public function testItPreservesExternalizedRunAndCommandPayloadEnvelopesInExports(): void
+    {
+        Carbon::setTestNow('2026-04-09 12:20:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
+
+        $run = $this->createMinimalCompletedRun('history-export-run-command-external-payloads');
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $codec = CodecRegistry::defaultCodec();
+        $arguments = $this->storedPayloadEnvelope($codec, 'run-arguments');
+        $commandPayload = $this->storedPayloadEnvelope($codec, 'start-command-payload');
+        $signalArguments = $this->storedPayloadEnvelope($codec, 'signal-arguments');
+        $updateArguments = $this->storedPayloadEnvelope($codec, 'update-arguments');
+        $updateResult = $this->storedPayloadEnvelope($codec, 'update-result');
+
+        $run->forceFill([
+            'payload_codec' => $codec,
+            'arguments' => $arguments,
+            'output' => null,
+        ])->save();
+
+        $command = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Start->value,
+            'target_scope' => 'instance',
+            'payload_codec' => $codec,
+            'payload' => $commandPayload,
+            'source' => 'api',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::StartedNew->value,
+            'accepted_at' => now(),
+            'applied_at' => now(),
+        ]);
+
+        WorkflowHistoryEvent::record($run->refresh(), HistoryEventType::StartAccepted, [
+            'workflow_type' => 'external.payload.workflow',
+        ], command: $command);
+
+        $signalCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Signal->value,
+            'target_scope' => 'instance',
+            'payload_codec' => $codec,
+            'payload' => Serializer::serialize(['name' => 'external-signal']),
+            'source' => 'api',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::SignalReceived->value,
+            'accepted_at' => now(),
+            'applied_at' => now(),
+        ]);
+
+        WorkflowSignal::query()->create([
+            'workflow_command_id' => $signalCommand->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'instance',
+            'resolved_workflow_run_id' => $run->id,
+            'signal_name' => 'external-signal',
+            'status' => 'applied',
+            'outcome' => 'signal_received',
+            'command_sequence' => $signalCommand->command_sequence,
+            'workflow_sequence' => 1,
+            'payload_codec' => $codec,
+            'arguments' => $signalArguments,
+            'received_at' => now(),
+            'applied_at' => now(),
+            'closed_at' => now(),
+        ]);
+
+        $updateCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => CommandType::Update->value,
+            'target_scope' => 'instance',
+            'payload_codec' => $codec,
+            'payload' => Serializer::serialize(['name' => 'external-update']),
+            'source' => 'api',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::UpdateCompleted->value,
+            'accepted_at' => now(),
+            'applied_at' => now(),
+        ]);
+
+        WorkflowUpdate::query()->create([
+            'workflow_command_id' => $updateCommand->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'command_sequence' => $updateCommand->command_sequence,
+            'workflow_sequence' => 1,
+            'update_name' => 'external-update',
+            'status' => 'completed',
+            'outcome' => 'update_completed',
+            'payload_codec' => $codec,
+            'arguments' => $updateArguments,
+            'result' => $updateResult,
+            'accepted_at' => now(),
+            'applied_at' => now(),
+            'closed_at' => now(),
+        ]);
+
+        $bundle = HistoryExport::forRun($run->refresh());
+
+        $this->assertSame(ExternalPayloads::storedEnvelope($arguments), $bundle['payloads']['arguments']['data']);
+        $this->assertSame(ExternalPayloads::storedEnvelope($commandPayload), $bundle['commands'][0]['payload']);
+        $this->assertSame(ExternalPayloads::storedEnvelope($signalArguments), $bundle['signals'][0]['arguments']);
+        $this->assertSame(ExternalPayloads::storedEnvelope($updateArguments), $bundle['updates'][0]['arguments']);
+        $this->assertSame(ExternalPayloads::storedEnvelope($updateResult), $bundle['updates'][0]['result']);
+
+        $commandEvent = collect($bundle['history_events'])->firstWhere('workflow_command_id', $command->id);
+        $this->assertIsArray($commandEvent);
+        $this->assertSame(
+            ExternalPayloads::storedEnvelope($commandPayload),
+            $commandEvent['payload']['command']['payload'],
+        );
+
+        $timelineEntry = collect($bundle['timeline'])->firstWhere('command_id', $command->id);
+        $this->assertIsArray($timelineEntry);
+        $this->assertSame(
+            ExternalPayloads::storedEnvelope($commandPayload),
+            $timelineEntry['command']['payload'],
+        );
+
+        foreach ([
+            'payloads.arguments.data',
+            'commands.0.payload',
+            'signals.0.arguments',
+            'updates.0.arguments',
+            'updates.0.result',
+        ] as $path) {
+            $entry = collect($bundle['payload_manifest']['entries'])->firstWhere('path', $path);
+
+            $this->assertIsArray($entry, $path);
+            $this->assertTrue($entry['available'], $path);
+            $this->assertSame('external-storage-reference', $entry['encoding'], $path);
+            $this->assertSame('external_storage_reference', $entry['diagnostic'], $path);
+        }
+    }
+
     public function testItExportsTimerSnapshotsFromTypedHistoryWhenTimerRowIsMissing(): void
     {
         Carbon::setTestNow('2026-04-09 12:00:00');
@@ -1872,6 +2073,20 @@ final class HistoryExportTest extends TestCase
         ]);
 
         return $run->refresh();
+    }
+
+    private function storedPayloadEnvelope(string $codec, string $label): string
+    {
+        return ExternalPayloads::encodeStoredEnvelope([
+            'codec' => $codec,
+            'external_storage' => [
+                'schema' => ExternalPayloadReference::SCHEMA,
+                'uri' => 'local://history-export-test/' . $label,
+                'sha256' => hash('sha256', $label),
+                'size_bytes' => strlen($label),
+                'codec' => $codec,
+            ],
+        ]);
     }
 
     private static function canonicalJson(mixed $value): string

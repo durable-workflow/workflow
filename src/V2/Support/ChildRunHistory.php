@@ -423,40 +423,21 @@ final class ChildRunHistory
         WorkflowHistoryEvent $resolutionEvent,
         ?WorkflowRun $childRun = null,
     ): mixed {
-        $serialized = $resolutionEvent->payload['output'] ?? null;
+        $childRun ??= self::loadRun(
+            self::stringValue($resolutionEvent->payload['child_workflow_run_id'] ?? null)
+        );
+        $payload = $resolutionEvent->payload['output'] ?? null;
 
-        if (! is_string($serialized) && $childRun !== null) {
-            $serialized = self::outputPayloadForChildRun($childRun);
+        if ($payload === null && $childRun !== null) {
+            $payload = self::outputPayloadForChildRun($childRun);
         }
 
-        if (! is_string($serialized)) {
-            return null;
-        }
-
-        $codec = is_string($childRun?->payload_codec) && $childRun->payload_codec !== ''
-            ? $childRun->payload_codec
-            : null;
-
-        return $codec !== null
-            ? Serializer::unserializeWithCodec($codec, $serialized)
-            : Serializer::unserialize($serialized);
+        return self::unserializeOutputPayload($payload, $childRun);
     }
 
     public static function outputForChildRun(?WorkflowRun $childRun): mixed
     {
-        $serialized = self::outputPayloadForChildRun($childRun);
-
-        if (! is_string($serialized)) {
-            return null;
-        }
-
-        $codec = is_string($childRun?->payload_codec) && $childRun->payload_codec !== ''
-            ? $childRun->payload_codec
-            : null;
-
-        return $codec !== null
-            ? Serializer::unserializeWithCodec($codec, $serialized)
-            : Serializer::unserialize($serialized);
+        return self::unserializeOutputPayload(self::outputPayloadForChildRun($childRun), $childRun);
     }
 
     public static function exceptionForResolution(
@@ -620,14 +601,50 @@ final class ChildRunHistory
         return self::stringValue($payload['workflow_link_id'] ?? null);
     }
 
-    private static function outputPayloadForChildRun(?WorkflowRun $childRun): ?string
+    private static function outputPayloadForChildRun(?WorkflowRun $childRun): mixed
     {
         if (! $childRun instanceof WorkflowRun) {
             return null;
         }
 
-        return self::stringValue(self::terminalEventForRun($childRun)?->payload['output'] ?? null)
-            ?? self::stringValue($childRun->output);
+        $terminalOutput = self::terminalEventForRun($childRun)?->payload['output'] ?? null;
+
+        return $terminalOutput ?? self::stringValue($childRun->output);
+    }
+
+    private static function unserializeOutputPayload(mixed $payload, ?WorkflowRun $childRun): mixed
+    {
+        $codec = self::outputPayloadCodec($payload, $childRun);
+        $serialized = ExternalPayloads::payloadBlob(
+            $payload,
+            $codec,
+            is_string($childRun?->namespace) ? $childRun->namespace : null,
+        );
+
+        if ($serialized === null) {
+            return null;
+        }
+
+        return $codec !== null
+            ? Serializer::unserializeWithCodec($codec, $serialized)
+            : Serializer::unserialize($serialized);
+    }
+
+    private static function outputPayloadCodec(mixed $payload, ?WorkflowRun $childRun): ?string
+    {
+        if (is_array($payload) && is_string($payload['codec'] ?? null) && $payload['codec'] !== '') {
+            return $payload['codec'];
+        }
+
+        if (is_string($payload) && ExternalPayloads::isStoredReference($payload)) {
+            $envelope = ExternalPayloads::storedEnvelope($payload);
+
+            return self::stringValue($envelope['codec'] ?? null);
+        }
+
+        return is_string($childRun?->payload_codec) && $childRun->payload_codec !== ''
+            ? $childRun->payload_codec
+            : null;
     }
 
     /**

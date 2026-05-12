@@ -917,6 +917,7 @@ final class Webhooks
     private static function activityTaskClaimResponse(string $taskId, ?string $leaseOwner)
     {
         $payload = ActivityTaskBridge::claimStatus($taskId, $leaseOwner);
+        $payload = self::projectWorkerArgumentEnvelope($payload);
         $status = match ($payload['reason']) {
             null => 200,
             'task_not_found' => 404,
@@ -1076,7 +1077,25 @@ final class Webhooks
             ], 404);
         }
 
+        $payload = self::projectWorkerArgumentEnvelope($payload);
+
         return response()->json($payload, 200);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private static function projectWorkerArgumentEnvelope(array $payload): array
+    {
+        if (
+            array_key_exists('arguments_envelope', $payload)
+            && is_array($payload['arguments_envelope'])
+        ) {
+            $payload['arguments'] = $payload['arguments_envelope'];
+        }
+
+        return $payload;
     }
 
     private static function workflowTaskExecuteResponse(string $taskId)

@@ -404,6 +404,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_class' => self::nonEmptyString($run->workflow_class),
             'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'arguments' => self::nonEmptyString($run->arguments),
+            'arguments_envelope' => ExternalPayloads::wireEnvelope(
+                self::nonEmptyString($run->arguments),
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
             'run_status' => $run->status->value,
             'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
             'sticky_until' => $task->sticky_until?->toJSON(),
@@ -471,6 +476,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_class' => self::nonEmptyString($run->workflow_class),
             'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'arguments' => self::nonEmptyString($run->arguments),
+            'arguments_envelope' => ExternalPayloads::wireEnvelope(
+                self::nonEmptyString($run->arguments),
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
             'run_status' => $run->status->value,
             'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
             'sticky_worker_id' => self::nonEmptyString($task->sticky_worker_id),
@@ -913,7 +923,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      */
     private function applyWorkflowCompletion(WorkflowRun $run, WorkflowTask $task, array $command): void
     {
-        $result = $command['result'] ?? null;
+        $result = isset($command['result']) && is_string($command['result'])
+            ? ExternalPayloads::externalizeForNamespace(
+                $command['result'],
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            )
+            : null;
 
         $run->forceFill([
             'status' => RunStatus::Completed,
@@ -924,7 +940,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ])->save();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
-            'output' => $result,
+            'output' => ExternalPayloads::historyValue(
+                $result,
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
         ], $task);
 
         $task->forceFill([
@@ -1503,7 +1523,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array &$createdTaskIds,
     ): int {
         $activityType = $command['activity_type'];
-        $arguments = $command['arguments'] ?? null;
+        $arguments = isset($command['arguments']) && is_string($command['arguments'])
+            ? ExternalPayloads::externalizeForNamespace(
+                $command['arguments'],
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            )
+            : null;
         $connection = $command['connection'] ?? $run->connection;
         $queue = $command['queue'] ?? $run->queue;
         $options = self::activityOptionsFromCommand($command);
@@ -1721,7 +1747,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array &$createdTaskIds,
     ): int {
         $workflowType = $command['workflow_type'];
-        $arguments = $command['arguments'] ?? null;
+        $arguments = isset($command['arguments']) && is_string($command['arguments'])
+            ? ExternalPayloads::externalizeForNamespace(
+                $command['arguments'],
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            )
+            : null;
         $connection = $command['connection'] ?? $run->connection;
         $queue = $command['queue'] ?? $run->queue;
         $now = now();
@@ -1980,6 +2012,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     ): void {
         $now = now();
         $arguments = $command['arguments'] ?? $run->arguments;
+        $arguments = is_string($arguments)
+            ? ExternalPayloads::externalizeForNamespace(
+                $arguments,
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            )
+            : null;
         $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
         $queue = is_string($command['queue'] ?? null) ? $command['queue'] : $run->queue;
 

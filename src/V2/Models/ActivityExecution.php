@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExternalPayloads;
 
 class ActivityExecution extends Model
 {
@@ -87,6 +88,23 @@ class ActivityExecution extends Model
      */
     private function unserializeWithRowCodec(string $blob): mixed
     {
+        $namespace = null;
+
+        if ($this->relationLoaded('run') && $this->run instanceof WorkflowRun) {
+            $namespace = is_string($this->run->namespace) ? $this->run->namespace : null;
+        } elseif ($this->workflow_run_id !== null) {
+            $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->whereKey($this->workflow_run_id)
+                ->value('namespace');
+            $namespace = is_string($namespace) ? $namespace : null;
+        }
+
+        $blob = ExternalPayloads::resolveStoredPayload(
+            $blob,
+            is_string($this->payload_codec) ? $this->payload_codec : null,
+            $namespace,
+        );
+
         if (is_string($this->payload_codec) && $this->payload_codec !== '') {
             return Serializer::unserializeWithCodec($this->payload_codec, $blob);
         }

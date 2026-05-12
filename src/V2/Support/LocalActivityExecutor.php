@@ -202,8 +202,13 @@ final class LocalActivityExecutor
             : null;
         $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $activityCall->arguments);
         $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $activityCall->arguments);
+        $storedArguments = ExternalPayloads::externalizeForNamespace(
+            $serializedArguments,
+            $argumentsCodec,
+            is_string($run->namespace) ? $run->namespace : null,
+        );
 
-        StructuralLimits::guardPayloadSize($serializedArguments);
+        StructuralLimits::guardPayloadSize($storedArguments);
 
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
@@ -214,7 +219,7 @@ final class LocalActivityExecutor
             'status' => ActivityStatus::Pending->value,
             'attempt_count' => 0,
             'payload_codec' => $argumentsCodec,
-            'arguments' => $serializedArguments,
+            'arguments' => $storedArguments,
             'connection' => $run->connection,
             'queue' => $run->queue,
             'activity_options' => $options->toSnapshot(),
@@ -384,6 +389,11 @@ final class LocalActivityExecutor
         mixed $result,
     ): array {
         $encoded = self::serializeWithCodec($result, self::preferredPayloadCodec($execution, $run));
+        $encoded['blob'] = ExternalPayloads::externalizeForNamespace(
+            $encoded['blob'],
+            $encoded['codec'],
+            is_string($run->namespace) ? $run->namespace : null,
+        );
 
         try {
             StructuralLimits::guardPayloadSize($encoded['blob']);
@@ -413,7 +423,11 @@ final class LocalActivityExecutor
             'activity_type' => $execution->activity_type,
             'sequence' => $execution->sequence,
             'attempt_number' => $attempt->attempt_number,
-            'result' => $execution->result,
+            'result' => ExternalPayloads::historyValue(
+                $execution->result,
+                $encoded['codec'],
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
             'payload_codec' => $encoded['codec'],
             'workflow_task_id' => $task->id,
             'activity' => ActivitySnapshot::fromExecution($execution),

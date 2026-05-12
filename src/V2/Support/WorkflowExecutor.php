@@ -1435,7 +1435,12 @@ final class WorkflowExecutor
                 'activity_class' => $activityCall->activity,
             ],
         );
-        StructuralLimits::guardPayloadSize($serializedArguments);
+        $storedArguments = ExternalPayloads::externalizeForNamespace(
+            $serializedArguments,
+            $argumentsCodec,
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+        StructuralLimits::guardPayloadSize($storedArguments);
 
         /** @var ActivityExecution $execution */
         $execution = ActivityExecution::query()->create([
@@ -1446,7 +1451,7 @@ final class WorkflowExecutor
             'status' => ActivityStatus::Pending->value,
             'attempt_count' => 0,
             'payload_codec' => $argumentsCodec,
-            'arguments' => $serializedArguments,
+            'arguments' => $storedArguments,
             'connection' => RoutingResolver::activityConnection($activityCall->activity, $run, $options),
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run, $options),
             'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
@@ -1651,7 +1656,12 @@ final class WorkflowExecutor
                 'child_workflow_class' => $childWorkflowCall->workflow,
             ],
         );
-        StructuralLimits::guardPayloadSize($serializedChildArguments);
+        $storedChildArguments = ExternalPayloads::externalizeForNamespace(
+            $serializedChildArguments,
+            $childCodec,
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+        StructuralLimits::guardPayloadSize($storedChildArguments);
 
         /** @var WorkflowInstance $childInstance */
         $childInstance = WorkflowInstance::query()->create([
@@ -1675,7 +1685,7 @@ final class WorkflowExecutor
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
             'payload_codec' => $childCodec,
-            'arguments' => $serializedChildArguments,
+            'arguments' => $storedChildArguments,
             'connection' => RoutingResolver::workflowConnection($childWorkflowCall->workflow, $metadata),
             'queue' => RoutingResolver::workflowQueue($childWorkflowCall->workflow, $metadata),
             'started_at' => $now,
@@ -2357,7 +2367,12 @@ final class WorkflowExecutor
                 'target_workflow_class' => $workflowClass,
             ],
         );
-        StructuralLimits::guardPayloadSize($continueAsNewArguments);
+        $storedContinueAsNewArguments = ExternalPayloads::externalizeForNamespace(
+            $continueAsNewArguments,
+            is_string($run->payload_codec) ? $run->payload_codec : CodecRegistry::defaultCodec(),
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+        StructuralLimits::guardPayloadSize($storedContinueAsNewArguments);
 
         /** @var WorkflowRun $continuedRun */
         $continuedRun = WorkflowRun::query()->create([
@@ -2374,7 +2389,7 @@ final class WorkflowExecutor
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,
-            'arguments' => $continueAsNewArguments,
+            'arguments' => $storedContinueAsNewArguments,
             'connection' => $run->connection,
             'queue' => $run->queue,
             'started_at' => $now,
@@ -2663,18 +2678,27 @@ final class WorkflowExecutor
                 'payload_site' => 'workflow_output',
             ],
         );
-        StructuralLimits::guardPayloadSize($serializedOutput);
+        $storedOutput = ExternalPayloads::externalizeForNamespace(
+            $serializedOutput,
+            is_string($run->payload_codec) ? $run->payload_codec : CodecRegistry::defaultCodec(),
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+        StructuralLimits::guardPayloadSize($storedOutput);
 
         $run->forceFill([
             'status' => RunStatus::Completed,
             'closed_reason' => 'completed',
-            'output' => $serializedOutput,
+            'output' => $storedOutput,
             'closed_at' => now(),
             'last_progress_at' => now(),
         ])->save();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
-            'output' => $run->output,
+            'output' => ExternalPayloads::historyValue(
+                $run->output,
+                is_string($run->payload_codec) ? $run->payload_codec : CodecRegistry::defaultCodec(),
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
         ], $task);
 
         $task->forceFill([
@@ -2705,6 +2729,17 @@ final class WorkflowExecutor
         mixed $recordedAt,
         ?string $childCallId = null,
     ): WorkflowCommand {
+        $startCommandCodec = Serializer::chooseCodecForData(
+            $sourceRun->payload_codec ?? CodecRegistry::defaultCodec(),
+            $arguments,
+        );
+        $startCommandPayload = Serializer::serializeWithCodec($startCommandCodec, $arguments);
+        $startCommandPayload = ExternalPayloads::externalizeForNamespace(
+            $startCommandPayload,
+            $startCommandCodec,
+            is_string($targetRun->namespace) ? $targetRun->namespace : null,
+        );
+
         /** @var WorkflowCommand $command */
         $command = WorkflowCommand::record(
             $targetInstance,
@@ -2721,11 +2756,8 @@ final class WorkflowExecutor
                     'target_scope' => 'instance',
                     'status' => CommandStatus::Accepted->value,
                     'outcome' => CommandOutcome::StartedNew->value,
-                    'payload_codec' => $startCommandCodec = Serializer::chooseCodecForData(
-                        $sourceRun->payload_codec ?? CodecRegistry::defaultCodec(),
-                        $arguments,
-                    ),
-                    'payload' => Serializer::serializeWithCodec($startCommandCodec, $arguments),
+                    'payload_codec' => $startCommandCodec,
+                    'payload' => $startCommandPayload,
                     'accepted_at' => $recordedAt,
                     'applied_at' => $recordedAt,
                     'created_at' => $recordedAt,
@@ -3732,9 +3764,13 @@ final class WorkflowExecutor
 
     private function activityResult(WorkflowHistoryEvent $event, ?WorkflowRun $run = null): mixed
     {
-        $serialized = $event->payload['result'] ?? null;
+        $serialized = ExternalPayloads::payloadBlob(
+            $event->payload['result'] ?? null,
+            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue($run?->payload_codec ?? null),
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
 
-        if (! is_string($serialized)) {
+        if ($serialized === null) {
             return null;
         }
 
@@ -3749,9 +3785,13 @@ final class WorkflowExecutor
 
     private function sideEffectResult(WorkflowHistoryEvent $event, ?WorkflowRun $run = null): mixed
     {
-        $serialized = $event->payload['result'] ?? null;
+        $serialized = ExternalPayloads::payloadBlob(
+            $event->payload['result'] ?? null,
+            $this->stringValue($event->payload['payload_codec'] ?? null) ?? $this->stringValue($run?->payload_codec ?? null),
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
 
-        if (! is_string($serialized)) {
+        if ($serialized === null) {
             return null;
         }
 
@@ -3765,6 +3805,12 @@ final class WorkflowExecutor
      */
     private function unserializePayloadWithRun(string $serialized, ?WorkflowRun $run): mixed
     {
+        $serialized = ExternalPayloads::resolveStoredPayload(
+            $serialized,
+            is_string($run?->payload_codec) ? $run->payload_codec : null,
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
+
         if ($run !== null && is_string($run->payload_codec) && $run->payload_codec !== '') {
             return Serializer::unserializeWithCodec($run->payload_codec, $serialized);
         }

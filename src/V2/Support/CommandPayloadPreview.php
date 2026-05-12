@@ -28,6 +28,10 @@ final class CommandPayloadPreview
             return null;
         }
 
+        if (is_string($payload) && ExternalPayloads::isStoredReference($payload)) {
+            return ExternalPayloads::storedEnvelope($payload);
+        }
+
         try {
             return Serializer::unserialize($payload);
         } catch (Throwable) {
@@ -52,6 +56,10 @@ final class CommandPayloadPreview
     {
         if (! self::available($payload)) {
             return null;
+        }
+
+        if (is_string($payload) && ExternalPayloads::isStoredReference($payload)) {
+            return ExternalPayloads::storedEnvelope($payload);
         }
 
         if ($codec === null || $codec === '') {

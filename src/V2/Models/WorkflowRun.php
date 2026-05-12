@@ -13,6 +13,7 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ExternalPayloads;
 
 class WorkflowRun extends Model
 {
@@ -273,7 +274,7 @@ class WorkflowRun extends Model
     }
 
     /**
-     * @return array{codec: string, blob: string}|null
+     * @return array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null
      */
     public function argumentsEnvelope(): ?array
     {
@@ -281,14 +282,15 @@ class WorkflowRun extends Model
             return null;
         }
 
-        return [
-            'codec' => $this->payload_codec ?? CodecRegistry::defaultCodec(),
-            'blob' => $this->arguments,
-        ];
+        return ExternalPayloads::wireEnvelope(
+            $this->arguments,
+            $this->payload_codec ?? CodecRegistry::defaultCodec(),
+            is_string($this->namespace) ? $this->namespace : null,
+        );
     }
 
     /**
-     * @return array{codec: string, blob: string}|null
+     * @return array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null
      */
     public function outputEnvelope(): ?array
     {
@@ -296,10 +298,11 @@ class WorkflowRun extends Model
             return null;
         }
 
-        return [
-            'codec' => $this->payload_codec ?? CodecRegistry::defaultCodec(),
-            'blob' => $this->output,
-        ];
+        return ExternalPayloads::wireEnvelope(
+            $this->output,
+            $this->payload_codec ?? CodecRegistry::defaultCodec(),
+            is_string($this->namespace) ? $this->namespace : null,
+        );
     }
 
     /**
@@ -357,6 +360,12 @@ class WorkflowRun extends Model
      */
     private function unserializePayload(string $blob): mixed
     {
+        $blob = ExternalPayloads::resolveStoredPayload(
+            $blob,
+            is_string($this->payload_codec) ? $this->payload_codec : null,
+            is_string($this->namespace) ? $this->namespace : null,
+        );
+
         if (is_string($this->payload_codec) && $this->payload_codec !== '') {
             return Serializer::unserializeWithCodec($this->payload_codec, $blob);
         }

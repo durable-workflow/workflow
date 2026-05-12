@@ -77,6 +77,8 @@ final class ActivityRecovery
         $sequence = self::intValue($state['sequence'] ?? null);
         $activityClass = self::stringValue($state['class'] ?? null);
         $activityType = self::stringValue($state['type'] ?? null);
+        $payloadCodec = self::stringValue($state['payload_codec'] ?? null)
+            ?? self::stringValue($run->payload_codec);
 
         if ($sequence === null || $activityClass === null || $activityType === null) {
             return null;
@@ -90,7 +92,8 @@ final class ActivityRecovery
             'activity_class' => $activityClass,
             'activity_type' => $activityType,
             'status' => ActivityStatus::Pending->value,
-            'arguments' => self::stringValue($state['arguments'] ?? null),
+            'payload_codec' => $payloadCodec,
+            'arguments' => self::payloadString($state['arguments'] ?? null),
             'connection' => self::stringValue($state['connection'] ?? null) ?? $run->connection,
             'queue' => self::stringValue($state['queue'] ?? null) ?? $run->queue,
             'attempt_count' => max(0, self::intValue($state['attempt_count'] ?? null) ?? 0),
@@ -146,6 +149,31 @@ final class ActivityRecovery
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    private static function payloadString(mixed $value): ?string
+    {
+        if (is_string($value) && $value !== '') {
+            return $value;
+        }
+
+        if (! is_array($value)) {
+            return null;
+        }
+
+        if (isset($value['blob']) && is_string($value['blob']) && $value['blob'] !== '') {
+            return $value['blob'];
+        }
+
+        if (isset($value['external_storage']) && is_array($value['external_storage'])) {
+            try {
+                return ExternalPayloads::encodeStoredEnvelope($value);
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return null;
     }
 
     private static function intValue(mixed $value): ?int

@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -33,11 +34,17 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\WorkflowTaskPayload;
 
 final class V2WorkflowTaskBridgeTest extends TestCase
 {
     private WorkflowTaskBridge $bridge;
+
+    private ?string $storageRoot = null;
 
     protected function setUp(): void
     {
@@ -49,6 +56,18 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->set('workflows.v2.compatibility.supported', ['build-a']);
 
         $this->bridge = $this->app->make(WorkflowTaskBridge::class);
+    }
+
+    protected function tearDown(): void
+    {
+        ExternalPayloadStorage::flushVerifiedCache();
+
+        if ($this->storageRoot !== null) {
+            $this->removeDirectory($this->storageRoot);
+            $this->storageRoot = null;
+        }
+
+        parent::tearDown();
     }
 
     public function testBridgeIsResolvableFromContainer(): void
@@ -368,6 +387,49 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('test-greeting-workflow', $result['workflow_type']);
         $this->assertCount(1, $result['history_events']);
         $this->assertSame('WorkflowStarted', $result['history_events'][0]['event_type']);
+    }
+
+    public function testHistoryPayloadReturnsLegacyArgumentsAndExternalizedEnvelope(): void
+    {
+        $run = $this->createWaitingRun();
+        $codec = CodecRegistry::defaultCodec();
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $storedArguments = ExternalPayloads::externalize(
+            Serializer::serializeWithCodec($codec, ['Taylor']),
+            $codec,
+            $driver,
+            1,
+        );
+        $run->forceFill([
+            'payload_codec' => $codec,
+            'arguments' => $storedArguments,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+
+        $full = $this->bridge->historyPayload($task->id);
+        $page = $this->bridge->historyPayloadPaginated($task->id);
+
+        foreach ([$full, $page] as $payload) {
+            $this->assertIsArray($payload);
+            $this->assertSame($storedArguments, $payload['arguments']);
+            $this->assertIsArray($payload['arguments_envelope']);
+            $this->assertSame($codec, $payload['arguments_envelope']['codec']);
+            $this->assertArrayHasKey('external_storage', $payload['arguments_envelope']);
+            $this->assertArrayNotHasKey('blob', $payload['arguments_envelope']);
+            $this->assertSame(ExternalPayloadReference::SCHEMA, $payload['arguments_envelope']['external_storage']['schema']);
+        }
     }
 
     public function testHistoryPayloadReturnsNullForMissingTask(): void
@@ -3282,6 +3344,42 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ])->save();
 
         return $run;
+    }
+
+    private function makeStorageRoot(): string
+    {
+        $this->storageRoot = sys_get_temp_dir().'/dw-workflow-task-bridge-'.bin2hex(random_bytes(6));
+
+        return $this->storageRoot;
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory.DIRECTORY_SEPARATOR.$item;
+
+            if (is_dir($path)) {
+                $this->removeDirectory($path);
+            } else {
+                @unlink($path);
+            }
+        }
+
+        @rmdir($directory);
     }
 
     private function createSearchAttribute(WorkflowRun $run, string $key, mixed $value): void
