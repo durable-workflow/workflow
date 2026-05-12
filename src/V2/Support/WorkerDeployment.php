@@ -313,7 +313,9 @@ final class WorkerDeployment
     private static function normalizeWorkflowTypes(mixed $value): array
     {
         if (is_string($value)) {
-            $value = $value === '' ? [] : preg_split('/\s*,\s*/', $value, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+            $value = $value === ''
+                ? []
+                : (preg_split('/\s*,\s*/', $value, -1, PREG_SPLIT_NO_EMPTY) ?: []);
         }
 
         if (! is_array($value)) {
