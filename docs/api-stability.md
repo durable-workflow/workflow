@@ -120,6 +120,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\ScheduleStartResult`
 - `Workflow\V2\Support\ServerlessWorkflowCompiler`
 - `Workflow\V2\Support\ServiceExecutionContract`
+- `Workflow\V2\Support\StandaloneActivityStartService`
 - `Workflow\V2\Support\StructuralLimits`
 - `Workflow\V2\Support\SurfaceStabilityContract`
 - `Workflow\V2\Support\TaskQueuePriorityFairnessContract`
@@ -148,6 +149,27 @@ For these classes the semver guarantee is:
 Additive changes — new public methods, new optional parameters with
 defaults, new constants — are minor-version changes and do not require a
 major bump.
+
+## Server-facing standalone activity stability list
+
+The standalone-activity start contract is the server-facing stable API
+for creating the durable host run, activity execution, and ready activity
+task that represent a top-level activity execution. Its in-process
+entrypoint and host-marker helper are:
+
+- `Workflow\V2\Support\StandaloneActivityStartService`
+- `Workflow\V2\StandaloneActivity\StandaloneActivityHostType`
+
+For `StandaloneActivityStartService`, the public `start()` signature, the
+documented option keys, and the documented result keys are stable. For
+`StandaloneActivityHostType`, the `WORKFLOW_TYPE` constant value
+`dw.standalone_activity` is the stable wire identifier for standalone
+activity host runs, and the `isHostRun()` method signature is stable. Host
+rows are created with that identifier in both `workflow_type` and
+`workflow_class`, and `isHostRun()` treats either persisted identifier as
+host identity. The server uses the identifier to detect runs that have no
+PHP workflow code behind them, so terminal activity outcome and timeout
+paths close the host run instead of scheduling a workflow-task resume row.
 
 ## `Workflow\V2\Workflow` authoring facade
 

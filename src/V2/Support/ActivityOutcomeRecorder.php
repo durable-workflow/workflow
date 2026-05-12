@@ -23,6 +23,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
 
 final class ActivityOutcomeRecorder
 {
@@ -365,6 +366,18 @@ final class ActivityOutcomeRecorder
                 return self::recorded(null);
             }
 
+            // A standalone-activity host run has no workflow code to resume:
+            // the activity execution IS the work, so close the host run with
+            // the activity's outcome instead of scheduling a workflow-task
+            // resume row.
+            if (StandaloneActivityHostType::isHostRun($run)) {
+                self::closeStandaloneHostRun($run, $lockedExecution, $throwable, $resolutionEvent);
+
+                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+                return self::recorded(null);
+            }
+
             /** @var WorkflowTask $resumeTask */
             $resumeTask = WorkflowTask::query()->create([
                 'workflow_run_id' => $run->id,
@@ -384,6 +397,83 @@ final class ActivityOutcomeRecorder
 
             return self::recorded($resumeTask);
         });
+    }
+
+    /**
+     * Close a standalone-activity host run with the activity's terminal
+     * outcome. On success the run is marked Completed and the run output
+     * is set to the activity's serialized result (so a "show" surface can
+     * deliver the result without spelunking history). On failure the run
+     * is marked Failed.
+     *
+     * Workflow-internal activity behaviour is unchanged: this path is only
+     * reached when the host run is a standalone-activity host as identified
+     * by {@see StandaloneActivityHostType::isHostRun()}.
+     */
+    private static function closeStandaloneHostRun(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        ?Throwable $throwable,
+        ?WorkflowHistoryEvent $resolutionEvent,
+    ): void {
+        $now = now();
+
+        if ($throwable === null) {
+            $run->forceFill([
+                'status' => RunStatus::Completed,
+                'closed_reason' => 'completed',
+                'output' => $execution->result,
+                'payload_codec' => $execution->payload_codec ?? $run->payload_codec,
+                'closed_at' => $now,
+                'last_progress_at' => $now,
+            ])->save();
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCompleted, [
+                'output' => $execution->result,
+            ]);
+
+            LifecycleEventDispatcher::workflowCompleted($run);
+
+            return;
+        }
+
+        $run->forceFill([
+            'status' => RunStatus::Failed,
+            'closed_reason' => 'failed',
+            'closed_at' => $now,
+            'last_progress_at' => $now,
+        ])->save();
+
+        $exceptionClass = get_class($throwable);
+        $message = $throwable->getMessage();
+        $eventPayload = $resolutionEvent instanceof WorkflowHistoryEvent
+            && is_array($resolutionEvent->payload)
+                ? $resolutionEvent->payload
+                : [];
+
+        if (is_string($eventPayload['exception_class'] ?? null)) {
+            $exceptionClass = (string) $eventPayload['exception_class'];
+        }
+
+        if (is_string($eventPayload['message'] ?? null)) {
+            $message = (string) $eventPayload['message'];
+        }
+
+        $payload = array_filter([
+            'failure_id' => $eventPayload['failure_id'] ?? null,
+            'source_kind' => 'activity_execution',
+            'source_id' => $execution->id,
+            'failure_category' => $eventPayload['failure_category'] ?? null,
+            'non_retryable' => $eventPayload['non_retryable'] ?? null,
+            'exception_type' => $eventPayload['exception_type'] ?? null,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'exception' => $eventPayload['exception'] ?? null,
+        ], static fn (mixed $value): bool => $value !== null);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $payload);
+
+        LifecycleEventDispatcher::workflowFailed($run, $exceptionClass, $message);
     }
 
     /**

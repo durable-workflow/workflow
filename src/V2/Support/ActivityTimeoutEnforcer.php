@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -11,6 +12,7 @@ use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
@@ -19,6 +21,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
 
 /**
  * Sweeps activity executions whose schedule-to-start or start-to-close
@@ -336,6 +339,7 @@ final class ActivityTimeoutEnforcer
             'source_id' => $execution->id,
             'propagation_kind' => 'timeout',
             'failure_category' => $failureCategory->value,
+            'non_retryable' => false,
             'handled' => false,
             'exception_class' => $exceptionClass,
             'message' => $message,
@@ -394,6 +398,21 @@ final class ActivityTimeoutEnforcer
             $message,
         );
 
+        // A standalone-activity host run has no workflow code to resume:
+        // close the host run as Failed instead of scheduling a workflow-task
+        // resume row that no worker will be able to drive.
+        if (StandaloneActivityHostType::isHostRun($run)) {
+            self::closeStandaloneHostRunAfterTimeout($run, $execution, $failure, $exceptionClass, $message, $now);
+
+            self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+            return [
+                'enforced' => true,
+                'reason' => null,
+                'next_task' => null,
+            ];
+        }
+
         // Check if parallel group needs to wake the workflow.
         if (
             $parallelMetadataPath !== []
@@ -437,6 +456,44 @@ final class ActivityTimeoutEnforcer
             'reason' => null,
             'next_task' => $resumeTask,
         ];
+    }
+
+    private static function closeStandaloneHostRunAfterTimeout(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        WorkflowFailure $failure,
+        string $exceptionClass,
+        string $message,
+        CarbonInterface $now,
+    ): void {
+        $run->forceFill([
+            'status' => RunStatus::Failed,
+            'closed_reason' => 'timed_out',
+            'closed_at' => $now,
+            'last_progress_at' => $now,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, [
+            'failure_id' => $failure->id,
+            'source_kind' => 'activity_execution',
+            'source_id' => $execution->id,
+            'failure_category' => $failure->failure_category->value,
+            'non_retryable' => (bool) $failure->non_retryable,
+            'exception_type' => null,
+            'exception_class' => $exceptionClass,
+            'message' => $message,
+            'exception' => [
+                'class' => $exceptionClass,
+                'message' => $message,
+                'code' => 0,
+                'file' => '',
+                'line' => 0,
+                'trace' => [],
+                'properties' => [],
+            ],
+        ]);
+
+        LifecycleEventDispatcher::workflowFailed($run, $exceptionClass, $message);
     }
 
     private static function timeoutMessage(ActivityExecution $execution, string $timeoutKind): string
