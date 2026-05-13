@@ -43,6 +43,7 @@ final class WorkflowStep
         $command = [
             'type' => 'complete_workflow',
             'result' => self::serializePayload($result, $payloadCodec),
+            'payload_codec' => $payloadCodec,
         ];
 
         return new self(true, $result, null, null, $command, [$command]);
@@ -137,6 +138,7 @@ final class WorkflowStep
             $yielded instanceof ContinueAsNewCall => [
                 'type' => 'continue_as_new',
                 'arguments' => self::serializePayload($yielded->arguments, $payloadCodec),
+                'payload_codec' => $payloadCodec,
             ],
             default => throw new UnsupportedWorkflowYieldException(sprintf(
                 'Worker protocol runner received an unsupported workflow suspension of type %s.',
@@ -154,6 +156,7 @@ final class WorkflowStep
             'type' => 'schedule_activity',
             'activity_type' => $call->activity,
             'arguments' => self::serializePayload($call->arguments, $payloadCodec),
+            'payload_codec' => $payloadCodec,
             ...self::activityOptions($call->options),
         ], static fn (mixed $value): bool => $value !== null);
     }
@@ -167,6 +170,7 @@ final class WorkflowStep
             'type' => 'start_child_workflow',
             'workflow_type' => $call->workflow,
             'arguments' => self::serializePayload($call->arguments, $payloadCodec),
+            'payload_codec' => $payloadCodec,
             ...self::childWorkflowOptions($call->options),
         ], static fn (mixed $value): bool => $value !== null);
     }

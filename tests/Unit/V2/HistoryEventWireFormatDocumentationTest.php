@@ -74,6 +74,10 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'parallel_group_index',
             'parallel_group_path',
         ],
+        'WorkflowCompleted' => [
+            'output',
+            'payload_codec',
+        ],
         'TimerScheduled' => [
             'timer_id',
             'sequence',

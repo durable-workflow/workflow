@@ -43,6 +43,28 @@ final class WorkflowCommandNormalizerTest extends TestCase
         $this->assertSame([[
             'type' => 'complete_workflow',
             'result' => $blob,
+            'payload_codec' => 'avro',
+        ]], $out);
+    }
+
+    public function testCompleteWorkflowPreservesEnvelopeCodec(): void
+    {
+        $blob = Serializer::serializeWithCodec('workflow-serializer-y', ['ok' => true]);
+
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'complete_workflow',
+                'result' => [
+                    'codec' => 'workflow-serializer-y',
+                    'blob' => $blob,
+                ],
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'complete_workflow',
+            'result' => $blob,
+            'payload_codec' => 'workflow-serializer-y',
         ]], $out);
     }
 
@@ -110,8 +132,32 @@ final class WorkflowCommandNormalizerTest extends TestCase
             'type' => 'schedule_activity',
             'activity_type' => 'SendEmail',
             'arguments' => $arguments,
+            'payload_codec' => 'avro',
             'connection' => 'redis',
             'queue' => 'default',
+        ]], $out);
+    }
+
+    public function testScheduleActivityPreservesArgumentsEnvelopeCodec(): void
+    {
+        $arguments = Serializer::serializeWithCodec('workflow-serializer-y', ['hi']);
+
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'SendEmail',
+                'arguments' => [
+                    'codec' => 'workflow-serializer-y',
+                    'blob' => $arguments,
+                ],
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'schedule_activity',
+            'activity_type' => 'SendEmail',
+            'arguments' => $arguments,
+            'payload_codec' => 'workflow-serializer-y',
         ]], $out);
     }
 

@@ -410,7 +410,7 @@ cross-SDK replay:
 | `ArchiveRequested` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `command_type`, `outcome`, `reason` | `HistoryTimeline`, `RunCommandContract`, archive/export projections |
 | `WorkflowArchived` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `archive_command_id`, `reason` | `HistoryTimeline`, archive/export projections, operator detail projections |
 | `WorkflowTimedOut` | `failure_id`, `timeout_kind`, `failure_category`, `message`, `exception_class`, `execution_deadline_at`, `run_deadline_at` | `FailureSnapshots`, `HistoryTimeline`, `ChildRunHistory`, timeout repair projections |
-| `WorkflowCompleted` | `output` | `ChildRunHistory`, `HistoryTimeline`, history export, parent resume projections |
+| `WorkflowCompleted` | `output`, `payload_codec` | `ChildRunHistory`, `HistoryTimeline`, history export, parent resume projections |
 | `WorkflowFailed` | `failure_id`, `source_kind`, `source_id`, `failure_category`, `non_retryable`, `exception_type`, `exception_class`, `message`, `exception`, `structural_limit_kind`, `structural_limit_value`, `structural_limit_configured` | `FailureSnapshots`, `HistoryTimeline`, `ChildRunHistory`, failure repair projections |
 | `FailureHandled` | `failure_id`, `sequence`, `failure_category`, `source_kind`, `source_id`, `propagation_kind`, `exception_class`, `exception_type`, `message`, `handled` | `FailureSnapshots`, `HistoryTimeline`, `QueryStateReplayer`, operator detail projections |
 | `ParentClosePolicyApplied` | `child_instance_id`, `child_run_id`, `policy`, `reason` | `HistoryTimeline`, parent-close diagnostics, history export |

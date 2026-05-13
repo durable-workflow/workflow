@@ -89,6 +89,10 @@ final class WorkflowCommandNormalizer
             'allowed' => ['open_condition_wait'],
             'guidance' => 'timeout_seconds only applies to open_condition_wait. For activities use start_to_close_timeout / schedule_to_start_timeout / schedule_to_close_timeout / heartbeat_timeout; for child workflows use execution_timeout_seconds / run_timeout_seconds.',
         ],
+        'payload_codec' => [
+            'allowed' => ['complete_workflow', 'schedule_activity', 'start_child_workflow', 'continue_as_new'],
+            'guidance' => 'payload_codec identifies the codec used for command payload bytes and only applies to commands that carry result or arguments payloads.',
+        ],
     ];
 
     /**
@@ -112,13 +116,14 @@ final class WorkflowCommandNormalizer
             self::assertCommandFieldScope($type, is_array($command) ? $command : [], $index, $errors);
 
             if ($type === 'complete_workflow') {
-                $normalized[] = [
+                $result = self::resolveCommandPayloadWithCodec($command, 'result', $index, $errors);
+                $payloadCodec = self::payloadCodecForResolvedPayload($command, $result, 'result', $index, $errors);
+
+                $normalized[] = array_filter([
                     'type' => $type,
-                    'result' => PayloadEnvelopeResolver::resolveCommandPayload(
-                        $command['result'] ?? null,
-                        "commands.{$index}.result",
-                    ),
-                ];
+                    'result' => $result['payload'],
+                    'payload_codec' => is_string($result['payload']) ? $payloadCodec : null,
+                ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
             }
@@ -165,10 +170,14 @@ final class WorkflowCommandNormalizer
 
                 self::assertActivityTimeoutOrdering($startToClose, $scheduleToClose, $heartbeat, $index, $errors);
 
+                $arguments = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
+                $payloadCodec = self::payloadCodecForResolvedPayload($command, $arguments, 'arguments', $index, $errors);
+
                 $normalized[] = array_filter([
                     'type' => $type,
                     'activity_type' => trim($command['activity_type']),
-                    'arguments' => self::resolveCommandArguments($command, $index, $errors),
+                    'arguments' => $arguments['payload'],
+                    'payload_codec' => $arguments['payload'] !== null ? $payloadCodec : null,
                     'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
                     'retry_policy' => $retryPolicy,
@@ -228,10 +237,14 @@ final class WorkflowCommandNormalizer
 
                 self::assertChildWorkflowTimeoutOrdering($executionTimeout, $runTimeout, $index, $errors);
 
+                $arguments = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
+                $payloadCodec = self::payloadCodecForResolvedPayload($command, $arguments, 'arguments', $index, $errors);
+
                 $normalized[] = array_filter([
                     'type' => $type,
                     'workflow_type' => trim($command['workflow_type']),
-                    'arguments' => self::resolveCommandArguments($command, $index, $errors),
+                    'arguments' => $arguments['payload'],
+                    'payload_codec' => $arguments['payload'] !== null ? $payloadCodec : null,
                     'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
                     'parent_close_policy' => $parentClosePolicy,
@@ -498,6 +511,86 @@ final class WorkflowCommandNormalizer
             'payload' => null,
             'codec' => null,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     * @return array{payload: mixed, codec: string|null}
+     */
+    private static function resolveCommandPayloadWithCodec(
+        array $command,
+        string $field,
+        int $index,
+        array &$errors,
+    ): array {
+        if (! array_key_exists($field, $command) || $command[$field] === null) {
+            return [
+                'payload' => null,
+                'codec' => null,
+            ];
+        }
+
+        if (is_string($command[$field])) {
+            return [
+                'payload' => $command[$field],
+                'codec' => null,
+            ];
+        }
+
+        if (is_array($command[$field])) {
+            try {
+                return PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                    $command[$field],
+                    "commands.{$index}.{$field}",
+                );
+            } catch (ValidationException $e) {
+                foreach ($e->errors() as $errorField => $messages) {
+                    $errors[$errorField] = $messages;
+                }
+
+                return [
+                    'payload' => null,
+                    'codec' => null,
+                ];
+            }
+        }
+
+        return [
+            'payload' => $command[$field],
+            'codec' => null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array{payload: mixed, codec: string|null}  $resolved
+     * @param  array<string, list<string>>  $errors
+     */
+    private static function payloadCodecForResolvedPayload(
+        array $command,
+        array $resolved,
+        string $payloadField,
+        int $index,
+        array &$errors,
+    ): ?string {
+        $explicitPayloadCodec = self::optionalPayloadCodec($command, $index, $errors);
+        $resolvedCodec = $resolved['codec'];
+
+        if (
+            $explicitPayloadCodec !== null
+            && $resolvedCodec !== null
+            && $explicitPayloadCodec !== $resolvedCodec
+        ) {
+            $errors["commands.{$index}.payload_codec"] = [
+                sprintf(
+                    'Workflow task command field [payload_codec] must match the %s envelope codec.',
+                    $payloadField,
+                ),
+            ];
+        }
+
+        return $explicitPayloadCodec ?? $resolvedCodec;
     }
 
     /**

@@ -839,6 +839,7 @@ final class WorkflowFiberRunnerTest extends TestCase
             'type' => 'schedule_activity',
             'activity_type' => 'demo.after-search-attributes',
             'arguments' => $scheduled->commands[0]['arguments'],
+            'payload_codec' => 'avro',
         ]], $scheduled->commands);
         $this->assertSame(['ready'], Serializer::unserializeWithCodec('avro', $scheduled->commands[0]['arguments']));
     }

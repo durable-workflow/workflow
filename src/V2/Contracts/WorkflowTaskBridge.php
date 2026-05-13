@@ -252,6 +252,7 @@ interface WorkflowTaskBridge
      *     type: 'schedule_activity',
      *     activity_type: string,
      *     arguments?: string|null,
+     *     payload_codec?: string|null,
      *     connection?: string|null,
      *     queue?: string|null,
      *     retry_policy?: array,
@@ -272,7 +273,8 @@ interface WorkflowTaskBridge
      *     }
      *   }
      *   Schedules an activity task for execution. activity_type is a registered type key.
-     *   arguments is a codec-tagged serialized payload. connection and queue override run defaults.
+     *   arguments is a serialized payload; payload_codec names the codec when it differs from the run codec.
+     *   connection and queue override run defaults.
      *   retry_policy accepts max_attempts, backoff_seconds, and non_retryable_error_types.
      *   worker_session pins a sequence of activities to one worker-session lease.
      *
@@ -284,6 +286,7 @@ interface WorkflowTaskBridge
      *     type: 'start_child_workflow',
      *     workflow_type: string,
      *     arguments?: string|null,
+     *     payload_codec?: string|null,
      *     connection?: string|null,
      *     queue?: string|null,
      *     parent_close_policy?: 'abandon'|'request_cancel'|'terminate',
@@ -292,7 +295,8 @@ interface WorkflowTaskBridge
      *     run_timeout_seconds?: int
      *   }
      *   Starts a child workflow instance. workflow_type is a registered type key.
-     *   arguments is a codec-tagged serialized payload. retry_policy accepts the same
+     *   arguments is a serialized payload; payload_codec names the codec when it differs from the run codec.
+     *   retry_policy accepts the same
      *   max_attempts, backoff_seconds, and non_retryable_error_types shape as activities.
      *   Child workflow retries apply after a child run failure; invalid start commands
      *   are protocol errors and are not retried as child attempts.
@@ -316,7 +320,7 @@ interface WorkflowTaskBridge
      *
      * Terminal command types (at most one):
      *
-     * - complete_workflow: {type: 'complete_workflow', result?: string|null}
+     * - complete_workflow: {type: 'complete_workflow', result?: string|null, payload_codec?: string|null}
      *   Marks the workflow run as completed with an optional serialized result.
      *
      * - fail_workflow: {type: 'fail_workflow', message: string, exception_class?: string, exception_type?: string}

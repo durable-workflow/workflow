@@ -1421,6 +1421,49 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNotNull($completionEvent);
     }
 
+    public function testCompleteWithWorkflowCompletionPreservesExternalResultPayloadCodec(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new NamespacedExternalPayloadStoragePolicy($driver, 'default'),
+        );
+
+        $run = $this->createWaitingRun('default');
+        $run->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $codec = 'workflow-serializer-y';
+        $expected = ['message' => str_repeat('Y', 64)];
+        $payload = Serializer::serializeWithCodec($codec, $expected);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => $payload,
+                'payload_codec' => $codec,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        $run->refresh();
+        $this->assertIsString($run->output);
+        $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $run->output);
+        $this->assertSame($expected, $run->workflowOutput());
+
+        $completionEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->firstOrFail();
+
+        $this->assertSame($codec, $completionEvent->payload['payload_codec'] ?? null);
+        $this->assertSame($codec, $completionEvent->payload['output']['codec'] ?? null);
+        $this->assertSame($codec, $completionEvent->payload['output']['external_storage']['codec'] ?? null);
+    }
+
     public function testCompleteWithWorkflowFailureFailsRun(): void
     {
         $run = $this->createWaitingRun();
@@ -2180,6 +2223,55 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($scheduledEvent);
         $this->assertSame($execution->id, $scheduledEvent->payload['activity_execution_id']);
+    }
+
+    public function testCompleteSchedulesActivityPreservesExternalArgumentsPayloadCodec(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new NamespacedExternalPayloadStoragePolicy($driver, 'default'),
+        );
+
+        $run = $this->createWaitingRun('default');
+        $run->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $codec = 'workflow-serializer-y';
+        $expected = ['Taylor', str_repeat('Y', 64)];
+        $arguments = Serializer::serializeWithCodec($codec, $expected);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'test-greeting-activity',
+                'arguments' => $arguments,
+                'payload_codec' => $codec,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame($codec, $execution->payload_codec);
+        $this->assertIsString($execution->arguments);
+        $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $execution->arguments);
+        $this->assertSame($expected, $execution->activityArguments());
+
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame($codec, $scheduledEvent->payload['activity']['payload_codec'] ?? null);
+        $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['codec'] ?? null);
+        $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['external_storage']['codec'] ?? null);
     }
 
     public function testCompleteSchedulesTimer(): void

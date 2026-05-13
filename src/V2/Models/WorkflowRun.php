@@ -270,7 +270,7 @@ class WorkflowRun extends Model
             return null;
         }
 
-        return $this->unserializePayload($this->output);
+        return $this->unserializeOutputPayload($this->output);
     }
 
     /**
@@ -368,6 +368,31 @@ class WorkflowRun extends Model
 
         if (is_string($this->payload_codec) && $this->payload_codec !== '') {
             return Serializer::unserializeWithCodec($this->payload_codec, $blob);
+        }
+
+        return Serializer::unserialize($blob);
+    }
+
+    /**
+     * Workflow results may be produced by a worker command whose codec differs
+     * from the run input codec. Stored external envelopes carry that output
+     * codec with the reference, so prefer it when present.
+     */
+    private function unserializeOutputPayload(string $blob): mixed
+    {
+        $storedEnvelope = ExternalPayloads::storedEnvelope($blob);
+        $codec = is_array($storedEnvelope) && is_string($storedEnvelope['codec'] ?? null)
+            ? $storedEnvelope['codec']
+            : (is_string($this->payload_codec) ? $this->payload_codec : null);
+
+        $blob = ExternalPayloads::resolveStoredPayload(
+            $blob,
+            $codec,
+            is_string($this->namespace) ? $this->namespace : null,
+        );
+
+        if (is_string($codec) && $codec !== '') {
+            return Serializer::unserializeWithCodec($codec, $blob);
         }
 
         return Serializer::unserialize($blob);

@@ -589,7 +589,7 @@ final class HistoryEventPayloadContract
             'execution_deadline_at',
             'run_deadline_at',
         ],
-        'WorkflowCompleted' => ['output'],
+        'WorkflowCompleted' => ['output', 'payload_codec'],
         'WorkflowFailed' => [
             'failure_id',
             'source_kind',
