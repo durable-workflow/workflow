@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -41,6 +42,8 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\WorkflowTaskPayload;
+use Workflow\V2\Worker\WorkflowFiberRunner;
+use Workflow\V2\Workflow as V2Workflow;
 
 final class V2WorkflowTaskBridgeTest extends TestCase
 {
@@ -389,6 +392,115 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('test-greeting-workflow', $result['workflow_type']);
         $this->assertCount(1, $result['history_events']);
         $this->assertSame('WorkflowStarted', $result['history_events'][0]['event_type']);
+    }
+
+    public function testFiberRunnerReplaysHistoryPayloadWithBridgeAssignedCommandSequences(): void
+    {
+        $run = $this->createWaitingRun();
+        $workflowClass = BridgeHistorySequenceWorkflow::class;
+        $workflowType = 'bridge-history-sequence-workflow';
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $instance->forceFill([
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+        ])->save();
+        $run->forceFill([
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serializeWithCodec('avro', ['polyglot']),
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+        ]);
+
+        $firstTask = $this->createLeasedTask($run);
+        $firstHistory = $this->bridge->historyPayload($firstTask->id);
+
+        $this->assertNotNull($firstHistory);
+        $this->assertSame(2, $firstHistory['last_history_sequence']);
+
+        $firstStep = WorkflowFiberRunner::forClass(
+            $workflowClass,
+            $instance->id,
+            $run->id,
+            ['polyglot'],
+            'avro',
+            $firstHistory['history_events'],
+        )->step();
+
+        $this->assertSame('schedule_activity', $firstStep->command['type']);
+        $this->assertSame('demo.first', $firstStep->command['activity_type']);
+
+        $scheduled = $this->bridge->complete($firstTask->id, $firstStep->commands);
+
+        $this->assertTrue($scheduled['completed']);
+        $this->assertCount(1, $scheduled['created_task_ids']);
+
+        /** @var WorkflowHistoryEvent $scheduledEvent */
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame(3, (int) $scheduledEvent->sequence);
+        $this->assertSame(3, $scheduledEvent->payload['sequence']);
+
+        /** @var ActivityTaskBridge $activityBridge */
+        $activityBridge = $this->app->make(ActivityTaskBridge::class);
+        $activityClaim = $activityBridge->claim($scheduled['created_task_ids'][0], 'activity-worker-1');
+
+        $this->assertNotNull($activityClaim);
+        $this->assertIsString($activityClaim['activity_attempt_id']);
+
+        $activityAttemptId = $activityClaim['activity_attempt_id'];
+        $activityResult = $activityBridge->complete($activityAttemptId, 'first-result');
+
+        $this->assertTrue($activityResult['recorded']);
+        $this->assertIsString($activityResult['next_task_id']);
+
+        $resumeTaskId = $activityResult['next_task_id'];
+        $resumeClaim = $this->bridge->claim($resumeTaskId, 'external-worker-1');
+
+        $this->assertNotNull($resumeClaim);
+
+        $resumeHistory = $this->bridge->historyPayload($resumeTaskId);
+
+        $this->assertNotNull($resumeHistory);
+
+        $completedEvent = collect($resumeHistory['history_events'])
+            ->firstWhere('event_type', 'ActivityCompleted');
+
+        $this->assertIsArray($completedEvent);
+        $this->assertSame(3, $completedEvent['payload']['sequence']);
+
+        $resumedStep = WorkflowFiberRunner::forClass(
+            $workflowClass,
+            $instance->id,
+            $run->id,
+            ['polyglot'],
+            'avro',
+            $resumeHistory['history_events'],
+        )->step();
+
+        $this->assertSame('schedule_activity', $resumedStep->command['type']);
+        $this->assertSame('demo.second', $resumedStep->command['activity_type']);
+        $this->assertSame(
+            ['first-result'],
+            Serializer::unserializeWithCodec('avro', $resumedStep->command['arguments']),
+        );
     }
 
     public function testHistoryPayloadReturnsLegacyArgumentsAndExternalizedEnvelope(): void
@@ -3647,5 +3759,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $attribute->upserted_at_sequence = 0;
         $attribute->inherited_from_parent = false;
         $attribute->save();
+    }
+}
+
+final class BridgeHistorySequenceWorkflow extends V2Workflow
+{
+    public function handle(string $input): mixed
+    {
+        $first = V2Workflow::activity('demo.first', $input);
+
+        return V2Workflow::activity('demo.second', $first);
     }
 }

@@ -193,6 +193,61 @@ final class Avro implements SerializerInterface
     }
 
     /**
+     * Build the worker-protocol payload envelope for an Avro value.
+     *
+     * @return array{codec: string, blob: string}
+     */
+    public static function envelope(mixed $value): array
+    {
+        return [
+            'codec' => 'avro',
+            'blob' => self::serialize($value),
+        ];
+    }
+
+    /**
+     * Decode a worker-protocol Avro envelope.
+     *
+     * Accepts either the normal {codec, blob} shape or a raw Avro blob string
+     * when the surrounding task already declared payload_codec=avro.
+     *
+     * @param array<string, mixed>|string|null $envelope
+     */
+    public static function decodeEnvelope(array|string|null $envelope): mixed
+    {
+        if ($envelope === null) {
+            return null;
+        }
+
+        if (is_string($envelope)) {
+            return self::unserialize($envelope);
+        }
+
+        $codec = $envelope['codec'] ?? 'avro';
+        if ($codec !== 'avro') {
+            throw new CodecDecodeException(
+                'avro',
+                sprintf(
+                    'Avro envelope declared unsupported codec %s.',
+                    self::describeEnvelopeCodec($codec),
+                ),
+                'Use Workflow\\Serializers\\Avro::decodeEnvelope() only for language-neutral Avro envelopes.',
+            );
+        }
+
+        $blob = $envelope['blob'] ?? null;
+        if (! is_string($blob)) {
+            throw new CodecDecodeException(
+                'avro',
+                'Avro envelope is missing a string `blob` field.',
+                'Provide a base64 Avro payload in the envelope `blob` field.',
+            );
+        }
+
+        return self::unserialize($blob);
+    }
+
+    /**
      * Encode a value using a typed Avro schema.
      *
      * The value must match the schema (e.g., a record schema expects an
@@ -398,6 +453,27 @@ final class Avro implements SerializerInterface
         }
 
         return in_array($data, ['true', 'false', 'null'], true);
+    }
+
+    private static function describeEnvelopeCodec(mixed $codec): string
+    {
+        if (is_string($codec)) {
+            return sprintf('"%s"', $codec);
+        }
+
+        if ($codec === null) {
+            return 'null';
+        }
+
+        if (is_bool($codec)) {
+            return $codec ? 'true' : 'false';
+        }
+
+        if (is_int($codec) || is_float($codec)) {
+            return (string) $codec;
+        }
+
+        return gettype($codec);
     }
 
     private static function wrapperSchema(): AvroSchema

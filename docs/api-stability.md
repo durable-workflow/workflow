@@ -171,6 +171,47 @@ host identity. The server uses the identifier to detect runs that have no
 PHP workflow code behind them, so terminal activity outcome and timeout
 paths close the host run instead of scheduling a workflow-task resume row.
 
+## Worker protocol SDK shims
+
+The PHP SDK exposes a small stable worker-protocol surface for processes
+that host PHP workflows against the standalone server without embedding the
+Laravel queue runner:
+
+- `Workflow\V2\Worker\WorkerProtocolClient`
+- `Workflow\V2\Worker\WorkflowFiberRunner`
+- `Workflow\V2\Worker\WorkflowStep`
+
+These classes are covered by the same semver rules as the server-facing
+`Support\*` list above. They intentionally wrap only the worker-plane
+HTTP routes and cold-replay stepping primitives; application workers still
+own registration maps, process lifecycle, logging, and command-line UX.
+Cold PHP Fiber runners must be constructed with the bridge `history_events`
+payload so workflow start time plus recorded activity, timer, child-workflow,
+side-effect, version marker, and search-attribute outcomes can be replayed
+before new worker-protocol commands are emitted.
+Runner steps emit the complete command list for the current workflow task;
+immediate non-blocking commands such as side-effect records, version
+markers, and search-attribute upserts are combined with the next durable
+wait or terminal command. If replay reaches a wait that is already open in
+history and has no terminal outcome yet, the step contains no commands; the
+worker must wait for a later history payload instead of duplicating the
+schedule command.
+`WorkerProtocolClient` defaults to the standalone server worker API:
+registration, heartbeat, workflow-task polling/history/complete/fail, and
+activity-task polling/heartbeat/complete/fail all use `POST /api/worker/...`
+with the worker-protocol headers. Standalone `poll*` methods return leased
+tasks from the server's `task` envelope; the client caches the returned
+lease fields so follow-up history, heartbeat, complete, and fail calls can
+send the required `lease_owner`, `workflow_task_attempt`, and
+`activity_attempt_id` values.
+Embedded package installs that need the `/webhooks` bridge contract must opt
+into embedded bridge mode explicitly; in that mode `poll*` methods return
+ready task opportunities as `tasks` lists and workers explicitly claim a task
+before fetching workflow history or completing/failing the work.
+The `Workflow\Serializers\Avro::envelope()` and `::decodeEnvelope()`
+helpers provide the language-neutral payload envelope used by those
+worker-protocol commands.
+
 ## `Workflow\V2\Workflow` authoring facade
 
 The abstract base class `Workflow\V2\Workflow` is the stable authoring API

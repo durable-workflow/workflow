@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Throwable;
+
 final class WorkerCompatibility
 {
     /**
@@ -11,7 +13,7 @@ final class WorkerCompatibility
      */
     public static function supported(): array
     {
-        $configured = self::normalizeList(config('workflows.v2.compatibility.supported'));
+        $configured = self::normalizeList(self::configured('workflows.v2.compatibility.supported'));
 
         if ($configured === []) {
             $current = self::current();
@@ -28,7 +30,7 @@ final class WorkerCompatibility
 
     public static function current(): ?string
     {
-        return self::normalize(config('workflows.v2.compatibility.current'));
+        return self::normalize(self::configured('workflows.v2.compatibility.current'));
     }
 
     public static function supports(?string $required): bool
@@ -71,6 +73,19 @@ final class WorkerCompatibility
         $value = trim($value);
 
         return $value === '' ? null : $value;
+    }
+
+    private static function configured(string $key): mixed
+    {
+        if (! function_exists('config')) {
+            return null;
+        }
+
+        try {
+            return config($key);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**
