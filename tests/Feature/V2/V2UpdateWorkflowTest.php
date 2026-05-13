@@ -31,10 +31,13 @@ use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RunUpdateView;
+use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
@@ -901,17 +904,19 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->runReadyWorkflowTask($workflow->runId());
 
         $result = $workflow->attemptUpdate('largeResult', 512);
+        $expected = [
+            'length' => 512,
+            'value' => str_repeat('u', 512),
+        ];
 
         $this->assertTrue($result->accepted());
         $this->assertTrue($result->completed());
-        $this->assertSame([
-            'length' => 512,
-            'value' => str_repeat('u', 512),
-        ], $result->result());
+        $this->assertSame($expected, $result->result());
 
         /** @var WorkflowUpdate $update */
         $update = WorkflowUpdate::query()->findOrFail($result->updateId());
         $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $update->result);
+        $this->assertSame($expected, $update->updateResult());
 
         $resultEnvelope = $result->resultEnvelope();
         $this->assertIsArray($resultEnvelope);
@@ -932,6 +937,62 @@ final class V2UpdateWorkflowTest extends TestCase
             ExternalPayloadReference::SCHEMA,
             $completed->payload['result']['external_storage']['schema'],
         );
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $updateRows = RunUpdateView::forRun($run->fresh());
+        $updateRow = collect($updateRows)
+            ->first(static fn (array $row): bool => ($row['id'] ?? null) === $update->id);
+
+        $this->assertIsArray($updateRow);
+        $this->assertTrue($updateRow['result_available']);
+        $this->assertIsArray($updateRow['result']);
+        $this->assertArrayHasKey('external_storage', $updateRow['result']);
+        $this->assertArrayNotHasKey('blob', $updateRow['result']);
+
+        $detail = RunDetailView::forRun($run->fresh());
+        $detailUpdate = collect($detail['updates'])
+            ->first(static fn (array $row): bool => ($row['id'] ?? null) === $update->id);
+        $detailCommand = collect($detail['commands'])
+            ->first(static fn (array $row): bool => ($row['update_id'] ?? null) === $update->id);
+        $timelineEntry = collect(HistoryTimeline::fromHistory($run->fresh()))
+            ->first(static fn (array $entry): bool => ($entry['type'] ?? null) === 'UpdateCompleted');
+
+        $this->assertIsArray($detailUpdate);
+        $this->assertSame($updateRow['result'], $detailUpdate['result']);
+        $this->assertIsArray($detailCommand);
+        $this->assertSame($updateRow['result'], $detailCommand['result']);
+        $this->assertIsArray($timelineEntry);
+        $this->assertSame('update', $timelineEntry['kind']);
+        $this->assertSame('largeResult', $timelineEntry['update_name']);
+        $this->assertArrayNotHasKey('result', $timelineEntry);
+
+        $export = HistoryExport::forRun($run->fresh());
+        $exportUpdate = collect($export['updates'])
+            ->first(static fn (array $row): bool => ($row['id'] ?? null) === $update->id);
+        $exportEvent = collect($export['history_events'])
+            ->first(static fn (array $entry): bool => ($entry['type'] ?? null) === 'UpdateCompleted');
+        $manifestEntry = collect($export['payload_manifest']['entries'])
+            ->first(static fn (array $entry): bool => ($entry['path'] ?? null) === 'updates.0.result');
+
+        $this->assertIsArray($exportUpdate);
+        $this->assertIsArray($exportUpdate['result']);
+        $this->assertArrayHasKey('external_storage', $exportUpdate['result']);
+        $this->assertArrayNotHasKey('blob', $exportUpdate['result']);
+        $this->assertIsArray($exportEvent);
+        $this->assertArrayHasKey('external_storage', $exportEvent['payload']['result']);
+        $this->assertIsArray($manifestEntry);
+        $this->assertSame('external-storage-reference', $manifestEntry['encoding']);
+        $this->assertSame('external_storage_reference', $manifestEntry['diagnostic']);
+
+        $replayedRun = (new WorkflowReplayer())->runFromHistoryExport($export);
+        $replayedUpdate = collect(RunUpdateView::forRun($replayedRun))
+            ->first(static fn (array $row): bool => ($row['id'] ?? null) === $update->id);
+
+        $this->assertIsArray($replayedUpdate);
+        $this->assertIsArray($replayedUpdate['result']);
+        $this->assertArrayHasKey('external_storage', $replayedUpdate['result']);
+        $this->assertArrayNotHasKey('blob', $replayedUpdate['result']);
     }
 
     public function testAttemptUpdateRejectsInvalidArgumentsBeforeApplication(): void

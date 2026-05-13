@@ -12,9 +12,15 @@ use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
+use Workflow\V2\Support\QueryStateReplayer;
+use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
 final class V2SideEffectWorkflowTest extends TestCase
@@ -156,6 +162,81 @@ final class V2SideEffectWorkflowTest extends TestCase
             ExternalPayloadReference::SCHEMA,
             $event->payload['result']['external_storage']['schema'],
         );
+    }
+
+    public function testExternalizedSideEffectResultFeedsReaderSurfacesAndQueryReplay(): void
+    {
+        WorkflowStub::fake();
+        TestLargeSideEffectWorkflow::resetCounter();
+
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->bindExternalPayloadPolicy($driver);
+
+        $workflow = WorkflowStub::make(TestLargeSideEffectWorkflow::class, 'side-effect-external-readers');
+        $workflow->start(512, true);
+
+        $expected = [
+            'length' => 512,
+            'value' => str_repeat('x', 512),
+        ];
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame(1, TestLargeSideEffectWorkflow::sideEffectExecutions());
+        $this->assertSame($expected, $workflow->query('currentPayload'));
+        $this->assertSame(1, TestLargeSideEffectWorkflow::sideEffectExecutions());
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SideEffectRecorded)
+            ->firstOrFail();
+
+        $this->assertIsArray($event->payload['result']);
+        $this->assertArrayHasKey('external_storage', $event->payload['result']);
+        $this->assertArrayNotHasKey('blob', $event->payload['result']);
+
+        $timeline = HistoryTimeline::fromHistory($run->fresh());
+        $timelineEntry = collect($timeline)
+            ->first(static fn (array $entry): bool => ($entry['type'] ?? null) === 'SideEffectRecorded');
+
+        $this->assertIsArray($timelineEntry);
+        $this->assertSame('side_effect', $timelineEntry['kind']);
+        $this->assertSame('Recorded side effect.', $timelineEntry['summary']);
+        $this->assertArrayNotHasKey('result', $timelineEntry);
+
+        $detail = RunDetailView::forRun($run->fresh());
+        $detailEntry = collect($detail['timeline'])
+            ->first(static fn (array $entry): bool => ($entry['type'] ?? null) === 'SideEffectRecorded');
+
+        $this->assertIsArray($detailEntry);
+        $this->assertSame('side_effect', $detailEntry['kind']);
+        $this->assertArrayNotHasKey('result', $detailEntry);
+
+        $export = HistoryExport::forRun($run->fresh());
+        $exportEvent = collect($export['history_events'])
+            ->first(static fn (array $entry): bool => ($entry['type'] ?? null) === 'SideEffectRecorded');
+        $exportTimelineEntry = collect($export['timeline'])
+            ->first(static fn (array $entry): bool => ($entry['type'] ?? null) === 'SideEffectRecorded');
+
+        $this->assertIsArray($exportEvent);
+        $this->assertIsArray($exportEvent['payload']['result']);
+        $this->assertArrayHasKey('external_storage', $exportEvent['payload']['result']);
+        $this->assertArrayNotHasKey('blob', $exportEvent['payload']['result']);
+        $this->assertIsArray($exportTimelineEntry);
+        $this->assertSame('side_effect', $exportTimelineEntry['kind']);
+
+        $replayedRun = (new WorkflowReplayer())->runFromHistoryExport($export);
+        $replayedEvent = $replayedRun->historyEvents
+            ->first(static fn (WorkflowHistoryEvent $entry): bool => $entry->event_type === HistoryEventType::SideEffectRecorded);
+
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $replayedEvent);
+        $this->assertIsArray($replayedEvent->payload['result']);
+        $this->assertArrayHasKey('external_storage', $replayedEvent->payload['result']);
+        $this->assertSame($expected, (new QueryStateReplayer())->query($replayedRun, 'currentPayload'));
+        $this->assertSame(1, TestLargeSideEffectWorkflow::sideEffectExecutions());
     }
 
     public function testManySideEffectsRecordDistinctHistoryEventsInSequence(): void
