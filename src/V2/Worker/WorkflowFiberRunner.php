@@ -464,7 +464,8 @@ final class WorkflowFiberRunner
             ?? self::stringValue($startedPayload['compatibility'] ?? null);
         $namespace = self::stringValue($run->namespace ?? null)
             ?? self::stringValue($startedPayload['namespace'] ?? null)
-            ?? $this->namespace;
+            ?? $this->namespace
+            ?? self::historyNamespace($historyEvents);
 
         $run->forceFill(array_filter([
             'workflow_class' => $workflowClass,
@@ -520,6 +521,22 @@ final class WorkflowFiberRunner
         }
 
         return [];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     */
+    private static function historyNamespace(array $historyEvents): ?string
+    {
+        foreach ($historyEvents as $event) {
+            $namespace = self::stringValue($event['namespace'] ?? null);
+
+            if ($namespace !== null) {
+                return $namespace;
+            }
+        }
+
+        return null;
     }
 
     /**

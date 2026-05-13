@@ -560,6 +560,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertNotNull($history);
         $this->assertSame($namespace, $history['namespace']);
+        $this->assertSame($namespace, $history['history_events'][0]['namespace']);
 
         $step = WorkflowFiberRunner::forClass(
             $workflowClass,
@@ -568,7 +569,6 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ['polyglot'],
             'avro',
             $history['history_events'],
-            $history['namespace'],
         )->step();
 
         $this->assertSame('schedule_activity', $step->command['type']);

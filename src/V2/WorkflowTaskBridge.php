@@ -106,6 +106,7 @@ final class WorkflowTaskBridge
      *         id: string,
      *         sequence: int,
      *         event_type: string,
+     *         namespace: string|null,
      *         payload: array<string, mixed>,
      *         workflow_task_id: string|null,
      *         workflow_command_id: string|null,
