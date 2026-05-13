@@ -503,6 +503,78 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
     }
 
+    public function testFiberRunnerReplaysExternalPayloadHistoryWithBridgeNamespace(): void
+    {
+        $namespace = 'tenant-a';
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $policy = $this->bindNamespacedExternalPayloadPolicy($driver, $namespace);
+        $run = $this->createWaitingRun($namespace);
+        $workflowClass = BridgeHistorySequenceWorkflow::class;
+        $workflowType = 'bridge-history-sequence-workflow';
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $instance->forceFill([
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+        ])->save();
+        $run->forceFill([
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serializeWithCodec('avro', ['polyglot']),
+        ])->save();
+
+        $storedResult = ExternalPayloads::externalize(
+            Serializer::serializeWithCodec('avro', 'first-result'),
+            'avro',
+            $driver,
+            1,
+        );
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $workflowType,
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityCompleted, [
+            'sequence' => 1,
+            'result' => ExternalPayloads::historyValue($storedResult, 'avro', $namespace),
+            'payload_codec' => 'avro',
+        ]);
+
+        $task = $this->createLeasedTask($run);
+        $history = $this->bridge->historyPayload($task->id);
+
+        $this->assertNotNull($history);
+        $this->assertSame($namespace, $history['namespace']);
+
+        $step = WorkflowFiberRunner::forClass(
+            $workflowClass,
+            $instance->id,
+            $run->id,
+            ['polyglot'],
+            'avro',
+            $history['history_events'],
+            $history['namespace'],
+        )->step();
+
+        $this->assertSame('schedule_activity', $step->command['type']);
+        $this->assertSame('demo.second', $step->command['activity_type']);
+        $this->assertSame(
+            ['first-result'],
+            Serializer::unserializeWithCodec('avro', $step->command['arguments']),
+        );
+        $this->assertSame([$namespace], $policy->driverNamespaces);
+    }
+
     public function testHistoryPayloadReturnsLegacyArgumentsAndExternalizedEnvelope(): void
     {
         $run = $this->createWaitingRun();
@@ -3651,6 +3723,18 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
     }
 
+    private function bindNamespacedExternalPayloadPolicy(
+        ExternalPayloadStorageDriver $driver,
+        string $namespace,
+    ): NamespacedExternalPayloadStoragePolicy
+    {
+        $policy = new NamespacedExternalPayloadStoragePolicy($driver, $namespace);
+
+        $this->app->instance(ExternalPayloadStoragePolicy::class, $policy);
+
+        return $policy;
+    }
+
     private function createLeasedTask(WorkflowRun $run): WorkflowTask
     {
         /** @var WorkflowTask $task */
@@ -3759,6 +3843,32 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $attribute->upserted_at_sequence = 0;
         $attribute->inherited_from_parent = false;
         $attribute->save();
+    }
+}
+
+final class NamespacedExternalPayloadStoragePolicy implements ExternalPayloadStoragePolicy
+{
+    /**
+     * @var list<string|null>
+     */
+    public array $driverNamespaces = [];
+
+    public function __construct(
+        private readonly ExternalPayloadStorageDriver $driver,
+        private readonly string $namespace,
+    ) {
+    }
+
+    public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+    {
+        $this->driverNamespaces[] = $namespace;
+
+        return $namespace === $this->namespace ? $this->driver : null;
+    }
+
+    public function thresholdBytesFor(?string $namespace): ?int
+    {
+        return $namespace === $this->namespace ? 1 : null;
     }
 }
 

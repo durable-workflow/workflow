@@ -102,6 +102,8 @@ final class WorkflowFiberRunner
 
     private bool $hasReplayHistory = false;
 
+    private ?string $namespace = null;
+
     /**
      * @param array<int, mixed> $arguments
      * @param list<array<string, mixed>> $historyEvents
@@ -111,7 +113,10 @@ final class WorkflowFiberRunner
         private readonly array $arguments,
         private readonly string $payloadCodec = 'avro',
         array $historyEvents = [],
+        ?string $namespace = null,
     ) {
+        $this->namespace = self::stringValue($namespace)
+            ?? self::stringValue($this->workflow->run->namespace ?? null);
         $this->loadHistoryEvents($historyEvents);
     }
 
@@ -132,6 +137,7 @@ final class WorkflowFiberRunner
         array $arguments,
         string $payloadCodec = 'avro',
         array $historyEvents = [],
+        ?string $namespace = null,
     ): self {
         $run = new WorkflowRun();
         $run->id = $runId;
@@ -139,6 +145,7 @@ final class WorkflowFiberRunner
         $run->workflow_class = $workflowClass;
         $run->workflow_type = $workflowClass;
         $run->payload_codec = $payloadCodec;
+        $run->namespace = $namespace;
 
         $workflow = new $workflowClass($run);
 
@@ -149,7 +156,7 @@ final class WorkflowFiberRunner
             ));
         }
 
-        return new self($workflow, $arguments, $payloadCodec, $historyEvents);
+        return new self($workflow, $arguments, $payloadCodec, $historyEvents, $namespace);
     }
 
     /**
@@ -398,7 +405,11 @@ final class WorkflowFiberRunner
         $this->syncRunReplayMetadata($historyEvents);
         $this->startedAt = self::workflowStartedAt($historyEvents);
         $this->historySequencesByPosition = self::indexHistorySequencesByPosition($historyEvents);
-        $this->recordedActivityOutcomes = self::indexRecordedActivityOutcomes($historyEvents, $this->payloadCodec);
+        $this->recordedActivityOutcomes = self::indexRecordedActivityOutcomes(
+            $historyEvents,
+            $this->payloadCodec,
+            $this->namespace,
+        );
         $this->openActivityWaits = array_diff_key(
             self::indexOpenActivityWaits($historyEvents),
             $this->recordedActivityOutcomes,
@@ -408,12 +419,20 @@ final class WorkflowFiberRunner
             self::indexOpenTimerWaits($historyEvents),
             $this->recordedTimerOutcomes,
         );
-        $this->recordedChildOutcomes = self::indexRecordedChildOutcomes($historyEvents, $this->payloadCodec);
+        $this->recordedChildOutcomes = self::indexRecordedChildOutcomes(
+            $historyEvents,
+            $this->payloadCodec,
+            $this->namespace,
+        );
         $this->openChildWaits = array_diff_key(
             self::indexOpenChildWaits($historyEvents),
             $this->recordedChildOutcomes,
         );
-        $this->recordedSideEffects = self::indexRecordedSideEffects($historyEvents, $this->payloadCodec);
+        $this->recordedSideEffects = self::indexRecordedSideEffects(
+            $historyEvents,
+            $this->payloadCodec,
+            $this->namespace,
+        );
         $this->recordedVersionMarkers = self::indexRecordedVersionMarkers($historyEvents);
         $this->recordedSearchAttributeUpserts = self::indexRecordedSearchAttributeUpserts($historyEvents);
     }
@@ -443,12 +462,17 @@ final class WorkflowFiberRunner
             ?? $workflowClass;
         $compatibility = self::stringValue($run->compatibility ?? null)
             ?? self::stringValue($startedPayload['compatibility'] ?? null);
+        $namespace = self::stringValue($run->namespace ?? null)
+            ?? self::stringValue($startedPayload['namespace'] ?? null)
+            ?? $this->namespace;
 
         $run->forceFill(array_filter([
             'workflow_class' => $workflowClass,
             'workflow_type' => $workflowType,
             'compatibility' => $compatibility,
+            'namespace' => $namespace,
         ], static fn (mixed $value): bool => $value !== null));
+        $this->namespace = $namespace;
 
         $startedEvents = [];
 
@@ -582,7 +606,11 @@ final class WorkflowFiberRunner
      * @param list<array<string, mixed>> $historyEvents
      * @return array<int, array{status: string, result?: mixed, exception?: Throwable, recorded_at: CarbonInterface|null}>
      */
-    private static function indexRecordedActivityOutcomes(array $historyEvents, string $payloadCodec): array
+    private static function indexRecordedActivityOutcomes(
+        array $historyEvents,
+        string $payloadCodec,
+        ?string $namespace,
+    ): array
     {
         $outcomes = [];
 
@@ -614,6 +642,7 @@ final class WorkflowFiberRunner
                         $payload['result'] ?? null,
                         $payloadCodec,
                         self::stringValue($payload['payload_codec'] ?? null),
+                        $namespace,
                     ),
                     'recorded_at' => $recordedAt,
                 ];
@@ -729,7 +758,11 @@ final class WorkflowFiberRunner
      * @param list<array<string, mixed>> $historyEvents
      * @return array<int, array{status: string, result?: mixed, exception?: Throwable, recorded_at: CarbonInterface|null}>
      */
-    private static function indexRecordedChildOutcomes(array $historyEvents, string $payloadCodec): array
+    private static function indexRecordedChildOutcomes(
+        array $historyEvents,
+        string $payloadCodec,
+        ?string $namespace,
+    ): array
     {
         $outcomes = [];
 
@@ -761,6 +794,7 @@ final class WorkflowFiberRunner
                         $payload['output'] ?? null,
                         $payloadCodec,
                         self::stringValue($payload['payload_codec'] ?? null),
+                        $namespace,
                     ),
                     'recorded_at' => $recordedAt,
                 ];
@@ -810,7 +844,11 @@ final class WorkflowFiberRunner
      * @param list<array<string, mixed>> $historyEvents
      * @return array<int, array{result: mixed, recorded_at: CarbonInterface|null}>
      */
-    private static function indexRecordedSideEffects(array $historyEvents, string $payloadCodec): array
+    private static function indexRecordedSideEffects(
+        array $historyEvents,
+        string $payloadCodec,
+        ?string $namespace,
+    ): array
     {
         $sideEffects = [];
 
@@ -831,6 +869,7 @@ final class WorkflowFiberRunner
                     $payload['result'],
                     $payloadCodec,
                     self::stringValue($payload['payload_codec'] ?? null),
+                    $namespace,
                 ),
                 'recorded_at' => self::eventRecordedAt($event, $payload),
             ];
@@ -893,10 +932,15 @@ final class WorkflowFiberRunner
         return $upserts;
     }
 
-    private static function decodePayload(mixed $payload, string $fallbackCodec, ?string $eventCodec = null): mixed
+    private static function decodePayload(
+        mixed $payload,
+        string $fallbackCodec,
+        ?string $eventCodec = null,
+        ?string $namespace = null,
+    ): mixed
     {
         $codec = self::payloadCodec($payload, $eventCodec, $fallbackCodec);
-        $serialized = ExternalPayloads::payloadBlob($payload, $codec, null);
+        $serialized = ExternalPayloads::payloadBlob($payload, $codec, $namespace);
 
         if ($serialized === null) {
             return null;

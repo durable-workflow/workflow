@@ -22,7 +22,7 @@ interface WorkflowTaskBridge
      *
      * Returns an array of task summaries ordered by (priority asc, available_at asc, id).
      * Each summary contains task_id, workflow_run_id, workflow_instance_id,
-     * workflow_type, connection, queue, compatibility, sticky affinity, available_at,
+     * namespace, workflow_type, connection, queue, compatibility, sticky affinity, available_at,
      * and the dispatch-shaping fields priority + fairness_key + fairness_weight.
      * Fairness across workload classes is applied as a separate reorder pass on the
      * candidate batch — see TaskFairnessKey and the dispatch fairness scheduler.
@@ -32,6 +32,7 @@ interface WorkflowTaskBridge
      *     task_id: string,
      *     workflow_run_id: string,
      *     workflow_instance_id: string,
+     *     namespace: string|null,
      *     workflow_type: string|null,
      *     workflow_class: string|null,
      *     connection: string|null,
@@ -65,6 +66,7 @@ interface WorkflowTaskBridge
      *     task_id: string,
      *     workflow_run_id: string|null,
      *     workflow_instance_id: string|null,
+     *     namespace: string|null,
      *     workflow_type: string|null,
      *     workflow_class: string|null,
      *     payload_codec: string|null,
@@ -91,6 +93,7 @@ interface WorkflowTaskBridge
      *     task_id: string,
      *     workflow_run_id: string,
      *     workflow_instance_id: string,
+     *     namespace: string|null,
      *     workflow_type: string|null,
      *     workflow_class: string|null,
      *     payload_codec: string,
@@ -116,6 +119,7 @@ interface WorkflowTaskBridge
      *     task_id: string,
      *     workflow_run_id: string,
      *     workflow_instance_id: string,
+     *     namespace: string|null,
      *     workflow_type: string|null,
      *     workflow_class: string|null,
      *     payload_codec: string,
@@ -152,6 +156,7 @@ interface WorkflowTaskBridge
      *     task_id: string,
      *     workflow_run_id: string,
      *     workflow_instance_id: string,
+     *     namespace: string|null,
      *     workflow_type: string|null,
      *     workflow_class: string|null,
      *     payload_codec: string,
