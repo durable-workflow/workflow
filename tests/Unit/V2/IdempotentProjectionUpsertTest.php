@@ -83,8 +83,9 @@ final class IdempotentProjectionUpsertTest extends TestCase
         // saving() fires after firstOrNew has decided "no row" and is about to
         // INSERT. We use the hook to insert a competing row from a "different
         // worker," which makes the in-flight INSERT fail with a duplicate-key
-        // error. The helper must catch that, retry updateOrCreate, find the
-        // row this hook wrote, and UPDATE it.
+        // error. The helper must catch that and switch to the database-native
+        // upsert path so repeatable-read transactions do not keep retrying an
+        // INSERT against a row they cannot see yet.
         WorkflowTimelineEntry::saving(static function (WorkflowTimelineEntry $entry) use (
             $raceRowAttributes,
             &$raceFired

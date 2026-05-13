@@ -6,28 +6,25 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
-use LogicException;
 use Throwable;
 
 /**
- * Wraps a per-row updateOrCreate with retry on unique-key violations so the
+ * Wraps a per-row updateOrCreate with atomic fallback on unique-key violations so the
  * timeline / wait / timer / lineage / summary projectors stay correct when
  * two workers race the same projection row.
  *
  * The race shape (#438): updateOrCreate is firstOrNew + save. Two concurrent
  * callers both observe no row, both INSERT, and the loser hits SQLSTATE 23000
- * (MySQL/SQLite) or 23505 (Postgres) on the projection's primary or unique
- * key. On retry, firstOrNew sees the row the winning side just wrote and the
- * second call falls through to UPDATE, which has no analogous race because
- * UPDATE does not collide on existing primary keys.
+ * (MySQL/SQLite) or 23505 (Postgres) on the projection's primary or unique key.
+ * MySQL repeatable-read transactions can keep the competing row invisible to a
+ * retry while the unique index still rejects another INSERT, so duplicate-key
+ * recovery switches to the database-native upsert path.
  *
  * Sibling DELETE-side races for these projectors are handled by
  * {@see StaleProjectionCleanup} (#425).
  */
 final class IdempotentProjectionUpsert
 {
-    private const MAX_ATTEMPTS = 5;
-
     /**
      * @template TModel of Model
      * @param class-string<TModel> $model
@@ -37,22 +34,59 @@ final class IdempotentProjectionUpsert
      */
     public static function upsert(string $model, array $key, array $values): Model
     {
-        for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
-            try {
-                /** @var TModel $row */
-                $row = $model::query()->updateOrCreate($key, $values);
+        try {
+            /** @var TModel $row */
+            $row = $model::query()->updateOrCreate($key, $values);
 
-                return $row;
-            } catch (QueryException $e) {
-                if (! self::isUniqueViolation($e) || $attempt === self::MAX_ATTEMPTS) {
-                    throw $e;
-                }
-
-                usleep(self::backoffMicroseconds($attempt));
+            return $row;
+        } catch (QueryException $e) {
+            if (! self::isUniqueViolation($e)) {
+                throw $e;
             }
+
+            return self::atomicUpsert($model, $key, $values);
+        }
+    }
+
+    /**
+     * @template TModel of Model
+     * @param class-string<TModel> $model
+     * @param array<string, mixed> $key
+     * @param array<string, mixed> $values
+     * @return TModel
+     */
+    private static function atomicUpsert(string $model, array $key, array $values): Model
+    {
+        /** @var TModel $instance */
+        $instance = new $model();
+        $instance->forceFill($key + $values);
+
+        $updateColumns = array_keys($values);
+        $attributes = $instance->getAttributes();
+
+        if ($updateColumns === []) {
+            $model::query()->insertOrIgnore($attributes);
+        } else {
+            $model::query()->upsert(
+                [$attributes],
+                array_keys($key),
+                $updateColumns,
+            );
         }
 
-        throw new LogicException('IdempotentProjectionUpsert exhausted attempts without resolving.');
+        /** @var TModel|null $row */
+        $row = $model::query()
+            ->where($key)
+            ->first();
+
+        if ($row !== null) {
+            return $row;
+        }
+
+        $instance->exists = true;
+        $instance->syncOriginal();
+
+        return $instance;
     }
 
     private static function isUniqueViolation(Throwable $e): bool
@@ -89,12 +123,4 @@ final class IdempotentProjectionUpsert
         return false;
     }
 
-    private static function backoffMicroseconds(int $attempt): int
-    {
-        // 2ms, 4ms, 8ms, 16ms (capped) with small jitter to break ties between
-        // racing retriers.
-        $base = min(16_000, 2_000 * (1 << ($attempt - 1)));
-
-        return $base + random_int(0, 1_000);
-    }
 }
