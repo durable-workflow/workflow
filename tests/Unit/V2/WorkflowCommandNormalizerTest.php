@@ -43,6 +43,22 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]], $out);
     }
 
+    public function testCompleteWorkflowRejectsNonStringResultPayload(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'complete_workflow',
+                'result' => ['ok' => true],
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.result', $errors);
+        $this->assertStringContainsString(
+            'must be a string or a payload envelope',
+            $errors['commands.0.result'][0],
+        );
+    }
+
     public function testCompleteWorkflowUnwrapsEnvelope(): void
     {
         $out = WorkflowCommandNormalizer::normalize([
@@ -450,6 +466,23 @@ final class WorkflowCommandNormalizerTest extends TestCase
                 'result' => '"ok"',
             ],
         ]);
+    }
+
+    public function testCompleteUpdateRejectsNonStringResultPayload(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'complete_update',
+                'update_id' => '01UPDATE000000000000000001',
+                'result' => 42,
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.result', $errors);
+        $this->assertStringContainsString(
+            'must be a string or a payload envelope',
+            $errors['commands.0.result'][0],
+        );
     }
 
     public function testFailUpdatePreservesOptionalFields(): void

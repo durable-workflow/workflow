@@ -565,7 +565,7 @@ final class WorkflowCommandNormalizer
     /**
      * @param  array<string, mixed>  $command
      * @param  array<string, list<string>>  $errors
-     * @return array{payload: mixed, codec: string|null}
+     * @return array{payload: string|null, codec: string|null}
      */
     private static function resolveCommandPayloadWithCodec(
         array $command,
@@ -589,10 +589,31 @@ final class WorkflowCommandNormalizer
 
         if (is_array($command[$field])) {
             try {
-                return PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
                     $command[$field],
                     "commands.{$index}.{$field}",
                 );
+
+                $payload = $resolved['payload'];
+
+                if ($payload === null || is_string($payload)) {
+                    return [
+                        'payload' => $payload,
+                        'codec' => $resolved['codec'],
+                    ];
+                }
+
+                $errors["commands.{$index}.{$field}"] = [
+                    sprintf(
+                        'Workflow task command field [%s] must be a string or a payload envelope when provided.',
+                        $field,
+                    ),
+                ];
+
+                return [
+                    'payload' => null,
+                    'codec' => null,
+                ];
             } catch (ValidationException $e) {
                 foreach ($e->errors() as $errorField => $messages) {
                     $errors[$errorField] = $messages;
@@ -605,15 +626,22 @@ final class WorkflowCommandNormalizer
             }
         }
 
+        $errors["commands.{$index}.{$field}"] = [
+            sprintf(
+                'Workflow task command field [%s] must be a string or a payload envelope when provided.',
+                $field,
+            ),
+        ];
+
         return [
-            'payload' => $command[$field],
+            'payload' => null,
             'codec' => null,
         ];
     }
 
     /**
      * @param  array<string, mixed>  $command
-     * @param  array{payload: mixed, codec: string|null}  $resolved
+     * @param  array{payload: string|null, codec: string|null}  $resolved
      * @param  array<string, list<string>>  $errors
      */
     private static function payloadCodecForResolvedPayload(
