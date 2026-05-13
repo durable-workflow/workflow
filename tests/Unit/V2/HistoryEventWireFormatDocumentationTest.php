@@ -143,7 +143,6 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'update_name',
             'sequence',
             'result',
-            'payload_codec',
         ],
         'ConditionWaitOpened' => [
             'condition_wait_id',
@@ -152,7 +151,7 @@ final class HistoryEventWireFormatDocumentationTest extends TestCase
             'sequence',
             'timeout_seconds',
         ],
-        'SideEffectRecorded' => ['sequence', 'result', 'payload_codec'],
+        'SideEffectRecorded' => ['sequence', 'result'],
         'VersionMarkerRecorded' => ['sequence', 'change_id', 'version', 'min_supported', 'max_supported'],
         'ChildWorkflowScheduled' => [
             'sequence',

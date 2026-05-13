@@ -1769,7 +1769,6 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('event_type', HistoryEventType::SideEffectRecorded->value)
             ->firstOrFail();
 
-        $this->assertSame($codec, $event->payload['payload_codec'] ?? null);
         $this->assertIsArray($event->payload['result']);
         $this->assertSame($codec, $event->payload['result']['codec']);
         $this->assertArrayHasKey('external_storage', $event->payload['result']);
@@ -2150,7 +2149,6 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->where('event_type', HistoryEventType::UpdateCompleted->value)
             ->firstOrFail();
 
-        $this->assertSame($codec, $event->payload['payload_codec'] ?? null);
         $this->assertIsArray($event->payload['result']);
         $this->assertSame($codec, $event->payload['result']['codec']);
         $this->assertSame($resultPayload, ExternalPayloads::payloadBlob($event->payload['result'], $codec, null));

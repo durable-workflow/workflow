@@ -341,7 +341,6 @@ final class HistoryEventPayloadContract
             'update_name',
             'sequence',
             'result',
-            'payload_codec',
             'failure_id',
             'failure_category',
             'non_retryable',
@@ -377,7 +376,7 @@ final class HistoryEventPayloadContract
             'timer_id',
             'timeout_seconds',
         ],
-        'SideEffectRecorded' => ['sequence', 'result', 'payload_codec'],
+        'SideEffectRecorded' => ['sequence', 'result'],
         'VersionMarkerRecorded' => ['sequence', 'change_id', 'version', 'min_supported', 'max_supported'],
         'ChildWorkflowScheduled' => [
             'sequence',

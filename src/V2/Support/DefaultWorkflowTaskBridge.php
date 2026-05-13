@@ -1290,7 +1290,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ->whereKey($update->workflow_command_id)
                 ->first();
 
-        $payloadCodec = self::payloadCodecForCommand($command) ?? self::payloadCodecForUpdate($update, $run);
+        $fallbackCodec = self::payloadCodecForUpdate($update, $run);
+        $payloadCodec = self::payloadCodecForCommand($command) ?? $fallbackCodec;
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $result = isset($command['result']) && is_string($command['result'])
             ? ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace)
@@ -1314,8 +1315,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_run_id' => $run->id,
             'update_name' => $update->update_name,
             'sequence' => $sequence,
-            'result' => ExternalPayloads::historyValue($result, $payloadCodec, $namespace),
-            'payload_codec' => $payloadCodec,
+            'result' => self::historyPayloadValue($result, $payloadCodec, $namespace, $fallbackCodec),
         ], $task, $workflowCommand);
 
         $update->forceFill([
@@ -1960,17 +1960,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array $command,
         int $sequence,
     ): int {
-        $payloadCodec = self::payloadCodecForCommand($command)
-            ?? (is_string($run->payload_codec) && $run->payload_codec !== ''
-                ? $run->payload_codec
-                : CodecRegistry::defaultCodec());
+        $fallbackCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+            ? $run->payload_codec
+            : CodecRegistry::defaultCodec();
+        $payloadCodec = self::payloadCodecForCommand($command) ?? $fallbackCodec;
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $result = ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
             'sequence' => $sequence,
-            'result' => ExternalPayloads::historyValue($result, $payloadCodec, $namespace),
-            'payload_codec' => $payloadCodec,
+            'result' => self::historyPayloadValue($result, $payloadCodec, $namespace, $fallbackCodec),
         ], $task);
 
         return $sequence + 1;
@@ -1997,6 +1996,23 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         return is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']
             : null;
+    }
+
+    private static function historyPayloadValue(
+        ?string $payload,
+        string $payloadCodec,
+        ?string $namespace,
+        string $fallbackCodec,
+    ): mixed {
+        if ($payload === null) {
+            return null;
+        }
+
+        if ($payloadCodec !== $fallbackCodec) {
+            return ExternalPayloads::wireEnvelope($payload, $payloadCodec, $namespace);
+        }
+
+        return ExternalPayloads::historyValue($payload, $payloadCodec, $namespace);
     }
 
     /**
