@@ -11,6 +11,23 @@ use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 final class WorkflowCommandNormalizerTest extends TestCase
 {
+    public function testPayloadEnvelopeFieldContractNamesCodecBearingCommandPayloads(): void
+    {
+        $this->assertSame([
+            'complete_workflow' => ['result'],
+            'schedule_activity' => ['arguments'],
+            'start_child_workflow' => ['arguments'],
+            'continue_as_new' => ['arguments'],
+            'complete_update' => ['result'],
+            'record_side_effect' => ['result'],
+        ], WorkflowCommandNormalizer::payloadEnvelopeFields());
+
+        $this->assertTrue(WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'result'));
+        $this->assertTrue(WorkflowCommandNormalizer::acceptsPayloadEnvelope('record_side_effect', 'result'));
+        $this->assertFalse(WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'arguments'));
+        $this->assertFalse(WorkflowCommandNormalizer::acceptsPayloadEnvelope('fail_update', 'result'));
+    }
+
     public function testCompleteWorkflowAcceptsRawStringResult(): void
     {
         $out = WorkflowCommandNormalizer::normalize([

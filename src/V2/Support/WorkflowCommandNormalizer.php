@@ -103,6 +103,41 @@ final class WorkflowCommandNormalizer
     ];
 
     /**
+     * Command payload fields that accept a raw serialized string, a
+     * `{codec, blob}` envelope, or a `{codec, external_storage}` envelope.
+     *
+     * Server-side HTTP ingress resolves external payload references before
+     * normalization and uses this package-owned map so it does not need a
+     * duplicate allow-list for codec-bearing bridge payloads.
+     *
+     * @var array<string, list<string>>
+     */
+    private const PAYLOAD_ENVELOPE_FIELDS = [
+        'complete_workflow' => ['result'],
+        'schedule_activity' => ['arguments'],
+        'start_child_workflow' => ['arguments'],
+        'continue_as_new' => ['arguments'],
+        'complete_update' => ['result'],
+        'record_side_effect' => ['result'],
+    ];
+
+    /**
+     * Return the command payload-envelope grammar consumed by
+     * {@see self::normalize()}.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function payloadEnvelopeFields(): array
+    {
+        return self::PAYLOAD_ENVELOPE_FIELDS;
+    }
+
+    public static function acceptsPayloadEnvelope(string $commandType, string $field): bool
+    {
+        return in_array($field, self::PAYLOAD_ENVELOPE_FIELDS[$commandType] ?? [], true);
+    }
+
+    /**
      * @param  list<array<string, mixed>>  $commands
      * @return list<array<string, mixed>>
      */
