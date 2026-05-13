@@ -4,15 +4,23 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Tests\Fixtures\V2\TestLargeSideEffectWorkflow;
 use Tests\Fixtures\V2\TestManySideEffectsWorkflow;
 use Tests\Fixtures\V2\TestSideEffectWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloadStorage;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\WorkflowStub;
 
 final class V2SideEffectWorkflowTest extends TestCase
 {
+    private ?string $storageRoot = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -23,6 +31,18 @@ final class V2SideEffectWorkflowTest extends TestCase
             ->set('queue.connections.sync.driver', 'sync');
 
         TestSideEffectWorkflow::resetCounter();
+    }
+
+    protected function tearDown(): void
+    {
+        ExternalPayloadStorage::flushVerifiedCache();
+
+        if ($this->storageRoot !== null) {
+            $this->removeDirectory($this->storageRoot);
+            $this->storageRoot = null;
+        }
+
+        parent::tearDown();
     }
 
     public function testSideEffectExecutesOnceAndRecordsTypedHistoryEvent(): void
@@ -107,6 +127,37 @@ final class V2SideEffectWorkflowTest extends TestCase
         $this->assertSame(1, TestSideEffectWorkflow::sideEffectExecutions());
     }
 
+    public function testSideEffectResultUsesExternalPayloadStorageWhenThresholdRequiresIt(): void
+    {
+        WorkflowStub::fake();
+
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->bindExternalPayloadPolicy($driver);
+
+        $workflow = WorkflowStub::make(TestLargeSideEffectWorkflow::class, 'side-effect-external-payload');
+        $workflow->start(512);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'length' => 512,
+            'value' => str_repeat('x', 512),
+        ], $workflow->output());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::SideEffectRecorded)
+            ->firstOrFail();
+
+        $this->assertIsArray($event->payload['result']);
+        $this->assertArrayHasKey('external_storage', $event->payload['result']);
+        $this->assertArrayNotHasKey('blob', $event->payload['result']);
+        $this->assertSame(
+            ExternalPayloadReference::SCHEMA,
+            $event->payload['result']['external_storage']['schema'],
+        );
+    }
+
     public function testManySideEffectsRecordDistinctHistoryEventsInSequence(): void
     {
         WorkflowStub::fake();
@@ -160,5 +211,64 @@ final class V2SideEffectWorkflowTest extends TestCase
         $sideEffectIndex = array_search(HistoryEventType::SideEffectRecorded->value, $events, true);
 
         $this->assertGreaterThan($startedIndex, $sideEffectIndex);
+    }
+
+    private function bindExternalPayloadPolicy(ExternalPayloadStorageDriver $driver): void
+    {
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new class($driver) implements ExternalPayloadStoragePolicy {
+                public function __construct(
+                    private readonly ExternalPayloadStorageDriver $driver,
+                ) {
+                }
+
+                public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+                {
+                    return $this->driver;
+                }
+
+                public function thresholdBytesFor(?string $namespace): ?int
+                {
+                    return 1;
+                }
+            },
+        );
+    }
+
+    private function makeStorageRoot(): string
+    {
+        $this->storageRoot = sys_get_temp_dir().'/dw-side-effect-payloads-'.bin2hex(random_bytes(6));
+
+        return $this->storageRoot;
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory.DIRECTORY_SEPARATOR.$item;
+
+            if (is_dir($path)) {
+                $this->removeDirectory($path);
+            } else {
+                @unlink($path);
+            }
+        }
+
+        @rmdir($directory);
     }
 }

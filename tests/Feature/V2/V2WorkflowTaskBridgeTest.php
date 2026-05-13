@@ -10,6 +10,8 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
@@ -1415,6 +1417,51 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($serialized, $event->payload['result']);
     }
 
+    public function testCompleteExternalizesLargeSideEffectResultPayload(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->bindExternalPayloadPolicy($driver);
+        $run = $this->createWaitingRun();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+        $serialized = Serializer::serializeWithCodec('avro', [
+            'seed' => str_repeat('x', 256),
+        ]);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'record_side_effect',
+                'result' => $serialized,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SideEffectRecorded->value)
+            ->firstOrFail();
+
+        $this->assertSame(1, $event->payload['sequence']);
+        $this->assertIsArray($event->payload['result']);
+        $this->assertSame('avro', $event->payload['result']['codec']);
+        $this->assertArrayHasKey('external_storage', $event->payload['result']);
+        $this->assertArrayNotHasKey('blob', $event->payload['result']);
+        $this->assertSame(
+            ExternalPayloadReference::SCHEMA,
+            $event->payload['result']['external_storage']['schema'],
+        );
+        $this->assertSame(
+            $serialized,
+            ExternalPayloads::payloadBlob($event->payload['result'], 'avro', null),
+        );
+    }
+
     public function testCompleteRecordsVersionMarkerBeforeWorkflowCompletion(): void
     {
         $run = $this->createWaitingRun();
@@ -1584,6 +1631,90 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(1, $events[0]->payload['sequence']);
         $this->assertSame(HistoryEventType::UpdateCompleted, $events[1]->event_type);
         $this->assertSame($resultPayload, $events[1]->payload['result']);
+    }
+
+    public function testCompleteUpdateCommandExternalizesLargeResultPayload(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->bindExternalPayloadPolicy($driver);
+        $run = $this->createWaitingRun();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+
+        $workflowCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'approve',
+                'arguments' => [true],
+            ]),
+            'source' => 'worker-protocol',
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $workflowCommand->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'arguments' => Serializer::serializeWithCodec('avro', [true]),
+            'payload_codec' => 'avro',
+            'command_sequence' => $workflowCommand->command_sequence,
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+        $task->forceFill([
+            'payload' => WorkflowTaskPayload::forUpdate($update),
+        ])->save();
+
+        $resultPayload = Serializer::serializeWithCodec('avro', [
+            'approved' => true,
+            'note' => str_repeat('r', 256),
+        ]);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'complete_update',
+                'update_id' => $update->id,
+                'result' => $resultPayload,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        $update->refresh();
+        $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $update->result);
+        $this->assertSame([
+            'approved' => true,
+            'note' => str_repeat('r', 256),
+        ], $update->updateResult());
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::UpdateCompleted->value)
+            ->firstOrFail();
+
+        $this->assertIsArray($event->payload['result']);
+        $this->assertSame('avro', $event->payload['result']['codec']);
+        $this->assertArrayHasKey('external_storage', $event->payload['result']);
+        $this->assertArrayNotHasKey('blob', $event->payload['result']);
+        $this->assertSame(
+            ExternalPayloadReference::SCHEMA,
+            $event->payload['result']['external_storage']['schema'],
+        );
+        $this->assertSame(
+            $resultPayload,
+            ExternalPayloads::payloadBlob($event->payload['result'], 'avro', null),
+        );
     }
 
     public function testFailUpdateCommandClosesAcceptedUpdateLifecycleWithFailure(): void
@@ -3283,6 +3414,29 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->app->instance(HistoryProjectionRole::class, $customRole);
 
         return $customRole;
+    }
+
+    private function bindExternalPayloadPolicy(ExternalPayloadStorageDriver $driver): void
+    {
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new class($driver) implements ExternalPayloadStoragePolicy {
+                public function __construct(
+                    private readonly ExternalPayloadStorageDriver $driver,
+                ) {
+                }
+
+                public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+                {
+                    return $this->driver;
+                }
+
+                public function thresholdBytesFor(?string $namespace): ?int
+                {
+                    return 1;
+                }
+            },
+        );
     }
 
     private function createLeasedTask(WorkflowRun $run): WorkflowTask

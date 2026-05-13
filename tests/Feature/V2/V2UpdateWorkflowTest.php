@@ -13,6 +13,8 @@ use Tests\Fixtures\V2\TestStartBoundaryReceiverWorkflow;
 use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -26,7 +28,11 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\TaskWatchdog;
@@ -34,6 +40,20 @@ use Workflow\V2\WorkflowStub;
 
 final class V2UpdateWorkflowTest extends TestCase
 {
+    private ?string $storageRoot = null;
+
+    protected function tearDown(): void
+    {
+        ExternalPayloadStorage::flushVerifiedCache();
+
+        if ($this->storageRoot !== null) {
+            $this->removeDirectory($this->storageRoot);
+            $this->storageRoot = null;
+        }
+
+        parent::tearDown();
+    }
+
     public function testStartBoundarySignalAndUpdateApplyAfterWorkflowInitialization(): void
     {
         Queue::fake();
@@ -865,6 +885,52 @@ final class V2UpdateWorkflowTest extends TestCase
         $this->assertSame(
             [true, 'manual'],
             Serializer::unserialize($applied->payload['arguments'] ?? serialize([])),
+        );
+    }
+
+    public function testAttemptUpdateExternalizesLargeResultPayload(): void
+    {
+        Queue::fake();
+
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->bindExternalPayloadPolicy($driver);
+
+        $workflow = WorkflowStub::make(TestUpdateWorkflow::class, 'order-update-external-result');
+        $workflow->start();
+
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $result = $workflow->attemptUpdate('largeResult', 512);
+
+        $this->assertTrue($result->accepted());
+        $this->assertTrue($result->completed());
+        $this->assertSame([
+            'length' => 512,
+            'value' => str_repeat('u', 512),
+        ], $result->result());
+
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->findOrFail($result->updateId());
+        $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $update->result);
+
+        $resultEnvelope = $result->resultEnvelope();
+        $this->assertIsArray($resultEnvelope);
+        $this->assertArrayHasKey('external_storage', $resultEnvelope);
+        $this->assertArrayNotHasKey('blob', $resultEnvelope);
+        $this->assertSame(ExternalPayloadReference::SCHEMA, $resultEnvelope['external_storage']['schema']);
+
+        /** @var WorkflowHistoryEvent $completed */
+        $completed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', 'UpdateCompleted')
+            ->firstOrFail();
+
+        $this->assertIsArray($completed->payload['result']);
+        $this->assertArrayHasKey('external_storage', $completed->payload['result']);
+        $this->assertArrayNotHasKey('blob', $completed->payload['result']);
+        $this->assertSame(
+            ExternalPayloadReference::SCHEMA,
+            $completed->payload['result']['external_storage']['schema'],
         );
     }
 
@@ -1770,5 +1836,64 @@ final class V2UpdateWorkflowTest extends TestCase
         }
 
         $this->fail(sprintf('Unable to find %s wait.', $kind));
+    }
+
+    private function bindExternalPayloadPolicy(ExternalPayloadStorageDriver $driver): void
+    {
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new class($driver) implements ExternalPayloadStoragePolicy {
+                public function __construct(
+                    private readonly ExternalPayloadStorageDriver $driver,
+                ) {
+                }
+
+                public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+                {
+                    return $this->driver;
+                }
+
+                public function thresholdBytesFor(?string $namespace): ?int
+                {
+                    return 1;
+                }
+            },
+        );
+    }
+
+    private function makeStorageRoot(): string
+    {
+        $this->storageRoot = sys_get_temp_dir().'/dw-update-payloads-'.bin2hex(random_bytes(6));
+
+        return $this->storageRoot;
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory.DIRECTORY_SEPARATOR.$item;
+
+            if (is_dir($path)) {
+                $this->removeDirectory($path);
+            } else {
+                @unlink($path);
+            }
+        }
+
+        @rmdir($directory);
     }
 }

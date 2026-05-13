@@ -3891,13 +3891,22 @@ final class WorkflowExecutor
         SideEffectCall $sideEffectCall,
     ): WorkflowHistoryEvent {
         $result = ($sideEffectCall->callback)();
+        $payloadCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+            ? $run->payload_codec
+            : CodecRegistry::defaultCodec();
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $storedResult = ExternalPayloads::externalizeForNamespace(
+            Serializer::serializeWithCodec($payloadCodec, $result),
+            $payloadCodec,
+            $namespace,
+        );
 
         $event = WorkflowHistoryEvent::record(
             $run,
             HistoryEventType::SideEffectRecorded,
             [
                 'sequence' => $sequence,
-                'result' => Serializer::serializeWithCodec($run->payload_codec, $result),
+                'result' => ExternalPayloads::historyValue($storedResult, $payloadCodec, $namespace),
             ],
             $task,
         );
@@ -3905,6 +3914,19 @@ final class WorkflowExecutor
         $run->historyEvents->push($event);
 
         return $event;
+    }
+
+    private static function payloadCodecForUpdate(WorkflowUpdate $update, WorkflowRun $run): string
+    {
+        if (is_string($update->payload_codec) && $update->payload_codec !== '') {
+            return $update->payload_codec;
+        }
+
+        if (is_string($run->payload_codec) && $run->payload_codec !== '') {
+            return $run->payload_codec;
+        }
+
+        return CodecRegistry::defaultCodec();
     }
 
     private function recordVersionMarker(
@@ -4330,7 +4352,14 @@ final class WorkflowExecutor
                 ], $task, $command);
                 $run->historyEvents->push($appliedEvent);
 
-                $updateCodec = $run->payload_codec ?? CodecRegistry::defaultCodec();
+                $updateCodec = self::payloadCodecForUpdate($update, $run);
+                $namespace = is_string($run->namespace) ? $run->namespace : null;
+                $serializedResult = Serializer::serializeWithCodec($updateCodec, $result);
+                $storedResult = ExternalPayloads::externalizeForNamespace(
+                    $serializedResult,
+                    $updateCodec,
+                    $namespace,
+                );
                 $completedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
                     'workflow_command_id' => $command?->id,
                     'update_id' => $update->id,
@@ -4338,7 +4367,7 @@ final class WorkflowExecutor
                     'workflow_run_id' => $run->id,
                     'update_name' => $target,
                     'sequence' => $sequence,
-                    'result' => Serializer::serializeWithCodec($updateCodec, $result),
+                    'result' => ExternalPayloads::historyValue($storedResult, $updateCodec, $namespace),
                 ], $task, $command);
                 $run->historyEvents->push($completedEvent);
 
@@ -4346,7 +4375,7 @@ final class WorkflowExecutor
                     'workflow_sequence' => $sequence,
                     'status' => UpdateStatus::Completed->value,
                     'outcome' => CommandOutcome::UpdateCompleted->value,
-                    'result' => Serializer::serializeWithCodec($updateCodec, $result),
+                    'result' => $storedResult,
                     'applied_at' => now(),
                     'closed_at' => now(),
                 ])->save();

@@ -71,6 +71,15 @@ final class TestUpdateWorkflow extends Workflow
     }
 
     #[UpdateMethod]
+    public function largeResult(int $size): array
+    {
+        return [
+            'length' => $size,
+            'value' => str_repeat('u', $size),
+        ];
+    }
+
+    #[UpdateMethod]
     public function explode(string $message): never
     {
         throw new RuntimeException($message);

@@ -1279,7 +1279,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ->whereKey($update->workflow_command_id)
                 ->first();
 
-        $result = $command['result'] ?? null;
+        $payloadCodec = self::payloadCodecForUpdate($update, $run);
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $result = isset($command['result']) && is_string($command['result'])
+            ? ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace)
+            : null;
         $now = now();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
@@ -1299,7 +1303,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_run_id' => $run->id,
             'update_name' => $update->update_name,
             'sequence' => $sequence,
-            'result' => $result,
+            'result' => ExternalPayloads::historyValue($result, $payloadCodec, $namespace),
         ], $task, $workflowCommand);
 
         $update->forceFill([
@@ -1935,12 +1939,31 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array $command,
         int $sequence,
     ): int {
+        $payloadCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
+            ? $run->payload_codec
+            : CodecRegistry::defaultCodec();
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $result = ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace);
+
         WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
             'sequence' => $sequence,
-            'result' => $command['result'],
+            'result' => ExternalPayloads::historyValue($result, $payloadCodec, $namespace),
         ], $task);
 
         return $sequence + 1;
+    }
+
+    private static function payloadCodecForUpdate(WorkflowUpdate $update, WorkflowRun $run): string
+    {
+        if (is_string($update->payload_codec) && $update->payload_codec !== '') {
+            return $update->payload_codec;
+        }
+
+        if (is_string($run->payload_codec) && $run->payload_codec !== '') {
+            return $run->payload_codec;
+        }
+
+        return CodecRegistry::defaultCodec();
     }
 
     /**
