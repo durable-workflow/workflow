@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use LogicException;
 use RuntimeException;
 use Throwable;
@@ -1767,10 +1768,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array &$createdTaskIds,
     ): int {
         $workflowType = $command['workflow_type'];
+        $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
+            ? $command['payload_codec']
+            : ($run->payload_codec ?? CodecRegistry::defaultCodec());
         $arguments = isset($command['arguments']) && is_string($command['arguments'])
             ? ExternalPayloads::externalizeForNamespace(
                 $command['arguments'],
-                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                $payloadCodec,
                 is_string($run->namespace) ? $run->namespace : null,
             )
             : null;
@@ -1815,7 +1819,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'namespace' => $run->namespace,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
-            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+            'payload_codec' => $payloadCodec,
             'arguments' => $arguments,
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
@@ -2663,18 +2667,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      */
     private static function normalizeCompleteWorkflowCommand(array $command): ?array
     {
-        $payloadCodec = self::normalizeOptionalPayloadCodec($command['payload_codec'] ?? null);
+        $result = self::normalizeCommandPayloadString($command, 'result');
 
-        if (($command['payload_codec'] ?? null) !== null && $payloadCodec === null) {
+        if ($result === null) {
             return null;
         }
 
-        $result = $command['result'] ?? null;
-
         return array_filter([
             'type' => 'complete_workflow',
-            'result' => $result,
-            'payload_codec' => is_string($result) ? $payloadCodec : null,
+            'result' => $result['payload'],
+            'payload_codec' => $result['payload_codec'],
         ], static fn (mixed $value): bool => $value !== null);
     }
 
@@ -2723,14 +2725,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $scheduleToStartTimeout = self::normalizePositiveInt($command['schedule_to_start_timeout'] ?? null);
         $scheduleToCloseTimeout = self::normalizePositiveInt($command['schedule_to_close_timeout'] ?? null);
         $heartbeatTimeout = self::normalizePositiveInt($command['heartbeat_timeout'] ?? null);
-        $payloadCodec = self::normalizeOptionalPayloadCodec($command['payload_codec'] ?? null);
-        $arguments = self::normalizeNullableString($command['arguments'] ?? null);
+        $arguments = self::normalizeCommandPayloadString($command, 'arguments');
 
         if ($activityType === null) {
             return null;
         }
 
-        if (($command['payload_codec'] ?? null) !== null && $payloadCodec === null) {
+        if ($arguments === null) {
             return null;
         }
 
@@ -2754,8 +2755,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         return array_filter([
             'type' => 'schedule_activity',
             'activity_type' => $activityType,
-            'arguments' => $arguments,
-            'payload_codec' => $arguments !== null ? $payloadCodec : null,
+            'arguments' => $arguments['payload'],
+            'payload_codec' => $arguments['payload_codec'],
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
             'queue' => self::normalizeOptionalString($command['queue'] ?? null),
             'retry_policy' => $retryPolicy,
@@ -2856,14 +2857,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $retryPolicy = self::normalizeActivityRetryPolicy($command['retry_policy'] ?? null);
         $executionTimeoutSeconds = self::normalizePositiveInt($command['execution_timeout_seconds'] ?? null);
         $runTimeoutSeconds = self::normalizePositiveInt($command['run_timeout_seconds'] ?? null);
-        $payloadCodec = self::normalizeOptionalPayloadCodec($command['payload_codec'] ?? null);
-        $arguments = self::normalizeNullableString($command['arguments'] ?? null);
+        $arguments = self::normalizeCommandPayloadString($command, 'arguments');
 
         if ($workflowType === null) {
             return null;
         }
 
-        if (($command['payload_codec'] ?? null) !== null && $payloadCodec === null) {
+        if ($arguments === null) {
             return null;
         }
 
@@ -2885,8 +2885,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         return array_filter([
             'type' => 'start_child_workflow',
             'workflow_type' => $workflowType,
-            'arguments' => $arguments,
-            'payload_codec' => $arguments !== null ? $payloadCodec : null,
+            'arguments' => $arguments['payload'],
+            'payload_codec' => $arguments['payload_codec'],
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
             'queue' => self::normalizeOptionalString($command['queue'] ?? null),
             'parent_close_policy' => self::normalizeOptionalString($command['parent_close_policy'] ?? null),
@@ -2903,20 +2903,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     private static function normalizeContinueAsNewCommand(array $command): ?array
     {
         $workflowType = self::normalizeOptionalString($command['workflow_type'] ?? null);
-        $rawArguments = $command['arguments'] ?? null;
-        $arguments = self::normalizeOptionalPayloadString($rawArguments);
-        $payloadCodec = self::normalizeOptionalPayloadCodec($command['payload_codec'] ?? null);
+        $arguments = self::normalizeCommandPayloadString($command, 'arguments');
         $queue = self::normalizeOptionalString($command['queue'] ?? null);
 
         if (($command['workflow_type'] ?? null) !== null && $workflowType === null) {
             return null;
         }
 
-        if ($rawArguments !== null && $rawArguments !== '' && $arguments === null) {
-            return null;
-        }
-
-        if (($command['payload_codec'] ?? null) !== null && $payloadCodec === null) {
+        if ($arguments === null) {
             return null;
         }
 
@@ -2926,11 +2920,56 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         return array_filter([
             'type' => 'continue_as_new',
-            'arguments' => $arguments,
-            'payload_codec' => $arguments !== null ? $payloadCodec : null,
+            'arguments' => $arguments['payload'] === '' ? null : $arguments['payload'],
+            'payload_codec' => $arguments['payload'] === '' ? null : $arguments['payload_codec'],
             'workflow_type' => $workflowType,
             'queue' => $queue,
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{payload: string|null, payload_codec: string|null}|null
+     */
+    private static function normalizeCommandPayloadString(array $command, string $field): ?array
+    {
+        $payloadCodec = self::normalizeOptionalPayloadCodec($command['payload_codec'] ?? null);
+
+        if (($command['payload_codec'] ?? null) !== null && $payloadCodec === null) {
+            return null;
+        }
+
+        if (! array_key_exists($field, $command) || $command[$field] === null) {
+            return [
+                'payload' => null,
+                'payload_codec' => null,
+            ];
+        }
+
+        try {
+            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec($command[$field], $field);
+        } catch (ValidationException) {
+            return null;
+        }
+
+        $payload = $resolved['payload'];
+
+        if ($payload !== null && ! is_string($payload)) {
+            return null;
+        }
+
+        $envelopeCodec = is_string($resolved['codec'] ?? null) && $resolved['codec'] !== ''
+            ? $resolved['codec']
+            : null;
+
+        if ($payloadCodec !== null && $envelopeCodec !== null && $payloadCodec !== $envelopeCodec) {
+            return null;
+        }
+
+        return [
+            'payload' => $payload,
+            'payload_codec' => $payload !== null ? ($payloadCodec ?? $envelopeCodec) : null,
+        ];
     }
 
     /**
@@ -3089,32 +3128,6 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return self::normalizeRequiredString($value);
-    }
-
-    private static function normalizeNullableString(mixed $value): ?string
-    {
-        if ($value === null) {
-            return null;
-        }
-
-        if (! is_string($value)) {
-            return null;
-        }
-
-        return $value;
-    }
-
-    private static function normalizeOptionalPayloadString(mixed $value): ?string
-    {
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        if (! is_string($value)) {
-            return null;
-        }
-
-        return $value;
     }
 
     private static function normalizeOptionalPayloadCodec(mixed $value): ?string

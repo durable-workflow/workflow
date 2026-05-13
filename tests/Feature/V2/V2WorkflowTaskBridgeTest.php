@@ -1464,6 +1464,49 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($codec, $completionEvent->payload['output']['external_storage']['codec'] ?? null);
     }
 
+    public function testCompleteWithWorkflowCompletionPreservesResultEnvelopeCodec(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new NamespacedExternalPayloadStoragePolicy($driver, 'default'),
+        );
+
+        $run = $this->createWaitingRun('default');
+        $run->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $codec = 'workflow-serializer-y';
+        $expected = ['message' => str_repeat('Y', 64)];
+        $payload = Serializer::serializeWithCodec($codec, $expected);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => [
+                    'codec' => $codec,
+                    'blob' => $payload,
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        $run->refresh();
+        $this->assertSame($expected, $run->workflowOutput());
+
+        $completionEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->firstOrFail();
+
+        $this->assertSame($codec, $completionEvent->payload['payload_codec'] ?? null);
+        $this->assertSame($codec, $completionEvent->payload['output']['codec'] ?? null);
+        $this->assertSame($codec, $completionEvent->payload['output']['external_storage']['codec'] ?? null);
+    }
+
     public function testCompleteWithWorkflowFailureFailsRun(): void
     {
         $run = $this->createWaitingRun();
@@ -2274,6 +2317,55 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['external_storage']['codec'] ?? null);
     }
 
+    public function testCompleteSchedulesActivityPreservesArgumentsEnvelopeCodec(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->app->instance(
+            ExternalPayloadStoragePolicy::class,
+            new NamespacedExternalPayloadStoragePolicy($driver, 'default'),
+        );
+
+        $run = $this->createWaitingRun('default');
+        $run->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $codec = 'workflow-serializer-y';
+        $expected = ['Taylor', str_repeat('Y', 64)];
+        $arguments = Serializer::serializeWithCodec($codec, $expected);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'test-greeting-activity',
+                'arguments' => [
+                    'codec' => $codec,
+                    'blob' => $arguments,
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var ActivityExecution $execution */
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame($codec, $execution->payload_codec);
+        $this->assertSame($expected, $execution->activityArguments());
+
+        $scheduledEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame($codec, $scheduledEvent->payload['activity']['payload_codec'] ?? null);
+        $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['codec'] ?? null);
+        $this->assertSame($codec, $scheduledEvent->payload['activity']['arguments']['external_storage']['codec'] ?? null);
+    }
+
     public function testCompleteSchedulesTimer(): void
     {
         $run = $this->createWaitingRun();
@@ -2810,6 +2902,44 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertNotNull($childStartedEvent);
     }
 
+    public function testCompleteStartsChildWorkflowPreservesArgumentsEnvelopeCodec(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $codec = 'workflow-serializer-y';
+        $arguments = Serializer::serializeWithCodec($codec, ['child-arg']);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => [
+                    'codec' => $codec,
+                    'blob' => $arguments,
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $this->assertSame($codec, $childRun->payload_codec);
+        $this->assertSame($arguments, $childRun->arguments);
+        $this->assertSame(['child-arg'], $childRun->workflowArguments());
+    }
+
     public function testCompleteStartsChildWorkflowWithParentNamespace(): void
     {
         $run = $this->createWaitingRun('production');
@@ -3329,6 +3459,43 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $continuedRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
 
         $this->assertSame('avro', $continuedRun->payload_codec);
+        $this->assertSame($replacementArguments, $continuedRun->arguments);
+        $this->assertSame(['Avery'], $continuedRun->workflowArguments());
+    }
+
+    public function testCompleteContinueAsNewPreservesArgumentsEnvelopeCodec(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->forceFill(['payload_codec' => 'avro'])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $codec = 'workflow-serializer-y';
+        $replacementArguments = Serializer::serializeWithCodec($codec, ['Avery']);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'continue_as_new',
+                'arguments' => [
+                    'codec' => $codec,
+                    'blob' => $replacementArguments,
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'continue_as_new')
+            ->firstOrFail();
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $this->assertSame($codec, $continuedRun->payload_codec);
         $this->assertSame($replacementArguments, $continuedRun->arguments);
         $this->assertSame(['Avery'], $continuedRun->workflowArguments());
     }
