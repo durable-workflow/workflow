@@ -90,7 +90,14 @@ final class WorkflowCommandNormalizer
             'guidance' => 'timeout_seconds only applies to open_condition_wait. For activities use start_to_close_timeout / schedule_to_start_timeout / schedule_to_close_timeout / heartbeat_timeout; for child workflows use execution_timeout_seconds / run_timeout_seconds.',
         ],
         'payload_codec' => [
-            'allowed' => ['complete_workflow', 'schedule_activity', 'start_child_workflow', 'continue_as_new'],
+            'allowed' => [
+                'complete_workflow',
+                'schedule_activity',
+                'start_child_workflow',
+                'continue_as_new',
+                'complete_update',
+                'record_side_effect',
+            ],
             'guidance' => 'payload_codec identifies the codec used for command payload bytes and only applies to commands that carry result or arguments payloads.',
         ],
     ];
@@ -292,14 +299,15 @@ final class WorkflowCommandNormalizer
                     continue;
                 }
 
-                $normalized[] = [
+                $result = self::resolveCommandPayloadWithCodec($command, 'result', $index, $errors);
+                $payloadCodec = self::payloadCodecForResolvedPayload($command, $result, 'result', $index, $errors);
+
+                $normalized[] = array_filter([
                     'type' => $type,
                     'update_id' => $updateId,
-                    'result' => PayloadEnvelopeResolver::resolveCommandPayload(
-                        $command['result'] ?? null,
-                        "commands.{$index}.result",
-                    ),
-                ];
+                    'result' => $result['payload'],
+                    'payload_codec' => is_string($result['payload']) ? $payloadCodec : null,
+                ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
             }
@@ -336,16 +344,22 @@ final class WorkflowCommandNormalizer
             }
 
             if ($type === 'record_side_effect') {
-                if (! is_string($command['result'] ?? null)) {
-                    $errors["commands.{$index}.result"] = ['Record side effect commands require a string result.'];
+                $result = self::resolveCommandPayloadWithCodec($command, 'result', $index, $errors);
+                $payloadCodec = self::payloadCodecForResolvedPayload($command, $result, 'result', $index, $errors);
+
+                if (! is_string($result['payload'] ?? null)) {
+                    $errors["commands.{$index}.result"] = [
+                        'Record side effect commands require a string result or payload envelope.',
+                    ];
 
                     continue;
                 }
 
-                $normalized[] = [
+                $normalized[] = array_filter([
                     'type' => $type,
-                    'result' => $command['result'],
-                ];
+                    'result' => $result['payload'],
+                    'payload_codec' => $payloadCodec,
+                ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
             }

@@ -143,6 +143,7 @@ final class RunUpdateView
         $failureId = self::failureId($completed) ?? $update->failure_id;
         $failureSnapshot = is_string($failureId) ? ($failureSnapshots[$failureId] ?? null) : null;
         $result = self::resultPayload($completed, $update);
+        $resultCodec = self::resultPayloadCodec($completed, $update->payload_codec);
         $arguments = self::argumentsPayload($update, $accepted, $rejected, $applied, $completed);
         $commandSnapshot = self::commandSnapshot($accepted, $rejected, $applied, $completed);
 
@@ -171,7 +172,7 @@ final class RunUpdateView
             'arguments_available' => self::payloadAvailable($arguments),
             'arguments' => self::normalizeTypedValue($arguments, $update->payload_codec),
             'result_available' => self::payloadAvailable($result) && $failureId === null,
-            'result' => $failureId === null ? self::normalizeTypedValue($result, $update->payload_codec) : null,
+            'result' => $failureId === null ? self::normalizeTypedValue($result, $resultCodec) : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot)
                 ?? $update->failure_message
@@ -208,6 +209,7 @@ final class RunUpdateView
         $failureId = self::failureId($completed);
         $failureSnapshot = is_string($failureId) ? ($failureSnapshots[$failureId] ?? null) : null;
         $result = self::resultPayload($completed, null);
+        $resultCodec = self::resultPayloadCodec($completed, $command->payload_codec);
         $updateId = self::updateIdForEvents($eventList);
 
         return [
@@ -234,7 +236,7 @@ final class RunUpdateView
             'arguments_available' => CommandPayloadPreview::available($command->payload),
             'arguments' => self::commandArguments($command),
             'result_available' => self::payloadAvailable($result) && $failureId === null,
-            'result' => $failureId === null ? self::normalizeTypedValue($result, $command->payload_codec) : null,
+            'result' => $failureId === null ? self::normalizeTypedValue($result, $resultCodec) : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot),
             'exception_type' => $failureSnapshot['exception_type'] ?? null,
@@ -268,6 +270,10 @@ final class RunUpdateView
         $result = self::resultPayload($completed, null);
         $arguments = self::argumentsPayloadFromEvents($accepted, $rejected, $applied, $completed);
         $commandSnapshot = self::commandSnapshot($accepted, $rejected, $applied, $completed);
+        $resultCodec = self::resultPayloadCodec(
+            $completed,
+            self::stringValue($commandSnapshot['payload_codec'] ?? null),
+        );
 
         return [
             'id' => self::updateIdForEvents($events),
@@ -297,9 +303,7 @@ final class RunUpdateView
                 self::stringValue($commandSnapshot['payload_codec'] ?? null)
             ),
             'result_available' => self::payloadAvailable($result) && $failureId === null,
-            'result' => $failureId === null
-                ? self::normalizeTypedValue($result, self::stringValue($commandSnapshot['payload_codec'] ?? null))
-                : null,
+            'result' => $failureId === null ? self::normalizeTypedValue($result, $resultCodec) : null,
             'failure_id' => $failureId,
             'failure_message' => self::failureMessage($completed, $failureSnapshot),
             'exception_type' => $failureSnapshot['exception_type'] ?? null,
@@ -546,6 +550,11 @@ final class RunUpdateView
         }
 
         return $update?->result;
+    }
+
+    private static function resultPayloadCodec(?WorkflowHistoryEvent $completed, ?string $fallback): ?string
+    {
+        return self::stringValue($completed?->payload['payload_codec'] ?? null) ?? $fallback;
     }
 
     private static function argumentsPayload(WorkflowUpdate $update, ?WorkflowHistoryEvent ...$events): mixed

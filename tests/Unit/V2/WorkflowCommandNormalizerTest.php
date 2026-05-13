@@ -396,6 +396,30 @@ final class WorkflowCommandNormalizerTest extends TestCase
             'type' => 'complete_update',
             'update_id' => '01UPDATE000000000000000001',
             'result' => $blob,
+            'payload_codec' => 'avro',
+        ]], $out);
+    }
+
+    public function testCompleteUpdateAcceptsExplicitPayloadCodec(): void
+    {
+        $blob = Serializer::serializeWithCodec('workflow-serializer-y', [
+            'approved' => true,
+        ]);
+
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'complete_update',
+                'update_id' => '01UPDATE000000000000000001',
+                'result' => $blob,
+                'payload_codec' => 'workflow-serializer-y',
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'complete_update',
+            'update_id' => '01UPDATE000000000000000001',
+            'result' => $blob,
+            'payload_codec' => 'workflow-serializer-y',
         ]], $out);
     }
 
@@ -457,6 +481,29 @@ final class WorkflowCommandNormalizerTest extends TestCase
                 'result' => 42,
             ],
         ]);
+    }
+
+    public function testRecordSideEffectUnwrapsEnvelopeWithPayloadCodec(): void
+    {
+        $blob = Serializer::serializeWithCodec('workflow-serializer-y', [
+            'seed' => 123,
+        ]);
+
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'record_side_effect',
+                'result' => [
+                    'codec' => 'workflow-serializer-y',
+                    'blob' => $blob,
+                ],
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'record_side_effect',
+            'result' => $blob,
+            'payload_codec' => 'workflow-serializer-y',
+        ]], $out);
     }
 
     public function testRecordVersionMarkerRequiresAllIntFields(): void

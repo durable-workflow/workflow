@@ -1268,7 +1268,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * @param array{type: string, update_id: string, result?: string|null} $command
+     * @param array{type: string, update_id: string, result?: string|null, payload_codec?: string|null} $command
      */
     private function applyCompleteUpdate(
         WorkflowRun $run,
@@ -1290,7 +1290,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ->whereKey($update->workflow_command_id)
                 ->first();
 
-        $payloadCodec = self::payloadCodecForUpdate($update, $run);
+        $payloadCodec = self::payloadCodecForCommand($command) ?? self::payloadCodecForUpdate($update, $run);
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $result = isset($command['result']) && is_string($command['result'])
             ? ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace)
@@ -1315,6 +1315,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'update_name' => $update->update_name,
             'sequence' => $sequence,
             'result' => ExternalPayloads::historyValue($result, $payloadCodec, $namespace),
+            'payload_codec' => $payloadCodec,
         ], $task, $workflowCommand);
 
         $update->forceFill([
@@ -1951,7 +1952,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * @param array{type: string, result: string} $command
+     * @param array{type: string, result: string, payload_codec?: string|null} $command
      */
     private function applyRecordSideEffect(
         WorkflowRun $run,
@@ -1959,15 +1960,17 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array $command,
         int $sequence,
     ): int {
-        $payloadCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
-            ? $run->payload_codec
-            : CodecRegistry::defaultCodec();
+        $payloadCodec = self::payloadCodecForCommand($command)
+            ?? (is_string($run->payload_codec) && $run->payload_codec !== ''
+                ? $run->payload_codec
+                : CodecRegistry::defaultCodec());
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $result = ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
             'sequence' => $sequence,
             'result' => ExternalPayloads::historyValue($result, $payloadCodec, $namespace),
+            'payload_codec' => $payloadCodec,
         ], $task);
 
         return $sequence + 1;
@@ -1984,6 +1987,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return CodecRegistry::defaultCodec();
+    }
+
+    /**
+     * @param array{payload_codec?: mixed} $command
+     */
+    private static function payloadCodecForCommand(array $command): ?string
+    {
+        return is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
+            ? $command['payload_codec']
+            : null;
     }
 
     /**
@@ -2974,21 +2987,23 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * @param array<string, mixed> $command
-     * @return array{type: string, update_id: string, result?: string|null}|null
+     * @return array{type: string, update_id: string, result?: string|null, payload_codec?: string|null}|null
      */
     private static function normalizeCompleteUpdateCommand(array $command): ?array
     {
         $updateId = self::normalizeRequiredString($command['update_id'] ?? null);
+        $result = self::normalizeCommandPayloadString($command, 'result');
 
-        if ($updateId === null) {
+        if ($updateId === null || $result === null) {
             return null;
         }
 
-        return [
+        return array_filter([
             'type' => 'complete_update',
             'update_id' => $updateId,
-            'result' => $command['result'] ?? null,
-        ];
+            'result' => $result['payload'],
+            'payload_codec' => $result['payload_codec'],
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**
@@ -3023,20 +3038,21 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * @param array<string, mixed> $command
-     * @return array{type: string, result: string}|null
+     * @return array{type: string, result: string, payload_codec?: string|null}|null
      */
     private static function normalizeRecordSideEffectCommand(array $command): ?array
     {
-        $result = self::normalizeRequiredString($command['result'] ?? null);
+        $result = self::normalizeCommandPayloadString($command, 'result');
 
-        if ($result === null) {
+        if ($result === null || ! is_string($result['payload'] ?? null) || $result['payload'] === '') {
             return null;
         }
 
-        return [
+        return array_filter([
             'type' => 'record_side_effect',
-            'result' => $result,
-        ];
+            'result' => $result['payload'],
+            'payload_codec' => $result['payload_codec'],
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**

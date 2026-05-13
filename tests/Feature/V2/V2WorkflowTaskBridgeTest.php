@@ -1737,6 +1737,45 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
     }
 
+    public function testCompleteExternalizesSideEffectResultWithCommandPayloadCodec(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->bindExternalPayloadPolicy($driver);
+        $run = $this->createWaitingRun();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+        $codec = 'workflow-serializer-y';
+        $serialized = Serializer::serializeWithCodec($codec, [
+            'seed' => str_repeat('x', 256),
+        ]);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'record_side_effect',
+                'result' => $serialized,
+                'payload_codec' => $codec,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SideEffectRecorded->value)
+            ->firstOrFail();
+
+        $this->assertSame($codec, $event->payload['payload_codec'] ?? null);
+        $this->assertIsArray($event->payload['result']);
+        $this->assertSame($codec, $event->payload['result']['codec']);
+        $this->assertArrayHasKey('external_storage', $event->payload['result']);
+        $this->assertSame($serialized, ExternalPayloads::payloadBlob($event->payload['result'], $codec, null));
+    }
+
     public function testCompleteRecordsVersionMarkerBeforeWorkflowCompletion(): void
     {
         $run = $this->createWaitingRun();
@@ -2044,6 +2083,86 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertIsArray($replayedUpdate['result']);
         $this->assertArrayHasKey('external_storage', $replayedUpdate['result']);
         $this->assertArrayNotHasKey('blob', $replayedUpdate['result']);
+    }
+
+    public function testCompleteUpdateCommandUsesCommandPayloadCodecForResultPayload(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $this->bindExternalPayloadPolicy($driver);
+        $run = $this->createWaitingRun();
+        $run->forceFill([
+            'payload_codec' => 'avro',
+        ])->save();
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+
+        $workflowCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'approve',
+                'arguments' => [true],
+            ]),
+            'source' => 'worker-protocol',
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $workflowCommand->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'arguments' => Serializer::serializeWithCodec('avro', [true]),
+            'payload_codec' => 'avro',
+            'command_sequence' => $workflowCommand->command_sequence,
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+        $task->forceFill([
+            'payload' => WorkflowTaskPayload::forUpdate($update),
+        ])->save();
+
+        $codec = 'workflow-serializer-y';
+        $resultPayload = Serializer::serializeWithCodec($codec, [
+            'approved' => true,
+            'note' => str_repeat('r', 256),
+        ]);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'complete_update',
+                'update_id' => $update->id,
+                'result' => $resultPayload,
+                'payload_codec' => $codec,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowHistoryEvent $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::UpdateCompleted->value)
+            ->firstOrFail();
+
+        $this->assertSame($codec, $event->payload['payload_codec'] ?? null);
+        $this->assertIsArray($event->payload['result']);
+        $this->assertSame($codec, $event->payload['result']['codec']);
+        $this->assertSame($resultPayload, ExternalPayloads::payloadBlob($event->payload['result'], $codec, null));
+
+        $updateRow = collect(RunUpdateView::forRun($run->fresh()))
+            ->first(static fn (array $row): bool => ($row['id'] ?? null) === $update->id);
+
+        $this->assertIsArray($updateRow);
+        $this->assertTrue($updateRow['result_available']);
+        $this->assertIsArray($updateRow['result']);
+        $this->assertSame($codec, $updateRow['result']['codec']);
+        $this->assertArrayHasKey('external_storage', $updateRow['result']);
     }
 
     public function testFailUpdateCommandClosesAcceptedUpdateLifecycleWithFailure(): void
