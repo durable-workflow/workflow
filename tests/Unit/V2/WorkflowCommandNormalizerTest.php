@@ -281,6 +281,54 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]], $out);
     }
 
+    public function testContinueAsNewDropsPayloadCodecWithoutArguments(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'continue_as_new',
+                'payload_codec' => ' Workflow\\Serializers\\Y ',
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'continue_as_new',
+        ]], $out);
+    }
+
+    public function testContinueAsNewRejectsUnknownPayloadCodec(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'continue_as_new',
+                'arguments' => Serializer::serialize(['next']),
+                'payload_codec' => 'not-a-codec',
+            ],
+        ]);
+    }
+
+    public function testContinueAsNewTakesPayloadCodecFromArgumentsEnvelope(): void
+    {
+        $arguments = Serializer::serializeWithCodec('avro', ['next']);
+
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'continue_as_new',
+                'arguments' => [
+                    'codec' => 'avro',
+                    'blob' => $arguments,
+                ],
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'continue_as_new',
+            'arguments' => $arguments,
+            'payload_codec' => 'avro',
+        ]], $out);
+    }
+
     public function testCompleteUpdateUnwrapsEnvelope(): void
     {
         $blob = Serializer::serializeWithCodec('avro', [

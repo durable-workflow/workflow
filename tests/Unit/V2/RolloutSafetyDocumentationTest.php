@@ -256,6 +256,7 @@ final class RolloutSafetyDocumentationTest extends TestCase
         'supported_workflow_types',
         'supported_activity_types',
         'payload_codec',
+        'continue_as_new.payload_codec',
         'CodecRegistry::universal()',
         'payload_codecs_engine_specific',
         'unsupported_payload_codec',

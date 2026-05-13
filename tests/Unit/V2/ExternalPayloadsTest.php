@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use InvalidArgumentException;
 use Tests\TestCase;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
@@ -52,6 +53,19 @@ final class ExternalPayloadsTest extends TestCase
         $this->assertSame($payload, ExternalPayloads::resolveStoredPayload($stored, 'avro', 'default', $driver));
     }
 
+    public function testMissingLocalPayloadIsAnIntegrityFailure(): void
+    {
+        $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
+        $reference = ExternalPayloadStorage::store($driver, 'payload-a', 'avro');
+
+        unlink($this->pathFromUri($reference->uri));
+
+        $this->expectException(ExternalPayloadIntegrityException::class);
+        $this->expectExceptionMessage('Unable to read external payload');
+
+        ExternalPayloadStorage::fetch($driver, $reference);
+    }
+
     public function testSmallPayloadRemainsInline(): void
     {
         $driver = new LocalFilesystemExternalPayloadStorage($this->makeStorageRoot());
@@ -80,6 +94,13 @@ final class ExternalPayloadsTest extends TestCase
         $this->storageRoot = sys_get_temp_dir().'/dw-external-payloads-test-'.bin2hex(random_bytes(6));
 
         return $this->storageRoot;
+    }
+
+    private function pathFromUri(string $uri): string
+    {
+        $parts = parse_url($uri);
+
+        return rawurldecode($parts['path'] ?? '');
     }
 
     private function removeDirectory(string $directory): void

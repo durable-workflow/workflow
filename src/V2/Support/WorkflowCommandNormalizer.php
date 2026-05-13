@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Validation\ValidationException;
+use Workflow\Serializers\CodecRegistry;
 
 /**
  * Validates and normalizes workflow commands reported by a worker on a
@@ -244,10 +245,27 @@ final class WorkflowCommandNormalizer
 
             if ($type === 'continue_as_new') {
                 $workflowType = self::optionalCommandString($command, 'workflow_type', $index, $errors);
+                $arguments = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
+                $explicitPayloadCodec = self::optionalPayloadCodec($command, $index, $errors);
+
+                if (
+                    $explicitPayloadCodec !== null
+                    && $arguments['codec'] !== null
+                    && $explicitPayloadCodec !== $arguments['codec']
+                ) {
+                    $errors["commands.{$index}.payload_codec"] = [
+                        'Workflow task command field [payload_codec] must match the arguments envelope codec.',
+                    ];
+                }
+
+                $payloadCodec = $arguments['payload'] !== null
+                    ? $explicitPayloadCodec ?? $arguments['codec']
+                    : null;
 
                 $normalized[] = array_filter([
                     'type' => $type,
-                    'arguments' => self::resolveCommandArguments($command, $index, $errors),
+                    'arguments' => $arguments['payload'],
+                    'payload_codec' => $payloadCodec,
                     'workflow_type' => $workflowType,
                 ], static fn (mixed $value): bool => $value !== null);
 
@@ -419,25 +437,56 @@ final class WorkflowCommandNormalizer
      */
     private static function resolveCommandArguments(array $command, int $index, array &$errors): ?string
     {
+        $resolved = self::resolveCommandArgumentsWithCodec($command, $index, $errors);
+
+        return $resolved['payload'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     * @return array{payload: string|null, codec: string|null}
+     */
+    private static function resolveCommandArgumentsWithCodec(array $command, int $index, array &$errors): array
+    {
         if (! array_key_exists('arguments', $command) || $command['arguments'] === null) {
-            return null;
+            return [
+                'payload' => null,
+                'codec' => null,
+            ];
         }
 
         $value = $command['arguments'];
 
         if (is_string($value)) {
-            return $value !== '' ? $value : null;
+            return [
+                'payload' => $value !== '' ? $value : null,
+                'codec' => null,
+            ];
         }
 
         if (is_array($value)) {
             try {
-                return PayloadEnvelopeResolver::resolveCommandPayload($value, "commands.{$index}.arguments");
+                $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                    $value,
+                    "commands.{$index}.arguments",
+                );
+
+                return [
+                    'payload' => is_string($resolved['payload']) && $resolved['payload'] !== ''
+                        ? $resolved['payload']
+                        : null,
+                    'codec' => $resolved['codec'],
+                ];
             } catch (ValidationException $e) {
                 foreach ($e->errors() as $field => $messages) {
                     $errors[$field] = $messages;
                 }
 
-                return null;
+                return [
+                    'payload' => null,
+                    'codec' => null,
+                ];
             }
         }
 
@@ -445,7 +494,37 @@ final class WorkflowCommandNormalizer
             'Workflow task command field [arguments] must be a string or a payload envelope when provided.',
         ];
 
-        return null;
+        return [
+            'payload' => null,
+            'codec' => null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     */
+    private static function optionalPayloadCodec(array $command, int $index, array &$errors): ?string
+    {
+        if (! array_key_exists('payload_codec', $command) || $command['payload_codec'] === null) {
+            return null;
+        }
+
+        if (! is_string($command['payload_codec']) || trim($command['payload_codec']) === '') {
+            $errors["commands.{$index}.payload_codec"] = [
+                'Workflow task command field [payload_codec] must be a non-empty string when provided.',
+            ];
+
+            return null;
+        }
+
+        try {
+            return CodecRegistry::canonicalize(trim($command['payload_codec']));
+        } catch (\InvalidArgumentException $e) {
+            $errors["commands.{$index}.payload_codec"] = [$e->getMessage()];
+
+            return null;
+        }
     }
 
     /**

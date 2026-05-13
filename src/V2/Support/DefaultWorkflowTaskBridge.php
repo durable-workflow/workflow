@@ -2023,7 +2023,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * @param array{type: string, arguments?: string|null, workflow_type?: string|null} $command
+     * @param array{type: string, arguments?: string|null, payload_codec?: string|null, workflow_type?: string|null} $command
      * @param list<string> $createdTaskIds
      */
     private function applyContinueAsNew(
@@ -2034,12 +2034,20 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         array &$createdTaskIds = [],
     ): void {
         $now = now();
-        $arguments = $command['arguments'] ?? $run->arguments;
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+        $hasReplacementArguments = isset($command['arguments'])
+            && is_string($command['arguments'])
+            && $command['arguments'] !== '';
+        $commandPayloadCodec = $hasReplacementArguments
+            ? self::canonicalPayloadCodec($command['payload_codec'] ?? null)
+            : null;
+        $argumentsPayloadCodec = $commandPayloadCodec ?? ($run->payload_codec ?? CodecRegistry::defaultCodec());
+        $arguments = $hasReplacementArguments ? $command['arguments'] : $run->arguments;
         $arguments = is_string($arguments)
             ? ExternalPayloads::externalizeForNamespace(
                 $arguments,
-                $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                is_string($run->namespace) ? $run->namespace : null,
+                $argumentsPayloadCodec,
+                $namespace,
             )
             : null;
         $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
@@ -2061,7 +2069,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'visibility_labels' => $run->visibility_labels,
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
-            'payload_codec' => $run->payload_codec,
+            'payload_codec' => $commandPayloadCodec ?? $run->payload_codec,
             'arguments' => $arguments,
             'connection' => $run->connection,
             'queue' => $queue,
@@ -2840,19 +2848,25 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * @param array<string, mixed> $command
-     * @return array{type: string, arguments?: string|null, workflow_type?: string}|null
+     * @return array{type: string, arguments?: string|null, payload_codec?: string, workflow_type?: string}|null
      */
     private static function normalizeContinueAsNewCommand(array $command): ?array
     {
         $workflowType = self::normalizeOptionalString($command['workflow_type'] ?? null);
-        $arguments = self::normalizeNullableString($command['arguments'] ?? null);
+        $rawArguments = $command['arguments'] ?? null;
+        $arguments = self::normalizeOptionalPayloadString($rawArguments);
+        $payloadCodec = self::normalizeOptionalPayloadCodec($command['payload_codec'] ?? null);
         $queue = self::normalizeOptionalString($command['queue'] ?? null);
 
         if (($command['workflow_type'] ?? null) !== null && $workflowType === null) {
             return null;
         }
 
-        if (($command['arguments'] ?? null) !== null && $arguments === null) {
+        if ($rawArguments !== null && $rawArguments !== '' && $arguments === null) {
+            return null;
+        }
+
+        if (($command['payload_codec'] ?? null) !== null && $payloadCodec === null) {
             return null;
         }
 
@@ -2863,6 +2877,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         return array_filter([
             'type' => 'continue_as_new',
             'arguments' => $arguments,
+            'payload_codec' => $arguments !== null ? $payloadCodec : null,
             'workflow_type' => $workflowType,
             'queue' => $queue,
         ], static fn (mixed $value): bool => $value !== null);
@@ -3037,6 +3052,45 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return $value;
+    }
+
+    private static function normalizeOptionalPayloadString(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    private static function normalizeOptionalPayloadCodec(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        try {
+            return CodecRegistry::canonicalize(trim($value));
+        } catch (\InvalidArgumentException) {
+            return null;
+        }
+    }
+
+    private static function canonicalPayloadCodec(mixed $value): ?string
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        return CodecRegistry::canonicalize(trim($value));
     }
 
     private static function normalizePositiveInt(mixed $value): ?int

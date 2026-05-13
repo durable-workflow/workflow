@@ -2898,6 +2898,106 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($continuedRun->id, $continuedEvent->payload['continued_to_run_id']);
     }
 
+    public function testCompleteContinueAsNewIgnoresPayloadCodecWhenArgumentsAreInherited(): void
+    {
+        $run = $this->createWaitingRun();
+        $inheritedArguments = Serializer::serializeWithCodec('workflow-serializer-y', ['Taylor']);
+        $run->forceFill([
+            'payload_codec' => 'workflow-serializer-y',
+            'arguments' => $inheritedArguments,
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'continue_as_new',
+                'payload_codec' => 'avro',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'continue_as_new')
+            ->firstOrFail();
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $this->assertSame('workflow-serializer-y', $continuedRun->payload_codec);
+        $this->assertSame($inheritedArguments, $continuedRun->arguments);
+        $this->assertSame(['Taylor'], $continuedRun->workflowArguments());
+    }
+
+    public function testCompleteContinueAsNewRejectsUnknownPayloadCodec(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'continue_as_new',
+                'arguments' => Serializer::serialize(['Avery']),
+                'payload_codec' => 'not-a-codec',
+            ],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('invalid_commands', $result['reason']);
+
+        $run->refresh();
+        $task->refresh();
+
+        $this->assertSame(RunStatus::Waiting, $run->status);
+        $this->assertSame(TaskStatus::Leased, $task->status);
+        $this->assertSame(0, WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'continue_as_new')
+            ->count());
+    }
+
+    public function testCompleteContinueAsNewUsesPayloadCodecWithReplacementArguments(): void
+    {
+        $run = $this->createWaitingRun();
+        $run->forceFill([
+            'payload_codec' => 'workflow-serializer-y',
+            'arguments' => Serializer::serializeWithCodec('workflow-serializer-y', ['Taylor']),
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+        $replacementArguments = Serializer::serializeWithCodec('avro', ['Avery']);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'continue_as_new',
+                'arguments' => $replacementArguments,
+                'payload_codec' => 'avro',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'continue_as_new')
+            ->firstOrFail();
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+
+        $this->assertSame('avro', $continuedRun->payload_codec);
+        $this->assertSame($replacementArguments, $continuedRun->arguments);
+        $this->assertSame(['Avery'], $continuedRun->workflowArguments());
+    }
+
     public function testCompleteWithMultipleNonTerminalCommands(): void
     {
         $run = $this->createWaitingRun();

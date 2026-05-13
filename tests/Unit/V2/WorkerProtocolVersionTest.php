@@ -15,9 +15,9 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksEnvelopePayloadResponseShapes(): void
+    public function testVersionTracksContinueAsNewPayloadCodecCommandShape(): void
     {
-        $this->assertSame('1.3', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.4', WorkerProtocolVersion::VERSION);
     }
 
     public function testWorkflowTaskVerbsIncludesAllBridgeMethods(): void

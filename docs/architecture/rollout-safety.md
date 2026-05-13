@@ -346,7 +346,9 @@ first-party SDK workers, and future non-PHP workers is:
   and expose structured argument payloads through the additive
   `arguments_envelope` field so external payload references stay structured
   at the protocol edge. Worker webhook responses project that envelope into
-  `arguments` for HTTP clients.
+  `arguments` for HTTP clients. Continue-as-new commands may carry the
+  additive optional `continue_as_new.payload_codec` field only when replacing
+  arguments; omitted values inherit the current run codec.
   `CodecRegistry::universal()` is the language-neutral advertised codec
   set; PHP-only codecs are advertised separately under
   `payload_codecs_engine_specific` and must not be required of non-PHP

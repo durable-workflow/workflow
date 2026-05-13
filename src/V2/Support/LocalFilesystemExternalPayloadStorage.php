@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use InvalidArgumentException;
 use RuntimeException;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 
 final class LocalFilesystemExternalPayloadStorage implements ExternalPayloadStorageDriver
 {
@@ -60,7 +61,7 @@ final class LocalFilesystemExternalPayloadStorage implements ExternalPayloadStor
     {
         $path = $this->pathFromUri($uri);
         if (! is_file($path)) {
-            throw new RuntimeException(sprintf('Unable to read external payload [%s].', $uri));
+            throw new ExternalPayloadIntegrityException(sprintf('Unable to read external payload [%s].', $uri));
         }
 
         $data = file_get_contents($path);
