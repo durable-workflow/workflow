@@ -133,6 +133,53 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertArrayNotHasKey('declared_signals', $startedEvent->payload);
     }
 
+    public function testSignalForTypeKeyOnlyRunIsAcceptedWhenCommandContractUnavailable(): void
+    {
+        $start = $this->controlPlane->start('remote-signal-workflow', 'ctrl-plane-remote-signal-1', [
+            'arguments' => Serializer::serializeWithCodec(CodecRegistry::defaultCodec(), []),
+            'connection' => 'redis',
+            'queue' => 'polyglot-shared',
+        ]);
+
+        $this->assertTrue($start['started']);
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($start['workflow_run_id']);
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->update(['status' => TaskStatus::Completed->value]);
+
+        $run->forceFill([
+            'status' => RunStatus::Waiting->value,
+        ])->save();
+
+        $signal = $this->controlPlane->signal('ctrl-plane-remote-signal-1', 'polyglot-signal', [
+            'arguments' => ['delivered'],
+            'strict_configured_type_validation' => true,
+        ]);
+
+        $this->assertTrue($signal['accepted']);
+        $this->assertSame(202, $signal['status']);
+        $this->assertSame('signal_received', $signal['outcome']);
+        $this->assertNull($signal['reason']);
+
+        $signalReceived = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->first();
+        $this->assertNotNull($signalReceived);
+        $this->assertSame('polyglot-signal', $signalReceived->payload['signal_name'] ?? null);
+
+        $resumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->first();
+        $this->assertNotNull($resumeTask);
+        $this->assertSame('polyglot-shared', $resumeTask->queue);
+    }
+
     public function testStartUsesHistoryProjectionRoleBindingForNewRunProjection(): void
     {
         $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
@@ -730,6 +777,31 @@ final class V2WorkflowControlPlaneTest extends TestCase
 
         $this->assertSame('server', $command->commandContext()['caller']['type'] ?? null);
         $this->assertSame('default', $command->commandContext()['server']['namespace'] ?? null);
+    }
+
+    public function testUnknownSignalRejectionIncludesCommandContractDiagnostics(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test-signal-workflow' => TestSignalWorkflow::class,
+        ]);
+
+        $this->controlPlane->start('test-signal-workflow', 'ctrl-plane-sig-unknown-detail', [
+            'queue' => 'default',
+        ]);
+
+        $result = $this->controlPlane->signal('ctrl-plane-sig-unknown-detail', 'missing-signal', [
+            'strict_configured_type_validation' => true,
+        ]);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame(404, $result['status']);
+        $this->assertSame('unknown_signal', $result['reason']);
+        $this->assertSame('rejected_unknown_signal', $result['outcome']);
+        $this->assertSame('durable_history', $result['command_contract_source']);
+        $this->assertFalse($result['command_contract_backfill_needed']);
+        $this->assertSame(['name-provided'], $result['declared_signals']);
+        $this->assertSame('handler_not_declared', $result['signal_admission']);
+        $this->assertStringContainsString('durable command contract does not declare', $result['message']);
     }
 
     // ── Query happy path ────────────────────────────────────────────

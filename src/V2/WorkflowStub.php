@@ -2261,14 +2261,22 @@ final class WorkflowStub
 
             $this->loadLockedRunRelations($run, $instance);
 
-            if (! RunCommandContract::hasSignal($run, $name)) {
+            $signalAdmission = $this->signalAdmissionForRun($run, $name);
+
+            if (($signalAdmission['allowed'] ?? false) !== true) {
                 $command = $this->rejectCommand(
                     $instance,
                     $run,
                     CommandType::Signal,
                     'unknown_signal',
                     $this->commandTargetScope(),
-                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
+                    $this->signalCommandPayloadAttributes(
+                        $name,
+                        $arguments,
+                        [],
+                        $payloadCodec,
+                        $signalAdmission['payload'] ?? [],
+                    ),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -2462,7 +2470,9 @@ final class WorkflowStub
 
                 $this->loadLockedRunRelations($run, $instance);
 
-                if (! RunCommandContract::hasSignal($run, $name)) {
+                $signalAdmission = $this->signalAdmissionForRun($run, $name);
+
+                if (($signalAdmission['allowed'] ?? false) !== true) {
                     $signalCommand = $this->rejectSignalCommandForContext(
                         $commandContext,
                         $instance,
@@ -2470,6 +2480,9 @@ final class WorkflowStub
                         $name,
                         $signalArguments,
                         'unknown_signal',
+                        [],
+                        $signalAdmission['message'] ?? null,
+                        $signalAdmission['payload'] ?? [],
                     );
 
                     return;
@@ -3381,6 +3394,7 @@ final class WorkflowStub
         string $reason,
         array $validationErrors = [],
         ?string $message = null,
+        array $extraPayload = [],
     ): WorkflowCommand {
         /** @var WorkflowCommand $command */
         $command = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
@@ -3398,12 +3412,15 @@ final class WorkflowStub
                     $arguments,
                     $validationErrors,
                     null,
-                    $message === null
-                        ? []
-                        : [
-                            'reason' => $reason,
-                            'message' => $message,
-                        ],
+                    array_merge(
+                        $extraPayload,
+                        $message === null
+                            ? []
+                            : [
+                                'reason' => $reason,
+                                'message' => $message,
+                            ],
+                    ),
                 ),
             ],
         ));
@@ -3617,6 +3634,140 @@ final class WorkflowStub
                 'validation_errors' => [],
             ]
             : $this->normalizeNamedCommandArguments($contract, $arguments);
+    }
+
+    /**
+     * @return array{
+     *     allowed: bool,
+     *     payload?: array<string, mixed>,
+     *     message?: string
+     * }
+     */
+    private function signalAdmissionForRun(WorkflowRun $run, string $signalName): array
+    {
+        $contract = RunCommandContract::forRun($run);
+        $diagnostics = $this->signalContractDiagnostics($contract);
+
+        if (in_array($signalName, $contract['signals'], true)) {
+            return [
+                'allowed' => true,
+                'payload' => [
+                    ...$diagnostics,
+                    'signal_admission' => 'declared_signal',
+                ],
+            ];
+        }
+
+        if (($contract['source'] ?? null) !== RunCommandContract::SOURCE_DURABLE_HISTORY) {
+            try {
+                $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+            } catch (LogicException) {
+                return [
+                    'allowed' => true,
+                    'payload' => [
+                        ...$diagnostics,
+                        'signal_admission' => 'external_contract_unavailable',
+                    ],
+                ];
+            }
+
+            if (WorkflowDefinition::hasSignal($workflowClass, $signalName)) {
+                return [
+                    'allowed' => true,
+                    'payload' => [
+                        ...$diagnostics,
+                        'signal_admission' => 'loadable_workflow_class',
+                    ],
+                ];
+            }
+
+            $diagnostics = [
+                ...$diagnostics,
+                'signal_admission' => 'handler_not_declared_in_loadable_class',
+            ];
+            $message = $this->unknownSignalMessage($run, $signalName, $diagnostics);
+
+            return [
+                'allowed' => false,
+                'payload' => [
+                    ...$diagnostics,
+                    'reason' => 'unknown_signal',
+                    'message' => $message,
+                ],
+                'message' => $message,
+            ];
+        }
+
+        $diagnostics = [
+            ...$diagnostics,
+            'signal_admission' => 'handler_not_declared',
+        ];
+        $message = $this->unknownSignalMessage($run, $signalName, $diagnostics);
+
+        return [
+            'allowed' => false,
+            'payload' => [
+                ...$diagnostics,
+                'reason' => 'unknown_signal',
+                'message' => $message,
+            ],
+            'message' => $message,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $contract
+     * @return array{
+     *     command_contract_source: string|null,
+     *     command_contract_backfill_needed: bool,
+     *     command_contract_backfill_available: bool,
+     *     declared_signals: list<string>
+     * }
+     */
+    private function signalContractDiagnostics(array $contract): array
+    {
+        $signals = $contract['signals'] ?? [];
+
+        return [
+            'command_contract_source' => is_string($contract['source'] ?? null)
+                ? $contract['source']
+                : null,
+            'command_contract_backfill_needed' => ($contract['backfill_needed'] ?? false) === true,
+            'command_contract_backfill_available' => ($contract['backfill_available'] ?? false) === true,
+            'declared_signals' => is_array($signals)
+                ? array_values(array_filter($signals, static fn (mixed $signal): bool => is_string($signal) && $signal !== ''))
+                : [],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $diagnostics
+     */
+    private function unknownSignalMessage(WorkflowRun $run, string $signalName, array $diagnostics): string
+    {
+        $declaredSignals = $diagnostics['declared_signals'] ?? [];
+        $declaredSummary = is_array($declaredSignals) && $declaredSignals !== []
+            ? implode(', ', $declaredSignals)
+            : 'none';
+        $contractSource = is_string($diagnostics['command_contract_source'] ?? null)
+            ? $diagnostics['command_contract_source']
+            : RunCommandContract::SOURCE_UNAVAILABLE;
+        $admission = is_string($diagnostics['signal_admission'] ?? null)
+            ? $diagnostics['signal_admission']
+            : 'handler_not_declared';
+
+        $detail = $admission === 'handler_not_declared'
+            ? 'the durable command contract does not declare that handler'
+            : 'the server did not receive durable signal declarations and the loadable workflow class does not declare that handler';
+
+        return sprintf(
+            'Workflow signal [%s] is unknown for workflow type [%s]: %s. Command contract source [%s], declared signals [%s].',
+            $signalName,
+            $run->workflow_type,
+            $detail,
+            $contractSource,
+            $declaredSummary,
+        );
     }
 
     /**

@@ -32,6 +32,30 @@ final class CommandResponse
             'validation_errors' => $result->validationErrors(),
         ];
 
+        $payloadFields = $result->rejected()
+            ? [
+                'message',
+                'command_contract_source',
+                'command_contract_backfill_needed',
+                'command_contract_backfill_available',
+                'declared_signals',
+                'signal_admission',
+            ]
+            : [];
+        $payloadValues = $payloadFields === [] ? [] : $result->payloadValues($payloadFields);
+
+        foreach ($payloadFields as $field) {
+            $value = $payloadValues[$field] ?? null;
+
+            if ($field === 'message' && (! is_string($value) || $value === '')) {
+                continue;
+            }
+
+            if ($value !== null) {
+                $payload[$field] = $value;
+            }
+        }
+
         if ($result instanceof SignalWithStartResult) {
             $payload['start_command_id'] = $result->startCommandId();
             $payload['start_command_sequence'] = $result->startCommandSequence();

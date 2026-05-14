@@ -152,4 +152,13 @@ class CommandResult
     {
         return $this->command->commandMessage();
     }
+
+    /**
+     * @param list<string> $keys
+     * @return array<string, mixed>
+     */
+    public function payloadValues(array $keys): array
+    {
+        return $this->command->payloadValues($keys);
+    }
 }

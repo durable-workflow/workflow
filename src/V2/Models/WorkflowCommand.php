@@ -445,6 +445,29 @@ class WorkflowCommand extends Model
     }
 
     /**
+     * @param list<string> $keys
+     * @return array<string, mixed>
+     */
+    public function payloadValues(array $keys): array
+    {
+        $payload = $this->payloadData();
+
+        if (! is_array($payload)) {
+            return [];
+        }
+
+        $values = [];
+
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $payload)) {
+                $values[$key] = $payload[$key];
+            }
+        }
+
+        return $values;
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     private function payloadData(): ?array
