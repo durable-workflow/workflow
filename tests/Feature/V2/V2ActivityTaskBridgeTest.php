@@ -509,6 +509,14 @@ final class V2ActivityTaskBridgeTest extends TestCase
             HistoryEventType::ActivityFailed->value,
             $resumeTask->payload['workflow_event_type'] ?? null
         );
+
+        /** @var WorkflowHistoryEvent $failed */
+        $failed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $this->assertExternalFailurePayloadIsPublic($failed, 'Something went wrong');
     }
 
     public function testFailAcceptsArrayPayload(): void
@@ -526,6 +534,14 @@ final class V2ActivityTaskBridgeTest extends TestCase
         ]);
 
         $this->assertTrue($result['recorded']);
+
+        /** @var WorkflowHistoryEvent $failed */
+        $failed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+
+        $this->assertExternalFailurePayloadIsPublic($failed, 'External failure');
     }
 
     public function testCompleteAfterCancelledRunClosesAttemptAndReportsIgnoredOutcome(): void
@@ -1039,6 +1055,28 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertArrayHasKey('external_storage', $arguments);
         $this->assertArrayNotHasKey('blob', $arguments);
         $this->assertSame(ExternalPayloadReference::SCHEMA, $arguments['external_storage']['schema']);
+    }
+
+    private function assertExternalFailurePayloadIsPublic(WorkflowHistoryEvent $failed, string $message): void
+    {
+        $exception = $failed->payload['exception'] ?? null;
+        $activityException = $failed->payload['activity']['exception'] ?? null;
+
+        $this->assertIsArray($exception);
+        $this->assertSame($message, $exception['message'] ?? null);
+        $this->assertArrayNotHasKey('class', $exception);
+        $this->assertArrayNotHasKey('file', $exception);
+        $this->assertArrayNotHasKey('line', $exception);
+        $this->assertArrayNotHasKey('trace', $exception);
+        $this->assertArrayNotHasKey('properties', $exception);
+
+        $this->assertIsArray($activityException);
+        $this->assertSame($message, $activityException['message'] ?? null);
+        $this->assertArrayNotHasKey('class', $activityException);
+        $this->assertArrayNotHasKey('file', $activityException);
+        $this->assertArrayNotHasKey('line', $activityException);
+        $this->assertArrayNotHasKey('trace', $activityException);
+        $this->assertArrayNotHasKey('properties', $activityException);
     }
 
     private function makeStorageRoot(): string

@@ -365,6 +365,26 @@ least one replay or projection consumer. Frequently replayed event
 families are enumerated first because they sit on the hot path for
 cross-SDK replay:
 
+### Failure payload visibility
+
+Activity, workflow, update, and child failure events expose two kinds of
+failure data:
+
+- Language-neutral fields: `activity_type` or equivalent source identity,
+  `failure_category`, `exception_type`, `message`, `code`, `non_retryable`,
+  and codec-tagged `exception.details` with `details_payload_codec`.
+- Runtime diagnostics: `exception_class`, `exception.class`, `exception.file`,
+  `exception.line`, `exception.trace`, `exception.properties`, and stack
+  traces. These fields are diagnostic and replay-repair aids for runtimes
+  that opted into recording them; they are not required for cross-language
+  workflow code to catch or branch on a failure.
+
+SDKs that expose an `ActivityFailed.exception_payload`-style object should
+default to the language-neutral fields. Runtime diagnostics may be surfaced
+only inside an explicit diagnostics envelope such as `diagnostics` or
+`runtime_diagnostics`; SDKs must not require another language's exception
+class, source file path, or stack trace to replay or handle a failure.
+
 | event | frozen payload keys | primary replay / projection consumers |
 | --- | --- | --- |
 | `StartAccepted` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `workflow_class`, `workflow_type`, `business_key`, `visibility_labels`, `memo`, `search_attributes`, `outcome`, `rejection_reason` | `HistoryTimeline`, `HistoryExport`, `RunCommandContract`, operator command projections |

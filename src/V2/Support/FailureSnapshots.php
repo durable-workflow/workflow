@@ -303,6 +303,14 @@ final class FailureSnapshots
             $normalized['details_payload_codec'] = $payload['details_payload_codec'];
         }
 
+        if (is_array($payload['diagnostics'] ?? null)) {
+            $normalized['diagnostics'] = $payload['diagnostics'];
+        }
+
+        if (is_array($payload['runtime_diagnostics'] ?? null)) {
+            $normalized['runtime_diagnostics'] = $payload['runtime_diagnostics'];
+        }
+
         return $normalized;
     }
 

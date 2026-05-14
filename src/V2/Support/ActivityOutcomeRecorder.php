@@ -16,6 +16,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -223,6 +224,7 @@ final class ActivityOutcomeRecorder
                 self::closeAttempt($attemptId, ActivityAttemptStatus::Completed);
             } elseif (self::shouldRetry($lockedExecution, $throwable, $attemptCount, $maxAttempts)) {
                 $exceptionPayload = self::failurePayload($throwable, $codec);
+                $historyExceptionPayload = self::publicFailurePayload($throwable, $exceptionPayload);
                 $retryAvailableAt = now()
                     ->addSeconds($backoffSeconds);
 
@@ -279,8 +281,12 @@ final class ActivityOutcomeRecorder
                     'exception_class' => $exceptionPayload['class'] ?? get_class($throwable),
                     'message' => $exceptionPayload['message'] ?? $throwable->getMessage(),
                     'code' => $throwable->getCode(),
-                    'exception' => $exceptionPayload,
-                    'activity' => ActivitySnapshot::fromExecution($lockedExecution),
+                    'exception' => $historyExceptionPayload,
+                    'activity' => self::publicActivitySnapshot(
+                        $throwable,
+                        $lockedExecution,
+                        $historyExceptionPayload,
+                    ),
                 ], $parallelMetadata ?? []), $task);
 
                 self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
@@ -312,6 +318,12 @@ final class ActivityOutcomeRecorder
                     'exception' => self::serializeWithCodec($exceptionPayload, null, $runCodec)['blob'],
                     'closed_at' => now(),
                 ])->save();
+                $historyExceptionPayload = self::publicFailurePayload($throwable, $exceptionPayload);
+                $historyActivitySnapshot = self::publicActivitySnapshot(
+                    $throwable,
+                    $lockedExecution,
+                    $historyExceptionPayload,
+                );
 
                 $resolutionEvent = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, array_merge([
                     'activity_execution_id' => $lockedExecution->id,
@@ -327,8 +339,8 @@ final class ActivityOutcomeRecorder
                     'exception_class' => $failure->exception_class,
                     'message' => $failure->message,
                     'code' => $throwable->getCode(),
-                    'exception' => $exceptionPayload,
-                    'activity' => ActivitySnapshot::fromExecution($lockedExecution),
+                    'exception' => $historyExceptionPayload,
+                    'activity' => $historyActivitySnapshot,
                 ], self::structuralLimitPayload($throwable), $parallelMetadata ?? []), $task);
 
                 LifecycleEventDispatcher::activityFailed(
@@ -659,6 +671,45 @@ final class ActivityOutcomeRecorder
         }
 
         return $payload;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private static function publicFailurePayload(Throwable $throwable, array $payload): array
+    {
+        if (! $throwable instanceof RestoredWorkflowException) {
+            return $payload;
+        }
+
+        unset(
+            $payload['class'],
+            $payload['file'],
+            $payload['line'],
+            $payload['trace'],
+            $payload['properties'],
+        );
+
+        return $payload;
+    }
+
+    /**
+     * @param array<string, mixed> $exceptionPayload
+     * @return array<string, mixed>
+     */
+    private static function publicActivitySnapshot(
+        Throwable $throwable,
+        ActivityExecution $execution,
+        array $exceptionPayload,
+    ): array {
+        $snapshot = ActivitySnapshot::fromExecution($execution);
+
+        if ($throwable instanceof RestoredWorkflowException) {
+            $snapshot['exception'] = $exceptionPayload;
+        }
+
+        return $snapshot;
     }
 
     private static function preferredPayloadCodec(ActivityExecution $execution, ?string $runCodec): ?string

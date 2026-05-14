@@ -646,7 +646,12 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         }
 
         if (is_string($failure)) {
-            return new RuntimeException($failure);
+            return FailureFactory::restoreExternalWorkerFailure(
+                ['message' => $failure],
+                RuntimeException::class,
+                $failure,
+                0,
+            );
         }
 
         $message = is_string($failure['message'] ?? null)
@@ -655,7 +660,7 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge
         $code = is_int($failure['code'] ?? null) ? $failure['code'] : 0;
         $class = is_string($failure['class'] ?? null) ? $failure['class'] : RuntimeException::class;
 
-        return FailureFactory::restore($failure, $class, $message, $code);
+        return FailureFactory::restoreExternalWorkerFailure($failure, $class, $message, $code);
     }
 
     private static function nonEmptyString(mixed $value): ?string

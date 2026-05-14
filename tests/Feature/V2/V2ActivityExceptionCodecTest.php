@@ -19,6 +19,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -267,6 +268,10 @@ final class V2ActivityExceptionCodecTest extends TestCase
                 'message' => 'external timeout',
                 'non_retryable' => true,
                 'details' => $detailsBlob,
+                'runtime_diagnostics' => [
+                    'class' => RuntimeException::class,
+                    'file' => '/app/src/TimeoutActivity.php',
+                ],
             ]),
             maxAttempts: 2,
             backoffSeconds: 0,
@@ -294,6 +299,39 @@ final class V2ActivityExceptionCodecTest extends TestCase
         $this->assertSame($detailsBlob, $failed->payload['exception']['details'] ?? null);
         $this->assertSame('avro', $failed->payload['exception']['details_payload_codec'] ?? null);
         $this->assertTrue($failed->payload['exception']['non_retryable'] ?? false);
+        $this->assertSame(
+            '/app/src/TimeoutActivity.php',
+            $failed->payload['exception']['runtime_diagnostics']['file'] ?? null,
+        );
+        $this->assertArrayNotHasKey('class', $failed->payload['exception']);
+        $this->assertArrayNotHasKey('file', $failed->payload['exception']);
+        $this->assertArrayNotHasKey('line', $failed->payload['exception']);
+        $this->assertArrayNotHasKey('trace', $failed->payload['exception']);
+        $this->assertArrayNotHasKey('properties', $failed->payload['exception']);
+
+        $activityException = $failed->payload['activity']['exception'] ?? null;
+
+        $this->assertIsArray($activityException);
+        $this->assertSame($detailsBlob, $activityException['details'] ?? null);
+        $this->assertSame('avro', $activityException['details_payload_codec'] ?? null);
+        $this->assertTrue($activityException['non_retryable'] ?? false);
+        $this->assertSame(
+            '/app/src/TimeoutActivity.php',
+            $activityException['runtime_diagnostics']['file'] ?? null,
+        );
+        $this->assertArrayNotHasKey('class', $activityException);
+        $this->assertArrayNotHasKey('file', $activityException);
+        $this->assertArrayNotHasKey('line', $activityException);
+        $this->assertArrayNotHasKey('trace', $activityException);
+        $this->assertArrayNotHasKey('properties', $activityException);
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame('external-worker', $failure->file);
+        $this->assertSame(0, $failure->line);
 
         $this->assertFalse(
             WorkflowHistoryEvent::query()
@@ -309,6 +347,10 @@ final class V2ActivityExceptionCodecTest extends TestCase
         $this->assertSame($detailsBlob, $snapshot['exception_payload']['details'] ?? null);
         $this->assertSame('avro', $snapshot['exception_payload']['details_payload_codec'] ?? null);
         $this->assertTrue($snapshot['exception_payload']['non_retryable'] ?? false);
+        $this->assertSame(
+            '/app/src/TimeoutActivity.php',
+            $snapshot['exception_payload']['runtime_diagnostics']['file'] ?? null,
+        );
     }
 
     public function testNonRetryableWorkerFailureWithoutDetailsBypassesActivityRetry(): void
@@ -358,6 +400,105 @@ final class V2ActivityExceptionCodecTest extends TestCase
                 ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
                 ->exists(),
         );
+    }
+
+    public function testRetryableWorkerFailureSanitizesRetryScheduledHistoryPayload(): void
+    {
+        config()->set('workflows.serializer', 'avro');
+
+        [$run, $execution, $task, $attempt] = $this->scaffoldLeasedAttempt(
+            pinnedCodec: 'workflow-serializer-y',
+            maxAttempts: 3,
+            instanceId: 'worker-codec-retryable-sanitized',
+        );
+
+        $detailsBlob = Serializer::serializeWithCodec('avro', [
+            'retry_after' => 15,
+        ]);
+
+        $outcome = ActivityOutcomeRecorder::record(
+            taskId: $task->id,
+            attemptId: $attempt->id,
+            attemptCount: 1,
+            result: null,
+            throwable: FailureFactory::restoreExternalWorkerFailure([
+                'class' => RuntimeException::class,
+                'type' => 'TimeoutException',
+                'message' => 'external timeout',
+                'code' => 23,
+                'file' => '/app/src/TimeoutActivity.php',
+                'line' => 44,
+                'trace' => [
+                    [
+                        'file' => '/app/src/TimeoutActivity.php',
+                        'line' => 44,
+                        'function' => 'handle',
+                    ],
+                ],
+                'properties' => [
+                    [
+                        'declaring_class' => RuntimeException::class,
+                        'name' => 'privateState',
+                        'value' => 'secret',
+                    ],
+                ],
+                'details' => $detailsBlob,
+                'runtime_diagnostics' => [
+                    'class' => RuntimeException::class,
+                    'file' => '/app/src/TimeoutActivity.php',
+                    'line' => 44,
+                ],
+            ]),
+            maxAttempts: 3,
+            backoffSeconds: 1,
+            codec: 'avro',
+        );
+
+        $this->assertTrue($outcome['recorded']);
+        $this->assertInstanceOf(WorkflowTask::class, $outcome['next_task']);
+
+        $execution->refresh();
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
+
+        /** @var WorkflowHistoryEvent $retry */
+        $retry = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame(RuntimeException::class, $retry->payload['exception_class'] ?? null);
+        $this->assertSame('TimeoutException', $retry->payload['exception_type'] ?? null);
+        $this->assertSame('external timeout', $retry->payload['message'] ?? null);
+
+        $retryException = $retry->payload['exception'] ?? null;
+
+        $this->assertIsArray($retryException);
+        $this->assertSame($detailsBlob, $retryException['details'] ?? null);
+        $this->assertSame('avro', $retryException['details_payload_codec'] ?? null);
+        $this->assertSame(
+            '/app/src/TimeoutActivity.php',
+            $retryException['runtime_diagnostics']['file'] ?? null,
+        );
+        $this->assertArrayNotHasKey('class', $retryException);
+        $this->assertArrayNotHasKey('file', $retryException);
+        $this->assertArrayNotHasKey('line', $retryException);
+        $this->assertArrayNotHasKey('trace', $retryException);
+        $this->assertArrayNotHasKey('properties', $retryException);
+
+        $activityException = $retry->payload['activity']['exception'] ?? null;
+
+        $this->assertIsArray($activityException);
+        $this->assertSame($detailsBlob, $activityException['details'] ?? null);
+        $this->assertSame('avro', $activityException['details_payload_codec'] ?? null);
+        $this->assertSame(
+            '/app/src/TimeoutActivity.php',
+            $activityException['runtime_diagnostics']['file'] ?? null,
+        );
+        $this->assertArrayNotHasKey('class', $activityException);
+        $this->assertArrayNotHasKey('file', $activityException);
+        $this->assertArrayNotHasKey('line', $activityException);
+        $this->assertArrayNotHasKey('trace', $activityException);
+        $this->assertArrayNotHasKey('properties', $activityException);
     }
 
     /**

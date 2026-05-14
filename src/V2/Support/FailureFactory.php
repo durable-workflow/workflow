@@ -38,6 +38,7 @@ final class FailureFactory
     public static function make(Throwable $throwable): array
     {
         $payload = self::payload($throwable);
+        $restored = $throwable instanceof RestoredWorkflowException;
 
         return [
             'exception_class' => is_string($payload['class'] ?? null)
@@ -48,10 +49,10 @@ final class FailureFactory
                 : $throwable->getMessage(),
             'file' => is_string($payload['file'] ?? null)
                 ? $payload['file']
-                : $throwable->getFile(),
+                : ($restored ? 'external-worker' : $throwable->getFile()),
             'line' => is_int($payload['line'] ?? null)
                 ? $payload['line']
-                : $throwable->getLine(),
+                : ($restored ? 0 : $throwable->getLine()),
             'trace_preview' => self::previewFromPayload($payload),
         ];
     }
@@ -140,10 +141,12 @@ final class FailureFactory
      *     type?: string,
      *     message: string,
      *     code: int,
-     *     file: string,
-     *     line: int,
-     *     trace: list<array<string, mixed>>,
-     *     properties: list<array{declaring_class: string, name: string, value: mixed}>
+     *     file?: string,
+     *     line?: int,
+     *     trace?: list<array<string, mixed>>,
+     *     properties?: list<array{declaring_class: string, name: string, value: mixed}>,
+     *     diagnostics?: array<string, mixed>,
+     *     runtime_diagnostics?: array<string, mixed>
      * }
      */
     public static function payload(Throwable $throwable): array
@@ -154,10 +157,12 @@ final class FailureFactory
              *     type?: string,
              *     message: string,
              *     code: int,
-             *     file: string,
-             *     line: int,
-             *     trace: list<array<string, mixed>>,
-             *     properties: list<array{declaring_class: string, name: string, value: mixed}>
+             *     file?: string,
+             *     line?: int,
+             *     trace?: list<array<string, mixed>>,
+             *     properties?: list<array{declaring_class: string, name: string, value: mixed}>,
+             *     diagnostics?: array<string, mixed>,
+             *     runtime_diagnostics?: array<string, mixed>
              * } $payload
              */
             $payload = $throwable->failurePayload();
@@ -220,6 +225,21 @@ final class FailureFactory
         }
 
         return new RestoredWorkflowException($normalized);
+    }
+
+    public static function restoreExternalWorkerFailure(
+        mixed $payload,
+        ?string $fallbackClass = null,
+        ?string $fallbackMessage = null,
+        ?int $fallbackCode = null,
+    ): RestoredWorkflowException {
+        if (is_string($payload)) {
+            $payload = ['message' => $payload];
+        }
+
+        return new RestoredWorkflowException(
+            self::normalizePayload($payload, $fallbackClass, $fallbackMessage, $fallbackCode),
+        );
     }
 
     public static function restoreForReplay(
@@ -531,10 +551,12 @@ final class FailureFactory
      *     type: string|null,
      *     message: string,
      *     code: int,
-     *     file: string,
-     *     line: int,
-     *     trace: list<array<string, mixed>>,
-     *     properties: list<array{declaring_class: string, name: string, value: mixed}>
+     *     file?: string,
+     *     line?: int,
+     *     trace?: list<array<string, mixed>>,
+     *     properties?: list<array{declaring_class: string, name: string, value: mixed}>,
+     *     diagnostics?: array<string, mixed>,
+     *     runtime_diagnostics?: array<string, mixed>
      * }
      */
     private static function normalizePayload(
@@ -565,15 +587,23 @@ final class FailureFactory
             'code' => is_int($payload['code'] ?? null)
                 ? $payload['code']
                 : ($fallbackCode ?? 0),
-            'file' => is_string($payload['file'] ?? null)
-                ? $payload['file']
-                : __FILE__,
-            'line' => is_int($payload['line'] ?? null)
-                ? $payload['line']
-                : __LINE__,
-            'trace' => self::traceFrames($payload),
-            'properties' => self::propertyFrames($payload),
         ];
+
+        if (is_string($payload['file'] ?? null) && $payload['file'] !== '') {
+            $normalized['file'] = $payload['file'];
+        }
+
+        if (is_int($payload['line'] ?? null)) {
+            $normalized['line'] = $payload['line'];
+        }
+
+        if (array_key_exists('trace', $payload)) {
+            $normalized['trace'] = self::traceFrames($payload);
+        }
+
+        if (array_key_exists('properties', $payload)) {
+            $normalized['properties'] = self::propertyFrames($payload);
+        }
 
         if (array_key_exists('details', $payload)) {
             $normalized['details'] = $payload['details'];
@@ -587,6 +617,14 @@ final class FailureFactory
             $normalized['details_payload_codec'] = $payload['details_payload_codec'];
         }
 
+        if (is_array($payload['diagnostics'] ?? null)) {
+            $normalized['diagnostics'] = $payload['diagnostics'];
+        }
+
+        if (is_array($payload['runtime_diagnostics'] ?? null)) {
+            $normalized['runtime_diagnostics'] = $payload['runtime_diagnostics'];
+        }
+
         return $normalized;
     }
 
@@ -596,10 +634,12 @@ final class FailureFactory
      *     type?: string|null,
      *     message: string,
      *     code: int,
-     *     file: string,
-     *     line: int,
-     *     trace: list<array<string, mixed>>,
-     *     properties: list<array{declaring_class: string, name: string, value: mixed}>
+     *     file?: string,
+     *     line?: int,
+     *     trace?: list<array<string, mixed>>,
+     *     properties?: list<array{declaring_class: string, name: string, value: mixed}>,
+     *     diagnostics?: array<string, mixed>,
+     *     runtime_diagnostics?: array<string, mixed>
      * } $payload
      */
     private static function restoreThrowable(string $class, array $payload): Throwable
@@ -618,14 +658,18 @@ final class FailureFactory
         // the Error::class reflection target. Falling back to Exception here would
         // raise "Cannot access protected property Error::$message" (#436).
         $baseClass = is_a($class, Error::class, true) ? Error::class : Exception::class;
+        $file = is_string($payload['file'] ?? null) ? $payload['file'] : __FILE__;
+        $line = is_int($payload['line'] ?? null) ? $payload['line'] : __LINE__;
+        $trace = is_array($payload['trace'] ?? null) ? $payload['trace'] : [];
+        $properties = is_array($payload['properties'] ?? null) ? $payload['properties'] : [];
 
         self::setThrowableProperty($throwable, $baseClass, 'message', $payload['message']);
         self::setThrowableProperty($throwable, $baseClass, 'code', $payload['code']);
-        self::setThrowableProperty($throwable, $baseClass, 'file', $payload['file']);
-        self::setThrowableProperty($throwable, $baseClass, 'line', $payload['line']);
-        self::setThrowableProperty($throwable, $baseClass, 'trace', $payload['trace']);
+        self::setThrowableProperty($throwable, $baseClass, 'file', $file);
+        self::setThrowableProperty($throwable, $baseClass, 'line', $line);
+        self::setThrowableProperty($throwable, $baseClass, 'trace', $trace);
 
-        foreach ($payload['properties'] as $property) {
+        foreach ($properties as $property) {
             if (! is_string($property['declaring_class'] ?? null) || ! is_string($property['name'] ?? null)) {
                 continue;
             }
