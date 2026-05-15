@@ -9,6 +9,8 @@ use Error;
 use Exception;
 use RuntimeException;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Exceptions\RestoredWorkflowException;
 use TypeError;
 use Workflow\V2\Support\FailureFactory;
 
@@ -67,5 +69,31 @@ final class FailureFactoryRestoreTest extends TestCase
 
         $this->assertInstanceOf(Exception::class, $restored);
         $this->assertSame('base exception sanity check', $restored->getMessage());
+    }
+
+    public function testReplayPreservesStructuredFailureMetadata(): void
+    {
+        $payload = [
+            'class' => RuntimeException::class,
+            'type' => 'planned.python.failure',
+            'message' => 'planned python failure',
+            'non_retryable' => true,
+            'details_payload_codec' => 'avro',
+            'details' => Serializer::serializeWithCodec('avro', ['label' => 'planned-python-failure']),
+        ];
+
+        $restored = FailureFactory::restoreForReplay($payload);
+
+        $this->assertInstanceOf(RestoredWorkflowException::class, $restored);
+        $this->assertSame('planned python failure', $restored->getMessage());
+        $failurePayload = $restored->failurePayload();
+
+        $this->assertSame(RuntimeException::class, $failurePayload['class'] ?? null);
+        $this->assertSame('planned.python.failure', $failurePayload['type'] ?? null);
+        $this->assertSame('planned python failure', $failurePayload['message'] ?? null);
+        $this->assertSame(0, $failurePayload['code'] ?? null);
+        $this->assertTrue($failurePayload['non_retryable'] ?? false);
+        $this->assertSame('avro', $failurePayload['details_payload_codec'] ?? null);
+        $this->assertSame($payload['details'], $failurePayload['details'] ?? null);
     }
 }
