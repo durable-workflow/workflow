@@ -137,7 +137,7 @@ final class TypeRegistry
             'activities' => Activity::class,
         ] as $configKey => $baseClass) {
             /** @var array<string, class-string>|null $types */
-            $types = config("workflows.v2.types.{$configKey}");
+            $types = self::configuredTypeMap($configKey);
 
             if (! is_array($types) || $types === []) {
                 continue;
@@ -194,7 +194,7 @@ final class TypeRegistry
     private static function isRegisteredTypeKey(string $key): bool
     {
         foreach (['workflows', 'activities'] as $section) {
-            $types = config("workflows.v2.types.{$section}");
+            $types = self::configuredTypeMap($section);
             if (is_array($types) && array_key_exists($key, $types)) {
                 return true;
             }
@@ -216,7 +216,7 @@ final class TypeRegistry
         }
 
         /** @var array<string, class-string>|null $types */
-        $types = config("workflows.v2.types.{$configKey}");
+        $types = self::configuredTypeMap($configKey);
 
         if (! is_array($types)) {
             return null;
@@ -237,7 +237,7 @@ final class TypeRegistry
         // so that dotted durable type keys like "tests.external-greeting-workflow"
         // are matched as flat array keys instead of being interpreted as nested
         // config paths by Laravel's dot-notation config helper.
-        $types = config("workflows.v2.types.{$configKey}");
+        $types = self::configuredTypeMap($configKey);
 
         if (! is_array($types)) {
             return null;
@@ -267,7 +267,7 @@ final class TypeRegistry
     private static function configuredThrowableClassAlias(string $storedClass): ?string
     {
         /** @var array<string, class-string>|null $aliases */
-        $aliases = config('workflows.v2.types.exception_class_aliases');
+        $aliases = self::configuredTypeMap('exception_class_aliases');
 
         if (! is_array($aliases)) {
             return null;
@@ -323,5 +323,28 @@ final class TypeRegistry
     private static function isValidClass(string $class, string $expectedBaseClass): bool
     {
         return class_exists($class) && is_subclass_of($class, $expectedBaseClass);
+    }
+
+    /**
+     * Standalone workers can use the type registry outside a booted Laravel
+     * app, so missing config bindings must degrade to an empty type map rather
+     * than crashing replay-time exception restoration.
+     *
+     * @return array<string, class-string>|null
+     */
+    private static function configuredTypeMap(string $configKey): ?array
+    {
+        $types = self::configValue("workflows.v2.types.{$configKey}");
+
+        return is_array($types) ? $types : null;
+    }
+
+    private static function configValue(string $key): mixed
+    {
+        try {
+            return config($key);
+        } catch (Throwable) {
+            return null;
+        }
     }
 }
