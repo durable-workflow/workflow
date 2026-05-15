@@ -301,4 +301,19 @@ final class TypeRegistryTest extends TestCase
 
         $this->assertNull(TypeRegistry::resolveThrowableClass('App\\Missing\\Exception', null));
     }
+
+    public function testResolveThrowableClassFallsBackToRecordedClassWithoutConfigBinding(): void
+    {
+        $config = $this->app->make('config');
+        unset($this->app['config']);
+
+        try {
+            $this->assertSame(
+                \RuntimeException::class,
+                TypeRegistry::resolveThrowableClass(\RuntimeException::class, 'external.python-failure'),
+            );
+        } finally {
+            $this->app->instance('config', $config);
+        }
+    }
 }
