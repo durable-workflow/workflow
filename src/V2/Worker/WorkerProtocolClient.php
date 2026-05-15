@@ -131,7 +131,7 @@ final class WorkerProtocolClient
             $body['max_concurrent_activity_tasks'] = $maxConcurrentActivityTasks;
         }
 
-        $response = $this->workerPost($this->workerApiPath.'/register', $body);
+        $response = $this->workerPost($this->workerApiPath.'/register', $body, allowedStatuses: [200, 201]);
 
         $this->registeredWorkerId = $workerId;
         $this->registeredTaskQueue = $taskQueue;

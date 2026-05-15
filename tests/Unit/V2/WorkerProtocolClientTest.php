@@ -34,7 +34,7 @@ final class WorkerProtocolClientTest extends TestCase
                 ),
             ];
 
-            return $http->response(['ok' => true, 'heartbeat_interval_seconds' => 60]);
+            return $http->response(['ok' => true, 'heartbeat_interval_seconds' => 60], 201);
         });
 
         $client = new WorkerProtocolClient($http, 'http://server:8080/', 'test-token', 'default');
