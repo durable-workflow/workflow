@@ -177,7 +177,7 @@ final class SurfaceStabilityContract
                 'notes' => 'Per-route version is governed by the `control_plane.request_contract` and `control_plane.response.contract` schema/version pairs published from `/api/cluster/info`. The top-level server `version` is build identity, not the client compatibility authority.',
             ],
             'worker_protocol' => [
-                'description' => 'Worker-plane HTTP API used by external SDK workers to register, poll, heartbeat, complete, and fail workflow and activity tasks.',
+                'description' => 'Worker-plane HTTP API used by external SDK workers to register, poll, heartbeat, complete, and fail workflow, activity, and query tasks.',
                 'stability_level' => self::STABILITY_STABLE,
                 'authority_manifest' => 'worker_protocol',
                 'requires_protocol_header' => 'X-Durable-Workflow-Protocol-Version',

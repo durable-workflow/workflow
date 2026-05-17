@@ -47,6 +47,11 @@ final class WorkerProtocolClient
     private array $activityTaskLeases = [];
 
     /**
+     * @var array<string, array<string, mixed>>
+     */
+    private array $queryTaskLeases = [];
+
+    /**
      * @var array<string, string>
      */
     private array $activityAttemptTaskIds = [];
@@ -84,6 +89,7 @@ final class WorkerProtocolClient
      * @param list<string> $supportedWorkflowTypes
      * @param list<string> $supportedActivityTypes
      * @param array<string, string>|null $workflowDefinitionFingerprints
+     * @param list<string>|null $capabilities
      * @return array<string, mixed>|null
      */
     public function registerWorker(
@@ -97,6 +103,7 @@ final class WorkerProtocolClient
         ?int $maxConcurrentWorkflowTasks = null,
         ?int $maxConcurrentActivityTasks = null,
         ?array $workflowDefinitionFingerprints = null,
+        ?array $capabilities = null,
     ): ?array {
         if ($maxConcurrentWorkflowTasks !== null && $maxConcurrentWorkflowTasks < 1) {
             throw new InvalidArgumentException('maxConcurrentWorkflowTasks must be at least 1.');
@@ -117,6 +124,13 @@ final class WorkerProtocolClient
 
         if ($workflowDefinitionFingerprints !== null) {
             $body['workflow_definition_fingerprints'] = $workflowDefinitionFingerprints;
+        }
+
+        if ($capabilities !== null) {
+            $body['capabilities'] = array_values(array_filter(
+                $capabilities,
+                static fn (mixed $capability): bool => is_string($capability) && $capability !== '',
+            ));
         }
 
         if ($buildId !== null) {
@@ -338,6 +352,120 @@ final class WorkerProtocolClient
         );
 
         return ($response['reason'] ?? null) === 'task_not_found' ? null : $response;
+    }
+
+    /**
+     * Poll for worker-routed workflow query work.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function pollQueryTasks(
+        ?string $queue = null,
+        int $timeoutSeconds = WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+        ?string $workerId = null,
+    ): array {
+        if ($this->embeddedBridgeMode) {
+            return [];
+        }
+
+        $body = [
+            'worker_id' => $this->resolveStandaloneWorkerId($workerId),
+            'task_queue' => $this->resolveStandaloneTaskQueue($queue),
+        ];
+
+        try {
+            $response = $this->workerPost(
+                $this->workerApiPath.'/query-tasks/poll',
+                $body,
+                $this->longPollRequestTimeoutSeconds($timeoutSeconds),
+            );
+        } catch (ConnectionException $exception) {
+            if ($this->isHttpTimeout($exception)) {
+                return [];
+            }
+
+            throw $exception;
+        }
+
+        $task = $response['task'] ?? null;
+        if (! is_array($task)) {
+            return [];
+        }
+
+        $this->rememberQueryTaskLease($task);
+
+        return [$task];
+    }
+
+    /**
+     * @param array{codec: string, blob?: string|null, external_storage?: array<string, mixed>}|null $resultEnvelope
+     * @return array<string, mixed>|null
+     */
+    public function completeQueryTask(
+        string $queryTaskId,
+        mixed $result = null,
+        ?array $resultEnvelope = null,
+        ?string $leaseOwner = null,
+        ?int $queryTaskAttempt = null,
+    ): ?array {
+        $body = [
+            'lease_owner' => $this->resolveQueryLeaseOwner($queryTaskId, $leaseOwner),
+            'query_task_attempt' => $this->resolveQueryTaskAttempt($queryTaskId, $queryTaskAttempt),
+            'result' => $result,
+        ];
+
+        if ($resultEnvelope !== null) {
+            $body['result_envelope'] = $resultEnvelope;
+        }
+
+        return $this->workerPost(
+            $this->workerApiPath.'/query-tasks/'.$this->pathSegment($queryTaskId).'/complete',
+            $body,
+            allowedStatuses: [200, 404, 409, 422],
+        );
+    }
+
+    /**
+     * @param array<string, list<string>>|null $validationErrors
+     * @return array<string, mixed>|null
+     */
+    public function failQueryTask(
+        string $queryTaskId,
+        string $message,
+        ?string $reason = null,
+        ?string $failureType = null,
+        ?string $stackTrace = null,
+        ?string $leaseOwner = null,
+        ?int $queryTaskAttempt = null,
+        ?array $validationErrors = null,
+    ): ?array {
+        $failure = ['message' => $message];
+
+        if ($reason !== null) {
+            $failure['reason'] = $reason;
+        }
+
+        if ($failureType !== null) {
+            $failure['type'] = $failureType;
+        }
+
+        if ($stackTrace !== null) {
+            $failure['stack_trace'] = $stackTrace;
+        }
+
+        if ($validationErrors !== null) {
+            $failure['validation_errors'] = $validationErrors;
+        }
+
+        return $this->workerPost(
+            $this->workerApiPath.'/query-tasks/'.$this->pathSegment($queryTaskId).'/fail',
+            [
+                'lease_owner' => $this->resolveQueryLeaseOwner($queryTaskId, $leaseOwner),
+                'query_task_attempt' => $this->resolveQueryTaskAttempt($queryTaskId, $queryTaskAttempt),
+                'failure' => $failure,
+            ],
+            allowedStatuses: [200, 404, 409, 422],
+        );
     }
 
     /**
@@ -854,6 +982,36 @@ final class WorkerProtocolClient
         return $resolved;
     }
 
+    private function resolveQueryLeaseOwner(string $queryTaskId, ?string $leaseOwner): string
+    {
+        $resolved = $leaseOwner
+            ?? $this->stringValue($this->queryTaskLeases[$queryTaskId]['lease_owner'] ?? null)
+            ?? $this->registeredWorkerId;
+
+        if ($resolved === null || $resolved === '') {
+            throw new InvalidArgumentException(
+                'Query task completion requires leaseOwner, or a prior pollQueryTasks() lease on this client.'
+            );
+        }
+
+        return $resolved;
+    }
+
+    private function resolveQueryTaskAttempt(string $queryTaskId, ?int $queryTaskAttempt): int
+    {
+        $resolved = $queryTaskAttempt
+            ?? $this->intValue($this->queryTaskLeases[$queryTaskId]['query_task_attempt'] ?? null);
+
+        if ($resolved === null || $resolved < 1) {
+            throw new InvalidArgumentException(
+                'Query task completion requires queryTaskAttempt, or a prior pollQueryTasks() lease '
+                .'on this client.'
+            );
+        }
+
+        return $resolved;
+    }
+
     private function resolveActivityTaskId(string $activityAttemptId, ?string $taskId): string
     {
         $resolved = $taskId ?? $this->activityAttemptTaskIds[$activityAttemptId] ?? null;
@@ -923,6 +1081,25 @@ final class WorkerProtocolClient
         if ($attemptId !== null && $attemptId !== '') {
             $this->activityAttemptTaskIds[$attemptId] = $taskId;
         }
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     */
+    private function rememberQueryTaskLease(array $task): void
+    {
+        $queryTaskId = $this->stringValue($task['query_task_id'] ?? null);
+
+        if ($queryTaskId === null || $queryTaskId === '') {
+            return;
+        }
+
+        $lease = $task;
+        if (! isset($lease['lease_owner']) && $this->registeredWorkerId !== null) {
+            $lease['lease_owner'] = $this->registeredWorkerId;
+        }
+
+        $this->queryTaskLeases[$queryTaskId] = $lease;
     }
 
     private function stringValue(mixed $value): ?string

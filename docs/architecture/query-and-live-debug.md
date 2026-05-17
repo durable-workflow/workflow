@@ -164,6 +164,52 @@ the caller (for example `'run'` versus `'instance-current'`) so
 downstream clients can distinguish a query against a specific
 run from a query against the current run for an instance.
 
+## Worker-routed query tasks
+
+Standalone workers MAY execute queries through the worker-plane
+query task protocol instead of in the caller's HTTP process. This
+surface is part of the same non-durable query contract and is
+advertised by `Workflow\V2\Support\WorkerProtocolVersion::describe()`
+under `query_task_verbs` and `query_tasks`.
+
+Workers that can execute server-routed queries advertise the
+`query_tasks` worker capability when registering. The server may then
+lease query work through:
+
+- `POST /api/worker/query-tasks/poll`
+- `POST /api/worker/query-tasks/{query_task_id}/complete`
+- `POST /api/worker/query-tasks/{query_task_id}/fail`
+
+The poll request names `worker_id` and `task_queue`. A successful
+poll leases at most one query task and returns `poll_status =
+'leased'`; an empty long-poll returns `poll_status = 'empty'` with
+no task. Query task long-poll timeout semantics are the same
+clamped `WorkerProtocolVersion::longPollSemantics()` used by
+workflow and activity task polling.
+
+Each leased query task carries `query_task_id`,
+`query_task_attempt`, `lease_owner`, `workflow_id`, `run_id`,
+`query_name`, payload codec information, query arguments, and either
+a `history_export` snapshot or enough history fields for the worker
+to reconstruct one. The worker replays committed history with
+commands suppressed, invokes the declared query method, and then
+returns exactly one terminal query-task outcome.
+
+Completion requires `lease_owner`, `query_task_attempt`, `result`,
+and optionally `result_envelope` with `codec`, `blob`, or
+`external_storage`. Failure requires `lease_owner`,
+`query_task_attempt`, and `failure` with `message` plus optional
+`reason`, `type`, `stack_trace`, and `validation_errors`; known SDK
+reasons include `rejected_unknown_query`, `invalid_query_arguments`,
+and `query_rejected`.
+
+Completing or failing a query task resolves the waiting query
+request only. It MUST NOT append a workflow history event, create a
+workflow command, dispatch a wake notification for workflow work, or
+mutate the run. Adding, removing, or reshaping any query-task verb,
+field, or outcome is a worker protocol change and requires a
+`WorkerProtocolVersion::VERSION` bump.
+
 ## Non-durability guarantees
 
 A successful query MUST leave zero durable state behind.

@@ -38,7 +38,7 @@ final class PlatformProtocolSpecs
 {
     public const SCHEMA = 'durable-workflow.v2.platform-protocol-specs.catalog';
 
-    public const VERSION = 12;
+    public const VERSION = 13;
 
     public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs';
 
@@ -227,7 +227,7 @@ final class PlatformProtocolSpecs
                 'spec_path' => 'static/platform-protocol-specs/control-plane-api.openapi.yaml',
             ],
             'worker_protocol_api' => [
-                'description' => 'OpenAPI specification for the worker-plane HTTP+JSON API: register, poll, heartbeat, worker-session lifecycle, complete, and fail for workflow and activity tasks. The companion AsyncAPI document `worker_protocol_stream` describes the long-poll and lease-renewal semantics.',
+                'description' => 'OpenAPI specification for the worker-plane HTTP+JSON API: register, poll, heartbeat, worker-session lifecycle, complete, and fail for workflow, activity, and query tasks. Query-task routes are lease-fenced request/response work and are advertised through the `query_tasks` worker capability. The companion AsyncAPI document `worker_protocol_stream` describes the long-poll and lease-renewal semantics.',
                 'format' => self::FORMAT_OPENAPI,
                 'spec_id' => 'durable-workflow.v2.worker-protocol-api',
                 'surface_family' => 'worker_protocol',
@@ -254,6 +254,18 @@ final class PlatformProtocolSpecs
                         'version_authority' => 'Workflow\\V2\\Support\\WorkerProtocolVersion::VERSION',
                     ],
                     [
+                        'name' => 'worker_query_task_poll_request',
+                        'owner_repo' => 'durable-workflow/server',
+                        'schema_authority' => 'App\\Http\\Controllers\\Api\\WorkerController::pollQueryTasks and App\\Support\\WorkflowQueryTaskBroker::poll',
+                        'version_authority' => 'Workflow\\V2\\Support\\WorkerProtocolVersion::VERSION',
+                    ],
+                    [
+                        'name' => 'worker_query_task_result',
+                        'owner_repo' => 'durable-workflow/server',
+                        'schema_authority' => 'App\\Http\\Controllers\\Api\\WorkerController::completeQueryTask/failQueryTask and App\\Support\\WorkflowQueryTaskBroker terminal outcomes',
+                        'version_authority' => 'Workflow\\V2\\Support\\WorkerProtocolVersion::VERSION',
+                    ],
+                    [
                         'name' => 'external_task_input_contract',
                         'owner_repo' => 'durable-workflow/server',
                         'schema_authority' => 'App\\Support\\ExternalTaskInputContract::SCHEMA',
@@ -269,7 +281,7 @@ final class PlatformProtocolSpecs
                 'evolution_rule' => self::EVOLUTION_ADDITIVE_MINOR_BREAKING_MAJOR,
                 'breaking_change_release' => 'major',
                 'discovery_endpoint' => 'GET /api/cluster/info -> worker_protocol',
-                'conformance_test' => 'durable-workflow/server: tests/Feature/WorkerProtocolContractTest.php, tests/Feature/WorkerProtocolSuccessContractTest.php, tests/Feature/WorkerProtocolOwnershipErrorContractTest.php, tests/Feature/WorkerProtocolVersionCoverageTest.php, tests/Feature/WorkflowWorkerProtocolTest.php, and tests/Feature/ActivityWorkerProtocolTest.php',
+                'conformance_test' => 'durable-workflow/server: tests/Feature/WorkerProtocolContractTest.php, tests/Feature/WorkerProtocolSuccessContractTest.php, tests/Feature/WorkerProtocolOwnershipErrorContractTest.php, tests/Feature/WorkerProtocolVersionCoverageTest.php, tests/Feature/WorkflowWorkerProtocolTest.php, tests/Feature/ActivityWorkerProtocolTest.php, and tests/Feature/WorkflowQueryTaskBrokerTest.php; durable-workflow/workflow: tests/Unit/V2/WorkerProtocolClientTest.php and tests/Unit/V2/WorkflowQueryTaskExecutorTest.php',
                 'status' => self::STATUS_PUBLISHED,
                 'spec_path' => 'static/platform-protocol-specs/worker-protocol-api.openapi.yaml',
             ],

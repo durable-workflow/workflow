@@ -28,6 +28,7 @@ final class QueryAndLiveDebugDocumentationTest extends TestCase
         '## Terminology',
         '## Query invocation contract',
         '## Query response contract',
+        '## Worker-routed query tasks',
         '## Non-durability guarantees',
         '## Command-dispatch suppression',
         '## Live-debug surfaces',
@@ -286,6 +287,47 @@ final class QueryAndLiveDebugDocumentationTest extends TestCase
             '/no wake notification is signalled/i',
             $contents,
             'Contract must explicitly state wake notification is not signalled during a query.',
+        );
+    }
+
+    public function testContractDocumentPinsWorkerRoutedQueryTasks(): void
+    {
+        $contents = $this->documentContents();
+
+        foreach (
+            [
+                'WorkerProtocolVersion::describe()',
+                'query_task_verbs',
+                'query_tasks',
+                'POST /api/worker/query-tasks/poll',
+                'POST /api/worker/query-tasks/{query_task_id}/complete',
+                'POST /api/worker/query-tasks/{query_task_id}/fail',
+                'query_task_id',
+                'query_task_attempt',
+                'lease_owner',
+                'result_envelope',
+                'rejected_unknown_query',
+                'invalid_query_arguments',
+                'query_rejected',
+                'WorkerProtocolVersion::VERSION',
+            ] as $term
+        ) {
+            $this->assertStringContainsString(
+                $term,
+                $contents,
+                sprintf('Contract must pin worker-routed query task term %s.', $term),
+            );
+        }
+
+        $this->assertMatchesRegularExpression(
+            '/advertise the\s+`query_tasks`\s+worker capability/i',
+            $contents,
+            'Contract must state that query-task workers advertise the query_tasks capability.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/MUST NOT append a workflow history event/i',
+            $contents,
+            'Contract must preserve query-task non-durability at the worker protocol boundary.',
         );
     }
 

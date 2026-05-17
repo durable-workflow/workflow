@@ -28,7 +28,7 @@ final class PlatformProtocolSpecsTest extends TestCase
         $manifest = PlatformProtocolSpecs::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-protocol-specs.catalog', $manifest['schema']);
-        $this->assertSame(12, $manifest['version']);
+        $this->assertSame(13, $manifest['version']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs',
             $manifest['authority_url'],
@@ -223,6 +223,27 @@ final class PlatformProtocolSpecsTest extends TestCase
             'parallel_primitive_only',
             $entry['breaking_change_release'],
         );
+    }
+
+    public function testWorkerProtocolApiCatalogCoversQueryTasks(): void
+    {
+        $manifest = PlatformProtocolSpecs::manifest();
+
+        $entry = $manifest['specs']['worker_protocol_api'];
+        $this->assertStringContainsString('query tasks', $entry['description']);
+        $this->assertStringContainsString('query_tasks', $entry['description']);
+        $this->assertStringContainsString(
+            'WorkflowQueryTaskBrokerTest.php',
+            $entry['conformance_test'],
+        );
+        $this->assertStringContainsString(
+            'WorkflowQueryTaskExecutorTest.php',
+            $entry['conformance_test'],
+        );
+
+        $families = array_column($entry['object_families'], 'name');
+        $this->assertContains('worker_query_task_poll_request', $families);
+        $this->assertContains('worker_query_task_result', $families);
     }
 
     public function testHistoryExportBundleIsFrozenViaParallelPrimitiveRule(): void

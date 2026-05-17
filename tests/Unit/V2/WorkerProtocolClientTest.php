@@ -10,6 +10,7 @@ use Illuminate\Http\Client\Request;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Worker\WorkerProtocolClient;
+use Workflow\V2\Worker\WorkflowQueryTaskExecutor;
 
 final class WorkerProtocolClientTest extends TestCase
 {
@@ -47,6 +48,7 @@ final class WorkerProtocolClientTest extends TestCase
             maxConcurrentWorkflowTasks: 2,
             maxConcurrentActivityTasks: 3,
             workflowDefinitionFingerprints: ['demo.workflow' => 'sha256:abc'],
+            capabilities: [WorkflowQueryTaskExecutor::CAPABILITY],
         );
 
         $this->assertSame(['ok' => true, 'heartbeat_interval_seconds' => 60], $response);
@@ -61,10 +63,132 @@ final class WorkerProtocolClientTest extends TestCase
             'supported_workflow_types' => ['demo.workflow'],
             'supported_activity_types' => ['demo.activity'],
             'workflow_definition_fingerprints' => ['demo.workflow' => 'sha256:abc'],
+            'capabilities' => ['query_tasks'],
             'build_id' => 'build-a',
             'max_concurrent_workflow_tasks' => 2,
             'max_concurrent_activity_tasks' => 3,
         ], $requestBody);
+    }
+
+    public function testStandaloneQueryPollAndCompleteUseCachedLease(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/poll')) {
+                return $http->response([
+                    'task' => [
+                        'query_task_id' => 'query-task-1',
+                        'query_task_attempt' => 2,
+                        'lease_owner' => 'php-worker',
+                        'query_name' => 'currentStage',
+                    ],
+                ]);
+            }
+
+            return $http->response(['recorded' => true]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $tasks = $client->pollQueryTasks(queue: 'polyglot', workerId: 'php-worker');
+        $complete = $client->completeQueryTask('query-task-1', 'waiting', [
+            'codec' => 'avro',
+            'blob' => 'encoded-result',
+        ]);
+
+        $this->assertCount(1, $tasks);
+        $this->assertSame('query-task-1', $tasks[0]['query_task_id']);
+        $this->assertSame(['recorded' => true], $complete);
+        $this->assertSame([
+            [
+                'method' => 'POST',
+                'url' => 'http://server:8080/api/worker/query-tasks/poll',
+                'body' => ['worker_id' => 'php-worker', 'task_queue' => 'polyglot'],
+            ],
+            [
+                'method' => 'POST',
+                'url' => 'http://server:8080/api/worker/query-tasks/query-task-1/complete',
+                'body' => [
+                    'lease_owner' => 'php-worker',
+                    'query_task_attempt' => 2,
+                    'result' => 'waiting',
+                    'result_envelope' => [
+                        'codec' => 'avro',
+                        'blob' => 'encoded-result',
+                    ],
+                ],
+            ],
+        ], $requests);
+    }
+
+    public function testStandaloneQueryFailureUsesCachedLease(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/poll')) {
+                return $http->response([
+                    'task' => [
+                        'query_task_id' => 'query-task-1',
+                        'query_task_attempt' => 3,
+                        'lease_owner' => 'php-worker',
+                    ],
+                ]);
+            }
+
+            return $http->response(['recorded' => true]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $client->pollQueryTasks(queue: 'polyglot', workerId: 'php-worker');
+        $failure = $client->failQueryTask(
+            'query-task-1',
+            'No query handler.',
+            reason: 'rejected_unknown_query',
+            failureType: 'QueryNotFound',
+            validationErrors: [
+                'query' => ['Query validation failed.'],
+            ],
+        );
+
+        $this->assertSame(['recorded' => true], $failure);
+        $this->assertSame([
+            [
+                'method' => 'POST',
+                'url' => 'http://server:8080/api/worker/query-tasks/poll',
+                'body' => ['worker_id' => 'php-worker', 'task_queue' => 'polyglot'],
+            ],
+            [
+                'method' => 'POST',
+                'url' => 'http://server:8080/api/worker/query-tasks/query-task-1/fail',
+                'body' => [
+                    'lease_owner' => 'php-worker',
+                    'query_task_attempt' => 3,
+                    'failure' => [
+                        'message' => 'No query handler.',
+                        'reason' => 'rejected_unknown_query',
+                        'type' => 'QueryNotFound',
+                        'validation_errors' => [
+                            'query' => ['Query validation failed.'],
+                        ],
+                    ],
+                ],
+            ],
+        ], $requests);
     }
 
     public function testPollWorkflowTasksUsesStandaloneWorkerApiByDefault(): void

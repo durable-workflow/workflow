@@ -15,9 +15,9 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksNamespacedHistoryEventShape(): void
+    public function testVersionTracksQueryTaskWorkerProtocolShape(): void
     {
-        $this->assertSame('1.5', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.6', WorkerProtocolVersion::VERSION);
     }
 
     public function testWorkflowTaskVerbsIncludesAllBridgeMethods(): void
@@ -46,6 +46,16 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertContains('fail', $verbs);
         $this->assertContains('status', $verbs);
         $this->assertContains('heartbeat', $verbs);
+    }
+
+    public function testQueryTaskVerbsIncludesStandaloneWorkerOperations(): void
+    {
+        $this->assertSame(['poll', 'complete', 'fail'], WorkerProtocolVersion::queryTaskVerbs());
+    }
+
+    public function testWorkerCapabilitiesIncludeQueryTasks(): void
+    {
+        $this->assertSame(['query_tasks'], WorkerProtocolVersion::workerCapabilities());
     }
 
     public function testNonTerminalCommandTypesAreFrozen(): void
@@ -78,6 +88,8 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::VERSION, $summary['version']);
         $this->assertSame(WorkerProtocolVersion::workflowTaskVerbs(), $summary['workflow_task_verbs']);
         $this->assertSame(WorkerProtocolVersion::activityTaskVerbs(), $summary['activity_task_verbs']);
+        $this->assertSame(WorkerProtocolVersion::queryTaskVerbs(), $summary['query_task_verbs']);
+        $this->assertSame(WorkerProtocolVersion::workerCapabilities(), $summary['worker_capabilities']);
         $this->assertSame(WorkerProtocolVersion::nonTerminalCommandTypes(), $summary['non_terminal_command_types']);
         $this->assertSame(WorkerProtocolVersion::terminalCommandTypes(), $summary['terminal_command_types']);
         $this->assertSame(
@@ -101,6 +113,54 @@ final class WorkerProtocolVersionTest extends TestCase
             $summary['unsupported_payload_codec_reason']
         );
         $this->assertSame('unsupported_payload_codec', $summary['unsupported_payload_codec_reason']);
+    }
+
+    public function testDescribeIncludesQueryTaskSemantics(): void
+    {
+        $summary = WorkerProtocolVersion::describe();
+
+        $this->assertSame('query_tasks', WorkerProtocolVersion::CAPABILITY_QUERY_TASKS);
+        $this->assertArrayHasKey('query_tasks', $summary);
+
+        $queryTasks = $summary['query_tasks'];
+        $this->assertSame(WorkerProtocolVersion::CAPABILITY_QUERY_TASKS, $queryTasks['feature']);
+        $this->assertSame(WorkerProtocolVersion::VERSION, $queryTasks['minimum_protocol_version']);
+        $this->assertSame(WorkerProtocolVersion::CAPABILITY_QUERY_TASKS, $queryTasks['worker_capability']);
+        $this->assertSame(WorkerProtocolVersion::queryTaskVerbs(), $queryTasks['verbs']);
+        $this->assertSame('/api/worker/query-tasks', $queryTasks['path_prefix']);
+        $this->assertSame('/api/worker/query-tasks/poll', $queryTasks['endpoints']['poll']['path']);
+        $this->assertSame(
+            '/api/worker/query-tasks/{query_task_id}/complete',
+            $queryTasks['endpoints']['complete']['path'],
+        );
+        $this->assertSame(
+            '/api/worker/query-tasks/{query_task_id}/fail',
+            $queryTasks['endpoints']['fail']['path'],
+        );
+        $this->assertTrue($queryTasks['poll']['leases_on_return']);
+        $this->assertSame(WorkerProtocolVersion::longPollSemantics(), $queryTasks['poll']['long_poll']);
+        $this->assertSame('empty', $queryTasks['poll']['empty_response_poll_status']);
+        $this->assertTrue($queryTasks['poll']['requires_registered_worker']);
+        $this->assertSame(
+            WorkerProtocolVersion::CAPABILITY_QUERY_TASKS,
+            $queryTasks['poll']['requires_worker_capability'],
+        );
+        $this->assertContains('query_task_id', $queryTasks['task_fields']);
+        $this->assertContains('query_name', $queryTasks['task_fields']);
+        $this->assertContains('history_export', $queryTasks['task_fields']);
+        $this->assertSame(
+            ['codec', 'blob', 'external_storage'],
+            $queryTasks['completion']['result_envelope_fields'],
+        );
+        $this->assertSame(
+            ['message', 'reason', 'type', 'stack_trace', 'validation_errors'],
+            $queryTasks['failure']['failure_fields'],
+        );
+        $this->assertContains('rejected_unknown_query', $queryTasks['failure']['known_reasons']);
+        $this->assertContains('invalid_query_arguments', $queryTasks['failure']['known_reasons']);
+        $this->assertFalse($queryTasks['durability']['history_event_appended']);
+        $this->assertFalse($queryTasks['durability']['workflow_command_created']);
+        $this->assertTrue($queryTasks['durability']['result_resolves_waiting_query_request']);
     }
 
     public function testDefaultHistoryPageSizeIsReasonable(): void

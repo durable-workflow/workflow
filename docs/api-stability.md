@@ -21,7 +21,7 @@ surface has *which* machine-readable spec, *what format* the spec uses,
 - <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>
 - machine-readable mirror: `platform_protocol_specs` in
   `GET /api/cluster/info`, schema
-  `durable-workflow.v2.platform-protocol-specs.catalog`, version `1`.
+  `durable-workflow.v2.platform-protocol-specs.catalog`, version `13`.
 - in-process source: `Workflow\V2\Support\PlatformProtocolSpecs`, which
   the standalone server re-exports verbatim.
 
@@ -179,6 +179,7 @@ Laravel queue runner:
 
 - `Workflow\V2\Worker\WorkerProtocolClient`
 - `Workflow\V2\Worker\WorkflowFiberRunner`
+- `Workflow\V2\Worker\WorkflowQueryTaskExecutor`
 - `Workflow\V2\Worker\WorkflowStep`
 
 These classes are covered by the same semver rules as the server-facing
@@ -197,13 +198,20 @@ history and has no terminal outcome yet, the step contains no commands; the
 worker must wait for a later history payload instead of duplicating the
 schedule command.
 `WorkerProtocolClient` defaults to the standalone server worker API:
-registration, heartbeat, workflow-task polling/history/complete/fail, and
-activity-task polling/heartbeat/complete/fail all use `POST /api/worker/...`
-with the worker-protocol headers. Standalone `poll*` methods return leased
-tasks from the server's `task` envelope; the client caches the returned
-lease fields so follow-up history, heartbeat, complete, and fail calls can
-send the required `lease_owner`, `workflow_task_attempt`, and
-`activity_attempt_id` values.
+registration, heartbeat, workflow-task polling/history/complete/fail,
+activity-task polling/heartbeat/complete/fail, and query-task
+polling/complete/fail all use `POST /api/worker/...` with the
+worker-protocol headers. Standalone `poll*` methods return leased tasks from
+the server's `task` envelope; the client caches the returned lease fields so
+follow-up history, heartbeat, complete, and fail calls can send the required
+`lease_owner`, `workflow_task_attempt`, `activity_attempt_id`, and
+`query_task_attempt` values.
+`WorkflowQueryTaskExecutor` is the stable PHP worker shim for the
+`query_tasks` capability. It accepts the server-routed query task envelope,
+replays the supplied history export in query mode, validates query targets
+and arguments against the same contract as `WorkflowStub::queryWithArguments`,
+and returns either an encoded result envelope or a typed query failure for
+`WorkerProtocolClient` to complete or fail the query task.
 Embedded package installs that need the `/webhooks` bridge contract must opt
 into embedded bridge mode explicitly; in that mode `poll*` methods return
 ready task opportunities as `tasks` lists and workers explicitly claim a task

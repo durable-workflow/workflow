@@ -29,7 +29,14 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.5';
+    public const VERSION = '1.6';
+
+    /**
+     * Worker registration capability for server-routed workflow query
+     * tasks. Workers that advertise this capability may receive query work
+     * through the query task poll/complete/fail endpoints.
+     */
+    public const CAPABILITY_QUERY_TASKS = 'query_tasks';
 
     /**
      * Stable fail-closed reason a worker or server must return when it
@@ -126,6 +133,31 @@ final class WorkerProtocolVersion
     public static function activityTaskVerbs(): array
     {
         return ['poll', 'claim', 'claimStatus', 'complete', 'fail', 'status', 'heartbeat'];
+    }
+
+    /**
+     * Query task verbs exposed by the standalone worker protocol.
+     *
+     * Query tasks are server-routed, lease-fenced request/response work
+     * items. They replay committed history in a worker process, return a
+     * query result or typed failure to the waiting caller, and never append
+     * workflow history.
+     *
+     * @return list<string>
+     */
+    public static function queryTaskVerbs(): array
+    {
+        return ['poll', 'complete', 'fail'];
+    }
+
+    /**
+     * Worker registration capabilities with protocol-defined semantics.
+     *
+     * @return list<string>
+     */
+    public static function workerCapabilities(): array
+    {
+        return [self::CAPABILITY_QUERY_TASKS];
     }
 
     /**
@@ -238,6 +270,8 @@ final class WorkerProtocolVersion
      *     version: string,
      *     workflow_task_verbs: list<string>,
      *     activity_task_verbs: list<string>,
+     *     query_task_verbs: list<string>,
+     *     worker_capabilities: list<string>,
      *     non_terminal_command_types: list<string>,
      *     terminal_command_types: list<string>,
      *     history_pagination: array{default_page_size: int, max_page_size: int},
@@ -247,6 +281,7 @@ final class WorkerProtocolVersion
      *     worker_session_verbs: list<string>,
      *     sticky_execution: array<string, mixed>,
      *     worker_sessions: array<string, mixed>,
+     *     query_tasks: array<string, mixed>,
      *     invocable_carrier: array<string, mixed>,
      *     task_queue_priority_fairness: array<string, mixed>,
      * }
@@ -257,6 +292,8 @@ final class WorkerProtocolVersion
             'version' => self::VERSION,
             'workflow_task_verbs' => self::workflowTaskVerbs(),
             'activity_task_verbs' => self::activityTaskVerbs(),
+            'query_task_verbs' => self::queryTaskVerbs(),
+            'worker_capabilities' => self::workerCapabilities(),
             'non_terminal_command_types' => self::nonTerminalCommandTypes(),
             'terminal_command_types' => self::terminalCommandTypes(),
             'history_pagination' => [
@@ -272,11 +309,92 @@ final class WorkerProtocolVersion
             'worker_session_verbs' => self::workerSessionVerbs(),
             'sticky_execution' => StickyExecution::describe(),
             'worker_sessions' => self::workerSessionSemantics(),
+            'query_tasks' => self::queryTaskSemantics(),
             'payload_codecs_universal' => CodecRegistry::universal(),
             'payload_codecs_engine_specific' => CodecRegistry::engineSpecific(),
             'unsupported_payload_codec_reason' => self::REASON_UNSUPPORTED_PAYLOAD_CODEC,
             'invocable_carrier' => self::invocableCarrierSemantics(),
             'task_queue_priority_fairness' => self::taskQueuePriorityFairnessSemantics(),
+        ];
+    }
+
+    /**
+     * Published server-routed workflow query task contract.
+     *
+     * @return array<string, mixed>
+     */
+    public static function queryTaskSemantics(): array
+    {
+        return [
+            'feature' => self::CAPABILITY_QUERY_TASKS,
+            'minimum_protocol_version' => self::VERSION,
+            'worker_capability' => self::CAPABILITY_QUERY_TASKS,
+            'verbs' => self::queryTaskVerbs(),
+            'path_prefix' => '/api/worker/query-tasks',
+            'endpoints' => [
+                'poll' => [
+                    'method' => 'POST',
+                    'path' => '/api/worker/query-tasks/poll',
+                    'request_fields' => ['worker_id', 'task_queue'],
+                    'response_fields' => ['task', 'poll_status'],
+                ],
+                'complete' => [
+                    'method' => 'POST',
+                    'path' => '/api/worker/query-tasks/{query_task_id}/complete',
+                    'request_fields' => [
+                        'lease_owner',
+                        'query_task_attempt',
+                        'result',
+                        'result_envelope',
+                    ],
+                ],
+                'fail' => [
+                    'method' => 'POST',
+                    'path' => '/api/worker/query-tasks/{query_task_id}/fail',
+                    'request_fields' => ['lease_owner', 'query_task_attempt', 'failure'],
+                ],
+            ],
+            'poll' => [
+                'leases_on_return' => true,
+                'long_poll' => self::longPollSemantics(),
+                'empty_response_poll_status' => 'empty',
+                'requires_registered_worker' => true,
+                'requires_worker_capability' => self::CAPABILITY_QUERY_TASKS,
+            ],
+            'task_fields' => [
+                'query_task_id',
+                'query_task_attempt',
+                'lease_owner',
+                'workflow_id',
+                'run_id',
+                'task_queue',
+                'workflow_type',
+                'workflow_class',
+                'query_name',
+                'query_arguments',
+                'payload_codec',
+                'history_export',
+                'history_events',
+            ],
+            'completion' => [
+                'requires_lease_owner' => true,
+                'requires_query_task_attempt' => true,
+                'result_envelope_fields' => ['codec', 'blob', 'external_storage'],
+                'terminal_for_query_task' => true,
+            ],
+            'failure' => [
+                'requires_lease_owner' => true,
+                'requires_query_task_attempt' => true,
+                'failure_fields' => ['message', 'reason', 'type', 'stack_trace', 'validation_errors'],
+                'known_reasons' => ['rejected_unknown_query', 'invalid_query_arguments', 'query_rejected'],
+                'terminal_for_query_task' => true,
+            ],
+            'durability' => [
+                'history_event_appended' => false,
+                'workflow_command_created' => false,
+                'result_resolves_waiting_query_request' => true,
+                'query_replay_must_suppress_commands' => true,
+            ],
         ];
     }
 
