@@ -187,6 +187,10 @@ and returns `poll_status = 'leased'`; an empty long-poll returns
 `poll_status = 'empty'` with no task. Query task long-poll timeout
 semantics are the same clamped `WorkerProtocolVersion::longPollSemantics()`
 used by workflow and activity task polling.
+`WorkerProtocolClient::registerWorker()` advertises `query_tasks` by
+default for standalone PHP workers that register workflow types, and
+`pollQueryTasks()` sends a stable `poll_request_id` for every query
+poll attempt.
 
 Each leased query task carries `query_task_id`,
 `query_task_attempt`, `lease_owner`, `workflow_id`, `run_id`,

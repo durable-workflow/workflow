@@ -70,6 +70,70 @@ final class WorkerProtocolClientTest extends TestCase
         ], $requestBody);
     }
 
+    public function testStandaloneWorkflowWorkerRegistrationAdvertisesQueryTaskCapabilityByDefault(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+
+        $http->fake(function (Request $request) use ($http, &$requestBody) {
+            $requestBody = $request->data();
+
+            return $http->response(['registered' => true], 201);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $client->registerWorker(
+            workerId: 'php-worker',
+            taskQueue: 'polyglot',
+            supportedWorkflowTypes: ['polyglot.php.signal-query'],
+        );
+
+        $this->assertSame(['query_tasks'], $requestBody['capabilities'] ?? null);
+    }
+
+    public function testActivityOnlyWorkerRegistrationDoesNotAdvertiseQueryTasksByDefault(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+
+        $http->fake(function (Request $request) use ($http, &$requestBody) {
+            $requestBody = $request->data();
+
+            return $http->response(['registered' => true], 201);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $client->registerWorker(
+            workerId: 'php-activity-worker',
+            taskQueue: 'polyglot',
+            supportedActivityTypes: ['polyglot.php.activity'],
+        );
+
+        $this->assertArrayNotHasKey('capabilities', $requestBody);
+    }
+
+    public function testExplicitWorkerCapabilitiesOverrideQueryTaskDefault(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+
+        $http->fake(function (Request $request) use ($http, &$requestBody) {
+            $requestBody = $request->data();
+
+            return $http->response(['registered' => true], 201);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $client->registerWorker(
+            workerId: 'php-worker',
+            taskQueue: 'polyglot',
+            supportedWorkflowTypes: ['polyglot.php.signal-query'],
+            capabilities: [],
+        );
+
+        $this->assertSame([], $requestBody['capabilities'] ?? null);
+    }
+
     public function testStandaloneQueryPollAndCompleteUseCachedLease(): void
     {
         $http = new HttpFactory();

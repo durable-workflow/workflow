@@ -186,6 +186,10 @@ These classes are covered by the same semver rules as the server-facing
 `Support\*` list above. They intentionally wrap only the worker-plane
 HTTP routes and cold-replay stepping primitives; application workers still
 own registration maps, process lifecycle, logging, and command-line UX.
+Standalone PHP workflow-worker registrations advertise the `query_tasks`
+capability by default whenever they register workflow types; pass an explicit
+empty capabilities list only for custom workers that deliberately cannot
+answer server-routed workflow queries.
 Cold PHP Fiber runners must be constructed with the bridge `history_events`
 payload so workflow start time plus recorded activity, timer, child-workflow,
 side-effect, version marker, and search-attribute outcomes can be replayed

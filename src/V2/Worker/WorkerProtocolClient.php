@@ -126,11 +126,9 @@ final class WorkerProtocolClient
             $body['workflow_definition_fingerprints'] = $workflowDefinitionFingerprints;
         }
 
-        if ($capabilities !== null) {
-            $body['capabilities'] = array_values(array_filter(
-                $capabilities,
-                static fn (mixed $capability): bool => is_string($capability) && $capability !== '',
-            ));
+        $advertisedCapabilities = $this->workerCapabilities($supportedWorkflowTypes, $capabilities);
+        if ($advertisedCapabilities !== null) {
+            $body['capabilities'] = $advertisedCapabilities;
         }
 
         if ($buildId !== null) {
@@ -369,7 +367,9 @@ final class WorkerProtocolClient
             return [];
         }
 
-        $pollRequestId = $this->stringValue($pollRequestId) ?? 'query-poll-'.bin2hex(random_bytes(16));
+        $pollRequestId = is_string($pollRequestId) && trim($pollRequestId) !== ''
+            ? trim($pollRequestId)
+            : 'query-poll-'.bin2hex(random_bytes(16));
         $body = [
             'worker_id' => $this->resolveStandaloneWorkerId($workerId),
             'task_queue' => $this->resolveStandaloneTaskQueue($queue),
@@ -916,6 +916,39 @@ final class WorkerProtocolClient
         $pollTimeoutSeconds = WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds);
 
         return max($pollTimeoutSeconds, WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT) + 5;
+    }
+
+    /**
+     * @param list<string> $supportedWorkflowTypes
+     * @param list<string>|null $capabilities
+     * @return list<string>|null
+     */
+    private function workerCapabilities(array $supportedWorkflowTypes, ?array $capabilities): ?array
+    {
+        if ($capabilities === null) {
+            return $this->hasSupportedWorkflowTypes($supportedWorkflowTypes)
+                ? [WorkerProtocolVersion::CAPABILITY_QUERY_TASKS]
+                : null;
+        }
+
+        return array_values(array_filter(
+            $capabilities,
+            static fn (mixed $capability): bool => is_string($capability) && $capability !== '',
+        ));
+    }
+
+    /**
+     * @param list<string> $supportedWorkflowTypes
+     */
+    private function hasSupportedWorkflowTypes(array $supportedWorkflowTypes): bool
+    {
+        foreach ($supportedWorkflowTypes as $workflowType) {
+            if (is_string($workflowType) && trim($workflowType) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function resolveStandaloneWorkerId(?string $workerId): string
