@@ -29,7 +29,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.6';
+    public const VERSION = '1.7';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -335,7 +335,7 @@ final class WorkerProtocolVersion
                 'poll' => [
                     'method' => 'POST',
                     'path' => '/api/worker/query-tasks/poll',
-                    'request_fields' => ['worker_id', 'task_queue'],
+                    'request_fields' => ['worker_id', 'task_queue', 'poll_request_id'],
                     'response_fields' => ['task', 'poll_status'],
                 ],
                 'complete' => [
@@ -357,6 +357,7 @@ final class WorkerProtocolVersion
             'poll' => [
                 'leases_on_return' => true,
                 'long_poll' => self::longPollSemantics(),
+                'poll_request_idempotency' => true,
                 'empty_response_poll_status' => 'empty',
                 'requires_registered_worker' => true,
                 'requires_worker_capability' => self::CAPABILITY_QUERY_TASKS,

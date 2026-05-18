@@ -363,38 +363,45 @@ final class WorkerProtocolClient
         ?string $queue = null,
         int $timeoutSeconds = WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
         ?string $workerId = null,
+        ?string $pollRequestId = null,
     ): array {
         if ($this->embeddedBridgeMode) {
             return [];
         }
 
+        $pollRequestId = $this->stringValue($pollRequestId) ?? 'query-poll-'.bin2hex(random_bytes(16));
         $body = [
             'worker_id' => $this->resolveStandaloneWorkerId($workerId),
             'task_queue' => $this->resolveStandaloneTaskQueue($queue),
+            'poll_request_id' => $pollRequestId,
         ];
 
-        try {
-            $response = $this->workerPost(
-                $this->workerApiPath.'/query-tasks/poll',
-                $body,
-                $this->longPollRequestTimeoutSeconds($timeoutSeconds),
-            );
-        } catch (ConnectionException $exception) {
-            if ($this->isHttpTimeout($exception)) {
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $response = $this->workerPost(
+                    $this->workerApiPath.'/query-tasks/poll',
+                    $body,
+                    $this->longPollRequestTimeoutSeconds($timeoutSeconds),
+                );
+            } catch (ConnectionException $exception) {
+                if ($this->isHttpTimeout($exception)) {
+                    continue;
+                }
+
+                throw $exception;
+            }
+
+            $task = $response['task'] ?? null;
+            if (! is_array($task)) {
                 return [];
             }
 
-            throw $exception;
+            $this->rememberQueryTaskLease($task);
+
+            return [$task];
         }
 
-        $task = $response['task'] ?? null;
-        if (! is_array($task)) {
-            return [];
-        }
-
-        $this->rememberQueryTaskLease($task);
-
-        return [$task];
+        return [];
     }
 
     /**

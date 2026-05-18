@@ -17,7 +17,7 @@ final class WorkerProtocolVersionTest extends TestCase
 
     public function testVersionTracksQueryTaskWorkerProtocolShape(): void
     {
-        $this->assertSame('1.6', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.7', WorkerProtocolVersion::VERSION);
     }
 
     public function testWorkflowTaskVerbsIncludesAllBridgeMethods(): void
@@ -129,6 +129,7 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::queryTaskVerbs(), $queryTasks['verbs']);
         $this->assertSame('/api/worker/query-tasks', $queryTasks['path_prefix']);
         $this->assertSame('/api/worker/query-tasks/poll', $queryTasks['endpoints']['poll']['path']);
+        $this->assertContains('poll_request_id', $queryTasks['endpoints']['poll']['request_fields']);
         $this->assertSame(
             '/api/worker/query-tasks/{query_task_id}/complete',
             $queryTasks['endpoints']['complete']['path'],
@@ -139,6 +140,7 @@ final class WorkerProtocolVersionTest extends TestCase
         );
         $this->assertTrue($queryTasks['poll']['leases_on_return']);
         $this->assertSame(WorkerProtocolVersion::longPollSemantics(), $queryTasks['poll']['long_poll']);
+        $this->assertTrue($queryTasks['poll']['poll_request_idempotency']);
         $this->assertSame('empty', $queryTasks['poll']['empty_response_poll_status']);
         $this->assertTrue($queryTasks['poll']['requires_registered_worker']);
         $this->assertSame(

@@ -180,12 +180,13 @@ lease query work through:
 - `POST /api/worker/query-tasks/{query_task_id}/complete`
 - `POST /api/worker/query-tasks/{query_task_id}/fail`
 
-The poll request names `worker_id` and `task_queue`. A successful
-poll leases at most one query task and returns `poll_status =
-'leased'`; an empty long-poll returns `poll_status = 'empty'` with
-no task. Query task long-poll timeout semantics are the same
-clamped `WorkerProtocolVersion::longPollSemantics()` used by
-workflow and activity task polling.
+The poll request names `worker_id` and `task_queue`, and may include
+`poll_request_id` so a worker can recover the same poll result after
+a local HTTP timeout. A successful poll leases at most one query task
+and returns `poll_status = 'leased'`; an empty long-poll returns
+`poll_status = 'empty'` with no task. Query task long-poll timeout
+semantics are the same clamped `WorkerProtocolVersion::longPollSemantics()`
+used by workflow and activity task polling.
 
 Each leased query task carries `query_task_id`,
 `query_task_attempt`, `lease_owner`, `workflow_id`, `run_id`,

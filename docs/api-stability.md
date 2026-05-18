@@ -202,10 +202,11 @@ registration, heartbeat, workflow-task polling/history/complete/fail,
 activity-task polling/heartbeat/complete/fail, and query-task
 polling/complete/fail all use `POST /api/worker/...` with the
 worker-protocol headers. Standalone `poll*` methods return leased tasks from
-the server's `task` envelope; the client caches the returned lease fields so
-follow-up history, heartbeat, complete, and fail calls can send the required
-`lease_owner`, `workflow_task_attempt`, `activity_attempt_id`, and
-`query_task_attempt` values.
+the server's `task` envelope; query polling uses a stable `poll_request_id`
+to recover a leased task after a local HTTP timeout. The client caches the
+returned lease fields so follow-up history, heartbeat, complete, and fail
+calls can send the required `lease_owner`, `workflow_task_attempt`,
+`activity_attempt_id`, and `query_task_attempt` values.
 `WorkflowQueryTaskExecutor` is the stable PHP worker shim for the
 `query_tasks` capability. It accepts the server-routed query task envelope,
 replays the supplied history export in query mode, validates query targets

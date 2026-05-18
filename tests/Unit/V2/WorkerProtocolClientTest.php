@@ -97,7 +97,11 @@ final class WorkerProtocolClientTest extends TestCase
         });
 
         $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
-        $tasks = $client->pollQueryTasks(queue: 'polyglot', workerId: 'php-worker');
+        $tasks = $client->pollQueryTasks(
+            queue: 'polyglot',
+            workerId: 'php-worker',
+            pollRequestId: 'query-poll-request-1',
+        );
         $complete = $client->completeQueryTask('query-task-1', 'waiting', [
             'codec' => 'avro',
             'blob' => 'encoded-result',
@@ -110,7 +114,11 @@ final class WorkerProtocolClientTest extends TestCase
             [
                 'method' => 'POST',
                 'url' => 'http://server:8080/api/worker/query-tasks/poll',
-                'body' => ['worker_id' => 'php-worker', 'task_queue' => 'polyglot'],
+                'body' => [
+                    'worker_id' => 'php-worker',
+                    'task_queue' => 'polyglot',
+                    'poll_request_id' => 'query-poll-request-1',
+                ],
             ],
             [
                 'method' => 'POST',
@@ -154,7 +162,11 @@ final class WorkerProtocolClientTest extends TestCase
         });
 
         $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
-        $client->pollQueryTasks(queue: 'polyglot', workerId: 'php-worker');
+        $client->pollQueryTasks(
+            queue: 'polyglot',
+            workerId: 'php-worker',
+            pollRequestId: 'query-poll-request-2',
+        );
         $failure = $client->failQueryTask(
             'query-task-1',
             'No query handler.',
@@ -170,7 +182,11 @@ final class WorkerProtocolClientTest extends TestCase
             [
                 'method' => 'POST',
                 'url' => 'http://server:8080/api/worker/query-tasks/poll',
-                'body' => ['worker_id' => 'php-worker', 'task_queue' => 'polyglot'],
+                'body' => [
+                    'worker_id' => 'php-worker',
+                    'task_queue' => 'polyglot',
+                    'poll_request_id' => 'query-poll-request-2',
+                ],
             ],
             [
                 'method' => 'POST',
@@ -189,6 +205,40 @@ final class WorkerProtocolClientTest extends TestCase
                 ],
             ],
         ], $requests);
+    }
+
+    public function testStandaloneQueryPollRetriesTimeoutWithSamePollRequestId(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = $request->data();
+
+            if (count($requests) === 1) {
+                throw new ConnectionException('cURL error 28: Operation timed out');
+            }
+
+            return $http->response([
+                'task' => [
+                    'query_task_id' => 'query-task-retry',
+                    'query_task_attempt' => 1,
+                    'lease_owner' => 'php-worker',
+                ],
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $tasks = $client->pollQueryTasks(queue: 'polyglot', workerId: 'php-worker');
+
+        $this->assertCount(1, $tasks);
+        $this->assertSame('query-task-retry', $tasks[0]['query_task_id']);
+        $this->assertCount(2, $requests);
+        $this->assertSame('php-worker', $requests[0]['worker_id']);
+        $this->assertSame('polyglot', $requests[0]['task_queue']);
+        $this->assertIsString($requests[0]['poll_request_id']);
+        $this->assertNotSame('', $requests[0]['poll_request_id']);
+        $this->assertSame($requests[0]['poll_request_id'], $requests[1]['poll_request_id']);
     }
 
     public function testPollWorkflowTasksUsesStandaloneWorkerApiByDefault(): void
