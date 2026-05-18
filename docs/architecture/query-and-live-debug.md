@@ -190,7 +190,10 @@ used by workflow and activity task polling.
 `WorkerProtocolClient::registerWorker()` advertises `query_tasks` by
 default for standalone PHP workers that register workflow types, and
 `pollQueryTasks()` sends a stable `poll_request_id` for every query
-poll attempt.
+poll attempt. When the standalone server only knows an external workflow type
+key, PHP workers should pass the same `workflow_type => workflow_class` registry
+to `WorkflowQueryTaskExecutor` so query-task replay can see the class's declared
+queries before invoking the handler.
 
 Each leased query task carries `query_task_id`,
 `query_task_attempt`, `lease_owner`, `workflow_id`, `run_id`,

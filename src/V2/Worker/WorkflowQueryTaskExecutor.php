@@ -14,10 +14,11 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
-use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerProtocolVersion;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowQueryContract;
 use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\Workflow;
 
 /**
  * Executes server-routed query tasks inside a standalone PHP worker process.
@@ -31,6 +32,19 @@ use Workflow\V2\Support\WorkflowReplayer;
 final class WorkflowQueryTaskExecutor
 {
     public const CAPABILITY = WorkerProtocolVersion::CAPABILITY_QUERY_TASKS;
+
+    /**
+     * @var array<string, class-string<Workflow>>
+     */
+    private readonly array $workflowClassesByType;
+
+    /**
+     * @param array<string, class-string<Workflow>> $workflowClassesByType
+     */
+    public function __construct(array $workflowClassesByType = [])
+    {
+        $this->workflowClassesByType = $this->normalizeWorkflowClasses($workflowClassesByType);
+    }
 
     /**
      * @param array<string, mixed> $task
@@ -111,10 +125,153 @@ final class WorkflowQueryTaskExecutor
     private function runFromTask(array $task): WorkflowRun
     {
         $historyExport = $task['history_export'] ?? null;
+        $historyExport = is_array($historyExport) ? $historyExport : $this->historyExportFromTask($task);
 
-        return (new WorkflowReplayer())->runFromHistoryExport(
-            is_array($historyExport) ? $historyExport : $this->historyExportFromTask($task),
-        );
+        $workflowType = $this->workflowTypeFromHistoryExport($historyExport)
+            ?? $this->stringValue($task['workflow_type'] ?? null);
+        $workflowClass = $workflowType !== null
+            ? ($this->workflowClassesByType[$workflowType] ?? null)
+            : null;
+
+        if ($workflowClass !== null) {
+            $historyExport = $this->historyExportWithWorkflowClass($historyExport, $workflowType, $workflowClass);
+        }
+
+        return (new WorkflowReplayer())->runFromHistoryExport($historyExport);
+    }
+
+    /**
+     * @param array<string, mixed> $historyExport
+     * @param class-string<Workflow> $workflowClass
+     * @return array<string, mixed>
+     */
+    private function historyExportWithWorkflowClass(
+        array $historyExport,
+        string $workflowType,
+        string $workflowClass,
+    ): array {
+        $workflow = is_array($historyExport['workflow'] ?? null)
+            ? $historyExport['workflow']
+            : [];
+        $workflow['workflow_type'] = $workflowType;
+        $workflow['workflow_class'] = $workflowClass;
+        $historyExport['workflow'] = $workflow;
+
+        $contract = WorkflowDefinition::commandContract($workflowClass);
+        $fingerprint = WorkflowDefinition::fingerprint($workflowClass);
+        $events = is_array($historyExport['history_events'] ?? null)
+            ? $historyExport['history_events']
+            : [];
+
+        foreach ($events as $index => $event) {
+            if (! is_array($event) || $this->historyEventType($event) !== 'WorkflowStarted') {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $payload['workflow_class'] = $workflowClass;
+            $payload['workflow_type'] = $workflowType;
+
+            if ($fingerprint !== null) {
+                $payload['workflow_definition_fingerprint'] = $fingerprint;
+            }
+
+            if (! $this->hasStrictDeclaredContract($payload)) {
+                $payload['declared_queries'] = $contract['queries'];
+                $payload['declared_query_contracts'] = $contract['query_contracts'];
+                $payload['declared_signals'] = $contract['signals'];
+                $payload['declared_signal_contracts'] = $contract['signal_contracts'];
+                $payload['declared_updates'] = $contract['updates'];
+                $payload['declared_update_contracts'] = $contract['update_contracts'];
+                $payload['declared_entry_method'] = $contract['entry_method'];
+                $payload['declared_entry_mode'] = $contract['entry_mode'];
+                $payload['declared_entry_declaring_class'] = $contract['entry_declaring_class'];
+            }
+
+            $event['payload'] = $payload;
+            $events[$index] = $event;
+        }
+
+        $historyExport['history_events'] = $events;
+
+        return $historyExport;
+    }
+
+    /**
+     * @param array<string, class-string<Workflow>> $workflowClassesByType
+     * @return array<string, class-string<Workflow>>
+     */
+    private function normalizeWorkflowClasses(array $workflowClassesByType): array
+    {
+        $normalized = [];
+
+        foreach ($workflowClassesByType as $workflowType => $workflowClass) {
+            if (! is_string($workflowType) || trim($workflowType) === '') {
+                throw new LogicException(
+                    'Workflow query task executor registry keys must be non-empty workflow types.',
+                );
+            }
+
+            if (! is_string($workflowClass) || ! is_subclass_of($workflowClass, Workflow::class)) {
+                throw new LogicException(sprintf(
+                    'Workflow query task executor registry entry [%s] must point to a loadable %s subclass.',
+                    trim($workflowType),
+                    Workflow::class,
+                ));
+            }
+
+            /** @var class-string<Workflow> $workflowClass */
+            $normalized[trim($workflowType)] = $workflowClass;
+        }
+
+        ksort($normalized);
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<string, mixed> $historyExport
+     */
+    private function workflowTypeFromHistoryExport(array $historyExport): ?string
+    {
+        $workflow = is_array($historyExport['workflow'] ?? null)
+            ? $historyExport['workflow']
+            : [];
+
+        return $this->stringValue($workflow['workflow_type'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     */
+    private function historyEventType(array $event): ?string
+    {
+        return $this->stringValue($event['type'] ?? null)
+            ?? $this->stringValue($event['event_type'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function hasStrictDeclaredContract(array $payload): bool
+    {
+        foreach ([
+            'declared_queries',
+            'declared_query_contracts',
+            'declared_signals',
+            'declared_signal_contracts',
+            'declared_updates',
+            'declared_update_contracts',
+            'declared_entry_method',
+            'declared_entry_mode',
+            'declared_entry_declaring_class',
+        ] as $key) {
+            if (! array_key_exists($key, $payload)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

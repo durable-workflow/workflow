@@ -29,6 +29,50 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
         );
     }
 
+    public function testExecutorUsesRegisteredExternalWorkflowClassForQueryDeclarations(): void
+    {
+        $result = (new WorkflowQueryTaskExecutor([
+            'polyglot.php.signal-query' => TestQueryWorkflow::class,
+        ]))->execute($this->externalQueryTask());
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('waiting-for-name', $result['result'] ?? null);
+    }
+
+    public function testExecutorReplaysSignalsForRegisteredExternalWorkflowClass(): void
+    {
+        $result = (new WorkflowQueryTaskExecutor([
+            'polyglot.php.signal-query' => TestQueryWorkflow::class,
+        ]))->execute($this->externalQueryTask([
+            'query_name' => 'events-starting-with',
+            'query_arguments' => [
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', [
+                    'prefix' => 'name:',
+                ]),
+            ],
+            'history_export' => [
+                'history_events' => [
+                    1 => [
+                        'id' => 'event-signal-applied',
+                        'sequence' => 2,
+                        'type' => HistoryEventType::SignalApplied->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'signal_name' => 'name-provided',
+                            'signal_wait_id' => 'external-name-provided',
+                            'value' => Serializer::serializeWithCodec('avro', 'Ada'),
+                        ],
+                        'recorded_at' => '2026-05-17T00:01:00+00:00',
+                    ],
+                ],
+            ],
+        ]));
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame(1, $result['result'] ?? null);
+    }
+
     public function testExecutorFailsUnknownQueryWithoutThrowing(): void
     {
         $result = (new WorkflowQueryTaskExecutor())->execute($this->queryTask([
@@ -159,5 +203,36 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
                 ],
             ],
         ], $overrides);
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     * @return array<string, mixed>
+     */
+    private function externalQueryTask(array $overrides = []): array
+    {
+        return array_replace_recursive($this->queryTask([
+            'workflow_type' => 'polyglot.php.signal-query',
+            'workflow_class' => 'polyglot.php.signal-query',
+            'history_export' => [
+                'workflow' => [
+                    'workflow_type' => 'polyglot.php.signal-query',
+                    'workflow_class' => 'polyglot.php.signal-query',
+                ],
+                'history_events' => [
+                    [
+                        'id' => 'event-started',
+                        'sequence' => 1,
+                        'type' => HistoryEventType::WorkflowStarted->value,
+                        'payload' => [
+                            'workflow_type' => 'polyglot.php.signal-query',
+                            'workflow_class' => 'polyglot.php.signal-query',
+                            'payload_codec' => 'avro',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:00+00:00',
+                    ],
+                ],
+            ],
+        ]), $overrides);
     }
 }

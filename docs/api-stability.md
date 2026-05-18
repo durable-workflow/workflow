@@ -216,7 +216,11 @@ calls can send the required `lease_owner`, `workflow_task_attempt`,
 replays the supplied history export in query mode, validates query targets
 and arguments against the same contract as `WorkflowStub::queryWithArguments`,
 and returns either an encoded result envelope or a typed query failure for
-`WorkerProtocolClient` to complete or fail the query task.
+`WorkerProtocolClient` to complete or fail the query task. Standalone workers
+that register external workflow type keys can construct it with a
+`workflow_type => workflow_class` map; the executor uses that map to attach the
+PHP class and declared signal/query/update contract to service-mode query-task
+history before replay.
 Embedded package installs that need the `/webhooks` bridge contract must opt
 into embedded bridge mode explicitly; in that mode `poll*` methods return
 ready task opportunities as `tasks` lists and workers explicitly claim a task
