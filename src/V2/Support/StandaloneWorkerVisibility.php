@@ -224,7 +224,14 @@ final class StandaloneWorkerVisibility
             return null;
         }
 
-        $allowed = ['cpu_percent', 'memory_bytes', 'process_uptime_seconds', 'process_id', 'host'];
+        $allowed = [
+            'cpu_percent',
+            'memory_bytes',
+            'process_uptime_seconds',
+            'process_id',
+            'host',
+            'process_started_at',
+        ];
         $clean = [];
 
         foreach ($allowed as $key) {
@@ -232,7 +239,10 @@ final class StandaloneWorkerVisibility
                 continue;
             }
 
-            if ($key === 'host' && is_string($value[$key]) && trim($value[$key]) !== '') {
+            if (($key === 'host' || $key === 'process_started_at')
+                && is_string($value[$key])
+                && trim($value[$key]) !== ''
+            ) {
                 $clean[$key] = mb_substr(trim($value[$key]), 0, 255);
 
                 continue;

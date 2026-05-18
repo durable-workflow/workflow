@@ -47,7 +47,8 @@ final class WorkerHeartbeatTelemetryTest extends TestCase
 
     public function test_process_metrics_include_memory_pid_and_optional_uptime(): void
     {
-        $metrics = WorkerHeartbeatTelemetry::processMetrics(startedAt: time() - 30);
+        $startedAt = time() - 30;
+        $metrics = WorkerHeartbeatTelemetry::processMetrics(startedAt: $startedAt);
 
         self::assertArrayHasKey('memory_bytes', $metrics);
         self::assertArrayHasKey('process_id', $metrics);
@@ -55,6 +56,7 @@ final class WorkerHeartbeatTelemetryTest extends TestCase
         self::assertGreaterThan(0, $metrics['process_id']);
 
         self::assertArrayHasKey('process_uptime_seconds', $metrics);
+        self::assertSame(gmdate('Y-m-d\TH:i:s\Z', $startedAt), $metrics['process_started_at']);
         self::assertGreaterThanOrEqual(0, $metrics['process_uptime_seconds']);
         self::assertLessThan(120, $metrics['process_uptime_seconds']);
     }
@@ -64,6 +66,7 @@ final class WorkerHeartbeatTelemetryTest extends TestCase
         $metrics = WorkerHeartbeatTelemetry::processMetrics();
 
         self::assertArrayNotHasKey('process_uptime_seconds', $metrics);
+        self::assertArrayNotHasKey('process_started_at', $metrics);
     }
 
     public function test_process_metrics_cpu_percent_uses_started_at_for_long_running_workers(): void

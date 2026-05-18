@@ -66,11 +66,12 @@ final class WorkerHeartbeatTelemetry
      * runtime APIs that PHP exposes everywhere (no extension required).
      *
      * The optional `$startedAt` argument is a Unix timestamp captured at
-     * worker boot; it is used to derive `process_uptime_seconds` and to
-     * anchor the wall-clock denominator for `cpu_percent` so long-running
-     * workers see the lifetime average rather than a value inflated by
-     * the first telemetry call. When `$startedAt` is null the uptime
-     * entry is omitted and `cpu_percent` falls back to a denominator
+     * worker boot; it is used to derive `process_uptime_seconds`, report
+     * the stable `process_started_at` identity field, and anchor the
+     * wall-clock denominator for `cpu_percent` so long-running workers see
+     * the lifetime average rather than a value inflated by the first
+     * telemetry call. When `$startedAt` is null the uptime and process-start
+     * entries are omitted and `cpu_percent` falls back to a denominator
      * cached on the first call.
      *
      * @return array<string, float|int|string>
@@ -89,6 +90,7 @@ final class WorkerHeartbeatTelemetry
 
         if ($startedAt !== null) {
             $metrics['process_uptime_seconds'] = max(0, time() - $startedAt);
+            $metrics['process_started_at'] = gmdate('Y-m-d\TH:i:s\Z', $startedAt);
         }
 
         $host = self::host();
