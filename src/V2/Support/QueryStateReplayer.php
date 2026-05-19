@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Workflow;
 
 final class QueryStateReplayer
@@ -46,6 +47,7 @@ final class QueryStateReplayer
             'timers',
             'failures',
             'commands',
+            'signals',
             'historyEvents',
             'childLinks.childRun.instance.currentRun',
             'childLinks.childRun.failures',
@@ -658,16 +660,107 @@ final class QueryStateReplayer
     {
         $serialized = $event->payload['value'] ?? null;
 
-        if (! is_string($serialized)) {
+        if (is_string($serialized)) {
+            return WorkflowPayloadDecoder::unserializeWithRun($serialized, $run, [
+                'workflow_id' => $run?->workflow_instance_id,
+                'run_id' => $run?->id,
+                'event_id' => $event->id,
+                'signal_name' => $this->stringValue($event->payload['signal_name'] ?? null),
+            ]);
+        }
+
+        $arguments = $event->payload['arguments'] ?? null;
+
+        if ($arguments !== null) {
+            return $this->signalValueFromArguments(
+                $arguments,
+                $this->stringValue($event->payload['payload_codec'] ?? null),
+                $run,
+            );
+        }
+
+        $signal = $this->signalRecordForEvent($event, $run);
+
+        if (! $signal instanceof WorkflowSignal) {
             return null;
         }
 
-        return WorkflowPayloadDecoder::unserializeWithRun($serialized, $run, [
-            'workflow_id' => $run?->workflow_instance_id,
-            'run_id' => $run?->id,
-            'event_id' => $event->id,
-            'signal_name' => $this->stringValue($event->payload['signal_name'] ?? null),
-        ]);
+        return $this->signalValueFromArguments(
+            $signal->arguments,
+            $this->stringValue($signal->payload_codec ?? null),
+            $run,
+        );
+    }
+
+    private function signalRecordForEvent(WorkflowHistoryEvent $event, ?WorkflowRun $run): ?WorkflowSignal
+    {
+        $signals = $run?->signals ?? collect();
+        $signalId = $this->stringValue($event->payload['signal_id'] ?? null);
+
+        if ($signalId !== null) {
+            /** @var WorkflowSignal|null $signal */
+            $signal = $signals->firstWhere('id', $signalId);
+
+            if ($signal instanceof WorkflowSignal) {
+                return $signal;
+            }
+        }
+
+        $commandId = $this->stringValue($event->payload['workflow_command_id'] ?? null)
+            ?? $this->stringValue($event->workflow_command_id ?? null);
+
+        if ($commandId !== null) {
+            /** @var WorkflowSignal|null $signal */
+            $signal = $signals->firstWhere('workflow_command_id', $commandId);
+
+            if ($signal instanceof WorkflowSignal) {
+                return $signal;
+            }
+        }
+
+        $signalName = $this->stringValue($event->payload['signal_name'] ?? null);
+        $signalWaitId = $this->stringValue($event->payload['signal_wait_id'] ?? null);
+
+        if ($signalName === null || $signalWaitId === null) {
+            return null;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = $signals->first(static fn (mixed $candidate): bool => $candidate instanceof WorkflowSignal
+            && $candidate->signal_name === $signalName
+            && $candidate->signal_wait_id === $signalWaitId);
+
+        return $signal instanceof WorkflowSignal ? $signal : null;
+    }
+
+    private function signalValueFromArguments(mixed $payload, ?string $payloadCodec, ?WorkflowRun $run): mixed
+    {
+        $codec = $payloadCodec ?? $this->stringValue($run?->payload_codec ?? null);
+        $serialized = ExternalPayloads::payloadBlob(
+            $payload,
+            $codec,
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
+
+        if ($serialized === null) {
+            return true;
+        }
+
+        $arguments = $codec !== null
+            ? Serializer::unserializeWithCodec($codec, $serialized)
+            : $this->unserializeWithRun($serialized, $run);
+
+        if (! is_array($arguments)) {
+            return $arguments;
+        }
+
+        $arguments = array_values($arguments);
+
+        if ($arguments === []) {
+            return true;
+        }
+
+        return count($arguments) === 1 ? $arguments[0] : $arguments;
     }
 
     private function activityResult(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed

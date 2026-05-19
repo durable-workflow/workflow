@@ -48,7 +48,7 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
             'query_arguments' => [
                 'codec' => 'avro',
                 'blob' => Serializer::serializeWithCodec('avro', [
-                    'prefix' => 'name:',
+                    'prefix' => 'name:Ada',
                 ]),
             ],
             'history_export' => [
@@ -64,6 +64,51 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
                             'value' => Serializer::serializeWithCodec('avro', 'Ada'),
                         ],
                         'recorded_at' => '2026-05-17T00:01:00+00:00',
+                    ],
+                ],
+            ],
+        ]));
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame(1, $result['result'] ?? null);
+    }
+
+    public function testExecutorDecodesSparseSignalAppliedArgumentsFromHistoryExportSignals(): void
+    {
+        $result = (new WorkflowQueryTaskExecutor([
+            'polyglot.php.signal-query' => TestQueryWorkflow::class,
+        ]))->execute($this->externalQueryTask([
+            'query_name' => 'events-starting-with',
+            'query_arguments' => [
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', [
+                    'prefix' => 'name:Ada',
+                ]),
+            ],
+            'history_export' => [
+                'history_events' => [
+                    1 => [
+                        'id' => 'event-signal-applied',
+                        'sequence' => 2,
+                        'type' => HistoryEventType::SignalApplied->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'signal_id' => 'signal-history-export-1',
+                            'signal_name' => 'name-provided',
+                            'signal_wait_id' => 'external-name-provided',
+                        ],
+                        'recorded_at' => '2026-05-17T00:01:00+00:00',
+                    ],
+                ],
+                'signals' => [
+                    [
+                        'id' => 'signal-history-export-1',
+                        'name' => 'name-provided',
+                        'signal_wait_id' => 'external-name-provided',
+                        'status' => 'applied',
+                        'workflow_sequence' => 1,
+                        'payload_codec' => 'avro',
+                        'arguments' => Serializer::serializeWithCodec('avro', ['Ada']),
                     ],
                 ],
             ],

@@ -15,6 +15,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTimer;
 
 /**
@@ -104,11 +105,12 @@ final class WorkflowReplayer
 
         $run->setRelation('historyEvents', $this->historyEvents($historyExport, $run));
         $run->setRelation('commands', $this->commands($historyExport, $run));
+        $run->setRelation('signals', $this->signals($historyExport, $run));
         $run->setRelation('activityExecutions', $this->activities($historyExport, $run));
         $run->setRelation('timers', $this->timers($historyExport, $run));
         $run->setRelation('failures', $this->failures($historyExport, $run));
 
-        foreach (['tasks', 'signals', 'updates', 'childLinks', 'parentLinks'] as $relation) {
+        foreach (['tasks', 'updates', 'childLinks', 'parentLinks'] as $relation) {
             $run->setRelation($relation, collect());
         }
 
@@ -178,6 +180,50 @@ final class WorkflowReplayer
                     'accepted_at' => self::timestamp($command['accepted_at'] ?? null),
                     'applied_at' => self::timestamp($command['applied_at'] ?? null),
                     'rejected_at' => self::timestamp($command['rejected_at'] ?? null),
+                ]);
+
+                $model->setRelation('run', $run);
+
+                return $model;
+            })
+            ->sortBy('command_sequence')
+            ->values();
+    }
+
+    /**
+     * @param array<string, mixed> $historyExport
+     * @return Collection<int, WorkflowSignal>
+     */
+    private function signals(array $historyExport, WorkflowRun $run): Collection
+    {
+        return collect(self::arrayValue($historyExport['signals'] ?? null))
+            ->filter(static fn (mixed $item): bool => is_array($item))
+            ->map(function (array $signal) use ($run): WorkflowSignal {
+                /** @var WorkflowSignal $model */
+                $model = $this->existingModel(WorkflowSignal::class, [
+                    'id' => self::requiredString($signal, 'id', 'signals[].id'),
+                    'workflow_instance_id' => $run->workflow_instance_id,
+                    'workflow_run_id' => $run->id,
+                    'workflow_command_id' => self::stringValue($signal['command_id'] ?? null),
+                    'command_sequence' => self::intValue($signal['command_sequence'] ?? null),
+                    'workflow_sequence' => self::intValue($signal['workflow_sequence'] ?? null),
+                    'signal_name' => self::stringValue($signal['name'] ?? null)
+                        ?? self::stringValue($signal['signal_name'] ?? null),
+                    'signal_wait_id' => self::stringValue($signal['signal_wait_id'] ?? null),
+                    'target_scope' => self::stringValue($signal['target_scope'] ?? null),
+                    'requested_workflow_run_id' => self::stringValue($signal['requested_run_id'] ?? null),
+                    'resolved_workflow_run_id' => self::stringValue($signal['resolved_run_id'] ?? null),
+                    'status' => self::stringValue($signal['source_status'] ?? null)
+                        ?? self::stringValue($signal['status'] ?? null),
+                    'outcome' => self::stringValue($signal['outcome'] ?? null),
+                    'rejection_reason' => self::stringValue($signal['rejection_reason'] ?? null),
+                    'validation_errors' => self::jsonValue(self::arrayValue($signal['validation_errors'] ?? null)),
+                    'payload_codec' => self::stringValue($signal['payload_codec'] ?? null),
+                    'arguments' => self::payloadRowValue($signal['arguments'] ?? null),
+                    'received_at' => self::timestamp($signal['received_at'] ?? null),
+                    'applied_at' => self::timestamp($signal['applied_at'] ?? null),
+                    'rejected_at' => self::timestamp($signal['rejected_at'] ?? null),
+                    'closed_at' => self::timestamp($signal['closed_at'] ?? null),
                 ]);
 
                 $model->setRelation('run', $run);
