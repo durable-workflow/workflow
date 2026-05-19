@@ -20,6 +20,7 @@ use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
@@ -33,6 +34,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -913,7 +915,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     $this->applyWorkflowFailure($run, $task, $terminal);
                 }
             } else {
-                $this->markRunWaiting($run, $task);
+                $this->markRunWaiting($run, $task, $parsed['non_terminal'], $createdTaskIds);
             }
 
             return [
@@ -1052,8 +1054,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
     }
 
-    private function markRunWaiting(WorkflowRun $run, WorkflowTask $task): void
-    {
+    /**
+     * @param list<array{type: string, ...}> $nonTerminalCommands
+     * @param list<string> $createdTaskIds
+     */
+    private function markRunWaiting(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $nonTerminalCommands,
+        array &$createdTaskIds,
+    ): void {
         $run->forceFill([
             'status' => RunStatus::Waiting,
             'last_progress_at' => now(),
@@ -1064,7 +1074,123 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'lease_expires_at' => null,
         ])->save();
 
+        if ($this->waitingRunCanAdvanceFromSignal($run, $nonTerminalCommands)) {
+            $this->createPendingSignalResumeTask($run, $createdTaskIds, self::workflowSignalIdForTask($task));
+        }
+
         self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $nonTerminalCommands
+     */
+    private function waitingRunCanAdvanceFromSignal(WorkflowRun $run, array $nonTerminalCommands): bool
+    {
+        $latestOpenedWait = null;
+
+        foreach ($nonTerminalCommands as $command) {
+            $type = $command['type'] ?? null;
+
+            if ($type === 'open_condition_wait') {
+                $latestOpenedWait = 'condition';
+            } elseif (in_array($type, ['schedule_activity', 'start_timer', 'start_child_workflow'], true)) {
+                $latestOpenedWait = 'non_signal';
+            }
+        }
+
+        if ($latestOpenedWait !== null) {
+            return $latestOpenedWait === 'condition';
+        }
+
+        return self::hasOpenSignalAdvanceableWait($run);
+    }
+
+    private static function hasOpenSignalAdvanceableWait(WorkflowRun $run): bool
+    {
+        foreach (ConditionWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) === 'open' && ($wait['source_status'] ?? null) !== 'timeout_fired') {
+                return true;
+            }
+        }
+
+        foreach (SignalWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) === 'open') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function workflowSignalIdForTask(WorkflowTask $task): ?string
+    {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $signalId = $payload['workflow_signal_id'] ?? $payload['resume_source_id'] ?? null;
+
+        return is_string($signalId) && $signalId !== ''
+            ? $signalId
+            : null;
+    }
+
+    /**
+     * Signals can be accepted while a workflow task is already leased. In that
+     * case the signal path cannot create a second workflow task. Completing
+     * the leased task only enqueues the pending signal when the workflow is
+     * now parked at a wait that signal history can advance.
+     *
+     * @param list<string> $createdTaskIds
+     */
+    private function createPendingSignalResumeTask(
+        WorkflowRun $run,
+        array &$createdTaskIds,
+        ?string $alreadyAttemptedSignalId = null,
+    ): void
+    {
+        if (self::hasOpenWorkflowTask($run->id)) {
+            return;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', SignalStatus::Received->value)
+            ->whereNull('closed_at')
+            ->orderBy('received_at')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->first();
+
+        if (! $signal instanceof WorkflowSignal) {
+            return;
+        }
+
+        if ($alreadyAttemptedSignalId !== null && $signal->id === $alreadyAttemptedSignalId) {
+            return;
+        }
+
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        $createdTaskIds[] = $signalTask->id;
+    }
+
+    private static function hasOpenWorkflowTask(string $runId): bool
+    {
+        return WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->exists();
     }
 
     /**

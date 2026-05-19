@@ -486,7 +486,7 @@ final class WorkflowExecutor
                 }
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
-                return $this->waitForNextResumeSource($run, $task);
+                return $this->waitForNextResumeSource($run, $task, true);
             }
 
             if ($current instanceof SideEffectCall) {
@@ -874,7 +874,7 @@ final class WorkflowExecutor
                 }
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
-                return $this->waitForNextResumeSource($run, $task);
+                return $this->waitForNextResumeSource($run, $task, true);
             }
 
             if ($current instanceof ChildWorkflowCall) {
@@ -1562,7 +1562,7 @@ final class WorkflowExecutor
             'compatibility' => $run->compatibility,
         ]);
 
-        $this->markRunWaiting($run, $task);
+        $this->markRunWaiting($run, $task, true);
 
         return $timerTask;
     }
@@ -1614,7 +1614,7 @@ final class WorkflowExecutor
             'compatibility' => $run->compatibility,
         ]);
 
-        $this->markRunWaiting($run, $task);
+        $this->markRunWaiting($run, $task, true);
 
         return $timerTask;
     }
@@ -2308,14 +2308,18 @@ final class WorkflowExecutor
         ], static fn ($value): bool => $value !== null), $task);
     }
 
-    private function waitForNextResumeSource(WorkflowRun $run, WorkflowTask $task): ?WorkflowTask
+    private function waitForNextResumeSource(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        bool $signalsCanAdvance = false,
+    ): ?WorkflowTask
     {
-        $this->markRunWaiting($run, $task);
+        $this->markRunWaiting($run, $task, $signalsCanAdvance);
 
         return null;
     }
 
-    private function markRunWaiting(WorkflowRun $run, WorkflowTask $task): void
+    private function markRunWaiting(WorkflowRun $run, WorkflowTask $task, bool $signalsCanAdvance = false): void
     {
         $run->forceFill([
             'status' => RunStatus::Waiting,
@@ -2326,9 +2330,79 @@ final class WorkflowExecutor
             'lease_expires_at' => null,
         ])->save();
 
+        $signalTask = $signalsCanAdvance
+            ? $this->createPendingSignalResumeTask($run, self::workflowSignalIdForTask($task))
+            : null;
+
+        if ($signalTask instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($signalTask);
+        }
+
         $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+    }
+
+    private function createPendingSignalResumeTask(
+        WorkflowRun $run,
+        ?string $alreadyAttemptedSignalId = null,
+    ): ?WorkflowTask
+    {
+        if (self::hasOpenWorkflowTask($run->id)) {
+            return null;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', SignalStatus::Received->value)
+            ->whereNull('closed_at')
+            ->orderBy('received_at')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->first();
+
+        if (! $signal instanceof WorkflowSignal) {
+            return null;
+        }
+
+        if ($alreadyAttemptedSignalId !== null && $signal->id === $alreadyAttemptedSignalId) {
+            return null;
+        }
+
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+
+        return $signalTask;
+    }
+
+    private static function workflowSignalIdForTask(WorkflowTask $task): ?string
+    {
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $signalId = $payload['workflow_signal_id'] ?? $payload['resume_source_id'] ?? null;
+
+        return is_string($signalId) && $signalId !== ''
+            ? $signalId
+            : null;
+    }
+
+    private static function hasOpenWorkflowTask(string $runId): bool
+    {
+        return WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->exists();
     }
 
     private function continueAsNew(

@@ -32,6 +32,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -2872,6 +2873,114 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
     }
 
+    public function testCompletingLeasedTaskAfterSignalArrivesEnqueuesSignalResumeTask(): void
+    {
+        $run = $this->createWaitingRun();
+        $leasedTask = $this->createLeasedTask($run);
+        $signal = $this->recordReceivedSignal($run);
+
+        $result = $this->bridge->complete($leasedTask->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'approval.ready',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        $signalTask = WorkflowTask::query()
+            ->whereKey($result['created_task_ids'][0])
+            ->firstOrFail();
+
+        $this->assertSame(TaskType::Workflow, $signalTask->task_type);
+        $this->assertSame(TaskStatus::Ready, $signalTask->status);
+        $this->assertSame('signal', $signalTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame('workflow_signal', $signalTask->payload['resume_source_kind'] ?? null);
+        $this->assertSame($signal->id, $signalTask->payload['resume_source_id'] ?? null);
+        $this->assertSame($signal->id, $signalTask->payload['workflow_signal_id'] ?? null);
+        $this->assertSame('advance', $signalTask->payload['signal_name'] ?? null);
+        $this->assertSame('signal-wait-race', $signalTask->payload['signal_wait_id'] ?? null);
+    }
+
+    public function testCompletingLeasedTaskAfterSignalArrivesForActivityWaitDoesNotEnqueueSignalResumeTask(): void
+    {
+        $run = $this->createWaitingRun();
+        $leasedTask = $this->createLeasedTask($run);
+        $signal = $this->recordReceivedSignal($run);
+
+        $result = $this->bridge->complete($leasedTask->id, [
+            [
+                'type' => 'schedule_activity',
+                'activity_type' => 'tests.example.activity',
+                'arguments' => Serializer::serialize(['Ada']),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        $activityTask = WorkflowTask::query()
+            ->whereKey($result['created_task_ids'][0])
+            ->firstOrFail();
+        $openSignalTaskExists = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->get()
+            ->contains(
+                static fn (WorkflowTask $task): bool => ($task->payload['workflow_signal_id'] ?? null)
+                    === $signal->id
+            );
+
+        $this->assertSame(TaskType::Activity, $activityTask->task_type);
+        $this->assertFalse($openSignalTaskExists);
+    }
+
+    public function testCompletingUnconsumedSignalResumeDoesNotRequeueSameSignal(): void
+    {
+        $run = $this->createWaitingRun();
+        $signal = $this->recordReceivedSignal($run);
+        $resumeTask = $this->createLeasedTask($run);
+
+        $resumeTask->forceFill([
+            'payload' => [
+                'workflow_wait_kind' => 'signal',
+                'open_wait_id' => 'signal-application:' . $signal->id,
+                'resume_source_kind' => 'workflow_signal',
+                'resume_source_id' => $signal->id,
+                'workflow_signal_id' => $signal->id,
+                'signal_name' => $signal->signal_name,
+                'signal_wait_id' => $signal->signal_wait_id,
+                'workflow_command_id' => $signal->workflow_command_id,
+            ],
+        ])->save();
+
+        $result = $this->bridge->complete($resumeTask->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'approval.ready',
+            ],
+        ]);
+
+        $openSignalTaskExists = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->get()
+            ->contains(
+                static fn (WorkflowTask $task): bool => ($task->payload['workflow_signal_id'] ?? null)
+                    === $signal->id
+            );
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertSame([], $result['created_task_ids']);
+        $this->assertFalse($openSignalTaskExists);
+    }
+
     public function testSignalResumeCompletionRecordsSatisfiedConditionWaitAndCancelsTimeout(): void
     {
         $run = $this->createWaitingRun();
@@ -4190,6 +4299,55 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ]);
 
         return $task;
+    }
+
+    private function recordReceivedSignal(
+        WorkflowRun $run,
+        string $name = 'advance',
+        string $waitId = 'signal-wait-race',
+    ): WorkflowSignal {
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+
+        $signalCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'signal',
+            'target_scope' => 'instance',
+            'status' => 'accepted',
+            'outcome' => 'signal_received',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => $name,
+                'arguments' => ['Ada'],
+            ]),
+            'accepted_at' => now(),
+        ]);
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()->create([
+            'workflow_command_id' => $signalCommand->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'target_scope' => 'instance',
+            'resolved_workflow_run_id' => $run->id,
+            'signal_name' => $name,
+            'signal_wait_id' => $waitId,
+            'status' => 'received',
+            'outcome' => 'signal_received',
+            'command_sequence' => $signalCommand->command_sequence,
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serializeWithCodec('avro', ['Ada']),
+            'received_at' => now(),
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, [
+            'workflow_command_id' => $signalCommand->id,
+            'signal_id' => $signal->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'signal_name' => $name,
+            'signal_wait_id' => $waitId,
+        ], null, $signalCommand);
+
+        return $signal;
     }
 
     private function createWaitingRun(?string $namespace = null): WorkflowRun
