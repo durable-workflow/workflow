@@ -55,6 +55,11 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertTrue($headers['authorization']);
         $this->assertTrue($headers['namespace']);
         $this->assertTrue($headers['protocol_version']);
+        $this->assertIsArray($requestBody['process_metrics'] ?? null);
+        $this->assertIsInt($requestBody['process_metrics']['process_id'] ?? null);
+        $this->assertIsString($requestBody['process_metrics']['process_started_at'] ?? null);
+        $this->assertIsInt($requestBody['process_metrics']['process_uptime_seconds'] ?? null);
+        unset($requestBody['process_metrics']);
         $this->assertSame([
             'worker_id' => 'php-worker',
             'task_queue' => 'polyglot',

@@ -9,6 +9,7 @@ use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Response;
 use InvalidArgumentException;
 use RuntimeException;
+use Workflow\V2\Support\WorkerHeartbeatTelemetry;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 /**
@@ -62,6 +63,8 @@ final class WorkerProtocolClient
 
     private ?string $registeredBuildId = null;
 
+    private readonly int $processStartedAt;
+
     public function __construct(
         private readonly HttpFactory $http,
         string $baseUrl,
@@ -83,6 +86,8 @@ final class WorkerProtocolClient
         if ($this->defaultRequestTimeoutSeconds < 1) {
             throw new InvalidArgumentException('Default request timeout must be at least 1 second.');
         }
+
+        $this->processStartedAt = time();
     }
 
     /**
@@ -120,6 +125,7 @@ final class WorkerProtocolClient
             'sdk_version' => $sdkVersion ?? self::DEFAULT_SDK_VERSION,
             'supported_workflow_types' => $supportedWorkflowTypes,
             'supported_activity_types' => $supportedActivityTypes,
+            'process_metrics' => WorkerHeartbeatTelemetry::processMetrics($this->processStartedAt),
         ];
 
         if ($workflowDefinitionFingerprints !== null) {
