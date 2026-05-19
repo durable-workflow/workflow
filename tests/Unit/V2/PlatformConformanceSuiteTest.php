@@ -362,15 +362,17 @@ final class PlatformConformanceSuiteTest extends TestCase
             $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
             'smoke-only replay coverage must not satisfy the stable runtime category',
         );
+        foreach (['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'] as $status) {
+            $this->assertStringContainsString(
+                $status,
+                $rules['stable_runtime_scenario_coverage']['rule'],
+                "runtime scenario status `$status` must stay part of the versioned status taxonomy",
+            );
+        }
         $this->assertStringContainsString(
-            'not_covered',
+            'statuses published by its runtime scenario manifest',
             $rules['stable_runtime_scenario_coverage']['rule'],
-            'omitted runtime scenario cells must be representable without appearing green',
-        );
-        $this->assertStringContainsString(
-            'runner_blocked',
-            $rules['stable_runtime_scenario_coverage']['rule'],
-            'environment-blocked runtime scenarios must be distinct from product pass/fail evidence',
+            'the suite rule must delegate the status set to the published scenario manifests',
         );
     }
 
