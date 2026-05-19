@@ -1,0 +1,191 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Unit\V2;
+
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Client\Request;
+use PHPUnit\Framework\TestCase;
+use RuntimeException;
+use Workflow\V2\Client\ControlPlaneClient;
+use Workflow\V2\Exceptions\ControlPlaneRequestException;
+
+final class ControlPlaneClientTest extends TestCase
+{
+    public function testStartWorkflowSendsControlPlaneHeadersAndBody(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+        $headers = [];
+
+        $http->fake(function (Request $request) use ($http, &$requestBody, &$headers) {
+            $requestBody = $request->data();
+            $headers = [
+                'authorization' => $request->hasHeader('Authorization', 'Bearer test-token'),
+                'namespace' => $request->hasHeader('X-Namespace', 'default'),
+                'control_plane_version' => $request->hasHeader(
+                    ControlPlaneClient::CONTROL_PLANE_HEADER,
+                    ControlPlaneClient::CONTROL_PLANE_VERSION,
+                ),
+            ];
+
+            $this->assertSame('http://server:8080/api/workflows', (string) $request->url());
+
+            return $http->response([
+                'workflow_id' => 'counter-1',
+                'run_id' => 'run-1',
+                'workflow_type' => 'Counter',
+            ], 201, [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ]);
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080/', 'test-token');
+        $response = $client->startWorkflow('Counter', 'counter-1', [['seed' => 1]], [
+            'task_queue' => 'polyglot',
+            'business_key' => 'customer-42',
+            'memo' => ['suite' => 'signals-queries'],
+            'search_attributes' => ['CustomerId' => '42'],
+            'duplicate_policy' => 'fail',
+            'priority' => 4,
+        ]);
+
+        $this->assertSame('counter-1', $response['workflow_id']);
+        $this->assertTrue($headers['authorization']);
+        $this->assertTrue($headers['namespace']);
+        $this->assertTrue($headers['control_plane_version']);
+        $this->assertSame([
+            'workflow_id' => 'counter-1',
+            'workflow_type' => 'Counter',
+            'task_queue' => 'polyglot',
+            'input' => [['seed' => 1]],
+            'business_key' => 'customer-42',
+            'memo' => ['suite' => 'signals-queries'],
+            'search_attributes' => ['CustomerId' => '42'],
+            'duplicate_policy' => 'fail',
+            'priority' => 4,
+        ], $requestBody);
+    }
+
+    public function testSignalWorkflowSupportsCurrentRunAndRunTargetedPaths(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'url' => (string) $request->url(),
+                'body' => $request->data(),
+            ];
+
+            return $http->response([
+                'workflow_id' => 'counter-1',
+                'run_id' => 'run-1',
+                'signal_name' => 'increment',
+                'outcome' => 'signal_received',
+            ], 202, [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ]);
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token');
+
+        $client->signalWorkflow('counter-1', 'increment', [3], ['request_id' => 'sig-1']);
+        $client->signalWorkflow('counter-1', 'increment', [5], ['run_id' => 'run-1']);
+
+        $this->assertSame('http://server:8080/api/workflows/counter-1/signal/increment', $requests[0]['url']);
+        $this->assertSame([
+            'input' => [3],
+            'request_id' => 'sig-1',
+        ], $requests[0]['body']);
+        $this->assertSame('http://server:8080/api/workflows/counter-1/runs/run-1/signal/increment', $requests[1]['url']);
+        $this->assertSame(['input' => [5]], $requests[1]['body']);
+    }
+
+    public function testQueryWorkflowReturnsRawServerEnvelope(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+
+        $http->fake(function (Request $request) use ($http, &$requestBody) {
+            $requestBody = $request->data();
+            $this->assertSame('http://server:8080/api/workflows/counter-1/runs/run-1/query/current', (string) $request->url());
+
+            return $http->response([
+                'workflow_id' => 'counter-1',
+                'run_id' => 'run-1',
+                'query_name' => 'current',
+                'result' => 8,
+            ], 200, [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ]);
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token');
+        $response = $client->queryWorkflow('counter-1', 'current', [], ['run_id' => 'run-1']);
+
+        $this->assertSame([], $requestBody);
+        $this->assertSame(8, $response['result']);
+    }
+
+    public function testThrowsTypedExceptionForControlPlaneErrors(): void
+    {
+        $http = new HttpFactory();
+        $http->fake(fn () => $http->response([
+            'message' => 'Signal argument validation failed.',
+            'reason' => 'invalid_signal_arguments',
+            'signal_name' => 'increment',
+        ], 422, [
+            ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+        ]));
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token');
+
+        try {
+            $client->signalWorkflow('counter-1', 'increment', ['not-an-int']);
+            $this->fail('Expected control-plane exception.');
+        } catch (ControlPlaneRequestException $exception) {
+            $this->assertSame(422, $exception->status());
+            $this->assertSame('invalid_signal_arguments', $exception->reason());
+            $this->assertSame('Signal argument validation failed.', $exception->getMessage());
+            $this->assertSame('increment', $exception->body()['signal_name'] ?? null);
+        }
+    }
+
+    public function testRejectsSuccessfulResponsesWithoutMatchingControlPlaneHeader(): void
+    {
+        $http = new HttpFactory();
+        $http->fake(fn () => $http->response([
+            'workflow_id' => 'counter-1',
+            'run_id' => 'run-1',
+            'workflow_type' => 'Counter',
+        ], 201));
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token');
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('used control-plane version [missing]; expected [2]');
+
+        $client->startWorkflow('Counter', 'counter-1');
+    }
+
+    public function testClusterInfoDoesNotRequireControlPlaneResponseHeader(): void
+    {
+        $http = new HttpFactory();
+        $http->fake(function (Request $request) use ($http) {
+            $this->assertSame('http://server:8080/api/cluster/info', (string) $request->url());
+
+            return $http->response([
+                'control_plane' => [
+                    'version' => ControlPlaneClient::CONTROL_PLANE_VERSION,
+                ],
+            ], 200);
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token');
+        $info = $client->clusterInfo();
+
+        $this->assertSame(ControlPlaneClient::CONTROL_PLANE_VERSION, $info['control_plane']['version']);
+    }
+}

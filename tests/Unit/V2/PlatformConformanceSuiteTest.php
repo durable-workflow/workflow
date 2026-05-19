@@ -246,6 +246,14 @@ final class PlatformConformanceSuiteTest extends TestCase
             $category['sources'],
             'operator visibility must remain part of the live signals/queries contract',
         );
+        $this->assertContains(
+            [
+                'repository' => 'workflow',
+                'path' => 'src/V2/Client/ControlPlaneClient.php',
+            ],
+            $category['sources'],
+            'the PHP SDK control-plane client must remain a conformance source for cross-language signal/query clients',
+        );
     }
 
     public function testHistoryReplayBundlesAreFlaggedForFrozenExactMatch(): void

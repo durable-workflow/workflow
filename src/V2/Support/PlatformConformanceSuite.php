@@ -247,6 +247,14 @@ final class PlatformConformanceSuite
                         'path' => 'tests/Feature/V2/V2QueryWorkflowTest.php',
                     ],
                     [
+                        'repository' => 'workflow',
+                        'path' => 'src/V2/Client/ControlPlaneClient.php',
+                    ],
+                    [
+                        'repository' => 'workflow',
+                        'path' => 'tests/Unit/V2/ControlPlaneClientTest.php',
+                    ],
+                    [
                         'repository' => 'server',
                         'path' => 'tests/Feature/WorkflowControlPlaneTest.php',
                     ],
