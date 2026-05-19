@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(1, $manifest['version']);
+        $this->assertSame(2, $manifest['version']);
         $this->assertSame(
             'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md',
             $manifest['authority_doc'],
@@ -106,6 +106,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $expected = [
             'control_plane_request_response',
             'worker_task_lifecycle',
+            'signal_query_runtime_contract',
             'history_replay_bundles',
             'failure_repair_actionability',
             'cli_json_envelopes',
@@ -190,6 +191,63 @@ final class PlatformConformanceSuiteTest extends TestCase
         );
     }
 
+    public function testSignalQueryRuntimeContractIsRequiredForInteractiveSurfaces(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['signal_query_runtime_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'signals and queries must be load-bearing, not a provisional smoke.',
+        );
+
+        foreach ([
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+            'waterline_contract_surface',
+        ] as $target) {
+            $this->assertContains(
+                'signal_query_runtime_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target must be graded against the live signals/queries contract",
+            );
+        }
+
+        foreach ([
+            'published_artifact_install_only',
+            'python_worker_cli_and_sdk_baseline',
+            'php_worker_cli_and_sdk_baseline',
+            'python_worker_php_facing_and_cli_clients',
+            'php_worker_python_and_cli_clients',
+            'ordered_signal_delivery',
+            'dedup_contract_observation',
+            'signal_during_replay',
+            'query_during_replay',
+            'completed_run_signal_and_query',
+            'unknown_signal_and_query_errors',
+            'malformed_signal_and_query_payloads',
+            'waterline_operator_visibility',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "signals/queries conformance must name scenario $scenario",
+            );
+        }
+
+        $this->assertContains(
+            [
+                'repository' => 'waterline',
+                'path' => 'CONFORMANCE.md',
+            ],
+            $category['sources'],
+            'operator visibility must remain part of the live signals/queries contract',
+        );
+    }
+
     public function testHistoryReplayBundlesAreFlaggedForFrozenExactMatch(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
@@ -212,6 +270,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $this->assertArrayHasKey('unknown_additive_fields_tolerated', $rules);
         $this->assertArrayHasKey('frozen_shape_exact_match', $rules);
         $this->assertArrayHasKey('required_fixtures_must_pass', $rules);
+        $this->assertArrayHasKey('stable_runtime_scenario_coverage', $rules);
         $this->assertArrayHasKey('provisional_categories_warn_only', $rules);
         $this->assertArrayHasKey('diagnostic_only_mismatches_pass', $rules);
 
@@ -219,6 +278,11 @@ final class PlatformConformanceSuiteTest extends TestCase
             SurfaceStabilityContract::SCHEMA . '#field_visibility_rule',
             $rules['guaranteed_field_equality']['follows'],
             'the equality rule must defer to the surface stability contract field visibility rule',
+        );
+        $this->assertContains(
+            'signal_query_runtime_contract',
+            $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'smoke-only signals/queries coverage must not satisfy the stable runtime category',
         );
     }
 

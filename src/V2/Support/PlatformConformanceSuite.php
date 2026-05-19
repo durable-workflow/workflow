@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -108,6 +108,7 @@ final class PlatformConformanceSuite
                 ],
                 'required_fixture_categories' => [
                     'control_plane_request_response',
+                    'signal_query_runtime_contract',
                     'worker_task_lifecycle',
                     'failure_repair_actionability',
                 ],
@@ -121,6 +122,7 @@ final class PlatformConformanceSuite
                 ],
                 'required_fixture_categories' => [
                     'control_plane_request_response',
+                    'signal_query_runtime_contract',
                     'worker_task_lifecycle',
                     'history_replay_bundles',
                 ],
@@ -133,6 +135,7 @@ final class PlatformConformanceSuite
                 ],
                 'required_fixture_categories' => [
                     'worker_task_lifecycle',
+                    'signal_query_runtime_contract',
                     'history_replay_bundles',
                 ],
             ],
@@ -143,6 +146,7 @@ final class PlatformConformanceSuite
                 ],
                 'required_fixture_categories' => [
                     'control_plane_request_response',
+                    'signal_query_runtime_contract',
                     'cli_json_envelopes',
                 ],
             ],
@@ -152,6 +156,7 @@ final class PlatformConformanceSuite
                     'waterline_api',
                 ],
                 'required_fixture_categories' => [
+                    'signal_query_runtime_contract',
                     'waterline_observer_envelopes',
                 ],
             ],
@@ -220,6 +225,72 @@ final class PlatformConformanceSuite
                     ],
                 ],
                 'authority_doc' => 'https://github.com/durable-workflow/server/blob/main/docs/contracts/external-task-input.md, https://github.com/durable-workflow/server/blob/main/docs/contracts/external-task-result.md',
+            ],
+            'signal_query_runtime_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility.',
+                'sources' => [
+                    [
+                        'repository' => 'workflow',
+                        'path' => 'docs/architecture/platform-conformance-suite.md',
+                    ],
+                    [
+                        'repository' => 'workflow',
+                        'path' => 'docs/architecture/query-and-live-debug.md',
+                    ],
+                    [
+                        'repository' => 'workflow',
+                        'path' => 'tests/Feature/SignalReplayTest.php',
+                    ],
+                    [
+                        'repository' => 'workflow',
+                        'path' => 'tests/Feature/V2/V2QueryWorkflowTest.php',
+                    ],
+                    [
+                        'repository' => 'server',
+                        'path' => 'tests/Feature/WorkflowControlPlaneTest.php',
+                    ],
+                    [
+                        'repository' => 'server',
+                        'path' => 'tests/Feature/WorkflowQueryTaskBrokerTest.php',
+                    ],
+                    [
+                        'repository' => 'cli',
+                        'path' => 'tests/Commands/',
+                    ],
+                    [
+                        'repository' => 'sdk-python',
+                        'path' => 'tests/test_signals.py',
+                    ],
+                    [
+                        'repository' => 'sdk-python',
+                        'path' => 'tests/test_queries.py',
+                    ],
+                    [
+                        'repository' => 'sdk-python',
+                        'path' => 'tests/test_worker.py',
+                    ],
+                    [
+                        'repository' => 'waterline',
+                        'path' => 'CONFORMANCE.md',
+                    ],
+                ],
+                'authority_doc' => 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md',
+                'required_scenarios' => [
+                    'published_artifact_install_only',
+                    'python_worker_cli_and_sdk_baseline',
+                    'php_worker_cli_and_sdk_baseline',
+                    'python_worker_php_facing_and_cli_clients',
+                    'php_worker_python_and_cli_clients',
+                    'ordered_signal_delivery',
+                    'dedup_contract_observation',
+                    'signal_during_replay',
+                    'query_during_replay',
+                    'completed_run_signal_and_query',
+                    'unknown_signal_and_query_errors',
+                    'malformed_signal_and_query_payloads',
+                    'waterline_operator_visibility',
+                ],
             ],
             'history_replay_bundles' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
@@ -318,6 +389,10 @@ final class PlatformConformanceSuite
             ],
             'required_fixtures_must_pass' => [
                 'rule' => 'A release that claims a target must pass every required fixture category for that target. One failed required fixture means the release does not conform for that target.',
+            ],
+            'stable_runtime_scenario_coverage' => [
+                'rule' => 'A stable runtime fixture category passes only when every required scenario it declares records a pass, fail, or unsupported result with artifact versions and linked findings. A smoke-only subset or omitted scenario is nonconforming, not provisional.',
+                'applies_to_categories' => ['signal_query_runtime_contract'],
             ],
             'provisional_categories_warn_only' => [
                 'rule' => 'A failed fixture in a provisional category emits a warning in the harness output and does not block the release. The category becomes load-bearing when promoted to stable in a later suite version.',

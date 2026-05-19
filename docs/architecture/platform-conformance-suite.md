@@ -17,7 +17,7 @@ The machine-readable mirror of this document is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `1`.
+`durable-workflow.v2.platform-conformance.suite`, version `2`.
 
 ## Why one suite
 
@@ -49,11 +49,11 @@ target (the standalone `server` claims `standalone_server` *and*
 
 | Target | Required surface families | Required fixture categories |
 | --- | --- | --- |
-| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `worker_task_lifecycle`, `failure_repair_actionability` |
-| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `worker_task_lifecycle`, `history_replay_bundles` |
-| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `history_replay_bundles` |
-| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `cli_json_envelopes` |
-| `waterline_contract_surface` | `waterline_api` | `waterline_observer_envelopes` |
+| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
+| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
+| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `history_replay_bundles` |
+| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `cli_json_envelopes` |
+| `waterline_contract_surface` | `waterline_api` | `signal_query_runtime_contract`, `waterline_observer_envelopes` |
 | `repair_actionability_surface` | `worker_protocol` (failure subset), `server_api` (repair routes) | `failure_repair_actionability` |
 | `mcp_discovery_surface` | `mcp_discovery_results` | `mcp_discovery_envelopes` |
 
@@ -72,6 +72,7 @@ them from the declared locations.
 | --- | --- | --- | --- |
 | `control_plane_request_response` | `cli`, `sdk-python` | `tests/fixtures/control-plane/` | Frozen request bodies and response shapes for `workflow.start`, `signal`, `query`, `update`, `cancel`, `task-history`, namespace storage. |
 | `worker_task_lifecycle` | `cli`, `sdk-python`, `server` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | Task input envelopes (poll → claim → run) and task result envelopes (complete, fail, cancel, heartbeat) used by every conforming worker. |
+| `signal_query_runtime_contract` | `workflow`, `server`, `cli`, `sdk-python`, `waterline` | `docs/architecture/platform-conformance-suite.md`, `docs/architecture/query-and-live-debug.md`, `tests/Feature/SignalReplayTest.php`, `tests/Feature/V2/V2QueryWorkflowTest.php`, `tests/Feature/WorkflowControlPlaneTest.php`, `tests/Feature/WorkflowQueryTaskBrokerTest.php`, `tests/Commands/`, `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py`, `CONFORMANCE.md` | Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
 | `history_replay_bundles` | `workflow`, `sdk-python` | `tests/Fixtures/V2/GoldenHistory/`, `tests/fixtures/golden_history/` | Frozen history event bundles. A conforming SDK must replay each bundle and reproduce the documented final command sequence. |
 | `failure_repair_actionability` | `server`, `workflow` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, fixture pointers therein | Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces. |
 | `cli_json_envelopes` | `cli` | `tests/fixtures/control-plane/`, `schemas/` | The `--output=json` and `--output=jsonl` envelopes that automation depends on. Diagnostic-only fields are listed and excluded from the contract diff. |
@@ -82,6 +83,49 @@ A fixture category is **required** for a target only if both the target
 column lists it *and* the category status is not `provisional`.
 Provisional categories ship an advisory result (warn but do not fail);
 they become required when promoted to `stable` in a later suite version.
+
+### Signals and queries runtime contract
+
+The `signal_query_runtime_contract` category is stable and load-bearing.
+It must run against published install channels only, pin the resolved
+artifact versions in the result, and name every required scenario as
+passed, failed, or unsupported with a linked finding. A smoke-only run is
+nonconforming even if the covered smoke scenarios pass.
+
+Required scenarios:
+
+- `published_artifact_install_only` — server image, CLI installer,
+  Python package, PHP package, and Waterline package are resolved from
+  published channels; no local source checkout is used as the artifact
+  under test.
+- `python_worker_cli_and_sdk_baseline` — a Python-authored workflow
+  exposes `increment`, `set`, and `current` handlers through CLI and
+  Python SDK clients.
+- `php_worker_cli_and_sdk_baseline` — the same workflow shape runs on
+  the PHP worker and answers through CLI and PHP SDK paths.
+- `python_worker_php_facing_and_cli_clients` — a Python-authored
+  workflow accepts the supported PHP-facing client path and CLI path.
+- `php_worker_python_and_cli_clients` — a PHP-authored workflow accepts
+  the Python SDK client path and CLI path.
+- `ordered_signal_delivery` — rapid ordered signals are reflected in the
+  queried value and recorded in documented history order.
+- `dedup_contract_observation` — duplicate client-side keys are observed
+  according to the documented support level, or the absence of such a
+  contract is recorded.
+- `signal_during_replay` — a signal sent while a worker is replaying is
+  applied after replay reaches a consistent point.
+- `query_during_replay` — a query waits for replay consistency and does
+  not run against stale state.
+- `completed_run_signal_and_query` — documented terminal-run signal and
+  query behavior is verified.
+- `unknown_signal_and_query_errors` — unknown names return stable
+  user-facing errors without corrupting history.
+- `malformed_signal_and_query_payloads` — incompatible payload shapes
+  fail before a handler mutates workflow state.
+- `waterline_operator_visibility` — operator surfaces show enough
+  signal, query, and state information to diagnose the run, including a
+  stable reason when live query values are intentionally not materialized
+  in read-only detail responses.
 
 ## Pass / fail rules
 
@@ -109,17 +153,23 @@ emits a structured result. The rules below are normative.
    category for `official_sdk`. One failed required fixture means the
    release does not conform.
 
-5. **Provisional categories warn but do not fail.** A failed fixture in
+5. **Stable runtime scenario coverage.** A stable runtime category such
+   as `signal_query_runtime_contract` passes only when every scenario it
+   declares records a pass, fail, or unsupported result with resolved
+   artifact versions and linked findings. A smoke-only subset or omitted
+   scenario is nonconforming, not provisional.
+
+6. **Provisional categories warn but do not fail.** A failed fixture in
    a provisional category emits a warning in the harness output. A
    release may still claim the target. The category is promoted to
    required by bumping `PlatformConformanceSuite::VERSION` and is then
    load-bearing.
 
-6. **Diagnostic-only mismatches are not failures.** If only
+7. **Diagnostic-only mismatches are not failures.** If only
    diagnostic-only fields differ, the harness records the difference in
    its `diagnostic_diff` output and the fixture passes.
 
-7. **Conformance level.** The harness output declares one of:
+8. **Conformance level.** The harness output declares one of:
    - `full` — every required fixture passes for every claimed target.
    - `partial` — every required fixture passes for at least one claimed
      target, but a target is failing.
