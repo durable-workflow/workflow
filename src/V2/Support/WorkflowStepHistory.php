@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\Activity;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Workflow;
 
 final class WorkflowStepHistory
 {
@@ -201,7 +203,10 @@ final class WorkflowStepHistory
 
             $recorded = self::recordedDetail($event, $expectedField);
 
-            if ($recorded === null || $recorded === $expected) {
+            if (
+                $recorded === null
+                || in_array($recorded, self::expectedDetailCandidates($expectedField, $expected), true)
+            ) {
                 continue;
             }
 
@@ -238,11 +243,51 @@ final class WorkflowStepHistory
             return $value;
         }
 
+        if ($field === 'activity_type') {
+            return self::stringValue($event->payload['activity_class'] ?? null);
+        }
+
         if ($field === 'child_workflow_type') {
-            return self::stringValue($event->payload['workflow_type'] ?? null);
+            foreach (['workflow_type', 'child_workflow_class', 'workflow_class'] as $fallbackField) {
+                $fallback = self::stringValue($event->payload[$fallbackField] ?? null);
+
+                if ($fallback !== null) {
+                    return $fallback;
+                }
+            }
         }
 
         return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function expectedDetailCandidates(string $field, string $expected): array
+    {
+        $candidates = [$expected];
+
+        if ($field === 'activity_type' && is_subclass_of($expected, Activity::class)) {
+            $candidates[] = self::durableTypeForClass($expected);
+        }
+
+        if ($field === 'child_workflow_type' && is_subclass_of($expected, Workflow::class)) {
+            $candidates[] = self::durableTypeForClass($expected);
+        }
+
+        return array_values(array_unique(array_filter(
+            $candidates,
+            static fn (mixed $value): bool => is_string($value) && $value !== '',
+        )));
+    }
+
+    private static function durableTypeForClass(string $class): ?string
+    {
+        try {
+            return TypeRegistry::for($class);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**
