@@ -1,10 +1,11 @@
 # Platform Conformance Suite
 
-This document is the normative specification for the Durable Workflow
-**platform conformance suite**. It defines the conformance target matrix,
-the reusable fixture catalog, the harness contract, the pass / fail
-rules, and the release gates that make a "compatibility" claim
-executable rather than prose.
+This document records the package-side mirror for the Durable Workflow
+**platform conformance suite**. The public authority is the docs-site
+[Platform Conformance Suite](https://durable-workflow.github.io/docs/2.0/platform-conformance),
+which defines the conformance target matrix, reusable fixture catalog,
+harness contract, pass / fail rules, and release gates that make a
+"compatibility" claim executable rather than prose.
 
 It is downstream of the platform-wide compatibility authority published
 at <https://durable-workflow.github.io/docs/2.0/compatibility> and
@@ -13,7 +14,7 @@ conformance suite enumerates a surface family or stability rule, it must
 match the authority manifest. The authority defines *what* the contract
 is; this document defines *how* an implementation proves it follows it.
 
-The machine-readable mirror of this document is
+The machine-readable mirror of the public authority is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
@@ -72,7 +73,7 @@ them from the declared locations.
 | --- | --- | --- | --- |
 | `control_plane_request_response` | `cli`, `sdk-python` | `tests/fixtures/control-plane/` | Frozen request bodies and response shapes for `workflow.start`, `signal`, `query`, `update`, `cancel`, `task-history`, namespace storage. |
 | `worker_task_lifecycle` | `cli`, `sdk-python`, `server` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | Task input envelopes (poll → claim → run) and task result envelopes (complete, fail, cancel, heartbeat) used by every conforming worker. |
-| `signal_query_runtime_contract` | `durable-workflow.github.io`, `workflow`, `server`, `cli`, `sdk-python`, `waterline` | `static/platform-conformance/signal-query-runtime-scenarios.json`, `docs/architecture/platform-conformance-suite.md`, `docs/architecture/query-and-live-debug.md`, `src/V2/Client/ControlPlaneClient.php`, `tests/Unit/V2/ControlPlaneClientTest.php`, `tests/Feature/SignalReplayTest.php`, `tests/Feature/V2/V2QueryWorkflowTest.php`, `tests/Feature/WorkflowControlPlaneTest.php`, `tests/Feature/WorkflowQueryTaskBrokerTest.php`, `tests/Commands/`, `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py`, `CONFORMANCE.md` | Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
+| `signal_query_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/signal-query-runtime-scenarios.json` | Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
 | `history_replay_bundles` | `durable-workflow.github.io`, `workflow`, `sdk-python` | `static/platform-conformance/replay-runtime-scenarios.json`, `tests/Fixtures/V2/GoldenHistory/`, `tests/fixtures/golden_history/` | Deterministic replay coverage for frozen history bundles, worker restart replay, adversarial refusal, and in-flight signal timing across the official PHP and Python runtimes. |
 | `failure_repair_actionability` | `server`, `workflow` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, fixture pointers therein | Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces. |
 | `cli_json_envelopes` | `cli` | `tests/fixtures/control-plane/`, `schemas/` | The `--output=json` and `--output=jsonl` envelopes that automation depends on. Diagnostic-only fields are listed and excluded from the contract diff. |
@@ -307,9 +308,12 @@ docs. It indexes them under one normative declaration so a single
   fixtures. The suite cites them as the
   `control_plane_request_response` source-of-truth.
 - `durable-workflow.github.io/static/platform-conformance/signal-query-runtime-scenarios.json`
-  is the public signals/queries scenario matrix consumed by published
-  artifact harnesses. The suite cites it alongside the repo-local docs,
-  client surfaces, and executable tests that define each product slice.
+  is the stable public source of truth for the
+  `signal_query_runtime_contract` category and the scenario matrix
+  consumed by published artifact harnesses. Repo-local docs, client
+  surfaces, and executable tests remain implementation evidence for
+  their product slices, but they are not independent authorities for
+  this category.
 - `static/platform-conformance/replay-runtime-scenarios.json`,
   `tests/Fixtures/V2/GoldenHistory/` (this repo), and
   `sdk-python/tests/fixtures/golden_history/` are the replay scenario and

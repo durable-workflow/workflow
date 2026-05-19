@@ -6,10 +6,10 @@ namespace Workflow\V2\Support;
 
 /**
  * Canonical, machine-readable mirror of the platform conformance suite
- * specification. The human-readable authority is
- * `docs/architecture/platform-conformance-suite.md`. This class exists
- * so server endpoints, CI gates, and third-party harnesses can validate
- * themselves against one source of truth.
+ * specification. The human-readable authority is the public docs-site
+ * platform conformance page. This class exists so server endpoints, CI
+ * gates, and third-party harnesses can validate themselves against one
+ * source of truth.
  *
  * The suite is downstream of `SurfaceStabilityContract` (the platform
  * compatibility authority): every target row's `required_surface_families`
@@ -35,7 +35,9 @@ final class PlatformConformanceSuite
 
     public const RESULT_VERSION = 1;
 
-    public const AUTHORITY_DOC = 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md';
+    public const AUTHORITY_DOC = 'docs/platform-conformance.md';
+
+    public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/platform-conformance';
 
     public const CATEGORY_STATUS_STABLE = 'stable';
 
@@ -65,6 +67,7 @@ final class PlatformConformanceSuite
             'schema' => self::SCHEMA,
             'version' => self::VERSION,
             'authority_doc' => self::AUTHORITY_DOC,
+            'authority_url' => self::AUTHORITY_URL,
             'surface_stability_authority' => SurfaceStabilityContract::SCHEMA,
             'result_schema' => self::RESULT_SCHEMA,
             'result_version' => self::RESULT_VERSION,
@@ -234,60 +237,8 @@ final class PlatformConformanceSuite
                         'repository' => 'durable-workflow.github.io',
                         'path' => 'static/platform-conformance/signal-query-runtime-scenarios.json',
                     ],
-                    [
-                        'repository' => 'workflow',
-                        'path' => 'docs/architecture/platform-conformance-suite.md',
-                    ],
-                    [
-                        'repository' => 'workflow',
-                        'path' => 'docs/architecture/query-and-live-debug.md',
-                    ],
-                    [
-                        'repository' => 'workflow',
-                        'path' => 'tests/Feature/SignalReplayTest.php',
-                    ],
-                    [
-                        'repository' => 'workflow',
-                        'path' => 'tests/Feature/V2/V2QueryWorkflowTest.php',
-                    ],
-                    [
-                        'repository' => 'workflow',
-                        'path' => 'src/V2/Client/ControlPlaneClient.php',
-                    ],
-                    [
-                        'repository' => 'workflow',
-                        'path' => 'tests/Unit/V2/ControlPlaneClientTest.php',
-                    ],
-                    [
-                        'repository' => 'server',
-                        'path' => 'tests/Feature/WorkflowControlPlaneTest.php',
-                    ],
-                    [
-                        'repository' => 'server',
-                        'path' => 'tests/Feature/WorkflowQueryTaskBrokerTest.php',
-                    ],
-                    [
-                        'repository' => 'cli',
-                        'path' => 'tests/Commands/',
-                    ],
-                    [
-                        'repository' => 'sdk-python',
-                        'path' => 'tests/test_signals.py',
-                    ],
-                    [
-                        'repository' => 'sdk-python',
-                        'path' => 'tests/test_queries.py',
-                    ],
-                    [
-                        'repository' => 'sdk-python',
-                        'path' => 'tests/test_worker.py',
-                    ],
-                    [
-                        'repository' => 'waterline',
-                        'path' => 'CONFORMANCE.md',
-                    ],
                 ],
-                'authority_doc' => 'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/platform-conformance.md',
+                'authority_doc' => self::AUTHORITY_URL,
                 'required_scenarios' => [
                     'published_artifact_install_only',
                     'python_worker_cli_and_sdk_baseline',

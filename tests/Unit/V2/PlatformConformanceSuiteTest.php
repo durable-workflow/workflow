@@ -10,8 +10,8 @@ use Workflow\V2\Support\SurfaceStabilityContract;
 
 /**
  * Pins the platform conformance suite manifest mirrored by
- * `Workflow\V2\Support\PlatformConformanceSuite`. The authority is
- * `docs/architecture/platform-conformance-suite.md`. The standalone
+ * `Workflow\V2\Support\PlatformConformanceSuite`. The authority is the
+ * public docs-site platform conformance page. The standalone
  * `workflow-server` re-exports the same manifest from
  * `GET /api/cluster/info` under `platform_conformance_suite`.
  *
@@ -29,9 +29,10 @@ final class PlatformConformanceSuiteTest extends TestCase
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
         $this->assertSame(5, $manifest['version']);
+        $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
-            'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md',
-            $manifest['authority_doc'],
+            'https://durable-workflow.github.io/docs/2.0/platform-conformance',
+            $manifest['authority_url'],
         );
         $this->assertSame(
             SurfaceStabilityContract::SCHEMA,
@@ -239,32 +240,18 @@ final class PlatformConformanceSuiteTest extends TestCase
         }
 
         $this->assertSame(
-            'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/platform-conformance.md',
+            'https://durable-workflow.github.io/docs/2.0/platform-conformance',
             $category['authority_doc'],
         );
-        $this->assertContains(
+        $this->assertSame(
             [
-                'repository' => 'durable-workflow.github.io',
-                'path' => 'static/platform-conformance/signal-query-runtime-scenarios.json',
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/signal-query-runtime-scenarios.json',
+                ],
             ],
             $category['sources'],
             'the public scenario manifest must be the consumable source for full signals/queries coverage',
-        );
-        $this->assertContains(
-            [
-                'repository' => 'waterline',
-                'path' => 'CONFORMANCE.md',
-            ],
-            $category['sources'],
-            'operator visibility must remain part of the live signals/queries contract',
-        );
-        $this->assertContains(
-            [
-                'repository' => 'workflow',
-                'path' => 'src/V2/Client/ControlPlaneClient.php',
-            ],
-            $category['sources'],
-            'the PHP SDK control-plane client must remain a conformance source for cross-language signal/query clients',
         );
     }
 
