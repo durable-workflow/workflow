@@ -231,6 +231,10 @@ final class PlatformConformanceSuite
                 'description' => 'Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility.',
                 'sources' => [
                     [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/signal-query-runtime-scenarios.json',
+                    ],
+                    [
                         'repository' => 'workflow',
                         'path' => 'docs/architecture/platform-conformance-suite.md',
                     ],
@@ -283,7 +287,7 @@ final class PlatformConformanceSuite
                         'path' => 'CONFORMANCE.md',
                     ],
                 ],
-                'authority_doc' => 'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md',
+                'authority_doc' => 'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/platform-conformance.md',
                 'required_scenarios' => [
                     'published_artifact_install_only',
                     'python_worker_cli_and_sdk_baseline',

@@ -238,6 +238,18 @@ final class PlatformConformanceSuiteTest extends TestCase
             );
         }
 
+        $this->assertSame(
+            'https://github.com/durable-workflow/durable-workflow.github.io/blob/main/docs/platform-conformance.md',
+            $category['authority_doc'],
+        );
+        $this->assertContains(
+            [
+                'repository' => 'durable-workflow.github.io',
+                'path' => 'static/platform-conformance/signal-query-runtime-scenarios.json',
+            ],
+            $category['sources'],
+            'the public scenario manifest must be the consumable source for full signals/queries coverage',
+        );
         $this->assertContains(
             [
                 'repository' => 'waterline',
