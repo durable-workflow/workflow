@@ -37,12 +37,30 @@ final class WorkflowStepHistory
 
     public const VERSION_MARKER = 'version marker';
 
-    public static function assertCompatible(WorkflowRun $run, int $sequence, string $expectedShape): void
-    {
+    /**
+     * @param array<string, string|null> $expectedDetails
+     */
+    public static function assertCompatible(
+        WorkflowRun $run,
+        int $sequence,
+        string $expectedShape,
+        array $expectedDetails = [],
+    ): void {
         $conflictingEventTypes = self::conflictingEventTypesForSequence($run, $sequence, $expectedShape);
 
         if ($conflictingEventTypes !== []) {
             throw new HistoryEventShapeMismatchException($sequence, $expectedShape, $conflictingEventTypes);
+        }
+
+        $detailMismatch = self::detailMismatchForSequence($run, $sequence, $expectedShape, $expectedDetails);
+
+        if ($detailMismatch !== null) {
+            throw new HistoryEventShapeMismatchException(
+                $sequence,
+                self::diagnosticShape($expectedShape, $expectedDetails),
+                $detailMismatch['recorded_event_types'],
+                $detailMismatch['message'],
+            );
         }
     }
 
@@ -142,6 +160,102 @@ final class WorkflowStepHistory
         }
 
         return array_values(array_unique($eventTypes));
+    }
+
+    /**
+     * @param array<string, string|null> $expectedDetails
+     * @return array{recorded_event_types: list<string>, message: string}|null
+     */
+    private static function detailMismatchForSequence(
+        WorkflowRun $run,
+        int $sequence,
+        string $expectedShape,
+        array $expectedDetails,
+    ): ?array {
+        $expectedField = self::detailFieldForShape($expectedShape);
+
+        if ($expectedField === null) {
+            return null;
+        }
+
+        $expected = self::stringValue($expectedDetails[$expectedField] ?? null);
+
+        if ($expected === null) {
+            return null;
+        }
+
+        $run->loadMissing('historyEvents');
+
+        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+
+            if (! self::isWorkflowStepEvent($event) || ! self::eventMatchesShape($event, $expectedShape)) {
+                continue;
+            }
+
+            if (self::intValue($event->payload['sequence'] ?? null) !== $sequence) {
+                continue;
+            }
+
+            $recorded = self::recordedDetail($event, $expectedField);
+
+            if ($recorded === null || $recorded === $expected) {
+                continue;
+            }
+
+            return [
+                'recorded_event_types' => [$event->event_type->value],
+                'message' => sprintf(
+                    'Recorded %s [%s], but current workflow yielded [%s].',
+                    $expectedField,
+                    $recorded,
+                    $expected,
+                ),
+            ];
+        }
+
+        return null;
+    }
+
+    private static function detailFieldForShape(string $expectedShape): ?string
+    {
+        return match ($expectedShape) {
+            self::ACTIVITY, self::LOCAL_ACTIVITY => 'activity_type',
+            self::CHILD_WORKFLOW => 'child_workflow_type',
+            self::SIGNAL_WAIT => 'signal_name',
+            self::VERSION_MARKER => 'change_id',
+            default => null,
+        };
+    }
+
+    private static function recordedDetail(WorkflowHistoryEvent $event, string $field): ?string
+    {
+        $value = self::stringValue($event->payload[$field] ?? null);
+
+        if ($value !== null) {
+            return $value;
+        }
+
+        if ($field === 'child_workflow_type') {
+            return self::stringValue($event->payload['workflow_type'] ?? null);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, string|null> $expectedDetails
+     */
+    private static function diagnosticShape(string $expectedShape, array $expectedDetails): string
+    {
+        $field = self::detailFieldForShape($expectedShape);
+        $expected = $field === null ? null : self::stringValue($expectedDetails[$field] ?? null);
+
+        return $expected === null
+            ? $expectedShape
+            : "{$expectedShape}:{$expected}";
     }
 
     private static function eventMatchesShape(WorkflowHistoryEvent $event, string $expectedShape): bool

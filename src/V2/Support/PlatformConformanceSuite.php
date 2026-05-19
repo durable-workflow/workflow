@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -302,8 +302,12 @@ final class PlatformConformanceSuite
             ],
             'history_replay_bundles' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
-                'description' => 'Frozen history event bundles. A conforming SDK must replay each bundle and reproduce the documented final command sequence.',
+                'description' => 'Deterministic replay coverage for frozen history bundles, worker restart replay, adversarial refusal, and in-flight signal timing across the official PHP and Python runtimes.',
                 'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/replay-runtime-scenarios.json',
+                    ],
                     [
                         'repository' => 'workflow',
                         'path' => 'tests/Fixtures/V2/GoldenHistory/',
@@ -313,7 +317,8 @@ final class PlatformConformanceSuite
                         'path' => 'tests/fixtures/golden_history/',
                     ],
                 ],
-                'authority_doc' => 'https://github.com/durable-workflow/workflow/blob/v2/docs/api-stability.md',
+                'authority_doc' => 'https://durable-workflow.github.io/docs/2.0/platform-conformance, https://github.com/durable-workflow/server/blob/main/docs/contracts/replay-verification.md, https://github.com/durable-workflow/workflow/blob/v2/docs/api-stability.md',
+                'required_scenarios' => self::replayRequiredScenarios(),
             ],
             'failure_repair_actionability' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
@@ -400,7 +405,10 @@ final class PlatformConformanceSuite
             ],
             'stable_runtime_scenario_coverage' => [
                 'rule' => 'A stable runtime fixture category passes only when every required scenario it declares records a pass, fail, or unsupported result with artifact versions and linked findings. A smoke-only subset or omitted scenario is nonconforming, not provisional.',
-                'applies_to_categories' => ['signal_query_runtime_contract'],
+                'applies_to_categories' => [
+                    'signal_query_runtime_contract',
+                    'history_replay_bundles',
+                ],
             ],
             'provisional_categories_warn_only' => [
                 'rule' => 'A failed fixture in a provisional category emits a warning in the harness output and does not block the release. The category becomes load-bearing when promoted to stable in a later suite version.',
@@ -408,6 +416,44 @@ final class PlatformConformanceSuite
             'diagnostic_only_mismatches_pass' => [
                 'rule' => 'If only diagnostic-only fields differ, the harness records the difference in its diagnostic_diff output and the fixture passes.',
             ],
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function replayRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'python_completed_history_activity_replay',
+            'python_completed_history_signal_update_replay',
+            'python_completed_history_wait_condition_replay',
+            'python_completed_history_version_marker_replay',
+            'python_completed_history_saga_compensation_replay',
+            'php_completed_history_activity_replay',
+            'php_completed_history_signal_update_replay',
+            'php_completed_history_wait_condition_replay',
+            'php_completed_history_version_marker_replay',
+            'php_completed_history_saga_compensation_replay',
+            'python_worker_restart_completed_query',
+            'python_worker_restart_activity_state',
+            'python_worker_restart_signal_update_state',
+            'python_worker_restart_wait_condition_state',
+            'python_worker_restart_version_marker_state',
+            'python_worker_restart_saga_compensation_state',
+            'php_worker_restart_completed_query',
+            'php_worker_restart_activity_state',
+            'php_worker_restart_signal_update_state',
+            'php_worker_restart_wait_condition_state',
+            'php_worker_restart_version_marker_state',
+            'php_worker_restart_saga_compensation_state',
+            'python_code_divergence_refusal',
+            'php_code_divergence_refusal',
+            'server_history_mutation_refusal',
+            'malformed_history_refusal',
+            'python_in_flight_signal_restart_timing',
+            'php_in_flight_signal_restart_timing',
         ];
     }
 

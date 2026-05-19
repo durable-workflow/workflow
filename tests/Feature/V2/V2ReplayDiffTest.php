@@ -91,6 +91,51 @@ final class V2ReplayDiffTest extends TestCase
         $this->assertNull($report['error']);
     }
 
+    public function testReplayDiffSurfacesSameShapeActivityTypeDrift(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'replay-diff-activity-type-drift');
+        $workflow->start('Ada');
+        $runId = $workflow->runId();
+        $this->assertNotNull($runId);
+
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+        $this->runReadyTaskForRun($runId, TaskType::Activity);
+        $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+        $bundle = HistoryExport::forRun(WorkflowRun::query()->findOrFail($runId));
+
+        foreach ($bundle['history_events'] as &$event) {
+            if (! in_array($event['type'] ?? null, [
+                'ActivityScheduled',
+                'ActivityStarted',
+                'ActivityCompleted',
+                'ActivityFailed',
+            ], true)) {
+                continue;
+            }
+
+            $event['payload']['activity_type'] = 'Tests\\Fixtures\\V2\\ChangedGreetingActivity';
+        }
+        unset($event);
+
+        $report = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame(ReplayDiff::STATUS_DRIFTED, $report['status']);
+        $this->assertSame(ReplayDiff::REASON_SHAPE_MISMATCH, $report['reason']);
+        $this->assertSame(1, $report['divergence']['workflow_sequence']);
+        $this->assertSame(
+            'activity:Tests\\Fixtures\\V2\\TestGreetingActivity',
+            $report['divergence']['expected_shape'],
+        );
+        $this->assertContains('ActivityScheduled', $report['divergence']['recorded_event_types']);
+        $this->assertStringContainsString('Recorded activity_type', $report['divergence']['message']);
+        $this->assertNull($report['error']);
+    }
+
     public function testReplayDiffReportsBundleInvalidWhenSchemaMissing(): void
     {
         $report = (new ReplayDiff())->diffExport([

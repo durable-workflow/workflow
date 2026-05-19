@@ -17,7 +17,7 @@ The machine-readable mirror of this document is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `2`.
+`durable-workflow.v2.platform-conformance.suite`, version `3`.
 
 ## Why one suite
 
@@ -73,7 +73,7 @@ them from the declared locations.
 | `control_plane_request_response` | `cli`, `sdk-python` | `tests/fixtures/control-plane/` | Frozen request bodies and response shapes for `workflow.start`, `signal`, `query`, `update`, `cancel`, `task-history`, namespace storage. |
 | `worker_task_lifecycle` | `cli`, `sdk-python`, `server` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | Task input envelopes (poll → claim → run) and task result envelopes (complete, fail, cancel, heartbeat) used by every conforming worker. |
 | `signal_query_runtime_contract` | `workflow`, `server`, `cli`, `sdk-python`, `waterline` | `docs/architecture/platform-conformance-suite.md`, `docs/architecture/query-and-live-debug.md`, `src/V2/Client/ControlPlaneClient.php`, `tests/Unit/V2/ControlPlaneClientTest.php`, `tests/Feature/SignalReplayTest.php`, `tests/Feature/V2/V2QueryWorkflowTest.php`, `tests/Feature/WorkflowControlPlaneTest.php`, `tests/Feature/WorkflowQueryTaskBrokerTest.php`, `tests/Commands/`, `tests/test_signals.py`, `tests/test_queries.py`, `tests/test_worker.py`, `CONFORMANCE.md` | Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
-| `history_replay_bundles` | `workflow`, `sdk-python` | `tests/Fixtures/V2/GoldenHistory/`, `tests/fixtures/golden_history/` | Frozen history event bundles. A conforming SDK must replay each bundle and reproduce the documented final command sequence. |
+| `history_replay_bundles` | `durable-workflow.github.io`, `workflow`, `sdk-python` | `static/platform-conformance/replay-runtime-scenarios.json`, `tests/Fixtures/V2/GoldenHistory/`, `tests/fixtures/golden_history/` | Deterministic replay coverage for frozen history bundles, worker restart replay, adversarial refusal, and in-flight signal timing across the official PHP and Python runtimes. |
 | `failure_repair_actionability` | `server`, `workflow` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, fixture pointers therein | Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces. |
 | `cli_json_envelopes` | `cli` | `tests/fixtures/control-plane/`, `schemas/` | The `--output=json` and `--output=jsonl` envelopes that automation depends on. Diagnostic-only fields are listed and excluded from the contract diff. |
 | `waterline_observer_envelopes` | `waterline` | (TBD: `tests/fixtures/observer/`) | The `/waterline/api/v2/*` shapes and operator dashboard JSON envelopes. Status: provisional — fixtures land alongside the next Waterline contract slice. |
@@ -127,6 +127,31 @@ Required scenarios:
   stable reason when live query values are intentionally not materialized
   in read-only detail responses.
 
+### History replay runtime contract
+
+The `history_replay_bundles` category is also stable and load-bearing.
+It must run against published install channels only, pin the resolved
+artifact versions in the result, and name every required replay scenario
+as passed, failed, or unsupported with a linked finding. A smoke-only
+run is nonconforming even when the smoke path passes.
+
+Required scenarios are published in the public replay scenario manifest
+at `static/platform-conformance/replay-runtime-scenarios.json` and
+include:
+
+- published-artifact install-only evidence for server, CLI, PHP runtime,
+  and Python SDK;
+- PHP and Python completed-history replay for activity, signal/update,
+  wait-condition, version-marker, and saga-compensation families;
+- PHP and Python worker-restart replay for completed-query, activity,
+  signal/update, wait-condition, version-marker, and saga-compensation
+  state;
+- PHP and Python divergent-code refusal with actionable
+  non-determinism diagnostics;
+- server history mutation and malformed-history refusal through the
+  documented replay verification surface;
+- PHP and Python in-flight signal restart timing.
+
 ## Pass / fail rules
 
 The harness runs each fixture against the implementation under test and
@@ -154,10 +179,11 @@ emits a structured result. The rules below are normative.
    release does not conform.
 
 5. **Stable runtime scenario coverage.** A stable runtime category such
-   as `signal_query_runtime_contract` passes only when every scenario it
-   declares records a pass, fail, or unsupported result with resolved
-   artifact versions and linked findings. A smoke-only subset or omitted
-   scenario is nonconforming, not provisional.
+   as `signal_query_runtime_contract` or `history_replay_bundles` passes
+   only when every scenario it declares records a pass, fail, or
+   unsupported result with resolved artifact versions and linked
+   findings. A smoke-only subset or omitted scenario is nonconforming,
+   not provisional.
 
 6. **Provisional categories warn but do not fail.** A failed fixture in
    a provisional category emits a warning in the harness output. A
@@ -276,10 +302,11 @@ docs. It indexes them under one normative declaration so a single
   `sdk-python/tests/fixtures/control-plane/` are the existing parity
   fixtures. The suite cites them as the
   `control_plane_request_response` source-of-truth.
-- `tests/Fixtures/V2/GoldenHistory/` (this repo) and
-  `sdk-python/tests/fixtures/golden_history/` are the existing replay
-  bundles. The suite cites them as the `history_replay_bundles`
-  source-of-truth.
+- `static/platform-conformance/replay-runtime-scenarios.json`,
+  `tests/Fixtures/V2/GoldenHistory/` (this repo), and
+  `sdk-python/tests/fixtures/golden_history/` are the replay scenario and
+  bundle authorities. The suite cites them as the
+  `history_replay_bundles` source-of-truth.
 
 ## Changing this document
 

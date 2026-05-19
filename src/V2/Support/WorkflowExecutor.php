@@ -137,7 +137,13 @@ final class WorkflowExecutor
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
-                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::LOCAL_ACTIVITY)) {
+                if (! $this->ensureStepHistoryCompatible(
+                    $run,
+                    $task,
+                    $sequence,
+                    WorkflowStepHistory::LOCAL_ACTIVITY,
+                    ['activity_type' => $current->activity],
+                )) {
                     return null;
                 }
 
@@ -211,7 +217,13 @@ final class WorkflowExecutor
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
-                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::ACTIVITY)) {
+                if (! $this->ensureStepHistoryCompatible(
+                    $run,
+                    $task,
+                    $sequence,
+                    WorkflowStepHistory::ACTIVITY,
+                    ['activity_type' => $current->activity],
+                )) {
                     return null;
                 }
 
@@ -548,7 +560,13 @@ final class WorkflowExecutor
                 // legacy replays that have since produced ACTIVITY/TIMER
                 // events at the same sequence.
                 if ($resolution->advancesSequence
-                    && ! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::VERSION_MARKER)
+                    && ! $this->ensureStepHistoryCompatible(
+                        $run,
+                        $task,
+                        $sequence,
+                        WorkflowStepHistory::VERSION_MARKER,
+                        ['change_id' => $current->changeId],
+                    )
                 ) {
                     return null;
                 }
@@ -734,7 +752,13 @@ final class WorkflowExecutor
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
-                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::SIGNAL_WAIT)) {
+                if (! $this->ensureStepHistoryCompatible(
+                    $run,
+                    $task,
+                    $sequence,
+                    WorkflowStepHistory::SIGNAL_WAIT,
+                    ['signal_name' => $current->name],
+                )) {
                     return null;
                 }
 
@@ -884,7 +908,13 @@ final class WorkflowExecutor
                     return $this->restartAfterPendingUpdateFailure($run, $task);
                 }
 
-                if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
+                if (! $this->ensureStepHistoryCompatible(
+                    $run,
+                    $task,
+                    $sequence,
+                    WorkflowStepHistory::CHILD_WORKFLOW,
+                    ['child_workflow_type' => $current->workflow],
+                )) {
                     return null;
                 }
 
@@ -1036,6 +1066,9 @@ final class WorkflowExecutor
                         $call instanceof ActivityCall
                             ? WorkflowStepHistory::ACTIVITY
                             : WorkflowStepHistory::CHILD_WORKFLOW,
+                        $call instanceof ActivityCall
+                            ? ['activity_type' => $call->activity]
+                            : ['child_workflow_type' => $call->workflow],
                     )) {
                         return null;
                     }
@@ -3107,9 +3140,10 @@ final class WorkflowExecutor
         WorkflowTask $task,
         int $sequence,
         string $expectedShape,
+        array $expectedDetails = [],
     ): bool {
         try {
-            WorkflowStepHistory::assertCompatible($run, $sequence, $expectedShape);
+            WorkflowStepHistory::assertCompatible($run, $sequence, $expectedShape, $expectedDetails);
 
             return true;
         } catch (Throwable $throwable) {

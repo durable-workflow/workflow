@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(2, $manifest['version']);
+        $this->assertSame(3, $manifest['version']);
         $this->assertSame(
             'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md',
             $manifest['authority_doc'],
@@ -259,6 +259,7 @@ final class PlatformConformanceSuiteTest extends TestCase
     public function testHistoryReplayBundlesAreFlaggedForFrozenExactMatch(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['history_replay_bundles'];
 
         $rule = $manifest['pass_fail_rules']['frozen_shape_exact_match'] ?? null;
         $this->assertNotNull($rule, 'frozen_shape_exact_match rule must be declared');
@@ -267,6 +268,58 @@ final class PlatformConformanceSuiteTest extends TestCase
             $rule['applies_to_categories'],
             'history_replay_bundles must be subject to exact-match because the underlying surface is frozen',
         );
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'history replay must be load-bearing, not a provisional smoke.',
+        );
+        $this->assertContains(
+            [
+                'repository' => 'durable-workflow.github.io',
+                'path' => 'static/platform-conformance/replay-runtime-scenarios.json',
+            ],
+            $category['sources'],
+            'the public replay scenario manifest must remain a conformance source',
+        );
+
+        foreach ([
+            'published_artifact_install_only',
+            'python_completed_history_activity_replay',
+            'python_completed_history_signal_update_replay',
+            'python_completed_history_wait_condition_replay',
+            'python_completed_history_version_marker_replay',
+            'python_completed_history_saga_compensation_replay',
+            'php_completed_history_activity_replay',
+            'php_completed_history_signal_update_replay',
+            'php_completed_history_wait_condition_replay',
+            'php_completed_history_version_marker_replay',
+            'php_completed_history_saga_compensation_replay',
+            'python_worker_restart_completed_query',
+            'python_worker_restart_activity_state',
+            'python_worker_restart_signal_update_state',
+            'python_worker_restart_wait_condition_state',
+            'python_worker_restart_version_marker_state',
+            'python_worker_restart_saga_compensation_state',
+            'php_worker_restart_completed_query',
+            'php_worker_restart_activity_state',
+            'php_worker_restart_signal_update_state',
+            'php_worker_restart_wait_condition_state',
+            'php_worker_restart_version_marker_state',
+            'php_worker_restart_saga_compensation_state',
+            'python_code_divergence_refusal',
+            'php_code_divergence_refusal',
+            'server_history_mutation_refusal',
+            'malformed_history_refusal',
+            'python_in_flight_signal_restart_timing',
+            'php_in_flight_signal_restart_timing',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "history replay conformance must name scenario $scenario",
+            );
+        }
     }
 
     public function testPassFailRulesNameTheCoreContract(): void
@@ -291,6 +344,11 @@ final class PlatformConformanceSuiteTest extends TestCase
             'signal_query_runtime_contract',
             $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
             'smoke-only signals/queries coverage must not satisfy the stable runtime category',
+        );
+        $this->assertContains(
+            'history_replay_bundles',
+            $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'smoke-only replay coverage must not satisfy the stable runtime category',
         );
     }
 

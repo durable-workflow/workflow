@@ -76,7 +76,9 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof LocalActivityCall) {
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::LOCAL_ACTIVITY);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::LOCAL_ACTIVITY, [
+                    'activity_type' => $current->activity,
+                ]);
 
                 $activityCompletion = $this->activityCompletionEvent($run, $sequence);
 
@@ -113,7 +115,9 @@ final class QueryStateReplayer
             }
 
             if ($current instanceof ActivityCall) {
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::ACTIVITY);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::ACTIVITY, [
+                    'activity_type' => $current->activity,
+                ]);
 
                 $activityCompletion = $this->activityCompletionEvent($run, $sequence);
 
@@ -268,7 +272,9 @@ final class QueryStateReplayer
 
             if ($current instanceof VersionCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::VERSION_MARKER);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::VERSION_MARKER, [
+                    'change_id' => $current->changeId,
+                ]);
 
                 $versionEvent = $this->versionMarkerEvent($run, $sequence);
                 $resolution = VersionResolver::resolve($run, $versionEvent, $current, $sequence);
@@ -307,7 +313,9 @@ final class QueryStateReplayer
 
             if ($current instanceof SignalCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SIGNAL_WAIT);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::SIGNAL_WAIT, [
+                    'signal_name' => $current->name,
+                ]);
 
                 $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
 
@@ -342,7 +350,9 @@ final class QueryStateReplayer
 
             if ($current instanceof ChildWorkflowCall) {
                 $this->applyRecordedUpdates($run, $workflow, $sequence);
-                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW);
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW, [
+                    'child_workflow_type' => $current->workflow,
+                ]);
 
                 $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
                 $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
@@ -453,6 +463,9 @@ final class QueryStateReplayer
                         $call instanceof ActivityCall
                             ? WorkflowStepHistory::ACTIVITY
                             : WorkflowStepHistory::CHILD_WORKFLOW,
+                        $call instanceof ActivityCall
+                            ? ['activity_type' => $call->activity]
+                            : ['child_workflow_type' => $call->workflow],
                     );
 
                     if ($call instanceof ActivityCall) {

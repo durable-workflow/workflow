@@ -15,12 +15,18 @@ final class HistoryEventShapeMismatchException extends LogicException
         public readonly int $workflowSequence,
         public readonly string $expectedHistoryShape,
         public readonly array $recordedEventTypes,
+        ?string $detail = null,
     ) {
+        $detail = is_string($detail) && $detail !== ''
+            ? " {$detail}"
+            : '';
+
         parent::__construct(sprintf(
-            'Workflow history at workflow sequence %d recorded [%s], but the current workflow yielded %s. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.',
+            'Workflow history at workflow sequence %d recorded [%s], but the current workflow yielded %s.%s Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.',
             $workflowSequence,
             implode(', ', $recordedEventTypes),
             $expectedHistoryShape,
+            $detail,
         ));
     }
 }
