@@ -1150,21 +1150,36 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             return;
         }
 
-        /** @var WorkflowSignal|null $signal */
-        $signal = WorkflowSignal::query()
+        /** @var \Illuminate\Support\Collection<int, WorkflowSignal> $signals */
+        $signals = WorkflowSignal::query()
             ->where('workflow_run_id', $run->id)
             ->where('status', SignalStatus::Received->value)
             ->whereNull('closed_at')
             ->orderBy('received_at')
             ->orderBy('created_at')
             ->orderBy('id')
-            ->first();
+            ->get();
 
-        if (! $signal instanceof WorkflowSignal) {
-            return;
+        /** @var WorkflowSignal|null $signal */
+        $signal = null;
+        $afterAttemptedSignal = $alreadyAttemptedSignalId === null;
+
+        foreach ($signals as $candidate) {
+            if ($afterAttemptedSignal) {
+                $signal = $candidate;
+                break;
+            }
+
+            if ($candidate->id === $alreadyAttemptedSignalId) {
+                $afterAttemptedSignal = true;
+            }
         }
 
-        if ($alreadyAttemptedSignalId !== null && $signal->id === $alreadyAttemptedSignalId) {
+        if (! $afterAttemptedSignal) {
+            $signal = $signals->first();
+        }
+
+        if (! $signal instanceof WorkflowSignal) {
             return;
         }
 
