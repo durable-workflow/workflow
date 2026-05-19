@@ -17,7 +17,7 @@ The machine-readable mirror of this document is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `3`.
+`durable-workflow.v2.platform-conformance.suite`, version `5`.
 
 ## Why one suite
 
@@ -89,8 +89,9 @@ they become required when promoted to `stable` in a later suite version.
 The `signal_query_runtime_contract` category is stable and load-bearing.
 It must run against published install channels only, pin the resolved
 artifact versions in the result, and name every required scenario as
-passed, failed, or unsupported with a linked finding. A smoke-only run is
-nonconforming even if the covered smoke scenarios pass.
+`pass`, `fail`, `unsupported`, `not_covered`, or `runner_blocked` with a
+linked finding. A smoke-only run is nonconforming even if the covered
+smoke scenarios pass.
 
 Required scenarios:
 
@@ -132,8 +133,9 @@ Required scenarios:
 The `history_replay_bundles` category is also stable and load-bearing.
 It must run against published install channels only, pin the resolved
 artifact versions in the result, and name every required replay scenario
-as passed, failed, or unsupported with a linked finding. A smoke-only
-run is nonconforming even when the smoke path passes.
+as `pass`, `fail`, `unsupported`, `not_covered`, or `runner_blocked` with
+a linked finding. A smoke-only run is nonconforming even when the smoke
+path passes.
 
 Required scenarios are published in the public replay scenario manifest
 at `static/platform-conformance/replay-runtime-scenarios.json` and
@@ -179,11 +181,13 @@ emits a structured result. The rules below are normative.
    release does not conform.
 
 5. **Stable runtime scenario coverage.** A stable runtime category such
-   as `signal_query_runtime_contract` or `history_replay_bundles` passes
-   only when every scenario it declares records a pass, fail, or
-   unsupported result with resolved artifact versions and linked
-   findings. A smoke-only subset or omitted scenario is nonconforming,
-   not provisional.
+   as `signal_query_runtime_contract` or `history_replay_bundles` must
+   report every scenario it declares with one of the statuses published
+   by its runtime scenario manifest: `pass`, `fail`, `unsupported`,
+   `not_covered`, or `runner_blocked`. Full conformance requires every
+   required scenario to pass. A smoke-only subset, omitted scenario,
+   unsupported public surface, uncovered cell, or runner-blocked cell is
+   nonconforming and must link the owning finding.
 
 6. **Provisional categories warn but do not fail.** A failed fixture in
    a provisional category emits a warning in the harness output. A

@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 3;
+    public const VERSION = 5;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -408,7 +408,7 @@ final class PlatformConformanceSuite
                 'rule' => 'A release that claims a target must pass every required fixture category for that target. One failed required fixture means the release does not conform for that target.',
             ],
             'stable_runtime_scenario_coverage' => [
-                'rule' => 'A stable runtime fixture category passes only when every required scenario it declares records a pass, fail, or unsupported result with artifact versions and linked findings. A smoke-only subset or omitted scenario is nonconforming, not provisional.',
+                'rule' => 'A stable runtime fixture category must report every required scenario it declares with one of the statuses published by its runtime scenario manifest: pass, fail, unsupported, not_covered, or runner_blocked. Full conformance requires every required scenario to pass. A smoke-only subset, omitted scenario, unsupported public surface, uncovered cell, or runner-blocked cell is nonconforming and must link the owning finding.',
                 'applies_to_categories' => [
                     'signal_query_runtime_contract',
                     'history_replay_bundles',

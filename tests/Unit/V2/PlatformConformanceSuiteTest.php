@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(3, $manifest['version']);
+        $this->assertSame(5, $manifest['version']);
         $this->assertSame(
             'https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md',
             $manifest['authority_doc'],
@@ -361,6 +361,16 @@ final class PlatformConformanceSuiteTest extends TestCase
             'history_replay_bundles',
             $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
             'smoke-only replay coverage must not satisfy the stable runtime category',
+        );
+        $this->assertStringContainsString(
+            'not_covered',
+            $rules['stable_runtime_scenario_coverage']['rule'],
+            'omitted runtime scenario cells must be representable without appearing green',
+        );
+        $this->assertStringContainsString(
+            'runner_blocked',
+            $rules['stable_runtime_scenario_coverage']['rule'],
+            'environment-blocked runtime scenarios must be distinct from product pass/fail evidence',
         );
     }
 
