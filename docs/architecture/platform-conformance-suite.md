@@ -18,7 +18,7 @@ The machine-readable mirror of the public authority is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `6`.
+`durable-workflow.v2.platform-conformance.suite`, version `7`.
 
 ## Why one suite
 
@@ -50,10 +50,10 @@ target (the standalone `server` claims `standalone_server` *and*
 
 | Target | Required surface families | Required fixture categories |
 | --- | --- | --- |
-| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
-| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
-| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `history_replay_bundles` |
-| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `namespace_runtime_contract`, `cli_json_envelopes` |
+| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
+| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
+| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `history_replay_bundles` |
+| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `cli_json_envelopes` |
 | `waterline_contract_surface` | `waterline_api` | `signal_query_runtime_contract`, `namespace_runtime_contract`, `waterline_observer_envelopes` |
 | `repair_actionability_surface` | `worker_protocol` (failure subset), `server_api` (repair routes) | `failure_repair_actionability` |
 | `mcp_discovery_surface` | `mcp_discovery_results` | `mcp_discovery_envelopes` |
@@ -76,6 +76,7 @@ them from the declared locations.
 | `signal_query_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/signal-query-runtime-scenarios.json` | Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
 | `history_replay_bundles` | `durable-workflow.github.io`, `workflow`, `sdk-python` | `static/platform-conformance/replay-runtime-scenarios.json`, `tests/Fixtures/V2/GoldenHistory/`, `tests/fixtures/golden_history/` | Deterministic replay coverage for frozen history bundles, worker restart replay, adversarial refusal, and in-flight signal timing across the official PHP and Python runtimes. |
 | `namespace_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/namespace-runtime-scenarios.json` | Live published-artifact scenarios for Temporal-parity namespace isolation, lifecycle cleanup, CLI and SDK namespace selection, PHP worker routing, Waterline visibility, Nexus opt-in crossing, and search-attribute value query isolation. |
+| `child_workflow_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/child-workflow-runtime-scenarios.json` | Live published-artifact scenarios for child workflow orchestration across PHP and Python workers, cross-language parent/child execution, failure and cancellation propagation, replay after worker restart, concurrent fan-out, and namespace behavior. |
 | `failure_repair_actionability` | `server`, `workflow` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, fixture pointers therein | Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces. |
 | `cli_json_envelopes` | `cli` | `tests/fixtures/control-plane/`, `schemas/` | The `--output=json` and `--output=jsonl` envelopes that automation depends on. Diagnostic-only fields are listed and excluded from the contract diff. |
 | `waterline_observer_envelopes` | `waterline` | (TBD: `tests/fixtures/observer/`) | The `/waterline/api/v2/*` shapes and operator dashboard JSON envelopes. Status: provisional — fixtures land alongside the next Waterline contract slice. |
@@ -186,6 +187,35 @@ and include:
 - result-record evidence with artifact versions, timestamps, outcomes,
   and routed product findings.
 
+### Child workflow runtime contract
+
+The `child_workflow_runtime_contract` category is stable and
+load-bearing. It must run against published install channels only, pin
+the resolved artifact versions in the result, and name every required
+child workflow scenario as `pass`, `fail`, `unsupported`, `not_covered`,
+or `runner_blocked` with a linked finding. A single parent/child smoke is
+nonconforming until the run covers PHP and Python worker participation,
+same-language and cross-language parent/child execution, typed child
+failure propagation, parent-to-child cancellation, direct child
+cancellation observed by the parent, replay across parent-worker
+restart, concurrent fan-out, and namespace behavior.
+
+Required scenarios are published in the public child workflow scenario
+manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`
+and include:
+
+- published-artifact install-only evidence for server, CLI, PHP runtime,
+  and Python SDK;
+- Python parent to Python child and PHP parent to PHP child baselines;
+- PHP parent to Python child and Python parent to PHP child
+  cross-language execution;
+- typed child failure round-trip across the parent/child runtime matrix;
+- parent cancellation propagation to a running child and direct child
+  cancellation observed by the parent as a typed cancellation;
+- replay across parent-worker restart while awaiting a child;
+- concurrent child fan-out with aggregate result and timestamp evidence;
+- namespace behavior for parent/child lineage.
+
 ## Pass / fail rules
 
 The harness runs each fixture against the implementation under test and
@@ -213,14 +243,15 @@ emits a structured result. The rules below are normative.
    release does not conform.
 
 5. **Stable runtime scenario coverage.** A stable runtime category such
-   as `signal_query_runtime_contract`, `history_replay_bundles`, or
-   `namespace_runtime_contract` must
-   report every scenario it declares with one of the statuses published
-   by its runtime scenario manifest: `pass`, `fail`, `unsupported`,
-   `not_covered`, or `runner_blocked`. Full conformance requires every
-   required scenario to pass. A smoke-only subset, omitted scenario,
-   unsupported public surface, uncovered cell, or runner-blocked cell is
-   nonconforming and must link the owning finding.
+   as `signal_query_runtime_contract`, `history_replay_bundles`,
+   `namespace_runtime_contract`, or
+   `child_workflow_runtime_contract` must report every scenario it
+   declares with one of the statuses published by its runtime scenario
+   manifest: `pass`, `fail`, `unsupported`, `not_covered`, or
+   `runner_blocked`. Full conformance requires every required scenario
+   to pass. A smoke-only subset, omitted scenario, unsupported public
+   surface, uncovered cell, or runner-blocked cell is nonconforming and
+   must link the owning finding.
 
 6. **Provisional categories warn but do not fail.** A failed fixture in
    a provisional category emits a warning in the harness output. A
@@ -351,6 +382,14 @@ docs. It indexes them under one normative declaration so a single
   `sdk-python/tests/fixtures/golden_history/` are the replay scenario and
   bundle authorities. The suite cites them as the
   `history_replay_bundles` source-of-truth.
+- `durable-workflow.github.io/static/platform-conformance/namespace-runtime-scenarios.json`
+  is the stable public source of truth for the
+  `namespace_runtime_contract` category and the scenario matrix consumed
+  by published artifact harnesses.
+- `durable-workflow.github.io/static/platform-conformance/child-workflow-runtime-scenarios.json`
+  is the stable public source of truth for the
+  `child_workflow_runtime_contract` category and the scenario matrix
+  consumed by published artifact harnesses.
 
 ## Changing this document
 

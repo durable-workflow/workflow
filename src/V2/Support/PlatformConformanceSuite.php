@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 6;
+    public const VERSION = 7;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -113,6 +113,7 @@ final class PlatformConformanceSuite
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
                     'namespace_runtime_contract',
+                    'child_workflow_runtime_contract',
                     'worker_task_lifecycle',
                     'failure_repair_actionability',
                 ],
@@ -128,6 +129,7 @@ final class PlatformConformanceSuite
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
                     'namespace_runtime_contract',
+                    'child_workflow_runtime_contract',
                     'worker_task_lifecycle',
                     'history_replay_bundles',
                 ],
@@ -142,6 +144,7 @@ final class PlatformConformanceSuite
                     'worker_task_lifecycle',
                     'signal_query_runtime_contract',
                     'namespace_runtime_contract',
+                    'child_workflow_runtime_contract',
                     'history_replay_bundles',
                 ],
             ],
@@ -154,6 +157,7 @@ final class PlatformConformanceSuite
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
                     'namespace_runtime_contract',
+                    'child_workflow_runtime_contract',
                     'cli_json_envelopes',
                 ],
             ],
@@ -292,6 +296,18 @@ final class PlatformConformanceSuite
                 'authority_doc' => self::AUTHORITY_URL,
                 'required_scenarios' => self::namespaceRequiredScenarios(),
             ],
+            'child_workflow_runtime_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Live published-artifact scenarios for child workflow orchestration across PHP and Python workers, cross-language parent/child execution, failure and cancellation propagation, replay after worker restart, concurrent fan-out, and namespace behavior.',
+                'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/child-workflow-runtime-scenarios.json',
+                    ],
+                ],
+                'authority_doc' => self::AUTHORITY_URL,
+                'required_scenarios' => self::childWorkflowRequiredScenarios(),
+            ],
             'failure_repair_actionability' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
                 'description' => 'Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces.',
@@ -381,6 +397,7 @@ final class PlatformConformanceSuite
                     'signal_query_runtime_contract',
                     'history_replay_bundles',
                     'namespace_runtime_contract',
+                    'child_workflow_runtime_contract',
                 ],
             ],
             'provisional_categories_warn_only' => [
@@ -450,6 +467,26 @@ final class PlatformConformanceSuite
             'nexus_explicit_cross_namespace_invocation',
             'reserved_namespace_name_refusal',
             'result_record_and_product_finding_routing',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function childWorkflowRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'python_parent_python_child_baseline',
+            'php_parent_php_child_baseline',
+            'php_parent_python_child_cross_language',
+            'python_parent_php_child_cross_language',
+            'child_failure_round_trip_matrix',
+            'parent_cancellation_propagates_to_child',
+            'direct_child_cancellation_observed_by_parent',
+            'worker_restart_replay_preserves_child_outcome',
+            'concurrent_child_fan_out',
+            'child_workflow_namespace_contract',
         ];
     }
 

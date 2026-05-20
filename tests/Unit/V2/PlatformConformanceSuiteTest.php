@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(6, $manifest['version']);
+        $this->assertSame(7, $manifest['version']);
         $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -110,6 +110,7 @@ final class PlatformConformanceSuiteTest extends TestCase
             'signal_query_runtime_contract',
             'history_replay_bundles',
             'namespace_runtime_contract',
+            'child_workflow_runtime_contract',
             'failure_repair_actionability',
             'cli_json_envelopes',
             'waterline_observer_envelopes',
@@ -382,6 +383,62 @@ final class PlatformConformanceSuiteTest extends TestCase
         );
     }
 
+    public function testChildWorkflowRuntimeContractIsRequiredForParentChildSurfaces(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['child_workflow_runtime_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'child workflow parity must be load-bearing, not a single-runtime smoke.',
+        );
+
+        foreach ([
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+        ] as $target) {
+            $this->assertContains(
+                'child_workflow_runtime_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target must be graded against the live child workflow contract",
+            );
+        }
+
+        $this->assertSame(
+            [
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/child-workflow-runtime-scenarios.json',
+                ],
+            ],
+            $category['sources'],
+            'the public child workflow scenario manifest must be the consumable source for full child workflow coverage',
+        );
+
+        foreach ([
+            'published_artifact_install_only',
+            'python_parent_python_child_baseline',
+            'php_parent_php_child_baseline',
+            'php_parent_python_child_cross_language',
+            'python_parent_php_child_cross_language',
+            'child_failure_round_trip_matrix',
+            'parent_cancellation_propagates_to_child',
+            'direct_child_cancellation_observed_by_parent',
+            'worker_restart_replay_preserves_child_outcome',
+            'concurrent_child_fan_out',
+            'child_workflow_namespace_contract',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "child workflow conformance must name scenario $scenario",
+            );
+        }
+    }
+
     public function testPassFailRulesNameTheCoreContract(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
@@ -414,6 +471,11 @@ final class PlatformConformanceSuiteTest extends TestCase
             'namespace_runtime_contract',
             $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
             'smoke-only namespace coverage must not satisfy the stable runtime category',
+        );
+        $this->assertContains(
+            'child_workflow_runtime_contract',
+            $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'smoke-only child workflow coverage must not satisfy the stable runtime category',
         );
         foreach (['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'] as $status) {
             $this->assertStringContainsString(
