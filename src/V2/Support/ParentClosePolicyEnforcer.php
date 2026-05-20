@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
@@ -84,6 +85,8 @@ final class ParentClosePolicyEnforcer
                     default => null,
                 };
 
+                self::markChildCallForPolicy($run, $link, $policy);
+
                 WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyApplied, [
                     'child_instance_id' => $childInstanceId,
                     'child_run_id' => $childRun->id,
@@ -117,5 +120,31 @@ final class ParentClosePolicyEnforcer
         }
 
         return $appliedTo;
+    }
+
+    private static function markChildCallForPolicy(
+        WorkflowRun $parentRun,
+        WorkflowLink $link,
+        ParentClosePolicy $policy,
+    ): void {
+        if (! is_int($link->sequence)) {
+            return;
+        }
+
+        /** @var WorkflowChildCall|null $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $link->sequence)
+            ->first();
+
+        if (! $childCall instanceof WorkflowChildCall || $childCall->isTerminal()) {
+            return;
+        }
+
+        match ($policy) {
+            ParentClosePolicy::RequestCancel => $childCall->markCancelled(),
+            ParentClosePolicy::Terminate => $childCall->markTerminated(),
+            ParentClosePolicy::Abandon => null,
+        };
     }
 }

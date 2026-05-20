@@ -971,6 +971,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         LifecycleEventDispatcher::workflowCompleted($run);
 
+        ParentClosePolicyEnforcer::enforce($run);
+
         $this->dispatchParentResumeTasksForRun($run);
 
         self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
@@ -1050,6 +1052,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $exceptionClass,
             $message,
         );
+
+        ParentClosePolicyEnforcer::enforce($run);
 
         $this->dispatchParentResumeTasksForRun($run);
 
@@ -2669,6 +2673,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             RunStatus::Terminated => HistoryEventType::ChildRunTerminated,
             default => HistoryEventType::ChildRunFailed,
         };
+
+        ChildRunHistory::markChildCallResolved($run, $sequence, $childRun);
 
         $alreadyRecorded = $run->historyEvents->contains(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $eventType

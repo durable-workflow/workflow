@@ -7,8 +7,10 @@ namespace Workflow\V2\Support;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
@@ -23,6 +25,58 @@ final class ChildRunHistory
     public const HISTORY_AUTHORITY_UNSUPPORTED_TERMINAL = 'unsupported_terminal_without_history';
 
     public const UNSUPPORTED_TERMINAL_REASON = 'terminal_child_link_without_typed_parent_history';
+
+    public static function markChildCallResolved(WorkflowRun $parentRun, int $sequence, WorkflowRun $childRun): void
+    {
+        $childCall = self::openChildCallForSequence($parentRun, $sequence);
+
+        if (! $childCall instanceof WorkflowChildCall || $childCall->isTerminal()) {
+            return;
+        }
+
+        if ($childCall->resolved_child_run_id !== $childRun->id) {
+            $childCall->forceFill([
+                'resolved_child_instance_id' => $childRun->workflow_instance_id,
+                'resolved_child_run_id' => $childRun->id,
+            ])->save();
+        }
+
+        match (self::resolvedStatus(null, $childRun)) {
+            RunStatus::Completed => $childCall->markCompleted(),
+            RunStatus::Cancelled => $childCall->markCancelled(),
+            RunStatus::Terminated => $childCall->markTerminated(),
+            default => $childCall->markFailed(self::failureReferenceForRun($childRun)),
+        };
+    }
+
+    public static function markChildCallContinued(
+        WorkflowRun $parentRun,
+        int $sequence,
+        WorkflowRun $continuedRun,
+        WorkflowRun $continuedFromRun,
+        ?string $childCallId = null,
+    ): void {
+        $childCall = self::openChildCallForSequence($parentRun, $sequence);
+
+        if (! $childCall instanceof WorkflowChildCall || $childCall->isTerminal()) {
+            return;
+        }
+
+        $metadata = is_array($childCall->metadata) ? $childCall->metadata : [];
+        $continuationCount = (int) ($metadata['continuation_count'] ?? 0);
+
+        $childCall->forceFill([
+            'resolved_child_instance_id' => $continuedRun->workflow_instance_id,
+            'resolved_child_run_id' => $continuedRun->id,
+            'status' => ChildCallStatus::Started,
+            'started_at' => now(),
+            'metadata' => array_merge($metadata, array_filter([
+                'child_call_id' => $childCallId ?? self::stringValue($metadata['child_call_id'] ?? null),
+                'continuation_count' => $continuationCount + 1,
+                'last_continued_from_child_workflow_run_id' => $continuedFromRun->id,
+            ], static fn (mixed $value): bool => $value !== null)),
+        ])->save();
+    }
 
     /**
      * @return list<int>
@@ -687,6 +741,25 @@ final class ChildRunHistory
         $failure = $childRun->failures->first();
 
         return $failure;
+    }
+
+    private static function failureReferenceForRun(WorkflowRun $run): ?string
+    {
+        $failure = self::failureRow($run);
+
+        return $failure instanceof WorkflowFailure ? (string) $failure->id : null;
+    }
+
+    private static function openChildCallForSequence(WorkflowRun $parentRun, int $sequence): ?WorkflowChildCall
+    {
+        /** @var WorkflowChildCall|null $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $sequence)
+            ->whereIn('status', [ChildCallStatus::Scheduled->value, ChildCallStatus::Started->value])
+            ->first();
+
+        return $childCall;
     }
 
     private static function loadRun(?string $runId): ?WorkflowRun

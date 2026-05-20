@@ -1746,6 +1746,32 @@ final class WorkflowExecutor
         $parentClosePolicy = $childWorkflowCall->options?->parentClosePolicy
             ?? ParentClosePolicy::Abandon;
 
+        WorkflowChildCall::query()->create([
+            'parent_workflow_run_id' => $run->id,
+            'parent_workflow_instance_id' => $run->workflow_instance_id,
+            'sequence' => $sequence,
+            'child_workflow_type' => $workflowType,
+            'child_workflow_class' => $childWorkflowCall->workflow,
+            'parent_close_policy' => $parentClosePolicy->value,
+            'connection' => $childRun->connection,
+            'queue' => $childRun->queue,
+            'compatibility' => $childRun->compatibility,
+            'cancellation_propagation' => false,
+            'status' => ChildCallStatus::Started,
+            'scheduled_at' => $now,
+            'started_at' => $now,
+            'arguments' => [
+                'payload' => $storedChildArguments,
+                'payload_codec' => $childCodec,
+            ],
+            'metadata' => [
+                'child_call_id' => $childCallId,
+                'attempt_count' => 1,
+            ],
+            'resolved_child_instance_id' => $childInstance->id,
+            'resolved_child_run_id' => $childRun->id,
+        ]);
+
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
             'id' => $childCallId,
@@ -2268,6 +2294,8 @@ final class WorkflowExecutor
             default => HistoryEventType::ChildRunFailed,
         };
 
+        ChildRunHistory::markChildCallResolved($run, $sequence, $childRun);
+
         $alreadyRecorded = $run->historyEvents->contains(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $eventType
                 && ($event->payload['sequence'] ?? null) === $sequence
@@ -2599,6 +2627,13 @@ final class WorkflowExecutor
 
             $parentRunsToProject[$parentRun->id] = true;
             $parentRun->loadMissing('historyEvents');
+            ChildRunHistory::markChildCallContinued(
+                $parentRun,
+                (int) $parentChildLink->sequence,
+                $continuedRun,
+                $run,
+                $childCallId,
+            );
 
             $alreadyRecorded = $parentRun->historyEvents->contains(
                 static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted

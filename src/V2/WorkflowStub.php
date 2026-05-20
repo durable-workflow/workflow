@@ -4466,6 +4466,8 @@ final class WorkflowStub
             default => HistoryEventType::ChildRunFailed,
         };
 
+        ChildRunHistory::markChildCallResolved($parentRun, $sequence, $childRun);
+
         /** @var WorkflowHistoryEvent|null $alreadyRecorded */
         $alreadyRecorded = $parentRun->historyEvents->first(
             static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $eventType

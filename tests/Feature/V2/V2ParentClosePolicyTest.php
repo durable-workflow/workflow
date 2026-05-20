@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestParentWithClosePolicyContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWithClosePolicyWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -16,6 +17,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
@@ -171,6 +173,14 @@ final class V2ParentClosePolicyTest extends TestCase
             'Workflow\\V2\\Exceptions\\WorkflowCancelledException',
             $resolution->payload['exception_class'] ?? null,
         );
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $resolution->payload['sequence'] ?? null)
+            ->sole();
+
+        $this->assertSame(ChildCallStatus::Cancelled, $childCall->status);
 
         /** @var WorkflowTask $resumeTask */
         $resumeTask = WorkflowTask::query()
@@ -355,6 +365,20 @@ final class V2ParentClosePolicyTest extends TestCase
             ->get();
 
         $this->assertCount(0, $appliedEvents, 'Continue-as-new should not trigger parent-close policy.');
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', 1)
+            ->sole();
+
+        /** @var WorkflowRun $resolvedChildRun */
+        $resolvedChildRun = WorkflowRun::query()
+            ->findOrFail($childCall->resolved_child_run_id);
+
+        $this->assertSame(2, $resolvedChildRun->run_number);
+        $this->assertSame(ChildCallStatus::Completed, $childCall->status);
+        $this->assertNull($childCall->result_payload_reference);
     }
 
     public function testParentClosePolicySurvivesContinueAsNewOnChild(): void
@@ -378,6 +402,7 @@ final class V2ParentClosePolicyTest extends TestCase
         $links = WorkflowLink::query()
             ->where('parent_workflow_instance_id', 'policy-survives-continue')
             ->where('link_type', 'child_workflow')
+            ->orderBy('created_at')
             ->get();
 
         // At least 2 links: original + at least one continue-as-new.
@@ -386,6 +411,20 @@ final class V2ParentClosePolicyTest extends TestCase
         // The latest child link should still carry the parent_close_policy.
         $latestLink = $links->last();
         $this->assertSame('request_cancel', $latestLink->parent_close_policy);
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'policy-survives-continue')
+            ->firstOrFail();
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $latestLink->sequence)
+            ->sole();
+
+        $this->assertSame($latestLink->child_workflow_run_id, $childCall->resolved_child_run_id);
+        $this->assertSame(ChildCallStatus::Started, $childCall->status);
 
         // Now terminate the parent — the policy should apply to the current child run.
         $childInstanceId = $latestLink->child_workflow_instance_id;
@@ -403,11 +442,11 @@ final class V2ParentClosePolicyTest extends TestCase
         $childStub->refresh();
         $this->assertSame('cancelled', $childStub->status());
 
-        // Confirm the ParentClosePolicyApplied event was recorded.
-        $parentRun = WorkflowRun::query()
-            ->where('workflow_instance_id', 'policy-survives-continue')
-            ->first();
+        $childCall->refresh();
+        $this->assertSame(ChildCallStatus::Cancelled, $childCall->status);
+        $this->assertSame($latestLink->child_workflow_run_id, $childCall->resolved_child_run_id);
 
+        // Confirm the ParentClosePolicyApplied event was recorded.
         $appliedEvent = $parentRun->historyEvents()
             ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
             ->first();
