@@ -27,7 +27,7 @@ final class StartOptions
     public readonly array $memo;
 
     /**
-     * @var array<string, scalar|null>
+     * @var array<string, scalar|list<string>|null>
      */
     public readonly array $searchAttributes;
 
@@ -63,7 +63,7 @@ final class StartOptions
     /**
      * @param array<string, scalar|null> $labels
      * @param array<string, mixed> $memo
-     * @param array<string, scalar|null> $searchAttributes
+     * @param array<string, scalar|list<string>|null> $searchAttributes
      */
     public function __construct(
         DuplicateStartPolicy $duplicateStartPolicy = DuplicateStartPolicy::RejectDuplicate,
@@ -132,7 +132,7 @@ final class StartOptions
     }
 
     /**
-     * @param array<string, scalar|null> $searchAttributes
+     * @param array<string, scalar|list<string>|null> $searchAttributes
      */
     public function withSearchAttributes(array $searchAttributes): self
     {
@@ -300,8 +300,8 @@ final class StartOptions
     }
 
     /**
-     * @param array<string, scalar|null> $searchAttributes
-     * @return array<string, scalar|null>
+     * @param array<string, scalar|list<string>|null> $searchAttributes
+     * @return array<string, scalar|list<string>>
      */
     private static function normalizeSearchAttributes(array $searchAttributes): array
     {
@@ -314,9 +314,9 @@ final class StartOptions
                 );
             }
 
-            if ($value !== null && ! is_scalar($value)) {
+            if ($value !== null && ! is_scalar($value) && ! is_array($value)) {
                 throw new LogicException(sprintf(
-                    'Workflow v2 search attribute [%s] must be a scalar value or null.',
+                    'Workflow v2 search attribute [%s] must be a scalar value, string list, or null.',
                     $key,
                 ));
             }
@@ -325,7 +325,43 @@ final class StartOptions
                 continue;
             }
 
-            $stringValue = is_bool($value) ? ($value ? '1' : '0') : trim((string) $value);
+            if (is_array($value)) {
+                if (! array_is_list($value)) {
+                    throw new LogicException(sprintf(
+                        'Workflow v2 search attribute [%s] list value must be a JSON array.',
+                        $key,
+                    ));
+                }
+
+                $list = [];
+
+                foreach ($value as $entry) {
+                    if (! is_string($entry)) {
+                        throw new LogicException(sprintf(
+                            'Workflow v2 search attribute [%s] list values must contain only strings.',
+                            $key,
+                        ));
+                    }
+
+                    $trimmed = trim($entry);
+
+                    if ($trimmed !== '' && strlen($trimmed) > WorkflowInstanceId::MAX_LENGTH) {
+                        throw new LogicException(sprintf(
+                            'Workflow v2 search attribute [%s] list values must be up to %d characters.',
+                            $key,
+                            WorkflowInstanceId::MAX_LENGTH,
+                        ));
+                    }
+
+                    $list[] = $trimmed;
+                }
+
+                $normalized[$key] = $list;
+
+                continue;
+            }
+
+            $stringValue = is_bool($value) ? ($value ? '1' : '0') : (is_string($value) ? trim($value) : (string) $value);
 
             if ($stringValue !== '' && strlen($stringValue) > WorkflowInstanceId::MAX_LENGTH) {
                 throw new LogicException(sprintf(
@@ -336,7 +372,7 @@ final class StartOptions
             }
 
             if ($stringValue !== '') {
-                $normalized[$key] = $stringValue;
+                $normalized[$key] = is_string($value) ? $stringValue : $value;
             }
         }
 

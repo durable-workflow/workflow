@@ -4538,7 +4538,7 @@ final class WorkflowStub
 
     /**
      * @param array<string, mixed>|null $memo
-     * @param array<string, scalar|null>|null $searchAttributes
+     * @param array<string, scalar|list<string>|null>|null $searchAttributes
      */
     private function seedTypedVisibilityMetadata(WorkflowRun $run, ?array $memo, ?array $searchAttributes): void
     {

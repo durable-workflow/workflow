@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
+use LogicException;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 
 /**
  * Validates and normalizes workflow commands reported by a worker on a
@@ -441,10 +444,30 @@ final class WorkflowCommandNormalizer
                     continue;
                 }
 
+                try {
+                    $call = new UpsertSearchAttributesCall($command['attributes']);
+                } catch (LogicException $e) {
+                    $errors["commands.{$index}.attributes"] = [$e->getMessage()];
+
+                    continue;
+                }
+
+                $attributeTypes = self::normalizeSearchAttributeTypes($command['attribute_types'] ?? null);
+
+                try {
+                    SearchAttributeUpsertService::assertDeclaredTypesCompatible($call, $attributeTypes);
+                } catch (InvalidArgumentException $e) {
+                    $errors["commands.{$index}.attribute_types"] = [$e->getMessage()];
+
+                    continue;
+                }
+
                 $normalized[] = [
                     'type' => $type,
-                    'attributes' => $command['attributes'],
-                ];
+                    'attributes' => $call->attributes,
+                ] + array_filter([
+                    'attribute_types' => $attributeTypes,
+                ], static fn (mixed $value): bool => $value !== []);
 
                 continue;
             }
@@ -1037,5 +1060,33 @@ final class WorkflowCommandNormalizer
                 ),
             ];
         }
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function normalizeSearchAttributeTypes(mixed $types): array
+    {
+        if (! is_array($types)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($types as $key => $type) {
+            if (! is_string($key) || ! is_string($type)) {
+                continue;
+            }
+
+            if (! in_array($type, WorkflowSearchAttribute::VALID_TYPES, true)) {
+                continue;
+            }
+
+            $normalized[$key] = $type;
+        }
+
+        ksort($normalized);
+
+        return $normalized;
     }
 }

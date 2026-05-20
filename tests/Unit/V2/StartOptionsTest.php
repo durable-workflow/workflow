@@ -272,16 +272,29 @@ final class StartOptionsTest extends TestCase
         ], $options->searchAttributes);
     }
 
-    public function testBooleanSearchAttributeCastToString(): void
+    public function testScalarSearchAttributeTypesArePreserved(): void
     {
         $options = new StartOptions(searchAttributes: [
             'active' => true,
             'deleted' => false,
+            'priority' => 3,
         ]);
 
         $this->assertSame([
-            'active' => '1',
-            'deleted' => '0',
+            'active' => true,
+            'deleted' => false,
+            'priority' => 3,
+        ], $options->searchAttributes);
+    }
+
+    public function testKeywordListSearchAttributesArePreserved(): void
+    {
+        $options = new StartOptions(searchAttributes: [
+            'tags' => ['alpha', 'beta'],
+        ]);
+
+        $this->assertSame([
+            'tags' => ['alpha', 'beta'],
         ], $options->searchAttributes);
     }
 

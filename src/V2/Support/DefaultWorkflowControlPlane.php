@@ -27,6 +27,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\UpdateResult;
 use Workflow\V2\WorkflowStub;
@@ -48,6 +49,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         $labels = $options['labels'] ?? null;
         $memo = $options['memo'] ?? null;
         $searchAttributes = $options['search_attributes'] ?? null;
+        $searchAttributeTypes = self::normalizeSearchAttributeTypes($options['search_attribute_types'] ?? null);
         $namespace = $this->resolveNamespace($options);
         if (is_string($arguments)) {
             $arguments = ExternalPayloads::externalizeForNamespace($arguments, $payloadCodec, $namespace);
@@ -82,6 +84,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             $labels,
             $memo,
             $searchAttributes,
+            $searchAttributeTypes,
             $namespace,
             $commandContext,
             $executionTimeoutSeconds,
@@ -248,6 +251,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 $run,
                 is_array($memo) ? $memo : null,
                 is_array($searchAttributes) ? $searchAttributes : null,
+                $searchAttributeTypes,
             );
 
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes($commandContext, [
@@ -1062,10 +1066,15 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
 
     /**
      * @param array<string, mixed>|null $memo
-     * @param array<string, scalar|null>|null $searchAttributes
+     * @param array<string, scalar|list<string>|null>|null $searchAttributes
+     * @param array<string, string> $searchAttributeTypes
      */
-    private function seedTypedVisibilityMetadata(WorkflowRun $run, ?array $memo, ?array $searchAttributes): void
-    {
+    private function seedTypedVisibilityMetadata(
+        WorkflowRun $run,
+        ?array $memo,
+        ?array $searchAttributes,
+        array $searchAttributeTypes = [],
+    ): void {
         if (is_array($memo) && $memo !== []) {
             app(MemoUpsertService::class)->upsert($run, new UpsertMemosCall($memo), 0);
             $run->unsetRelation('memos');
@@ -1076,9 +1085,38 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                 $run,
                 new UpsertSearchAttributesCall($searchAttributes),
                 0,
+                attributeTypes: $searchAttributeTypes,
             );
             $run->unsetRelation('searchAttributes');
         }
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function normalizeSearchAttributeTypes(mixed $types): array
+    {
+        if (! is_array($types)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($types as $key => $type) {
+            if (! is_string($key) || ! is_string($type)) {
+                continue;
+            }
+
+            if (! in_array($type, WorkflowSearchAttribute::VALID_TYPES, true)) {
+                continue;
+            }
+
+            $normalized[$key] = $type;
+        }
+
+        ksort($normalized);
+
+        return $normalized;
     }
 
     /**

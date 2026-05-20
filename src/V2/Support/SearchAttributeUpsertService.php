@@ -25,14 +25,18 @@ final class SearchAttributeUpsertService
      * @param UpsertSearchAttributesCall $call The upsert command
      * @param int $sequence History sequence when this upsert occurred
      * @param bool $inheritedFromParent Whether these are inherited via continue-as-new
+     * @param array<string, string> $attributeTypes Declared storage types keyed by attribute name
      */
     public function upsert(
         WorkflowRun $run,
         UpsertSearchAttributesCall $call,
         int $sequence,
         bool $inheritedFromParent = false,
+        array $attributeTypes = [],
     ): void {
-        DB::transaction(static function () use ($run, $call, $sequence, $inheritedFromParent): void {
+        self::assertDeclaredTypesCompatible($call, $attributeTypes);
+
+        DB::transaction(static function () use ($run, $call, $sequence, $inheritedFromParent, $attributeTypes): void {
             foreach ($call->attributes as $key => $value) {
                 if ($value === null) {
                     // Null means delete the attribute
@@ -53,8 +57,13 @@ final class SearchAttributeUpsertService
                 $attribute->upserted_at_sequence = $sequence;
                 $attribute->inherited_from_parent = $inheritedFromParent;
 
-                // Set typed value with inference
-                $attribute->setTypedValueWithInference($value);
+                $type = $attributeTypes[$key] ?? null;
+
+                if (is_string($type) && in_array($type, WorkflowSearchAttribute::VALID_TYPES, true)) {
+                    $attribute->setTypedValue($value, $type);
+                } else {
+                    $attribute->setTypedValueWithInference($value);
+                }
 
                 $attribute->save();
             }
@@ -63,6 +72,42 @@ final class SearchAttributeUpsertService
             WorkflowSearchAttribute::validateCount($run->id);
             WorkflowSearchAttribute::validateTotalSize($run->id);
         });
+    }
+
+    /**
+     * Validate that every declared search-attribute type can store the
+     * corresponding normalized value before any upsert mutates state.
+     *
+     * @param array<string, string> $attributeTypes Declared storage types keyed by attribute name
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function assertDeclaredTypesCompatible(
+        UpsertSearchAttributesCall $call,
+        array $attributeTypes,
+    ): void {
+        foreach ($call->attributes as $key => $value) {
+            if ($value === null) {
+                continue;
+            }
+
+            $type = $attributeTypes[$key] ?? null;
+
+            if (! is_string($type) || ! in_array($type, WorkflowSearchAttribute::VALID_TYPES, true)) {
+                continue;
+            }
+
+            try {
+                (new WorkflowSearchAttribute())->setTypedValue($value, $type);
+            } catch (\InvalidArgumentException $e) {
+                throw new \InvalidArgumentException(sprintf(
+                    'Search attribute [%s] value is not compatible with declared type [%s]: %s',
+                    $key,
+                    $type,
+                    $e->getMessage(),
+                ), previous: $e);
+            }
+        }
     }
 
     /**
@@ -89,6 +134,7 @@ final class SearchAttributeUpsertService
                     'type' => $parentAttr->type,
                     'value_string' => $parentAttr->value_string,
                     'value_keyword' => $parentAttr->value_keyword,
+                    'value_keyword_list' => $parentAttr->value_keyword_list,
                     'value_int' => $parentAttr->value_int,
                     'value_float' => $parentAttr->value_float,
                     'value_bool' => $parentAttr->value_bool,

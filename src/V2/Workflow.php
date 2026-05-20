@@ -500,7 +500,7 @@ abstract class Workflow
     /**
      * Upsert indexed search attributes on the current workflow run.
      *
-     * @param array<string, scalar|null> $attributes
+     * @param array<string, scalar|list<string>|null> $attributes
      *
      * @see upsertSearchAttributes()
      */

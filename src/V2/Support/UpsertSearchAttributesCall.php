@@ -6,16 +6,17 @@ namespace Workflow\V2\Support;
 
 use LogicException;
 use Workflow\V2\Contracts\YieldedCommand;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 
 final class UpsertSearchAttributesCall implements YieldedCommand
 {
     /**
-     * @var array<string, scalar|null>
+     * @var array<string, scalar|list<string>|null>
      */
     public readonly array $attributes;
 
     /**
-     * @param array<string, scalar|null> $attributes
+     * @param array<string, scalar|list<string>|null> $attributes
      */
     public function __construct(array $attributes)
     {
@@ -32,9 +33,9 @@ final class UpsertSearchAttributesCall implements YieldedCommand
                 );
             }
 
-            if ($value !== null && ! is_scalar($value)) {
+            if ($value !== null && ! is_scalar($value) && ! is_array($value)) {
                 throw new LogicException(sprintf(
-                    'Workflow v2 search attribute [%s] must be a scalar value or null.',
+                    'Workflow v2 search attribute [%s] must be a scalar value, string list, or null.',
                     $key,
                 ));
             }
@@ -45,13 +46,50 @@ final class UpsertSearchAttributesCall implements YieldedCommand
                 continue;
             }
 
+            if (is_array($value)) {
+                if (! array_is_list($value)) {
+                    throw new LogicException(sprintf(
+                        'Workflow v2 search attribute [%s] list value must be a JSON array.',
+                        $key,
+                    ));
+                }
+
+                $list = [];
+
+                foreach ($value as $entry) {
+                    if (! is_string($entry)) {
+                        throw new LogicException(sprintf(
+                            'Workflow v2 search attribute [%s] list values must contain only strings.',
+                            $key,
+                        ));
+                    }
+
+                    $trimmed = trim($entry);
+
+                    if (strlen($trimmed) > WorkflowSearchAttribute::MAX_KEYWORD_LENGTH) {
+                        throw new LogicException(sprintf(
+                            'Workflow v2 search attribute [%s] list values must be up to %d characters.',
+                            $key,
+                            WorkflowSearchAttribute::MAX_KEYWORD_LENGTH,
+                        ));
+                    }
+
+                    $list[] = $trimmed;
+                }
+
+                $normalized[$key] = $list;
+
+                continue;
+            }
+
             if (is_string($value)) {
                 $trimmed = trim($value);
 
-                if (strlen($trimmed) > 191) {
+                if (strlen($trimmed) > WorkflowSearchAttribute::MAX_KEYWORD_LENGTH) {
                     throw new LogicException(sprintf(
-                        'Workflow v2 search attribute [%s] must be up to 191 characters.',
+                        'Workflow v2 search attribute [%s] must be up to %d characters.',
                         $key,
+                        WorkflowSearchAttribute::MAX_KEYWORD_LENGTH,
                     ));
                 }
 

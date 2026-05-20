@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use LogicException;
 use RuntimeException;
 use Throwable;
@@ -35,6 +36,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -2179,7 +2181,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * @param array{type: string, attributes: array<string, scalar|null>} $command
+     * @param array{
+     *     type: string,
+     *     attributes: array<string, scalar|list<string>|null>,
+     *     attribute_types?: array<string, string>
+     * } $command
      */
     private function applyUpsertSearchAttributes(
         WorkflowRun $run,
@@ -2190,6 +2196,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $call = new UpsertSearchAttributesCall($command['attributes']);
         $existing = $run->typedSearchAttributes();
         $merged = $existing;
+        $attributeTypes = self::normalizeSearchAttributeTypes($command['attribute_types'] ?? null);
 
         foreach ($call->attributes as $key => $value) {
             if ($value === null) {
@@ -2202,7 +2209,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         ksort($merged);
-        app(SearchAttributeUpsertService::class)->upsert($run, $call, $sequence);
+        app(SearchAttributeUpsertService::class)->upsert($run, $call, $sequence, attributeTypes: $attributeTypes);
         $run->unsetRelation('searchAttributes');
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SearchAttributesUpserted, [
@@ -3265,7 +3272,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * @param array<string, mixed> $command
-     * @return array{type: string, attributes: array<string, scalar|null>}|null
+     * @return array{
+     *     type: string,
+     *     attributes: array<string, scalar|list<string>|null>,
+     *     attribute_types?: array<string, string>
+     * }|null
      */
     private static function normalizeUpsertSearchAttributesCommand(array $command): ?array
     {
@@ -3279,10 +3290,48 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             return null;
         }
 
+        $attributeTypes = self::normalizeSearchAttributeTypes($command['attribute_types'] ?? null);
+
+        try {
+            SearchAttributeUpsertService::assertDeclaredTypesCompatible($call, $attributeTypes);
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+
         return [
             'type' => 'upsert_search_attributes',
             'attributes' => $call->attributes,
-        ];
+        ] + array_filter([
+            'attribute_types' => $attributeTypes,
+        ], static fn (mixed $value): bool => $value !== []);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function normalizeSearchAttributeTypes(mixed $types): array
+    {
+        if (! is_array($types)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($types as $key => $type) {
+            if (! is_string($key) || ! is_string($type)) {
+                continue;
+            }
+
+            if (! in_array($type, WorkflowSearchAttribute::VALID_TYPES, true)) {
+                continue;
+            }
+
+            $normalized[$key] = $type;
+        }
+
+        ksort($normalized);
+
+        return $normalized;
     }
 
     private static function normalizeRequiredString(mixed $value): ?string

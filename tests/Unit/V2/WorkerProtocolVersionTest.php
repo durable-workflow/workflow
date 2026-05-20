@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class WorkerProtocolVersionTest extends TestCase
@@ -15,9 +16,9 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksQueryTaskWorkerProtocolShape(): void
+    public function testVersionTracksSearchAttributeCommandShape(): void
     {
-        $this->assertSame('1.7', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.8', WorkerProtocolVersion::VERSION);
     }
 
     public function testWorkflowTaskVerbsIncludesAllBridgeMethods(): void
@@ -113,6 +114,36 @@ final class WorkerProtocolVersionTest extends TestCase
             $summary['unsupported_payload_codec_reason']
         );
         $this->assertSame('unsupported_payload_codec', $summary['unsupported_payload_codec_reason']);
+    }
+
+    public function testDescribeIncludesUpsertSearchAttributesCommandShape(): void
+    {
+        $summary = WorkerProtocolVersion::describe();
+
+        $this->assertArrayHasKey('upsert_search_attributes_command', $summary);
+
+        $shape = $summary['upsert_search_attributes_command'];
+        $this->assertSame('upsert_search_attributes', $shape['type']);
+        $this->assertSame('non_terminal_command', $shape['category']);
+        $this->assertSame(WorkerProtocolVersion::VERSION, $shape['minimum_protocol_version']);
+        $this->assertSame(['type', 'attributes'], $shape['required_fields']);
+        $this->assertSame(['attribute_types'], $shape['optional_fields']);
+        $this->assertSame('map<string, scalar|list<string>|null>', $shape['attributes']['shape']);
+        $this->assertContains('list<string>', $shape['attributes']['value_types']);
+        $this->assertSame('delete_attribute', $shape['attributes']['null_value']);
+        $this->assertSame('list<string>', $shape['attributes']['list_values']['shape']);
+        $this->assertSame(
+            WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+            $shape['attributes']['list_values']['search_attribute_type'],
+        );
+        $this->assertSame(
+            WorkflowSearchAttribute::MAX_KEYWORD_LENGTH,
+            $shape['attributes']['list_values']['max_entry_length'],
+        );
+        $this->assertSame('map<string, search_attribute_type>', $shape['attribute_types']['shape']);
+        $this->assertFalse($shape['attribute_types']['required']);
+        $this->assertSame(WorkflowSearchAttribute::VALID_TYPES, $shape['attribute_types']['valid_values']);
+        $this->assertSame('infer_from_attribute_value', $shape['attribute_types']['omitted_values']);
     }
 
     public function testDescribeIncludesQueryTaskSemantics(): void

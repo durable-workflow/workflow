@@ -23,6 +23,7 @@ use Workflow\V2\Support\ConfiguredV2Models;
  * - float: double precision
  * - bool: boolean
  * - datetime: timestamp with microseconds
+ * - keyword_list: ordered list of exact-match text values
  *
  * Size Limits (per v2 plan structural limits):
  * - Max 100 attributes per run
@@ -37,6 +38,7 @@ use Workflow\V2\Support\ConfiguredV2Models;
  * @property string $type
  * @property string|null $value_string
  * @property string|null $value_keyword
+ * @property array<int, string>|null $value_keyword_list
  * @property int|null $value_int
  * @property float|null $value_float
  * @property bool|null $value_bool
@@ -62,6 +64,8 @@ class WorkflowSearchAttribute extends Model
 
     public const TYPE_KEYWORD = 'keyword';
 
+    public const TYPE_KEYWORD_LIST = 'keyword_list';
+
     public const TYPE_INT = 'int';
 
     public const TYPE_FLOAT = 'float';
@@ -73,6 +77,7 @@ class WorkflowSearchAttribute extends Model
     public const VALID_TYPES = [
         self::TYPE_STRING,
         self::TYPE_KEYWORD,
+        self::TYPE_KEYWORD_LIST,
         self::TYPE_INT,
         self::TYPE_FLOAT,
         self::TYPE_BOOL,
@@ -90,6 +95,7 @@ class WorkflowSearchAttribute extends Model
         'value_float' => 'float',
         'value_bool' => 'boolean',
         'value_datetime' => 'datetime',
+        'value_keyword_list' => 'array',
         'upserted_at_sequence' => 'integer',
         'inherited_from_parent' => 'boolean',
     ];
@@ -115,6 +121,7 @@ class WorkflowSearchAttribute extends Model
         return match ($this->type) {
             self::TYPE_STRING => $this->value_string,
             self::TYPE_KEYWORD => $this->value_keyword,
+            self::TYPE_KEYWORD_LIST => $this->value_keyword_list ?? [],
             self::TYPE_INT => $this->value_int,
             self::TYPE_FLOAT => $this->value_float,
             self::TYPE_BOOL => $this->value_bool,
@@ -127,7 +134,7 @@ class WorkflowSearchAttribute extends Model
      * Set typed value with coercion and validation.
      *
      * @param mixed $value Raw value to store
-     * @param string $type Target type (string, keyword, int, float, bool, datetime)
+     * @param string $type Target type (string, keyword, keyword_list, int, float, bool, datetime)
      */
     public function setTypedValue(mixed $value, string $type): void
     {
@@ -140,6 +147,7 @@ class WorkflowSearchAttribute extends Model
         // Clear all value columns
         $this->value_string = null;
         $this->value_keyword = null;
+        $this->value_keyword_list = null;
         $this->value_int = null;
         $this->value_float = null;
         $this->value_bool = null;
@@ -149,6 +157,7 @@ class WorkflowSearchAttribute extends Model
         match ($type) {
             self::TYPE_STRING => $this->setStringValue($value),
             self::TYPE_KEYWORD => $this->setKeywordValue($value),
+            self::TYPE_KEYWORD_LIST => $this->setKeywordListValue($value),
             self::TYPE_INT => $this->setIntValue($value),
             self::TYPE_FLOAT => $this->setFloatValue($value),
             self::TYPE_BOOL => $this->setBoolValue($value),
@@ -197,6 +206,10 @@ class WorkflowSearchAttribute extends Model
             return self::TYPE_KEYWORD;
         }
 
+        if (is_array($value)) {
+            return self::TYPE_KEYWORD_LIST;
+        }
+
         if ($value === null) {
             // Default to keyword for null (will be stored as NULL in DB)
             return self::TYPE_KEYWORD;
@@ -230,6 +243,10 @@ class WorkflowSearchAttribute extends Model
                 self::TYPE_INT, self::TYPE_FLOAT => 8,
                 self::TYPE_BOOL => 1,
                 self::TYPE_DATETIME => 8,
+                self::TYPE_KEYWORD_LIST => array_sum(array_map(
+                    static fn (mixed $entry): int => is_string($entry) ? mb_strlen($entry, '8bit') : 0,
+                    is_array($value) ? $value : [],
+                )),
                 default => 0,
             };
         });
@@ -293,6 +310,35 @@ class WorkflowSearchAttribute extends Model
         }
 
         $this->value_keyword = $stringValue;
+    }
+
+    private function setKeywordListValue(mixed $value): void
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            throw new InvalidArgumentException('Search attribute keyword_list value must be a list of strings.');
+        }
+
+        $list = [];
+
+        foreach ($value as $entry) {
+            if (! is_string($entry)) {
+                throw new InvalidArgumentException('Search attribute keyword_list entries must be strings.');
+            }
+
+            if (mb_strlen($entry) > self::MAX_KEYWORD_LENGTH) {
+                throw new InvalidArgumentException(
+                    sprintf(
+                        'Search attribute keyword_list entry exceeds maximum length (%d > %d)',
+                        mb_strlen($entry),
+                        self::MAX_KEYWORD_LENGTH,
+                    ),
+                );
+            }
+
+            $list[] = $entry;
+        }
+
+        $this->value_keyword_list = $list;
     }
 
     private function setIntValue(mixed $value): void

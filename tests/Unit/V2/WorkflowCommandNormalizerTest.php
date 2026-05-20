@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 final class WorkflowCommandNormalizerTest extends TestCase
@@ -602,6 +603,56 @@ final class WorkflowCommandNormalizerTest extends TestCase
                 'attributes' => [],
             ],
         ]);
+    }
+
+    public function testUpsertSearchAttributesPreservesCompatibleDeclaredTypes(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'upsert_search_attributes',
+                'attributes' => [
+                    'score' => 5,
+                    'tags' => ['alpha', 'beta'],
+                ],
+                'attribute_types' => [
+                    'score' => WorkflowSearchAttribute::TYPE_FLOAT,
+                    'tags' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+                ],
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'upsert_search_attributes',
+            'attributes' => [
+                'score' => 5,
+                'tags' => ['alpha', 'beta'],
+            ],
+            'attribute_types' => [
+                'score' => WorkflowSearchAttribute::TYPE_FLOAT,
+                'tags' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+            ],
+        ]], $out);
+    }
+
+    public function testUpsertSearchAttributesRejectsDeclaredTypeIncompatibleWithValue(): void
+    {
+        $errors = $this->normalizeAndCaptureErrors([
+            [
+                'type' => 'upsert_search_attributes',
+                'attributes' => [
+                    'tags' => 'alpha',
+                ],
+                'attribute_types' => [
+                    'tags' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+                ],
+            ],
+        ]);
+
+        $this->assertArrayHasKey('commands.0.attribute_types', $errors);
+        $this->assertStringContainsString(
+            'not compatible with declared type [keyword_list]',
+            $errors['commands.0.attribute_types'][0],
+        );
     }
 
     public function testOpenConditionWaitWithoutOptionalFieldsNormalizes(): void

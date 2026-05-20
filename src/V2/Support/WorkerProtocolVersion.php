@@ -5,14 +5,14 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 
 /**
  * Frozen versioned contract for the external workflow-worker protocol.
  *
- * This class defines the canonical verb set, history pagination parameters,
- * and protocol version that external workers (including the standalone server)
- * must align to. Bump the version when the verb set, request/response shapes,
- * or pagination contract changes in a backwards-incompatible way.
+ * This class defines the canonical verb set, command shapes, history
+ * pagination parameters, and protocol version that external workers
+ * (including the standalone server) must align to.
  *
  * @api Stable class surface consumed by the standalone workflow-server.
  *      The public static method signatures and constant names on this class
@@ -29,7 +29,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.7';
+    public const VERSION = '1.8';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -282,6 +282,7 @@ final class WorkerProtocolVersion
      *     sticky_execution: array<string, mixed>,
      *     worker_sessions: array<string, mixed>,
      *     query_tasks: array<string, mixed>,
+     *     upsert_search_attributes_command: array<string, mixed>,
      *     invocable_carrier: array<string, mixed>,
      *     task_queue_priority_fairness: array<string, mixed>,
      * }
@@ -310,11 +311,54 @@ final class WorkerProtocolVersion
             'sticky_execution' => StickyExecution::describe(),
             'worker_sessions' => self::workerSessionSemantics(),
             'query_tasks' => self::queryTaskSemantics(),
+            'upsert_search_attributes_command' => self::upsertSearchAttributesCommandShape(),
             'payload_codecs_universal' => CodecRegistry::universal(),
             'payload_codecs_engine_specific' => CodecRegistry::engineSpecific(),
             'unsupported_payload_codec_reason' => self::REASON_UNSUPPORTED_PAYLOAD_CODEC,
             'invocable_carrier' => self::invocableCarrierSemantics(),
             'task_queue_priority_fairness' => self::taskQueuePriorityFairnessSemantics(),
+        ];
+    }
+
+    /**
+     * Published workflow-task command shape for search-attribute upserts.
+     *
+     * @return array<string, mixed>
+     */
+    public static function upsertSearchAttributesCommandShape(): array
+    {
+        return [
+            'type' => 'upsert_search_attributes',
+            'category' => 'non_terminal_command',
+            'minimum_protocol_version' => self::VERSION,
+            'required_fields' => ['type', 'attributes'],
+            'optional_fields' => ['attribute_types'],
+            'attributes' => [
+                'shape' => 'map<string, scalar|list<string>|null>',
+                'key' => 'search_attribute_key',
+                'value_types' => [
+                    'string',
+                    'int',
+                    'float',
+                    'bool',
+                    'datetime-string',
+                    'list<string>',
+                    'null',
+                ],
+                'null_value' => 'delete_attribute',
+                'list_values' => [
+                    'shape' => 'list<string>',
+                    'search_attribute_type' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+                    'max_entry_length' => WorkflowSearchAttribute::MAX_KEYWORD_LENGTH,
+                ],
+            ],
+            'attribute_types' => [
+                'shape' => 'map<string, search_attribute_type>',
+                'required' => false,
+                'valid_values' => WorkflowSearchAttribute::VALID_TYPES,
+                'invalid_values' => 'ignored',
+                'omitted_values' => 'infer_from_attribute_value',
+            ],
         ];
     }
 

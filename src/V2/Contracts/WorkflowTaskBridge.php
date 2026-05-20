@@ -319,8 +319,12 @@ interface WorkflowTaskBridge
      * - record_version_marker: {type: 'record_version_marker', change_id: string, version: int, min_supported: int, max_supported: int}
      *   Records the resolved getVersion() decision for replay-safe workflow upgrades.
      *
-     * - upsert_search_attributes: {type: 'upsert_search_attributes', attributes: array<string, scalar|null>}
-     *   Upserts indexed operator-visible metadata on the workflow run.
+     * - upsert_search_attributes: {type: 'upsert_search_attributes',
+     *   attributes: array<string, scalar|list<string>|null>,
+     *   attribute_types?: array<string, string>}
+     *   Upserts indexed operator-visible metadata on the workflow run. List
+     *   values are keyword-list attributes; attribute_types can pin registered
+     *   search-attribute types when the value shape is ambiguous.
      *
      * Terminal command types (at most one):
      *

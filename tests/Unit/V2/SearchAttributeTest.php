@@ -77,6 +77,66 @@ class SearchAttributeTest extends TestCase
         $this->assertEquals('completed', $attrs['status']->value_keyword);
     }
 
+    public function testItInfersAndStoresKeywordListType(): void
+    {
+        $run = $this->createRun();
+
+        $call = new UpsertSearchAttributesCall([
+            'tags' => ['alpha', 'beta'],
+        ]);
+
+        $this->service->upsert($run, $call, 1);
+
+        $attr = WorkflowSearchAttribute::where('workflow_run_id', $run->id)
+            ->where('key', 'tags')
+            ->first();
+
+        $this->assertNotNull($attr);
+        $this->assertEquals(WorkflowSearchAttribute::TYPE_KEYWORD_LIST, $attr->type);
+        $this->assertSame(['alpha', 'beta'], $attr->value_keyword_list);
+        $this->assertSame(['alpha', 'beta'], $attr->getValue());
+    }
+
+    public function testItStoresDeclaredSearchAttributeType(): void
+    {
+        $run = $this->createRun();
+
+        $call = new UpsertSearchAttributesCall([
+            'description' => 'short',
+            'score' => 5,
+        ]);
+
+        $this->service->upsert($run, $call, 1, attributeTypes: [
+            'description' => WorkflowSearchAttribute::TYPE_STRING,
+            'score' => WorkflowSearchAttribute::TYPE_FLOAT,
+        ]);
+
+        $attrs = WorkflowSearchAttribute::where('workflow_run_id', $run->id)
+            ->get()
+            ->keyBy('key');
+
+        $this->assertEquals(WorkflowSearchAttribute::TYPE_STRING, $attrs['description']->type);
+        $this->assertSame('short', $attrs['description']->value_string);
+        $this->assertEquals(WorkflowSearchAttribute::TYPE_FLOAT, $attrs['score']->type);
+        $this->assertEqualsWithDelta(5.0, $attrs['score']->value_float, 0.001);
+    }
+
+    public function testItRejectsDeclaredSearchAttributeTypeIncompatibleWithValue(): void
+    {
+        $run = $this->createRun();
+
+        $call = new UpsertSearchAttributesCall([
+            'tags' => 'alpha',
+        ]);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('not compatible with declared type [keyword_list]');
+
+        $this->service->upsert($run, $call, 1, attributeTypes: [
+            'tags' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+        ]);
+    }
+
     public function testItInfersAndStoresIntType(): void
     {
         $run = $this->createRun();

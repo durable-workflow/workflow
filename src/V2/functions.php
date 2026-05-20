@@ -263,7 +263,7 @@ if (! function_exists(__NAMESPACE__ . '\\upsertSearchAttributes')) {
      *
      * Setting a key to null removes it from the active search attributes.
      *
-     * @param array<string, scalar|null> $attributes
+     * @param array<string, scalar|list<string>|null> $attributes
      */
     function upsertSearchAttributes(array $attributes): void
     {

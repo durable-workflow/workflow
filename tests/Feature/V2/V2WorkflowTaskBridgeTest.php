@@ -1862,6 +1862,40 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($runAttrs, $event->payload['merged']);
     }
 
+    public function testCompleteRejectsIncompatibleDeclaredSearchAttributeType(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'upsert_search_attributes',
+                'attributes' => [
+                    'tags' => 'alpha',
+                ],
+                'attribute_types' => [
+                    'tags' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+                ],
+            ],
+        ]);
+
+        $this->assertFalse($result['completed']);
+        $this->assertSame('invalid_commands', $result['reason']);
+
+        $task->refresh();
+        $this->assertSame(TaskStatus::Leased, $task->status);
+        $this->assertSame(0, WorkflowSearchAttribute::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('key', 'tags')
+            ->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SearchAttributesUpserted->value)
+            ->count());
+    }
+
     public function testCompleteUpdateCommandClosesAcceptedUpdateLifecycle(): void
     {
         $run = $this->createWaitingRun();
