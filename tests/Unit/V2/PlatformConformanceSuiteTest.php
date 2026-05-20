@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(5, $manifest['version']);
+        $this->assertSame(6, $manifest['version']);
         $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -109,6 +109,7 @@ final class PlatformConformanceSuiteTest extends TestCase
             'worker_task_lifecycle',
             'signal_query_runtime_contract',
             'history_replay_bundles',
+            'namespace_runtime_contract',
             'failure_repair_actionability',
             'cli_json_envelopes',
             'waterline_observer_envelopes',
@@ -321,6 +322,66 @@ final class PlatformConformanceSuiteTest extends TestCase
         }
     }
 
+    public function testNamespaceRuntimeContractNamesFullTemporalParitySurface(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['namespace_runtime_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'namespace conformance must be load-bearing, not a smoke subset.',
+        );
+
+        foreach ([
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+            'waterline_contract_surface',
+        ] as $target) {
+            $this->assertContains(
+                'namespace_runtime_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target must be graded against the live namespace runtime contract",
+            );
+        }
+
+        foreach ([
+            'published_artifact_install_only',
+            'namespace_create_update_describe_and_list',
+            'workflow_cross_namespace_visibility_isolation',
+            'workflow_cross_namespace_mutation_isolation',
+            'php_worker_task_queue_namespace_isolation',
+            'cli_namespace_context_and_default_scope',
+            'sdk_namespace_selection_parity',
+            'search_attribute_schema_and_value_query_isolation',
+            'schedule_namespace_isolation',
+            'namespace_lifecycle_cleanup_and_recreate',
+            'waterline_operator_namespace_visibility',
+            'nexus_explicit_cross_namespace_invocation',
+            'reserved_namespace_name_refusal',
+            'result_record_and_product_finding_routing',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "namespace conformance must name scenario $scenario",
+            );
+        }
+
+        $this->assertSame(
+            [
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/namespace-runtime-scenarios.json',
+                ],
+            ],
+            $category['sources'],
+            'the public namespace scenario manifest must be the consumable source for full namespace coverage',
+        );
+    }
+
     public function testPassFailRulesNameTheCoreContract(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
@@ -348,6 +409,11 @@ final class PlatformConformanceSuiteTest extends TestCase
             'history_replay_bundles',
             $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
             'smoke-only replay coverage must not satisfy the stable runtime category',
+        );
+        $this->assertContains(
+            'namespace_runtime_contract',
+            $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'smoke-only namespace coverage must not satisfy the stable runtime category',
         );
         foreach (['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'] as $status) {
             $this->assertStringContainsString(

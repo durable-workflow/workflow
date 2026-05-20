@@ -18,7 +18,7 @@ The machine-readable mirror of the public authority is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `5`.
+`durable-workflow.v2.platform-conformance.suite`, version `6`.
 
 ## Why one suite
 
@@ -50,11 +50,11 @@ target (the standalone `server` claims `standalone_server` *and*
 
 | Target | Required surface families | Required fixture categories |
 | --- | --- | --- |
-| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
-| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
-| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `history_replay_bundles` |
-| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `cli_json_envelopes` |
-| `waterline_contract_surface` | `waterline_api` | `signal_query_runtime_contract`, `waterline_observer_envelopes` |
+| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
+| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
+| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `history_replay_bundles` |
+| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `namespace_runtime_contract`, `cli_json_envelopes` |
+| `waterline_contract_surface` | `waterline_api` | `signal_query_runtime_contract`, `namespace_runtime_contract`, `waterline_observer_envelopes` |
 | `repair_actionability_surface` | `worker_protocol` (failure subset), `server_api` (repair routes) | `failure_repair_actionability` |
 | `mcp_discovery_surface` | `mcp_discovery_results` | `mcp_discovery_envelopes` |
 
@@ -75,6 +75,7 @@ them from the declared locations.
 | `worker_task_lifecycle` | `cli`, `sdk-python`, `server` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | Task input envelopes (poll → claim → run) and task result envelopes (complete, fail, cancel, heartbeat) used by every conforming worker. |
 | `signal_query_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/signal-query-runtime-scenarios.json` | Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
 | `history_replay_bundles` | `durable-workflow.github.io`, `workflow`, `sdk-python` | `static/platform-conformance/replay-runtime-scenarios.json`, `tests/Fixtures/V2/GoldenHistory/`, `tests/fixtures/golden_history/` | Deterministic replay coverage for frozen history bundles, worker restart replay, adversarial refusal, and in-flight signal timing across the official PHP and Python runtimes. |
+| `namespace_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/namespace-runtime-scenarios.json` | Live published-artifact scenarios for Temporal-parity namespace isolation, lifecycle cleanup, CLI and SDK namespace selection, PHP worker routing, Waterline visibility, Nexus opt-in crossing, and search-attribute value query isolation. |
 | `failure_repair_actionability` | `server`, `workflow` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, fixture pointers therein | Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces. |
 | `cli_json_envelopes` | `cli` | `tests/fixtures/control-plane/`, `schemas/` | The `--output=json` and `--output=jsonl` envelopes that automation depends on. Diagnostic-only fields are listed and excluded from the contract diff. |
 | `waterline_observer_envelopes` | `waterline` | (TBD: `tests/fixtures/observer/`) | The `/waterline/api/v2/*` shapes and operator dashboard JSON envelopes. Status: provisional — fixtures land alongside the next Waterline contract slice. |
@@ -155,6 +156,36 @@ include:
   documented replay verification surface;
 - PHP and Python in-flight signal restart timing.
 
+### Namespace runtime contract
+
+The `namespace_runtime_contract` category is stable and load-bearing. It
+must run against published install channels only, pin the resolved
+artifact versions in the result, and name every required namespace
+scenario as `pass`, `fail`, `unsupported`, `not_covered`, or
+`runner_blocked` with linked findings. A namespace smoke that only
+creates a namespace or starts a single workflow is nonconforming.
+
+Required scenarios are published in the public namespace scenario
+manifest at `static/platform-conformance/namespace-runtime-scenarios.json`
+and include:
+
+- published-artifact install-only evidence for server, CLI, Python SDK,
+  PHP runtime, and Waterline;
+- namespace create, update, describe, list, reserved-name refusal, and
+  default-scope behavior;
+- workflow visibility and mutation isolation across namespaces;
+- PHP worker task-queue delivery isolation when namespaces share a queue
+  name;
+- CLI and SDK namespace selection parity;
+- search-attribute schema isolation and value query isolation;
+- schedule isolation;
+- namespace lifecycle cleanup, including delete/recreate state reset;
+- Waterline operator visibility scoped by namespace;
+- explicit Nexus cross-namespace invocation and rejection of implicit
+  cross-namespace workflow access;
+- result-record evidence with artifact versions, timestamps, outcomes,
+  and routed product findings.
+
 ## Pass / fail rules
 
 The harness runs each fixture against the implementation under test and
@@ -182,7 +213,8 @@ emits a structured result. The rules below are normative.
    release does not conform.
 
 5. **Stable runtime scenario coverage.** A stable runtime category such
-   as `signal_query_runtime_contract` or `history_replay_bundles` must
+   as `signal_query_runtime_contract`, `history_replay_bundles`, or
+   `namespace_runtime_contract` must
    report every scenario it declares with one of the statuses published
    by its runtime scenario manifest: `pass`, `fail`, `unsupported`,
    `not_covered`, or `runner_blocked`. Full conformance requires every

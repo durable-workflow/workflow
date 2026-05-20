@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 5;
+    public const VERSION = 6;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -112,6 +112,7 @@ final class PlatformConformanceSuite
                 'required_fixture_categories' => [
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
+                    'namespace_runtime_contract',
                     'worker_task_lifecycle',
                     'failure_repair_actionability',
                 ],
@@ -126,6 +127,7 @@ final class PlatformConformanceSuite
                 'required_fixture_categories' => [
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
+                    'namespace_runtime_contract',
                     'worker_task_lifecycle',
                     'history_replay_bundles',
                 ],
@@ -139,6 +141,7 @@ final class PlatformConformanceSuite
                 'required_fixture_categories' => [
                     'worker_task_lifecycle',
                     'signal_query_runtime_contract',
+                    'namespace_runtime_contract',
                     'history_replay_bundles',
                 ],
             ],
@@ -150,6 +153,7 @@ final class PlatformConformanceSuite
                 'required_fixture_categories' => [
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
+                    'namespace_runtime_contract',
                     'cli_json_envelopes',
                 ],
             ],
@@ -160,6 +164,7 @@ final class PlatformConformanceSuite
                 ],
                 'required_fixture_categories' => [
                     'signal_query_runtime_contract',
+                    'namespace_runtime_contract',
                     'waterline_observer_envelopes',
                 ],
             ],
@@ -275,6 +280,18 @@ final class PlatformConformanceSuite
                 'authority_doc' => 'https://durable-workflow.github.io/docs/2.0/platform-conformance, https://github.com/durable-workflow/server/blob/main/docs/contracts/replay-verification.md, https://github.com/durable-workflow/workflow/blob/v2/docs/api-stability.md',
                 'required_scenarios' => self::replayRequiredScenarios(),
             ],
+            'namespace_runtime_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Live published-artifact scenarios for Temporal-parity namespace isolation, lifecycle cleanup, CLI and SDK namespace selection, PHP worker routing, Waterline visibility, Nexus opt-in crossing, and search-attribute value query isolation.',
+                'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/namespace-runtime-scenarios.json',
+                    ],
+                ],
+                'authority_doc' => self::AUTHORITY_URL,
+                'required_scenarios' => self::namespaceRequiredScenarios(),
+            ],
             'failure_repair_actionability' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
                 'description' => 'Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces.',
@@ -363,6 +380,7 @@ final class PlatformConformanceSuite
                 'applies_to_categories' => [
                     'signal_query_runtime_contract',
                     'history_replay_bundles',
+                    'namespace_runtime_contract',
                 ],
             ],
             'provisional_categories_warn_only' => [
@@ -409,6 +427,29 @@ final class PlatformConformanceSuite
             'malformed_history_refusal',
             'python_in_flight_signal_restart_timing',
             'php_in_flight_signal_restart_timing',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function namespaceRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'namespace_create_update_describe_and_list',
+            'workflow_cross_namespace_visibility_isolation',
+            'workflow_cross_namespace_mutation_isolation',
+            'php_worker_task_queue_namespace_isolation',
+            'cli_namespace_context_and_default_scope',
+            'sdk_namespace_selection_parity',
+            'search_attribute_schema_and_value_query_isolation',
+            'schedule_namespace_isolation',
+            'namespace_lifecycle_cleanup_and_recreate',
+            'waterline_operator_namespace_visibility',
+            'nexus_explicit_cross_namespace_invocation',
+            'reserved_namespace_name_refusal',
+            'result_record_and_product_finding_routing',
         ];
     }
 
