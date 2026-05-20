@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowFailure;
@@ -26,27 +28,42 @@ final class ChildRunHistory
 
     public const UNSUPPORTED_TERMINAL_REASON = 'terminal_child_link_without_typed_parent_history';
 
+    /**
+     * Child-call rows are an operator projection, not the orchestration source of
+     * truth. Keep the child workflow path moving if the projection is unavailable.
+     *
+     * @param array<string, mixed> $attributes
+     */
+    public static function recordChildCallStarted(array $attributes): void
+    {
+        self::afterAuthoritativeCommit(static function () use ($attributes): void {
+            WorkflowChildCall::query()->create($attributes);
+        });
+    }
+
     public static function markChildCallResolved(WorkflowRun $parentRun, int $sequence, WorkflowRun $childRun): void
     {
-        $childCall = self::openChildCallForSequence($parentRun, $sequence);
+        self::afterAuthoritativeCommit(static function () use ($parentRun, $sequence, $childRun): void {
+            $childCall = self::openChildCallForSequence($parentRun, $sequence);
 
-        if (! $childCall instanceof WorkflowChildCall || $childCall->isTerminal()) {
-            return;
-        }
+            if (! $childCall instanceof WorkflowChildCall || $childCall->isTerminal()) {
+                return;
+            }
 
-        if ($childCall->resolved_child_run_id !== $childRun->id) {
-            $childCall->forceFill([
-                'resolved_child_instance_id' => $childRun->workflow_instance_id,
-                'resolved_child_run_id' => $childRun->id,
-            ])->save();
-        }
+            if ($childCall->resolved_child_run_id !== $childRun->id) {
+                $childCall->forceFill([
+                    'resolved_child_instance_id' => $childRun->workflow_instance_id,
+                    'resolved_child_run_id' => $childRun->id,
+                ])->save();
+            }
 
-        match (self::resolvedStatus(null, $childRun)) {
-            RunStatus::Completed => $childCall->markCompleted(),
-            RunStatus::Cancelled => $childCall->markCancelled(),
-            RunStatus::Terminated => $childCall->markTerminated(),
-            default => $childCall->markFailed(self::failureReferenceForRun($childRun)),
-        };
+            match (self::resolvedStatus(null, $childRun)) {
+                RunStatus::Completed => $childCall->markCompleted(),
+                RunStatus::Cancelled => $childCall->markCancelled(),
+                RunStatus::Terminated => $childCall->markTerminated(),
+                default => $childCall->markFailed(self::failureReferenceForRun($childRun)),
+            };
+        });
     }
 
     public static function markChildCallContinued(
@@ -56,26 +73,112 @@ final class ChildRunHistory
         WorkflowRun $continuedFromRun,
         ?string $childCallId = null,
     ): void {
-        $childCall = self::openChildCallForSequence($parentRun, $sequence);
+        self::afterAuthoritativeCommit(static function () use (
+            $parentRun,
+            $sequence,
+            $continuedRun,
+            $continuedFromRun,
+            $childCallId,
+        ): void {
+            $childCall = self::openChildCallForSequence($parentRun, $sequence);
 
-        if (! $childCall instanceof WorkflowChildCall || $childCall->isTerminal()) {
+            if (! $childCall instanceof WorkflowChildCall || $childCall->isTerminal()) {
+                return;
+            }
+
+            $metadata = is_array($childCall->metadata) ? $childCall->metadata : [];
+            $continuationCount = (int) ($metadata['continuation_count'] ?? 0);
+
+            $childCall->forceFill([
+                'resolved_child_instance_id' => $continuedRun->workflow_instance_id,
+                'resolved_child_run_id' => $continuedRun->id,
+                'status' => ChildCallStatus::Started,
+                'started_at' => now(),
+                'metadata' => array_merge($metadata, array_filter([
+                    'child_call_id' => $childCallId ?? self::stringValue($metadata['child_call_id'] ?? null),
+                    'continuation_count' => $continuationCount + 1,
+                    'last_continued_from_child_workflow_run_id' => $continuedFromRun->id,
+                ], static fn (mixed $value): bool => $value !== null)),
+            ])->save();
+        });
+    }
+
+    public static function markChildCallRetryStarted(
+        WorkflowRun $parentRun,
+        int $sequence,
+        WorkflowRun $retryRun,
+        string $childCallId,
+        int $attemptCount,
+        int $backoffSeconds,
+        WorkflowRun $failedChildRun,
+    ): void {
+        self::afterAuthoritativeCommit(static function () use (
+            $parentRun,
+            $sequence,
+            $retryRun,
+            $childCallId,
+            $attemptCount,
+            $backoffSeconds,
+            $failedChildRun,
+        ): void {
+            $childCall = self::openChildCallForSequence($parentRun, $sequence);
+
+            if (! $childCall instanceof WorkflowChildCall) {
+                return;
+            }
+
+            $childCall->forceFill([
+                'resolved_child_instance_id' => $retryRun->workflow_instance_id,
+                'resolved_child_run_id' => $retryRun->id,
+                'status' => ChildCallStatus::Started,
+                'started_at' => now(),
+                'metadata' => array_merge(is_array($childCall->metadata) ? $childCall->metadata : [], [
+                    'child_call_id' => $childCallId,
+                    'attempt_count' => $attemptCount + 1,
+                    'last_retry_of_child_workflow_run_id' => $failedChildRun->id,
+                    'last_retry_backoff_seconds' => $backoffSeconds,
+                ]),
+            ])->save();
+        });
+    }
+
+    public static function markChildCallClosedByParentPolicy(
+        WorkflowRun $parentRun,
+        int $sequence,
+        ParentClosePolicy $policy,
+    ): void {
+        self::afterAuthoritativeCommit(static function () use ($parentRun, $sequence, $policy): void {
+            $childCall = self::openChildCallForSequence($parentRun, $sequence);
+
+            if (! $childCall instanceof WorkflowChildCall || $childCall->isTerminal()) {
+                return;
+            }
+
+            match ($policy) {
+                ParentClosePolicy::RequestCancel => $childCall->markCancelled(),
+                ParentClosePolicy::Terminate => $childCall->markTerminated(),
+                ParentClosePolicy::Abandon => null,
+            };
+        });
+    }
+
+    private static function afterAuthoritativeCommit(callable $projection): void
+    {
+        $callback = static function () use ($projection): void {
+            try {
+                $projection();
+            } catch (Throwable $throwable) {
+                report($throwable);
+            }
+        };
+
+        if (DB::transactionLevel() > 0) {
+            DB::afterCommit($callback);
+
             return;
         }
 
-        $metadata = is_array($childCall->metadata) ? $childCall->metadata : [];
-        $continuationCount = (int) ($metadata['continuation_count'] ?? 0);
-
-        $childCall->forceFill([
-            'resolved_child_instance_id' => $continuedRun->workflow_instance_id,
-            'resolved_child_run_id' => $continuedRun->id,
-            'status' => ChildCallStatus::Started,
-            'started_at' => now(),
-            'metadata' => array_merge($metadata, array_filter([
-                'child_call_id' => $childCallId ?? self::stringValue($metadata['child_call_id'] ?? null),
-                'continuation_count' => $continuationCount + 1,
-                'last_continued_from_child_workflow_run_id' => $continuedFromRun->id,
-            ], static fn (mixed $value): bool => $value !== null)),
-        ])->save();
+        $callback();
     }
 
     /**

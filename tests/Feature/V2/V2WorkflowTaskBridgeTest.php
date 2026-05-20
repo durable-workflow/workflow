@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -3472,6 +3473,211 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('terminate', $applied->payload['policy'] ?? null);
     }
 
+    public function testChildStartAuthoritativeStateSurvivesChildCallProjectionInsertFailure(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $this->failChildCallProjectionWrites('insert');
+
+        try {
+            $result = $this->bridge->complete($task->id, [
+                [
+                    'type' => 'start_child_workflow',
+                    'workflow_type' => 'test-greeting-workflow',
+                    'arguments' => Serializer::serialize(['child-arg']),
+                    'parent_close_policy' => 'request_cancel',
+                ],
+            ]);
+        } finally {
+            $this->restoreChildCallProjectionWrites();
+        }
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        $this->assertSame('request_cancel', $link->parent_close_policy);
+
+        $this->assertFalse(
+            WorkflowChildCall::query()
+                ->where('parent_workflow_run_id', $run->id)
+                ->where('sequence', 1)
+                ->exists(),
+        );
+
+        $this->assertTrue(
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ChildWorkflowScheduled->value)
+                ->exists(),
+        );
+        $this->assertTrue(
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::ChildRunStarted->value)
+                ->exists(),
+        );
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $this->assertSame(RunStatus::Pending, $childRun->status);
+
+        $this->assertTrue(
+            WorkflowTask::query()
+                ->where('workflow_run_id', $childRun->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->exists(),
+        );
+    }
+
+    public function testChildCompletionAuthoritativeStateSurvivesChildCallProjectionUpdateFailure(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $link->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->bridge->claimStatus($childTask->id, 'external-child-worker');
+
+        $this->failChildCallProjectionWrites('update');
+
+        try {
+            $completed = $this->bridge->complete($childTask->id, [
+                [
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serialize(['child_result' => 'ok']),
+                ],
+            ]);
+        } finally {
+            $this->restoreChildCallProjectionWrites();
+        }
+
+        $this->assertTrue($completed['completed']);
+        $this->assertSame('completed', $completed['run_status']);
+
+        /** @var WorkflowHistoryEvent $childCompleted */
+        $childCompleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->firstOrFail();
+
+        $this->assertSame(1, $childCompleted->payload['sequence'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $childCompleted->payload['child_workflow_run_id'] ?? null);
+
+        /** @var WorkflowTask $parentResumeTask */
+        $parentResumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+
+        $this->assertSame('child', $parentResumeTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $parentResumeTask->payload['child_workflow_run_id'] ?? null);
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('sequence', 1)
+            ->firstOrFail();
+
+        $this->assertSame(ChildCallStatus::Started, $childCall->status);
+    }
+
+    public function testParentClosePolicyAuthoritativeStateSurvivesChildCallProjectionUpdateFailure(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+                'parent_close_policy' => 'request_cancel',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        $parentCloseTask = $this->createLeasedTask($run->fresh());
+
+        $this->failChildCallProjectionWrites('update');
+
+        try {
+            $closed = $this->bridge->complete($parentCloseTask->id, [
+                [
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serialize(['parent' => 'done']),
+                ],
+            ]);
+        } finally {
+            $this->restoreChildCallProjectionWrites();
+        }
+
+        $this->assertTrue($closed['completed']);
+        $this->assertSame('completed', $closed['run_status']);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $this->assertSame(RunStatus::Cancelled, $childRun->status);
+
+        /** @var WorkflowHistoryEvent $applied */
+        $applied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->firstOrFail();
+
+        $this->assertSame('request_cancel', $applied->payload['policy'] ?? null);
+        $this->assertSame($link->child_workflow_instance_id, $applied->payload['child_instance_id'] ?? null);
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('sequence', 1)
+            ->firstOrFail();
+
+        $this->assertSame(ChildCallStatus::Started, $childCall->status);
+    }
+
     public function testCompleteStartsChildWorkflowSnapshotsRetryPolicyAndTimeouts(): void
     {
         $run = $this->createWaitingRun();
@@ -4514,6 +4720,45 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->app->instance(ExternalPayloadStoragePolicy::class, $policy);
 
         return $policy;
+    }
+
+    private function failChildCallProjectionWrites(string ...$operations): void
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL trigger coverage is required for transaction-abort semantics.');
+        }
+
+        DB::unprepared(<<<'SQL'
+CREATE OR REPLACE FUNCTION fail_workflow_child_call_projection_write()
+RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'workflow_child_calls projection write disabled for test';
+END;
+$$ LANGUAGE plpgsql;
+SQL);
+
+        foreach ($operations as $operation) {
+            $operation = strtolower($operation);
+
+            $this->assertContains($operation, ['insert', 'update']);
+
+            DB::unprepared(sprintf(
+                'CREATE TRIGGER fail_workflow_child_call_projection_%s BEFORE %s ON workflow_child_calls FOR EACH ROW EXECUTE FUNCTION fail_workflow_child_call_projection_write();',
+                $operation,
+                strtoupper($operation),
+            ));
+        }
+    }
+
+    private function restoreChildCallProjectionWrites(): void
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            return;
+        }
+
+        DB::unprepared('DROP TRIGGER IF EXISTS fail_workflow_child_call_projection_insert ON workflow_child_calls;');
+        DB::unprepared('DROP TRIGGER IF EXISTS fail_workflow_child_call_projection_update ON workflow_child_calls;');
+        DB::unprepared('DROP FUNCTION IF EXISTS fail_workflow_child_call_projection_write();');
     }
 
     private function createLeasedTask(WorkflowRun $run): WorkflowTask

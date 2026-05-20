@@ -1746,7 +1746,7 @@ final class WorkflowExecutor
         $parentClosePolicy = $childWorkflowCall->options?->parentClosePolicy
             ?? ParentClosePolicy::Abandon;
 
-        WorkflowChildCall::query()->create([
+        ChildRunHistory::recordChildCallStarted([
             'parent_workflow_run_id' => $run->id,
             'parent_workflow_instance_id' => $run->workflow_instance_id,
             'sequence' => $sequence,
@@ -3607,26 +3607,15 @@ final class WorkflowExecutor
             'compatibility' => $retryRun->compatibility,
         ]);
 
-        /** @var WorkflowChildCall|null $childCall */
-        $childCall = WorkflowChildCall::query()
-            ->where('parent_workflow_run_id', $parentRun->id)
-            ->where('sequence', $sequence)
-            ->first();
-
-        if ($childCall instanceof WorkflowChildCall) {
-            $childCall->forceFill([
-                'resolved_child_instance_id' => $retryRun->workflow_instance_id,
-                'resolved_child_run_id' => $retryRun->id,
-                'status' => ChildCallStatus::Started,
-                'started_at' => $now,
-                'metadata' => array_merge(is_array($childCall->metadata) ? $childCall->metadata : [], [
-                    'child_call_id' => $childCallId,
-                    'attempt_count' => $attemptCount + 1,
-                    'last_retry_of_child_workflow_run_id' => $failedChildRun->id,
-                    'last_retry_backoff_seconds' => $backoffSeconds,
-                ]),
-            ])->save();
-        }
+        ChildRunHistory::markChildCallRetryStarted(
+            $parentRun,
+            $sequence,
+            $retryRun,
+            $childCallId,
+            $attemptCount,
+            $backoffSeconds,
+            $failedChildRun,
+        );
 
         TaskDispatcher::dispatch($retryTask);
 
