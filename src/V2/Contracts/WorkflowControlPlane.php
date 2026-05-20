@@ -63,6 +63,7 @@ interface WorkflowControlPlane
      *
      * Options:
      * - arguments: array<int, mixed> — positional signal arguments
+     * - namespace: string|null — require the workflow instance to belong to this namespace
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
@@ -95,6 +96,7 @@ interface WorkflowControlPlane
      *
      * Options:
      * - arguments: array<int|string, mixed> — positional or named query arguments
+     * - namespace: string|null — require the workflow instance to belong to this namespace
      * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
      * @return array{
@@ -120,6 +122,7 @@ interface WorkflowControlPlane
      *
      * Options:
      * - arguments: array<int|string, mixed> — positional or named update arguments
+     * - namespace: string|null — require the workflow instance to belong to this namespace
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - wait_for: 'accepted'|'completed'|null — accepted-only submit or completion wait
      * - wait_timeout_seconds: int|null — completion wait timeout
@@ -159,6 +162,7 @@ interface WorkflowControlPlane
      *
      * Options:
      * - reason: string|null — cancellation reason
+     * - namespace: string|null — require the workflow instance to belong to this namespace
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
@@ -186,6 +190,7 @@ interface WorkflowControlPlane
      *
      * Options:
      * - reason: string|null — termination reason
+     * - namespace: string|null — require the workflow instance to belong to this namespace
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
@@ -216,6 +221,7 @@ interface WorkflowControlPlane
      * Only the current run of an open workflow instance may be repaired.
      *
      * Options:
+     * - namespace: string|null — require the workflow instance to belong to this namespace
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
@@ -248,6 +254,7 @@ interface WorkflowControlPlane
      *
      * Options:
      * - reason: string|null — archive reason
+     * - namespace: string|null — require the workflow instance to belong to this namespace
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
@@ -280,6 +287,7 @@ interface WorkflowControlPlane
      *
      * Options:
      * - run_id: string|null — describe a specific run instead of current
+     * - namespace: string|null — require the workflow instance to belong to this namespace
      *
      * @return array{
      *     found: bool,

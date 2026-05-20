@@ -676,6 +676,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     public function describe(string $instanceId, array $options = []): array
     {
         $runId = $options['run_id'] ?? null;
+        $namespace = $this->namespaceOption($options);
 
         $notFound = [
             'found' => false,
@@ -698,10 +699,15 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
         ];
 
         try {
+            $query = $this->instanceQuery()
+                ->with('currentRun');
+
+            if ($namespace !== null) {
+                $query->where('namespace', $namespace);
+            }
+
             /** @var \Workflow\V2\Models\WorkflowInstance $instance */
-            $instance = $this->instanceQuery()
-                ->with('currentRun')
-                ->findOrFail($instanceId);
+            $instance = $query->findOrFail($instanceId);
         } catch (ModelNotFoundException) {
             return $notFound;
         }
@@ -871,9 +877,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
      */
     private function loadControlPlaneWorkflow(string $instanceId, array $options): array
     {
-        $namespace = isset($options['namespace']) && is_string($options['namespace'])
-            ? $options['namespace']
-            : null;
+        $namespace = $this->namespaceOption($options);
 
         try {
             $query = $this->instanceQuery();
@@ -977,6 +981,15 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     private function resolveNamespace(array $options): ?string
     {
         $namespace = $options['namespace'] ?? config('workflows.v2.namespace');
+
+        return is_string($namespace) && trim($namespace) !== ''
+            ? trim($namespace)
+            : null;
+    }
+
+    private function namespaceOption(array $options): ?string
+    {
+        $namespace = $options['namespace'] ?? null;
 
         return is_string($namespace) && trim($namespace) !== ''
             ? trim($namespace)

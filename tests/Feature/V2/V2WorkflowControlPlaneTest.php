@@ -651,6 +651,34 @@ final class V2WorkflowControlPlaneTest extends TestCase
         $this->assertTrue($result['actions']['can_terminate']);
     }
 
+    public function testDescribeCanBeScopedByNamespace(): void
+    {
+        $start = $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-desc-ns-1', [
+            'connection' => 'redis',
+            'queue' => 'default',
+            'namespace' => 'tenant-a',
+        ]);
+
+        $this->assertTrue($start['started']);
+
+        $visible = $this->controlPlane->describe('ctrl-plane-desc-ns-1', [
+            'namespace' => 'tenant-a',
+        ]);
+
+        $this->assertTrue($visible['found']);
+        $this->assertSame('tenant-a', $visible['namespace']);
+        $this->assertIsArray($visible['run']);
+        $this->assertSame($start['workflow_run_id'], $visible['run']['workflow_run_id']);
+
+        $hidden = $this->controlPlane->describe('ctrl-plane-desc-ns-1', [
+            'namespace' => 'tenant-b',
+        ]);
+
+        $this->assertFalse($hidden['found']);
+        $this->assertNull($hidden['run']);
+        $this->assertSame('instance_not_found', $hidden['reason']);
+    }
+
     public function testDescribeTerminatedWorkflow(): void
     {
         $this->controlPlane->start('remote-workflow-type', 'ctrl-plane-desc-term-1', [
