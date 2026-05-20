@@ -168,6 +168,42 @@ final class ControlPlaneClient
     }
 
     /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    public function listWorkflows(array $filters = []): array
+    {
+        return $this->get('/workflows', $this->withoutNulls($filters));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function listSearchAttributes(): array
+    {
+        return $this->get('/search-attributes');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function createSearchAttribute(string $name, string $type): array
+    {
+        return $this->post('/search-attributes', [
+            'name' => $name,
+            'type' => $type,
+        ], [200, 201]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function deleteSearchAttribute(string $name): array
+    {
+        return $this->delete(sprintf('/search-attributes/%s', $this->pathSegment($name)));
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function clusterInfo(): array
@@ -176,17 +212,19 @@ final class ControlPlaneClient
     }
 
     /**
+     * @param array<string, mixed> $query
      * @return array<string, mixed>
      */
     private function get(
         string $path,
+        array $query = [],
         ?int $requestTimeoutSeconds = null,
         bool $enforceControlPlaneHeader = true,
     ): array {
         $response = $this->http
             ->withHeaders($this->headers())
             ->timeout($requestTimeoutSeconds ?? $this->defaultRequestTimeoutSeconds)
-            ->get($this->url($path));
+            ->get($this->url($path), $query);
 
         return $this->decode($response, $path, $enforceControlPlaneHeader);
     }
@@ -206,6 +244,23 @@ final class ControlPlaneClient
             ->withHeaders($this->headers())
             ->timeout($requestTimeoutSeconds ?? $this->defaultRequestTimeoutSeconds)
             ->post($this->url($path), $body);
+
+        return $this->decode($response, $path, true, $successStatuses);
+    }
+
+    /**
+     * @param list<int> $successStatuses
+     * @return array<string, mixed>
+     */
+    private function delete(
+        string $path,
+        array $successStatuses = [200],
+        ?int $requestTimeoutSeconds = null,
+    ): array {
+        $response = $this->http
+            ->withHeaders($this->headers())
+            ->timeout($requestTimeoutSeconds ?? $this->defaultRequestTimeoutSeconds)
+            ->delete($this->url($path));
 
         return $this->decode($response, $path, true, $successStatuses);
     }

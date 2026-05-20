@@ -179,13 +179,16 @@ processes that need to drive the standalone server control plane from PHP:
 - `Workflow\V2\Client\ControlPlaneClient`
 - `Workflow\V2\Exceptions\ControlPlaneRequestException`
 
-`ControlPlaneClient` covers workflow start, workflow describe,
-run describe, signal delivery, query execution, and cluster-info reads
+`ControlPlaneClient` covers workflow start, workflow list by visibility
+query, workflow describe, run describe, signal delivery, query execution,
+search-attribute definition list/create/delete, and cluster-info reads
 against `POST /api/workflows`, `GET /api/workflows/{workflowId}`,
 `GET /api/workflows/{workflowId}/runs/{runId}`,
 `POST /api/workflows/{workflowId}/signal/{signalName}`,
-`POST /api/workflows/{workflowId}/query/{queryName}`, and their current-run
-targeted `/runs/{runId}` variants. It sends the
+`POST /api/workflows/{workflowId}/query/{queryName}`,
+`GET /api/workflows`, `GET|POST /api/search-attributes`, and
+`DELETE /api/search-attributes/{name}`, plus their current-run targeted
+`/runs/{runId}` variants. It sends the
 `X-Durable-Workflow-Control-Plane-Version` and `X-Namespace` headers on
 every request, accepts raw PHP argument arrays that the server resolves
 through the normal payload-envelope boundary, and returns the raw server

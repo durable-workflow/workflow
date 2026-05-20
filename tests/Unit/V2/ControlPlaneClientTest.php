@@ -129,6 +129,115 @@ final class ControlPlaneClientTest extends TestCase
         $this->assertSame(8, $response['result']);
     }
 
+    public function testListWorkflowsSendsVisibilityQueryFilters(): void
+    {
+        $http = new HttpFactory();
+        $requestQuery = [];
+        $namespaceHeader = false;
+
+        $http->fake(function (Request $request) use ($http, &$requestQuery, &$namespaceHeader) {
+            $requestQuery = $request->data();
+            if ($requestQuery === []) {
+                parse_str(parse_url((string) $request->url(), PHP_URL_QUERY) ?: '', $requestQuery);
+            }
+            $namespaceHeader = $request->hasHeader('X-Namespace', 'sa-test');
+
+            $this->assertSame('/api/workflows', parse_url((string) $request->url(), PHP_URL_PATH));
+
+            return $http->response([
+                'workflows' => [
+                    [
+                        'workflow_id' => 'order-php-1',
+                        'search_attributes' => [
+                            'customer_id' => 'cust-8',
+                            'priority_tier' => 'platinum',
+                        ],
+                    ],
+                ],
+            ], 200, [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ]);
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token', namespace: 'sa-test');
+        $response = $client->listWorkflows([
+            'query' => 'customer_id = "cust-2" OR customer_id = "cust-8"',
+            'status' => 'running',
+            'page_size' => 100,
+        ]);
+
+        $this->assertTrue($namespaceHeader);
+        $this->assertSame('customer_id = "cust-2" OR customer_id = "cust-8"', $requestQuery['query']);
+        $this->assertSame('running', $requestQuery['status']);
+        $this->assertSame('100', (string) $requestQuery['page_size']);
+        $this->assertSame('order-php-1', $response['workflows'][0]['workflow_id']);
+    }
+
+    public function testSearchAttributeDefinitionMethodsUseControlPlaneRoutes(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => $request->method(),
+                'url' => (string) $request->url(),
+                'body' => $request->data(),
+            ];
+
+            $headers = [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ];
+
+            return match ($request->method()) {
+                'GET' => $http->response([
+                    'custom_attributes' => [
+                        'customer_id' => 'string',
+                    ],
+                ], 200, $headers),
+                'POST' => $http->response([
+                    'name' => 'priority_tier',
+                    'type' => 'keyword',
+                ], 201, $headers),
+                'DELETE' => $http->response([
+                    'deleted' => true,
+                    'name' => 'priority tier temp',
+                ], 200, $headers),
+                default => $http->response([], 500, $headers),
+            };
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token');
+
+        $definitions = $client->listSearchAttributes();
+        $created = $client->createSearchAttribute('priority_tier', 'keyword');
+        $deleted = $client->deleteSearchAttribute('priority tier temp');
+
+        $this->assertSame('string', $definitions['custom_attributes']['customer_id']);
+        $this->assertSame('priority_tier', $created['name']);
+        $this->assertTrue($deleted['deleted']);
+        $this->assertSame([
+            [
+                'method' => 'GET',
+                'url' => 'http://server:8080/api/search-attributes',
+                'body' => [],
+            ],
+            [
+                'method' => 'POST',
+                'url' => 'http://server:8080/api/search-attributes',
+                'body' => [
+                    'name' => 'priority_tier',
+                    'type' => 'keyword',
+                ],
+            ],
+            [
+                'method' => 'DELETE',
+                'url' => 'http://server:8080/api/search-attributes/priority%20tier%20temp',
+                'body' => [],
+            ],
+        ], $requests);
+    }
+
     public function testThrowsTypedExceptionForControlPlaneErrors(): void
     {
         $http = new HttpFactory();
