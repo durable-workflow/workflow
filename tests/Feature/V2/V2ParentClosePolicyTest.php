@@ -131,6 +131,61 @@ final class V2ParentClosePolicyTest extends TestCase
         $this->assertSame('abandon', $link->parent_close_policy);
     }
 
+    public function testDirectChildCancellationRecordsTypedResolutionForWaitingParent(): void
+    {
+        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'direct-child-cancel');
+        $workflow->start('abandon');
+
+        $this->drainReadyTasks();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        /** @var WorkflowLink $link */
+        $link = WorkflowLink::query()
+            ->where('parent_workflow_instance_id', 'direct-child-cancel')
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()
+            ->where('workflow_instance_id', 'direct-child-cancel')
+            ->sole();
+
+        $childStub = WorkflowStub::load($link->child_workflow_instance_id);
+        $result = $childStub->attemptCancel('operator cancelled child directly');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame('cancelled', $childStub->refresh()->status());
+
+        /** @var WorkflowHistoryEvent $resolution */
+        $resolution = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildRunCancelled->value)
+            ->sole();
+
+        $this->assertSame($link->id, $resolution->payload['child_call_id'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $resolution->payload['child_workflow_run_id'] ?? null);
+        $this->assertSame('cancelled', $resolution->payload['child_status'] ?? null);
+        $this->assertSame('cancelled', $resolution->payload['failure_category'] ?? null);
+        $this->assertSame(
+            'Workflow\\V2\\Exceptions\\WorkflowCancelledException',
+            $resolution->payload['exception_class'] ?? null,
+        );
+
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame('child', $resumeTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame('child_workflow_run', $resumeTask->payload['resume_source_kind'] ?? null);
+        $this->assertSame(sprintf('child:%s', $link->id), $resumeTask->payload['open_wait_id'] ?? null);
+        $this->assertSame($link->child_workflow_run_id, $resumeTask->payload['child_workflow_run_id'] ?? null);
+        $this->assertSame('ChildRunCancelled', $resumeTask->payload['workflow_event_type'] ?? null);
+    }
+
     public function testRequestCancelPolicyCancelsChildWhenParentIsTerminated(): void
     {
         $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'cancel-on-terminate');

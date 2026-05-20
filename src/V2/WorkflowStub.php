@@ -4385,13 +4385,21 @@ final class WorkflowStub
                 $this->loadLockedRunRelations($parentRun, $parentInstance);
             }
 
+            $taskPayload = [];
+
             if (is_int($parentReference['parent_sequence'])) {
+                $resolutionEvent = $this->recordParentChildResolution(
+                    $parentRun,
+                    $parentReference['parent_sequence'],
+                    $childRun,
+                );
+                $taskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
                 $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence(
                     $parentRun,
                     $parentReference['parent_sequence']
                 );
                 $childStatus = ChildRunHistory::resolvedStatus(
-                    ChildRunHistory::resolutionEventForSequence($parentRun, $parentReference['parent_sequence']),
+                    $resolutionEvent,
                     $childRun,
                 );
 
@@ -4427,7 +4435,7 @@ final class WorkflowStub
                 'task_type' => TaskType::Workflow->value,
                 'status' => TaskStatus::Ready->value,
                 'available_at' => now(),
-                'payload' => [],
+                'payload' => $taskPayload,
                 'connection' => $parentRun->connection,
                 'queue' => $parentRun->queue,
                 'compatibility' => $parentRun->compatibility,
@@ -4439,6 +4447,90 @@ final class WorkflowStub
         }
 
         return $tasks;
+    }
+
+    private function recordParentChildResolution(
+        WorkflowRun $parentRun,
+        int $sequence,
+        WorkflowRun $childRun,
+    ): WorkflowHistoryEvent {
+        $childRun->unsetRelation('historyEvents');
+        $childRun->unsetRelation('failures');
+        $childRun->load(['historyEvents', 'failures']);
+
+        $link = ChildRunHistory::latestLinkForSequence($parentRun, $sequence);
+        $eventType = match (ChildRunHistory::resolvedStatus(null, $childRun)) {
+            RunStatus::Completed => HistoryEventType::ChildRunCompleted,
+            RunStatus::Cancelled => HistoryEventType::ChildRunCancelled,
+            RunStatus::Terminated => HistoryEventType::ChildRunTerminated,
+            default => HistoryEventType::ChildRunFailed,
+        };
+
+        /** @var WorkflowHistoryEvent|null $alreadyRecorded */
+        $alreadyRecorded = $parentRun->historyEvents->first(
+            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $eventType
+                && ($event->payload['sequence'] ?? null) === $sequence
+                && ($event->payload['child_workflow_run_id'] ?? null) === $childRun->id
+        );
+
+        if ($alreadyRecorded instanceof WorkflowHistoryEvent) {
+            return $alreadyRecorded;
+        }
+
+        $childTerminalEvent = $childRun->historyEvents
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
+                    HistoryEventType::WorkflowCompleted,
+                    HistoryEventType::WorkflowFailed,
+                    HistoryEventType::WorkflowCancelled,
+                    HistoryEventType::WorkflowTerminated,
+                ], true)
+            )
+            ->sortByDesc('sequence')
+            ->first();
+        $failure = $childRun->failures->first();
+        $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($parentRun, $sequence);
+        $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+
+        return WorkflowHistoryEvent::record($parentRun, $eventType, array_filter([
+            'sequence' => $sequence,
+            'workflow_link_id' => $link?->id,
+            'child_call_id' => ChildRunHistory::childCallIdForSequence($parentRun, $sequence),
+            'child_workflow_instance_id' => $childRun->workflow_instance_id,
+            'child_workflow_run_id' => $childRun->id,
+            'child_workflow_class' => $childRun->workflow_class,
+            'child_workflow_type' => $childRun->workflow_type,
+            'child_run_number' => $childRun->run_number,
+            'child_status' => $childRun->status->value,
+            'closed_reason' => $childRun->closed_reason,
+            'closed_at' => $childRun->closed_at?->toJSON(),
+            'output' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
+                ? $childTerminalEvent->payload['output'] ?? $childRun->output
+                : null,
+            'failure_id' => $failure?->id,
+            'failure_category' => match ($eventType) {
+                HistoryEventType::ChildRunFailed => $failure?->failure_category ?? FailureCategory::ChildWorkflow->value,
+                HistoryEventType::ChildRunCancelled => $failure?->failure_category ?? FailureCategory::Cancelled->value,
+                HistoryEventType::ChildRunTerminated => $failure?->failure_category ?? FailureCategory::Terminated->value,
+                default => null,
+            },
+            'exception' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception'] ?? null
+                : null,
+            'exception_type' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception_type'] ?? null
+                : null,
+            'exception_class' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['exception_class'] ?? $failure?->exception_class
+                : $failure?->exception_class,
+            'message' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['message'] ?? $failure?->message
+                : $failure?->message,
+            'code' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowFailed
+                ? $childTerminalEvent->payload['code'] ?? null
+                : null,
+            ...($parallelMetadata ?? []),
+        ], static fn (mixed $value): bool => $value !== null));
     }
 
     /**
