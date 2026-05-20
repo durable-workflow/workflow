@@ -52,6 +52,28 @@ final class ControlPlaneClient
         if ($this->defaultRequestTimeoutSeconds < 1) {
             throw new InvalidArgumentException('Default request timeout must be at least 1 second.');
         }
+
+        if (trim($this->namespace) === '') {
+            throw new InvalidArgumentException('Namespace must not be empty.');
+        }
+    }
+
+    public function namespace(): string
+    {
+        return $this->namespace;
+    }
+
+    public function withNamespace(string $namespace): self
+    {
+        return new self(
+            $this->http,
+            $this->baseUrl,
+            $this->token,
+            $namespace,
+            $this->controlPlaneVersion,
+            $this->defaultRequestTimeoutSeconds,
+            $this->apiPath,
+        );
     }
 
     /**
@@ -111,6 +133,52 @@ final class ControlPlaneClient
 
         $body = $this->withoutNulls([
             'input' => $arguments === [] ? null : $arguments,
+            'request_id' => $this->stringOption($options, 'request_id'),
+        ]);
+
+        return $this->post($path, $body, [200, 202]);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function cancelWorkflow(string $workflowId, array $options = []): array
+    {
+        $runId = $this->stringOption($options, 'run_id');
+        $path = $runId !== null
+            ? sprintf(
+                '/workflows/%s/runs/%s/cancel',
+                $this->pathSegment($workflowId),
+                $this->pathSegment($runId),
+            )
+            : sprintf('/workflows/%s/cancel', $this->pathSegment($workflowId));
+
+        $body = $this->withoutNulls([
+            'reason' => $this->stringOption($options, 'reason'),
+            'request_id' => $this->stringOption($options, 'request_id'),
+        ]);
+
+        return $this->post($path, $body, [200, 202]);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function terminateWorkflow(string $workflowId, array $options = []): array
+    {
+        $runId = $this->stringOption($options, 'run_id');
+        $path = $runId !== null
+            ? sprintf(
+                '/workflows/%s/runs/%s/terminate',
+                $this->pathSegment($workflowId),
+                $this->pathSegment($runId),
+            )
+            : sprintf('/workflows/%s/terminate', $this->pathSegment($workflowId));
+
+        $body = $this->withoutNulls([
+            'reason' => $this->stringOption($options, 'reason'),
             'request_id' => $this->stringOption($options, 'request_id'),
         ]);
 
@@ -187,6 +255,90 @@ final class ControlPlaneClient
     /**
      * @return array<string, mixed>
      */
+    public function listNamespaces(): array
+    {
+        return $this->get('/namespaces');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function describeNamespace(string $name): array
+    {
+        return $this->get(sprintf('/namespaces/%s', $this->pathSegment($name)));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function createNamespace(string $name, ?string $description = null, int $retentionDays = 30): array
+    {
+        if ($retentionDays < 1) {
+            throw new InvalidArgumentException('Namespace retention days must be at least 1.');
+        }
+
+        return $this->post('/namespaces', $this->withoutNulls([
+            'name' => $name,
+            'description' => $description,
+            'retention_days' => $retentionDays,
+        ]), [200, 201]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function updateNamespace(
+        string $name,
+        ?string $description = null,
+        ?int $retentionDays = null,
+    ): array {
+        if ($retentionDays !== null && $retentionDays < 1) {
+            throw new InvalidArgumentException('Namespace retention days must be at least 1.');
+        }
+
+        return $this->put(sprintf('/namespaces/%s', $this->pathSegment($name)), $this->withoutNulls([
+            'description' => $description,
+            'retention_days' => $retentionDays,
+        ]));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function deleteNamespace(string $name): array
+    {
+        return $this->delete(sprintf('/namespaces/%s', $this->pathSegment($name)));
+    }
+
+    /**
+     * @param array<string, mixed>|null $config
+     * @return array<string, mixed>
+     */
+    public function setNamespaceExternalStorage(
+        string $name,
+        string $driver,
+        bool $enabled = true,
+        ?int $thresholdBytes = null,
+        ?array $config = null,
+    ): array {
+        if ($thresholdBytes !== null && $thresholdBytes < 1) {
+            throw new InvalidArgumentException('Namespace external storage threshold bytes must be at least 1.');
+        }
+
+        return $this->put(
+            sprintf('/namespaces/%s/external-storage', $this->pathSegment($name)),
+            $this->withoutNulls([
+                'driver' => $driver,
+                'enabled' => $enabled,
+                'threshold_bytes' => $thresholdBytes,
+                'config' => $config,
+            ]),
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function createSearchAttribute(string $name, string $type): array
     {
         return $this->post('/search-attributes', [
@@ -244,6 +396,25 @@ final class ControlPlaneClient
             ->withHeaders($this->headers())
             ->timeout($requestTimeoutSeconds ?? $this->defaultRequestTimeoutSeconds)
             ->post($this->url($path), $body);
+
+        return $this->decode($response, $path, true, $successStatuses);
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     * @param list<int> $successStatuses
+     * @return array<string, mixed>
+     */
+    private function put(
+        string $path,
+        array $body,
+        array $successStatuses = [200],
+        ?int $requestTimeoutSeconds = null,
+    ): array {
+        $response = $this->http
+            ->withHeaders($this->headers())
+            ->timeout($requestTimeoutSeconds ?? $this->defaultRequestTimeoutSeconds)
+            ->put($this->url($path), $body);
 
         return $this->decode($response, $path, true, $successStatuses);
     }

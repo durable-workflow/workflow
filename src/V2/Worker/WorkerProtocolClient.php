@@ -87,7 +87,31 @@ final class WorkerProtocolClient
             throw new InvalidArgumentException('Default request timeout must be at least 1 second.');
         }
 
+        if (trim($this->namespace) === '') {
+            throw new InvalidArgumentException('Namespace must not be empty.');
+        }
+
         $this->processStartedAt = time();
+    }
+
+    public function namespace(): string
+    {
+        return $this->namespace;
+    }
+
+    public function withNamespace(string $namespace): self
+    {
+        return new self(
+            $this->http,
+            $this->baseUrl,
+            $this->token,
+            $namespace,
+            $this->protocolVersion,
+            $this->defaultRequestTimeoutSeconds,
+            $this->workerApiPath,
+            $this->bridgePath,
+            $this->embeddedBridgeMode,
+        );
     }
 
     /**

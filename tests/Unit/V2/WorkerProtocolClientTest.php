@@ -96,6 +96,62 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame(['query_tasks'], $requestBody['capabilities'] ?? null);
     }
 
+    public function testWorkerClientCanSelectNamespaceForSameQueueIsolation(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'namespace_a' => $request->hasHeader('X-Namespace', 'tenant-a'),
+                'namespace_b' => $request->hasHeader('X-Namespace', 'tenant-b'),
+                'body' => $request->data(),
+            ];
+
+            return $http->response(['registered' => true], 201);
+        });
+
+        $defaultClient = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $tenantA = $defaultClient->withNamespace('tenant-a');
+        $tenantB = $defaultClient->withNamespace('tenant-b');
+
+        $this->assertSame('default', $defaultClient->namespace());
+        $this->assertSame('tenant-a', $tenantA->namespace());
+        $this->assertSame('tenant-b', $tenantB->namespace());
+
+        $tenantA->registerWorker(workerId: 'php-worker-a', taskQueue: 'iso');
+        $tenantB->registerWorker(workerId: 'php-worker-b', taskQueue: 'iso');
+
+        unset($requests[0]['body']['process_metrics'], $requests[1]['body']['process_metrics']);
+
+        $this->assertSame([
+            [
+                'namespace_a' => true,
+                'namespace_b' => false,
+                'body' => [
+                    'worker_id' => 'php-worker-a',
+                    'task_queue' => 'iso',
+                    'runtime' => 'php',
+                    'sdk_version' => WorkerProtocolClient::DEFAULT_SDK_VERSION,
+                    'supported_workflow_types' => [],
+                    'supported_activity_types' => [],
+                ],
+            ],
+            [
+                'namespace_a' => false,
+                'namespace_b' => true,
+                'body' => [
+                    'worker_id' => 'php-worker-b',
+                    'task_queue' => 'iso',
+                    'runtime' => 'php',
+                    'sdk_version' => WorkerProtocolClient::DEFAULT_SDK_VERSION,
+                    'supported_workflow_types' => [],
+                    'supported_activity_types' => [],
+                ],
+            ],
+        ], $requests);
+    }
+
     public function testActivityOnlyWorkerRegistrationDoesNotAdvertiseQueryTasksByDefault(): void
     {
         $http = new HttpFactory();

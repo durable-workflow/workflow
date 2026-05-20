@@ -179,23 +179,33 @@ processes that need to drive the standalone server control plane from PHP:
 - `Workflow\V2\Client\ControlPlaneClient`
 - `Workflow\V2\Exceptions\ControlPlaneRequestException`
 
-`ControlPlaneClient` covers workflow start, workflow list by visibility
-query, workflow describe, run describe, signal delivery, query execution,
-search-attribute definition list/create/delete, and cluster-info reads
+`ControlPlaneClient` covers namespace selection, namespace lifecycle
+list/create/describe/update/delete, namespace external-storage policy
+updates, workflow start, workflow list by visibility query, workflow
+describe, run describe, signal delivery, query execution, cancel,
+terminate, search-attribute definition list/create/delete, and
+cluster-info reads
 against `POST /api/workflows`, `GET /api/workflows/{workflowId}`,
 `GET /api/workflows/{workflowId}/runs/{runId}`,
 `POST /api/workflows/{workflowId}/signal/{signalName}`,
 `POST /api/workflows/{workflowId}/query/{queryName}`,
+`POST /api/workflows/{workflowId}/cancel`,
+`POST /api/workflows/{workflowId}/terminate`,
 `GET /api/workflows`, `GET|POST /api/search-attributes`, and
-`DELETE /api/search-attributes/{name}`, plus their current-run targeted
-`/runs/{runId}` variants. It sends the
+`DELETE /api/search-attributes/{name}`,
+`GET|POST /api/namespaces`, `GET|PUT|DELETE /api/namespaces/{name}`,
+and `PUT /api/namespaces/{name}/external-storage`, plus their current-run
+targeted `/runs/{runId}` variants. It sends the
 `X-Durable-Workflow-Control-Plane-Version` and `X-Namespace` headers on
 every request, accepts raw PHP argument arrays that the server resolves
 through the normal payload-envelope boundary, and returns the raw server
 JSON envelope so conformance harnesses can deep-equal CLI, Python SDK,
 and PHP SDK results. Non-success HTTP responses raise
 `ControlPlaneRequestException` with the HTTP status, decoded response body,
-and stable `reason` helper.
+and stable `reason` helper. `namespace()` returns the selected namespace,
+and `withNamespace()` creates an equivalent client for another namespace so
+PHP harnesses can exercise tenant A/B isolation without mutating shared
+client state.
 
 ## Worker protocol SDK shims
 
@@ -237,6 +247,10 @@ to recover a leased task after a local HTTP timeout. The client caches the
 returned lease fields so follow-up history, heartbeat, complete, and fail
 calls can send the required `lease_owner`, `workflow_task_attempt`,
 `activity_attempt_id`, and `query_task_attempt` values.
+`namespace()` returns the worker client's selected namespace, and
+`withNamespace()` creates a fresh worker client with the same connection
+settings for a different namespace. That clone intentionally does not carry
+cached task leases across the namespace boundary.
 `WorkflowQueryTaskExecutor` is the stable PHP worker shim for the
 `query_tasks` capability. It accepts the server-routed query task envelope,
 replays the supplied history export in query mode, validates query targets

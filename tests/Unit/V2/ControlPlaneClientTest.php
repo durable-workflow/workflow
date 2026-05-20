@@ -103,6 +103,55 @@ final class ControlPlaneClientTest extends TestCase
         $this->assertSame(['input' => [5]], $requests[1]['body']);
     }
 
+    public function testCancelAndTerminateWorkflowSupportCurrentRunAndRunTargetedPaths(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'url' => (string) $request->url(),
+                'body' => $request->data(),
+                'tenant_b' => $request->hasHeader('X-Namespace', 'tenant-b'),
+            ];
+
+            return $http->response([
+                'workflow_id' => 'counter-1',
+                'run_id' => 'run-1',
+                'outcome' => 'accepted',
+            ], 202, [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ]);
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token', namespace: 'tenant-a');
+        $tenantB = $client->withNamespace('tenant-b');
+
+        $this->assertSame('tenant-a', $client->namespace());
+        $this->assertSame('tenant-b', $tenantB->namespace());
+
+        $tenantB->cancelWorkflow('counter-1', ['reason' => 'namespace probe', 'request_id' => 'cancel-1']);
+        $tenantB->terminateWorkflow('counter-1', ['run_id' => 'run-1', 'request_id' => 'term-1']);
+
+        $this->assertSame([
+            [
+                'url' => 'http://server:8080/api/workflows/counter-1/cancel',
+                'body' => [
+                    'reason' => 'namespace probe',
+                    'request_id' => 'cancel-1',
+                ],
+                'tenant_b' => true,
+            ],
+            [
+                'url' => 'http://server:8080/api/workflows/counter-1/runs/run-1/terminate',
+                'body' => [
+                    'request_id' => 'term-1',
+                ],
+                'tenant_b' => true,
+            ],
+        ], $requests);
+    }
+
     public function testQueryWorkflowReturnsRawServerEnvelope(): void
     {
         $http = new HttpFactory();
@@ -171,6 +220,138 @@ final class ControlPlaneClientTest extends TestCase
         $this->assertSame('running', $requestQuery['status']);
         $this->assertSame('100', (string) $requestQuery['page_size']);
         $this->assertSame('order-php-1', $response['workflows'][0]['workflow_id']);
+    }
+
+    public function testNamespaceLifecycleMethodsUseControlPlaneRoutes(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => (string) $request->url(),
+                'body' => $request->data(),
+                'namespace' => $request->hasHeader('X-Namespace', 'tenant-admin'),
+            ];
+
+            $headers = [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ];
+
+            return match (count($requests)) {
+                1 => $http->response([
+                    'namespaces' => [
+                        ['name' => 'default', 'retention_days' => 30, 'status' => 'active'],
+                        ['name' => 'billing', 'retention_days' => 90, 'status' => 'active'],
+                    ],
+                ], 200, $headers),
+                2 => $http->response([
+                    'name' => 'billing',
+                    'description' => 'Billing workflows',
+                    'retention_days' => 90,
+                    'status' => 'active',
+                ], 201, $headers),
+                3 => $http->response([
+                    'name' => 'billing',
+                    'description' => 'Billing workflows and reports',
+                    'retention_days' => 120,
+                    'status' => 'active',
+                ], 200, $headers),
+                4 => $http->response([
+                    'name' => 'billing',
+                    'description' => 'Billing workflows and reports',
+                    'retention_days' => 120,
+                    'status' => 'active',
+                ], 200, $headers),
+                5 => $http->response([
+                    'name' => 'billing',
+                    'external_payload_storage' => [
+                        'driver' => 's3',
+                        'enabled' => true,
+                        'threshold_bytes' => 2097152,
+                        'config' => ['disk' => 'external-payload-objects'],
+                    ],
+                ], 200, $headers),
+                default => $http->response([
+                    'name' => 'billing',
+                    'status' => 'deleted',
+                    'deleted' => ['workflow_runs' => 2],
+                ], 200, $headers),
+            };
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token', namespace: 'tenant-admin');
+
+        $list = $client->listNamespaces();
+        $created = $client->createNamespace('billing', 'Billing workflows', 90);
+        $updated = $client->updateNamespace('billing', 'Billing workflows and reports', 120);
+        $described = $client->describeNamespace('billing');
+        $storage = $client->setNamespaceExternalStorage(
+            'billing',
+            's3',
+            thresholdBytes: 2097152,
+            config: ['disk' => 'external-payload-objects'],
+        );
+        $deleted = $client->deleteNamespace('billing');
+
+        $this->assertSame('billing', $list['namespaces'][1]['name']);
+        $this->assertSame(90, $created['retention_days']);
+        $this->assertSame(120, $updated['retention_days']);
+        $this->assertSame('active', $described['status']);
+        $this->assertSame('s3', $storage['external_payload_storage']['driver']);
+        $this->assertSame('deleted', $deleted['status']);
+
+        $this->assertSame([
+            [
+                'method' => 'GET',
+                'url' => 'http://server:8080/api/namespaces',
+                'body' => [],
+                'namespace' => true,
+            ],
+            [
+                'method' => 'POST',
+                'url' => 'http://server:8080/api/namespaces',
+                'body' => [
+                    'name' => 'billing',
+                    'description' => 'Billing workflows',
+                    'retention_days' => 90,
+                ],
+                'namespace' => true,
+            ],
+            [
+                'method' => 'PUT',
+                'url' => 'http://server:8080/api/namespaces/billing',
+                'body' => [
+                    'description' => 'Billing workflows and reports',
+                    'retention_days' => 120,
+                ],
+                'namespace' => true,
+            ],
+            [
+                'method' => 'GET',
+                'url' => 'http://server:8080/api/namespaces/billing',
+                'body' => [],
+                'namespace' => true,
+            ],
+            [
+                'method' => 'PUT',
+                'url' => 'http://server:8080/api/namespaces/billing/external-storage',
+                'body' => [
+                    'driver' => 's3',
+                    'enabled' => true,
+                    'threshold_bytes' => 2097152,
+                    'config' => ['disk' => 'external-payload-objects'],
+                ],
+                'namespace' => true,
+            ],
+            [
+                'method' => 'DELETE',
+                'url' => 'http://server:8080/api/namespaces/billing',
+                'body' => [],
+                'namespace' => true,
+            ],
+        ], $requests);
     }
 
     public function testSearchAttributeDefinitionMethodsUseControlPlaneRoutes(): void
