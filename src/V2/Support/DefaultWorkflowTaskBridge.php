@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -975,7 +976,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $this->dispatchParentResumeTasksForRun($run);
 
-        self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        if (self::isChildWorkflowRun($run)) {
+            self::projectRunBestEffort($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_completion');
+        } else {
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        }
     }
 
     /**
@@ -1057,7 +1062,11 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $this->dispatchParentResumeTasksForRun($run);
 
-        self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        if (self::isChildWorkflowRun($run)) {
+            self::projectRunBestEffort($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_failure');
+        } else {
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        }
     }
 
     /**
@@ -1084,7 +1093,25 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             $this->createPendingSignalResumeTask($run, $createdTaskIds, self::workflowSignalIdForTask($task));
         }
 
-        self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        if (self::commandsIncludeChildWorkflowStart($nonTerminalCommands)) {
+            self::projectRunBestEffort($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_parent_wait');
+        } else {
+            self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        }
+    }
+
+    /**
+     * @param list<array{type: string, ...}> $commands
+     */
+    private static function commandsIncludeChildWorkflowStart(array $commands): bool
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'start_child_workflow') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -2095,7 +2122,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         $createdTaskIds[] = $childTask->id;
 
-        self::projectRun($childRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        self::projectRunBestEffort($childRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_start');
 
         return $sequence + 1;
     }
@@ -2556,7 +2583,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         TaskDispatcher::dispatch($retryTask);
 
-        self::projectRun($retryRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        self::projectRunBestEffort($retryRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_retry_start');
 
         return $retryTask;
     }
@@ -2696,6 +2723,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $failure = $childRun->failures->first();
         $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($run, $sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
+        $childOutput = $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
+            ? $childTerminalEvent->payload['output'] ?? $childRun->output
+            : null;
+        $childOutputCodec = $childOutput !== null
+            ? self::nonEmptyString($childTerminalEvent?->payload['payload_codec'] ?? null)
+                ?? self::nonEmptyString($childRun->payload_codec)
+                ?? CodecRegistry::defaultCodec()
+            : null;
 
         return WorkflowHistoryEvent::record($run, $eventType, array_filter([
             'sequence' => $sequence,
@@ -2709,9 +2744,9 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'child_status' => $childRun->status->value,
             'closed_reason' => $childRun->closed_reason,
             'closed_at' => $childRun->closed_at?->toJSON(),
-            'output' => $childTerminalEvent?->event_type === HistoryEventType::WorkflowCompleted
-                ? $childTerminalEvent->payload['output'] ?? $childRun->output
-                : null,
+            'output' => $childOutput,
+            'result' => $childOutput,
+            'payload_codec' => $childOutputCodec,
             'failure_id' => $failure?->id,
             'failure_category' => match ($eventType) {
                 HistoryEventType::ChildRunFailed => $failure?->failure_category ?? FailureCategory::ChildWorkflow->value,
@@ -3603,6 +3638,36 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         self::historyProjectionRole()->projectRun($run);
+    }
+
+    /**
+     * Child-workflow state transitions must remain durable even when the
+     * operator-facing projection is stale; rebuild can repair projections
+     * from history, but it cannot recover a rolled-back child completion.
+     *
+     * @param list<string> $with
+     */
+    private static function projectRunBestEffort(WorkflowRun $run, array $with = [], string $operation = 'projection'): void
+    {
+        try {
+            self::projectRun($run, $with);
+        } catch (Throwable $exception) {
+            Log::warning('Workflow run projection failed after child-workflow state changed.', [
+                'operation' => $operation,
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'exception_class' => get_class($exception),
+                'exception_message' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    private static function isChildWorkflowRun(WorkflowRun $run): bool
+    {
+        return WorkflowLink::query()
+            ->where('link_type', 'child_workflow')
+            ->where('child_workflow_run_id', $run->id)
+            ->exists();
     }
 
     private static function historyProjectionRole(): HistoryProjectionRole

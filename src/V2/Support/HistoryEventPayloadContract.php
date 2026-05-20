@@ -437,6 +437,8 @@ final class HistoryEventPayloadContract
             'closed_reason',
             'closed_at',
             'output',
+            'result',
+            'payload_codec',
             'parallel_group_id',
             'parallel_group_kind',
             'parallel_group_base_sequence',
