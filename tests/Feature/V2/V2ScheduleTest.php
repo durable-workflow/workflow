@@ -273,9 +273,10 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '* * * * *',
         );
 
+        $dueAt = now()->subMinute();
+
         $schedule->forceFill([
-            'next_fire_at' => now()
-                ->subMinute(),
+            'next_fire_at' => $dueAt,
         ])->save();
 
         $results = ScheduleManager::tick();
@@ -283,6 +284,23 @@ final class V2ScheduleTest extends TestCase
         $this->assertCount(1, $results);
         $this->assertSame('tick-test', $results[0]['schedule_id']);
         $this->assertNotNull($results[0]['instance_id']);
+        $this->assertSame('triggered', $results[0]['outcome']);
+        $this->assertSame($dueAt->format('Y-m-d\TH:i:s.uP'), $results[0]['occurrence_time']);
+        $this->assertArrayHasKey('last_fired_at', $results[0]);
+        $this->assertArrayHasKey('next_fire_at', $results[0]);
+
+        $schedule->refresh();
+        $recentAction = collect($schedule->recent_actions)->last();
+
+        $this->assertSame($dueAt->format('Y-m-d\TH:i:s.uP'), $recentAction['occurrence_time']);
+        $this->assertArrayHasKey('fire_lag_ms', $recentAction);
+
+        $triggered = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+            ->firstOrFail();
+
+        $this->assertSame($dueAt->format('Y-m-d\TH:i:s.uP'), $triggered->payload['occurrence_time']);
     }
 
     public function testTickSkipsFutureSchedules(): void

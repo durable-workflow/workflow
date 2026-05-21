@@ -335,11 +335,13 @@ final class ScheduleManager
         WorkflowSchedule $schedule,
         ?ScheduleOverlapPolicy $overlapPolicyOverride = null,
         ?CommandContext $context = null,
+        ?DateTimeInterface $occurrenceTime = null,
     ): ScheduleTriggerResult {
         return DB::transaction(static function () use (
             $schedule,
             $overlapPolicyOverride,
-            $context
+            $context,
+            $occurrenceTime
         ): ScheduleTriggerResult {
             /** @var WorkflowSchedule $schedule */
             $schedule = WorkflowSchedule::query()
@@ -372,7 +374,7 @@ final class ScheduleManager
                     return new ScheduleTriggerResult('buffer_full', null, null, 'buffer_full');
                 }
 
-                $schedule->bufferAction();
+                $schedule->bufferAction($occurrenceTime);
                 $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
                 $schedule->save();
 
@@ -396,6 +398,7 @@ final class ScheduleManager
             try {
                 $startResult = self::startRun(
                     $schedule,
+                    occurrenceTime: $occurrenceTime,
                     effectiveOverlapPolicy: $overlapPolicy->value,
                     context: $context,
                 );
@@ -413,7 +416,7 @@ final class ScheduleManager
     }
 
     /**
-     * @return list<array{schedule_id: string, instance_id: string|null}>
+     * @return list<array<string, mixed>>
      */
     public static function tick(int $limit = 100): array
     {
@@ -432,24 +435,44 @@ final class ScheduleManager
             }
 
             try {
-                $instanceId = DB::transaction(static function () use ($schedule): ?string {
+                $drained = DB::transaction(static function () use ($schedule): ?array {
                     /** @var WorkflowSchedule $schedule */
                     $schedule = WorkflowSchedule::query()->lockForUpdate()->findOrFail($schedule->id);
 
-                    if ($schedule->drainBuffer() === null) {
+                    $bufferedAction = $schedule->drainBuffer();
+
+                    if ($bufferedAction === null) {
                         return null;
                     }
 
                     $schedule->save();
 
-                    return self::startRun($schedule, outcome: 'drained')->instanceId;
+                    $occurrenceTime = self::dateTimeFromPayload($bufferedAction['occurrence_time'] ?? null);
+                    $startResult = self::startRun(
+                        $schedule,
+                        occurrenceTime: $occurrenceTime,
+                        outcome: 'drained',
+                    );
+
+                    return [
+                        'instance_id' => $startResult->instanceId,
+                        'run_id' => $startResult->runId,
+                        'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
+                    ];
                 });
 
-                if ($instanceId !== null) {
-                    $results[] = [
+                if ($drained !== null) {
+                    $schedule->refresh();
+
+                    $results[] = array_filter([
                         'schedule_id' => $schedule->schedule_id,
-                        'instance_id' => $instanceId,
-                    ];
+                        'instance_id' => $drained['instance_id'],
+                        'run_id' => $drained['run_id'],
+                        'outcome' => 'drained',
+                        'occurrence_time' => $drained['occurrence_time'],
+                        'last_fired_at' => $schedule->last_fired_at?->format('Y-m-d\TH:i:s.uP'),
+                        'next_fire_at' => $schedule->next_fire_at?->format('Y-m-d\TH:i:s.uP'),
+                    ], static fn (mixed $value): bool => $value !== null);
                 }
             } catch (WorkflowExecutionUnavailableException $exception) {
                 $schedule->refresh();
@@ -482,26 +505,86 @@ final class ScheduleManager
             ->get();
 
         foreach ($due as $schedule) {
+            $occurrenceTime = $schedule->next_fire_at;
+
             try {
-                $detail = self::triggerDetailed($schedule);
-                $results[] = [
-                    'schedule_id' => $schedule->schedule_id,
-                    'instance_id' => $detail->instanceId,
-                    'outcome' => $detail->outcome,
-                ];
+                $detail = self::triggerDetailed($schedule, occurrenceTime: $occurrenceTime);
+                $schedule->refresh();
+
+                $results[] = self::tickResult($schedule, $detail, $occurrenceTime);
             } catch (\Throwable $e) {
                 $schedule->refresh();
                 $schedule->recordFailure($e->getMessage());
                 $schedule->save();
-                $results[] = [
+                $row = [
                     'schedule_id' => $schedule->schedule_id,
                     'instance_id' => null,
                     'error' => $e->getMessage(),
                 ];
+
+                if ($occurrenceTime !== null) {
+                    $row['occurrence_time'] = $occurrenceTime->format('Y-m-d\TH:i:s.uP');
+                }
+
+                if ($schedule->next_fire_at !== null) {
+                    $row['next_fire_at'] = $schedule->next_fire_at->format('Y-m-d\TH:i:s.uP');
+                }
+
+                $results[] = $row;
             }
         }
 
         return $results;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function tickResult(
+        WorkflowSchedule $schedule,
+        ScheduleTriggerResult $detail,
+        ?DateTimeInterface $occurrenceTime,
+    ): array {
+        $row = [
+            'schedule_id' => $schedule->schedule_id,
+            'instance_id' => $detail->instanceId,
+            'outcome' => $detail->outcome,
+        ];
+
+        if ($detail->runId !== null) {
+            $row['run_id'] = $detail->runId;
+        }
+
+        if ($detail->reason !== null) {
+            $row['reason'] = $detail->reason;
+        }
+
+        if ($occurrenceTime !== null) {
+            $row['occurrence_time'] = $occurrenceTime->format('Y-m-d\TH:i:s.uP');
+        }
+
+        if ($schedule->last_fired_at !== null) {
+            $row['last_fired_at'] = $schedule->last_fired_at->format('Y-m-d\TH:i:s.uP');
+        }
+
+        if ($schedule->next_fire_at !== null) {
+            $row['next_fire_at'] = $schedule->next_fire_at->format('Y-m-d\TH:i:s.uP');
+        }
+
+        return $row;
+    }
+
+    private static function dateTimeFromPayload(mixed $value): ?DateTimeInterface
+    {
+        if (! is_string($value) || $value === '') {
+            return null;
+        }
+
+        try {
+            return new \DateTimeImmutable($value);
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     public static function describe(WorkflowSchedule $schedule): ScheduleDescription
@@ -686,7 +769,7 @@ final class ScheduleManager
             'occurrence_time' => $occurrenceTime?->format('Y-m-d\TH:i:s.uP'),
         ], static fn (mixed $value): bool => $value !== null), $context);
 
-        $schedule->recordFire($result->instanceId, $result->runId, $outcome);
+        $schedule->recordFire($result->instanceId, $result->runId, $outcome, $occurrenceTime);
         $schedule->forceFill([
             'recent_actions' => $schedule->recent_actions,
             'fires_count' => $schedule->fires_count,

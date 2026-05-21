@@ -315,13 +315,20 @@ class WorkflowSchedule extends Model
 
     // ── Buffer queue ──────────────────────────────────────────────────
 
-    public function bufferAction(): void
+    public function bufferAction(?DateTimeInterface $occurrenceTime = null): void
     {
         $buffer = $this->buffered_actions ?? [];
-        $buffer[] = [
+
+        $action = [
             'buffered_at' => now()
                 ->toIso8601String(),
         ];
+
+        if ($occurrenceTime !== null) {
+            $action['occurrence_time'] = $occurrenceTime->format('Y-m-d\TH:i:s.uP');
+        }
+
+        $buffer[] = $action;
         $this->buffered_actions = array_values($buffer);
     }
 
@@ -358,16 +365,31 @@ class WorkflowSchedule extends Model
 
     // ── Recent-actions ring ──────────────────────────────────────────
 
-    public function recordFire(string $workflowId, ?string $runId, string $outcome): void
+    public function recordFire(
+        string $workflowId,
+        ?string $runId,
+        string $outcome,
+        ?DateTimeInterface $occurrenceTime = null,
+    ): void
     {
+        $firedAt = now();
         $actions = $this->recent_actions ?? [];
-        $actions[] = [
+
+        $action = [
             'workflow_id' => $workflowId,
             'run_id' => $runId,
             'outcome' => $outcome,
-            'fired_at' => now()
-                ->toIso8601String(),
+            'fired_at' => $firedAt->toIso8601String(),
         ];
+
+        if ($occurrenceTime !== null) {
+            $action['occurrence_time'] = $occurrenceTime->format('Y-m-d\TH:i:s.uP');
+            $action['fire_lag_ms'] = max(0, (int) round(
+                ((float) $firedAt->format('U.u') - (float) $occurrenceTime->format('U.u')) * 1000
+            ));
+        }
+
+        $actions[] = $action;
 
         if (count($actions) > 10) {
             $actions = array_slice($actions, -10);
