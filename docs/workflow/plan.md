@@ -750,9 +750,10 @@ do not introduce new durable truth.
   `Workflow\V2\Contracts\HistoryExportRedactor` contract so site-
   specific redaction policy never has to fork the bundle format.
 - Replay-debug bundles, archive bundles, and import bundles share one
-  bundle format and one verifier. `workflow:v2:replay-simulate` and
-  `workflow:v2:replay-verify` are the supported tools for offline
-  replay; production correctness is never debugged in-band.
+  bundle format and one verifier. `workflow:v2:replay-simulate`,
+  `workflow:v2:replay-verify`, and `workflow:v2:replay-conformance`
+  are the supported tools for offline replay and conformance evidence;
+  production correctness is never debugged in-band.
 
 ### Export, archive, verification, health, monitoring, and HA-behavior guidance
 
@@ -760,6 +761,16 @@ do not introduce new durable truth.
   bundle replays to the same terminal projection it shipped with;
   mismatch, decode, and integrity outcomes are reported and never
   mutate durable rows.
+- `php artisan workflow:v2:replay-conformance` emits the Workflow PHP
+  runtime's replay conformance evidence shard for host harnesses. The
+  shard covers PHP completed-history replay, restart-query replay,
+  explicit divergence refusal, malformed or mutated history refusal, and
+  in-flight signal timing. Host harnesses must supply explicit
+  `--artifact-version` and `--artifact-source` entries for every artifact
+  in the published install tuple; local checkouts, development versions,
+  and inferred Composer metadata cannot satisfy the published-artifact
+  scenario. The shard is merged with server and Python evidence before a
+  full conformance run can pass.
 - `Workflow\V2\Support\HealthCheck::snapshot()`,
   `Workflow\V2\Support\ReadinessContract`, and
   `php artisan workflow:v2:doctor` are the boot-time and operate-time
