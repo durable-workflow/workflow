@@ -751,9 +751,10 @@ do not introduce new durable truth.
   specific redaction policy never has to fork the bundle format.
 - Replay-debug bundles, archive bundles, and import bundles share one
   bundle format and one verifier. `workflow:v2:replay-simulate`,
-  `workflow:v2:replay-verify`, and `workflow:v2:replay-conformance`
-  are the supported tools for offline replay and conformance evidence;
-  production correctness is never debugged in-band.
+  `workflow:v2:replay-verify`, `workflow:v2:replay-conformance`, and
+  `workflow:v2:namespace-conformance` are the supported tools for
+  offline replay and conformance evidence; production correctness is
+  never debugged in-band.
 
 ### Export, archive, verification, health, monitoring, and HA-behavior guidance
 
@@ -771,6 +772,16 @@ do not introduce new durable truth.
   and inferred Composer metadata cannot satisfy the published-artifact
   scenario. The shard is merged with server and Python evidence before a
   full conformance run can pass.
+- `php artisan workflow:v2:namespace-conformance` emits the Workflow PHP
+  runtime's namespace conformance evidence shard for host harnesses. The
+  shard runs against a standalone server through the published
+  `ControlPlaneClient` and `WorkerProtocolClient`, proving PHP namespace
+  selection, documented default namespace behavior, not-found
+  cross-namespace workflow lookup, and same-queue PHP worker delivery
+  isolation. As with replay conformance, host harnesses must supply
+  explicit published-artifact version and source entries; the shard is
+  merged with the server, CLI, Python, Waterline, cleanup, and Nexus
+  evidence before a full namespace conformance run can pass.
 - `Workflow\V2\Support\HealthCheck::snapshot()`,
   `Workflow\V2\Support\ReadinessContract`, and
   `php artisan workflow:v2:doctor` are the boot-time and operate-time

@@ -15,6 +15,7 @@ use Workflow\Commands\V2BackfillCommandContractsCommand;
 use Workflow\Commands\V2DoctorCommand;
 use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\V2HistoryImportCommand;
+use Workflow\Commands\V2NamespaceConformanceCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\V2RepairPassCommand;
 use Workflow\Commands\V2ReplayConformanceCommand;
@@ -147,6 +148,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             V2DoctorCommand::class,
             V2HistoryExportCommand::class,
             V2HistoryImportCommand::class,
+            V2NamespaceConformanceCommand::class,
             V2RepairPassCommand::class,
             V2RebuildProjectionsCommand::class,
             V2ReplayConformanceCommand::class,
