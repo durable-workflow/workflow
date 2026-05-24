@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(7, $manifest['version']);
+        $this->assertSame(10, $manifest['version']);
         $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -108,6 +108,7 @@ final class PlatformConformanceSuiteTest extends TestCase
             'control_plane_request_response',
             'worker_task_lifecycle',
             'signal_query_runtime_contract',
+            'search_attribute_runtime_contract',
             'history_replay_bundles',
             'namespace_runtime_contract',
             'child_workflow_runtime_contract',
@@ -254,6 +255,75 @@ final class PlatformConformanceSuiteTest extends TestCase
             ],
             $category['sources'],
             'the public scenario manifest must be the consumable source for full signals/queries coverage',
+        );
+    }
+
+    public function testSearchAttributeRuntimeContractNamesFullParitySurface(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['search_attribute_runtime_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'search attributes must be load-bearing, not a Python/server smoke.',
+        );
+
+        foreach ([
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+            'waterline_contract_surface',
+        ] as $target) {
+            $this->assertContains(
+                'search_attribute_runtime_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target must be graded against the live search-attribute contract",
+            );
+        }
+
+        foreach ([
+            'published_artifact_install_only',
+            'schema_definition_and_reserved_name_refusal',
+            'python_worker_start_and_upsert_visibility',
+            'php_worker_start_and_upsert_visibility',
+            'cli_query_and_error_surface',
+            'waterline_operator_visibility',
+            'python_to_php_codec_round_trip',
+            'php_to_python_codec_round_trip',
+            'equality_range_bool_query_behavior',
+            'or_not_query_grammar',
+            'keyword_list_membership',
+            'type_safety_wrong_literal',
+            'undefined_key_rejection',
+            'indexing_latency_distribution',
+            'load_and_bounded_latency',
+            'namespace_isolation',
+            'query_injection_hardening',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "search-attribute conformance must name scenario $scenario",
+            );
+        }
+
+        $this->assertSame(
+            [
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/search-attribute-runtime-scenarios.json',
+                    'public_url' => 'https://durable-workflow.com/platform-conformance/search-attribute-runtime-scenarios.json',
+                ],
+            ],
+            $category['sources'],
+            'the public search-attribute scenario manifest must be the consumable source for full parity coverage',
+        );
+
+        $this->assertContains(
+            'search_attribute_runtime_contract',
+            $manifest['pass_fail_rules']['stable_runtime_scenario_coverage']['applies_to_categories'],
         );
     }
 

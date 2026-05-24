@@ -18,7 +18,7 @@ The machine-readable mirror of the public authority is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `7`.
+`durable-workflow.v2.platform-conformance.suite`, version `10`.
 
 ## Why one suite
 
@@ -50,11 +50,11 @@ target (the standalone `server` claims `standalone_server` *and*
 
 | Target | Required surface families | Required fixture categories |
 | --- | --- | --- |
-| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
-| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
-| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `history_replay_bundles` |
-| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `cli_json_envelopes` |
-| `waterline_contract_surface` | `waterline_api` | `signal_query_runtime_contract`, `namespace_runtime_contract`, `waterline_observer_envelopes` |
+| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
+| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
+| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `history_replay_bundles` |
+| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `cli_json_envelopes` |
+| `waterline_contract_surface` | `waterline_api` | `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `waterline_observer_envelopes` |
 | `repair_actionability_surface` | `worker_protocol` (failure subset), `server_api` (repair routes) | `failure_repair_actionability` |
 | `mcp_discovery_surface` | `mcp_discovery_results` | `mcp_discovery_envelopes` |
 
@@ -74,6 +74,7 @@ them from the declared locations.
 | `control_plane_request_response` | `cli`, `sdk-python` | `tests/fixtures/control-plane/` | Frozen request bodies and response shapes for `workflow.start`, `signal`, `query`, `update`, `cancel`, `task-history`, namespace storage. |
 | `worker_task_lifecycle` | `cli`, `sdk-python`, `server` | `tests/fixtures/external-task-input/`, `tests/fixtures/external-task-result/` | Task input envelopes (poll → claim → run) and task result envelopes (complete, fail, cancel, heartbeat) used by every conforming worker. |
 | `signal_query_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/signal-query-runtime-scenarios.json` | Live published-artifact scenarios for signal delivery and query consistency across PHP and Python workers, CLI and SDK clients, replay timing, terminal runs, malformed payloads, and operator visibility. |
+| `search_attribute_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/search-attribute-runtime-scenarios.json` | Live published-artifact scenarios for Temporal-parity search attributes across PHP and Python workers, CLI query surfaces, Waterline operator visibility, cross-language codecs, load latency, boolean grammar, and adversarial query handling. |
 | `history_replay_bundles` | `durable-workflow.github.io`, `workflow`, `sdk-python` | `static/platform-conformance/replay-runtime-scenarios.json`, `tests/Fixtures/V2/GoldenHistory/`, `tests/fixtures/golden_history/` | Deterministic replay coverage for frozen history bundles, worker restart replay, adversarial refusal, and in-flight signal timing across the official PHP and Python runtimes. |
 | `namespace_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/namespace-runtime-scenarios.json` | Live published-artifact scenarios for Temporal-parity namespace isolation, lifecycle cleanup, CLI and SDK namespace selection, PHP worker routing, Waterline visibility, Nexus opt-in crossing, and search-attribute value query isolation. |
 | `child_workflow_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/child-workflow-runtime-scenarios.json` | Live published-artifact scenarios for child workflow orchestration across PHP and Python workers, cross-language parent/child execution, failure and cancellation propagation, replay after worker restart, concurrent fan-out, and namespace behavior. |
@@ -130,6 +131,56 @@ Required scenarios:
   signal, query, and state information to diagnose the run, including a
   stable reason when live query values are intentionally not materialized
   in read-only detail responses.
+
+### Search attributes runtime contract
+
+The `search_attribute_runtime_contract` category is stable and
+load-bearing. It must run against published install channels only, pin
+the resolved artifact versions in the result, and name every required
+scenario as `pass`, `fail`, `unsupported`, `not_covered`, or
+`runner_blocked` with a linked finding. A Python/server smoke-only run
+is nonconforming even when the smoke path passes.
+
+Required scenarios:
+
+- `published_artifact_install_only` — server image, CLI installer,
+  Python package, PHP package, and Waterline package are resolved from
+  published channels; no local source checkout is used as the artifact
+  under test.
+- `schema_definition_and_reserved_name_refusal` — all documented
+  search-attribute types can be defined per namespace, while reserved
+  or system-prefixed names are refused with typed errors.
+- `python_worker_start_and_upsert_visibility` — a Python workflow sets
+  search attributes at start and upserts them while running, and the
+  query surface observes the merged values.
+- `php_worker_start_and_upsert_visibility` — the same start/upsert
+  visibility behavior is proved through the PHP workflow runtime.
+- `cli_query_and_error_surface` — CLI schema commands and workflow list
+  queries report matching data and typed query errors.
+- `waterline_operator_visibility` — Waterline list filters, selected
+  run detail, and saved filter state expose the same search attributes.
+- `python_to_php_codec_round_trip` — PHP-facing readers observe Python
+  written search-attribute values without language-specific drift.
+- `php_to_python_codec_round_trip` — Python readers observe PHP written
+  search-attribute values without language-specific drift.
+- `equality_range_bool_query_behavior` — equality, numeric ranges, and
+  boolean predicates return exactly the source dataset.
+- `or_not_query_grammar` — `OR` and `NOT` expressions match the
+  documented grammar without over-returning workflows.
+- `keyword_list_membership` — keyword-list membership queries match
+  values independent of list ordering.
+- `type_safety_wrong_literal` — wrong-type literals fail with typed
+  errors instead of silent coercion or empty results.
+- `undefined_key_rejection` — workflow attempts to set undefined keys
+  fail before bad state is advanced.
+- `indexing_latency_distribution` — the indexing latency distribution
+  records min, p50, p95, max, sample count, and documented bound.
+- `load_and_bounded_latency` — query latency remains bounded under the
+  required workflow-count load profile.
+- `namespace_isolation` — definitions and value queries stay scoped to
+  the selected namespace.
+- `query_injection_hardening` — SQL-like and shell-like query injection
+  probes are rejected without partial execution.
 
 ### History replay runtime contract
 
@@ -377,6 +428,13 @@ docs. It indexes them under one normative declaration so a single
   surfaces, and executable tests remain implementation evidence for
   their product slices, but they are not independent authorities for
   this category.
+- `durable-workflow.github.io/static/platform-conformance/search-attribute-runtime-scenarios.json`
+  is the stable public source of truth for the
+  `search_attribute_runtime_contract` category. The docs site serves it
+  at
+  `https://durable-workflow.com/platform-conformance/search-attribute-runtime-scenarios.json`
+  so harnesses do not have to infer a published URL from the repository
+  source path.
 - `static/platform-conformance/replay-runtime-scenarios.json`,
   `tests/Fixtures/V2/GoldenHistory/` (this repo), and
   `sdk-python/tests/fixtures/golden_history/` are the replay scenario and

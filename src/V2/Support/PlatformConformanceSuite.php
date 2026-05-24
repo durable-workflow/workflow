@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 7;
+    public const VERSION = 10;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -112,6 +112,7 @@ final class PlatformConformanceSuite
                 'required_fixture_categories' => [
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
+                    'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
                     'worker_task_lifecycle',
@@ -128,6 +129,7 @@ final class PlatformConformanceSuite
                 'required_fixture_categories' => [
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
+                    'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
                     'worker_task_lifecycle',
@@ -143,6 +145,7 @@ final class PlatformConformanceSuite
                 'required_fixture_categories' => [
                     'worker_task_lifecycle',
                     'signal_query_runtime_contract',
+                    'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
                     'history_replay_bundles',
@@ -156,6 +159,7 @@ final class PlatformConformanceSuite
                 'required_fixture_categories' => [
                     'control_plane_request_response',
                     'signal_query_runtime_contract',
+                    'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
                     'cli_json_envelopes',
@@ -168,6 +172,7 @@ final class PlatformConformanceSuite
                 ],
                 'required_fixture_categories' => [
                     'signal_query_runtime_contract',
+                    'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'waterline_observer_envelopes',
                 ],
@@ -263,6 +268,19 @@ final class PlatformConformanceSuite
                     'malformed_signal_and_query_payloads',
                     'waterline_operator_visibility',
                 ],
+            ],
+            'search_attribute_runtime_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Live published-artifact scenarios for Temporal-parity search attributes across PHP and Python workers, CLI query surfaces, Waterline operator visibility, cross-language codecs, load latency, boolean grammar, and adversarial query handling.',
+                'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/search-attribute-runtime-scenarios.json',
+                        'public_url' => 'https://durable-workflow.com/platform-conformance/search-attribute-runtime-scenarios.json',
+                    ],
+                ],
+                'authority_doc' => self::AUTHORITY_URL,
+                'required_scenarios' => self::searchAttributeRequiredScenarios(),
             ],
             'history_replay_bundles' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
@@ -395,6 +413,7 @@ final class PlatformConformanceSuite
                 'rule' => 'A stable runtime fixture category must report every required scenario it declares with one of the statuses published by its runtime scenario manifest: pass, fail, unsupported, not_covered, or runner_blocked. Full conformance requires every required scenario to pass. A smoke-only subset, omitted scenario, unsupported public surface, uncovered cell, or runner-blocked cell is nonconforming and must link the owning finding.',
                 'applies_to_categories' => [
                     'signal_query_runtime_contract',
+                    'search_attribute_runtime_contract',
                     'history_replay_bundles',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
@@ -406,6 +425,32 @@ final class PlatformConformanceSuite
             'diagnostic_only_mismatches_pass' => [
                 'rule' => 'If only diagnostic-only fields differ, the harness records the difference in its diagnostic_diff output and the fixture passes.',
             ],
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function searchAttributeRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'schema_definition_and_reserved_name_refusal',
+            'python_worker_start_and_upsert_visibility',
+            'php_worker_start_and_upsert_visibility',
+            'cli_query_and_error_surface',
+            'waterline_operator_visibility',
+            'python_to_php_codec_round_trip',
+            'php_to_python_codec_round_trip',
+            'equality_range_bool_query_behavior',
+            'or_not_query_grammar',
+            'keyword_list_membership',
+            'type_safety_wrong_literal',
+            'undefined_key_rejection',
+            'indexing_latency_distribution',
+            'load_and_bounded_latency',
+            'namespace_isolation',
+            'query_injection_hardening',
         ];
     }
 
