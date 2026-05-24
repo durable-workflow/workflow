@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(10, $manifest['version']);
+        $this->assertSame(12, $manifest['version']);
         $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -112,6 +112,8 @@ final class PlatformConformanceSuiteTest extends TestCase
             'history_replay_bundles',
             'namespace_runtime_contract',
             'child_workflow_runtime_contract',
+            'worker_versioning_runtime_contract',
+            'saga_runtime_contract',
             'failure_repair_actionability',
             'cli_json_envelopes',
             'waterline_observer_envelopes',
@@ -509,6 +511,123 @@ final class PlatformConformanceSuiteTest extends TestCase
         }
     }
 
+    public function testWorkerVersioningRuntimeContractNamesSafeDeploySurface(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['worker_versioning_runtime_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'worker versioning must be load-bearing, not advisory release notes.',
+        );
+
+        foreach ([
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+            'waterline_contract_surface',
+        ] as $target) {
+            $this->assertContains(
+                'worker_versioning_runtime_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target must be graded against the live worker-versioning contract",
+            );
+        }
+
+        $this->assertSame(
+            [
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/worker-versioning-runtime-scenarios.json',
+                ],
+            ],
+            $category['sources'],
+            'the public worker-versioning scenario manifest must be the consumable source for safe-deploy coverage',
+        );
+
+        foreach ([
+            'published_artifact_install_only',
+            'worker_registration_build_ids',
+            'operator_rollout_visibility',
+            'drain_resume_operator_controls',
+            'pin_on_start',
+            'replay_only_by_compatible_workers',
+            'new_starts_to_promoted_version',
+            'replay_across_cache_eviction',
+            'no_compatible_worker_behavior',
+            'operator_visibility_surfaces',
+            'cross_language_php_python_pinning',
+            'adversarial_no_version_bump',
+            'history_api_version_pin',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "worker-versioning conformance must name scenario $scenario",
+            );
+        }
+    }
+
+    public function testSagaRuntimeContractNamesCompensationParitySurface(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['saga_runtime_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'saga compensation must be load-bearing, not a happy-path smoke.',
+        );
+
+        foreach ([
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+            'waterline_contract_surface',
+        ] as $target) {
+            $this->assertContains(
+                'saga_runtime_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target must be graded against the live saga compensation contract",
+            );
+        }
+
+        $this->assertSame(
+            [
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/saga-runtime-scenarios.json',
+                ],
+            ],
+            $category['sources'],
+            'the public saga scenario manifest must be the consumable source for full compensation coverage',
+        );
+
+        foreach ([
+            'published_artifact_install_only',
+            'forward_success_path',
+            'failure_at_d_reverse_compensation',
+            'failure_at_c_reverse_compensation',
+            'failure_at_a_no_compensation',
+            'compensation_retry_idempotence',
+            'compensation_failure_visibility',
+            'mid_compensation_worker_restart',
+            'php_workflow_python_compensation',
+            'python_workflow_php_compensation',
+            'typed_compensation_error_round_trip',
+            'operator_visible_mid_compensation_status',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "saga conformance must name scenario $scenario",
+            );
+        }
+    }
+
     public function testPassFailRulesNameTheCoreContract(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
@@ -546,6 +665,16 @@ final class PlatformConformanceSuiteTest extends TestCase
             'child_workflow_runtime_contract',
             $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
             'smoke-only child workflow coverage must not satisfy the stable runtime category',
+        );
+        $this->assertContains(
+            'worker_versioning_runtime_contract',
+            $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'safe-deploy worker-versioning coverage must not satisfy the suite with smoke-only evidence',
+        );
+        $this->assertContains(
+            'saga_runtime_contract',
+            $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'saga compensation coverage must not satisfy the suite with smoke-only evidence',
         );
         foreach (['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'] as $status) {
             $this->assertStringContainsString(

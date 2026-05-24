@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 10;
+    public const VERSION = 12;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -115,6 +115,8 @@ final class PlatformConformanceSuite
                     'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
+                    'saga_runtime_contract',
+                    'worker_versioning_runtime_contract',
                     'worker_task_lifecycle',
                     'failure_repair_actionability',
                 ],
@@ -132,6 +134,8 @@ final class PlatformConformanceSuite
                     'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
+                    'saga_runtime_contract',
+                    'worker_versioning_runtime_contract',
                     'worker_task_lifecycle',
                     'history_replay_bundles',
                 ],
@@ -148,6 +152,8 @@ final class PlatformConformanceSuite
                     'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
+                    'saga_runtime_contract',
+                    'worker_versioning_runtime_contract',
                     'history_replay_bundles',
                 ],
             ],
@@ -162,6 +168,8 @@ final class PlatformConformanceSuite
                     'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
+                    'saga_runtime_contract',
+                    'worker_versioning_runtime_contract',
                     'cli_json_envelopes',
                 ],
             ],
@@ -174,6 +182,8 @@ final class PlatformConformanceSuite
                     'signal_query_runtime_contract',
                     'search_attribute_runtime_contract',
                     'namespace_runtime_contract',
+                    'saga_runtime_contract',
+                    'worker_versioning_runtime_contract',
                     'waterline_observer_envelopes',
                 ],
             ],
@@ -326,6 +336,30 @@ final class PlatformConformanceSuite
                 'authority_doc' => self::AUTHORITY_URL,
                 'required_scenarios' => self::childWorkflowRequiredScenarios(),
             ],
+            'worker_versioning_runtime_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Live published-artifact scenarios for safe-deploy worker versioning across build-ID registration, rollout visibility, drain/resume controls, per-run pins, compatible replay routing, no-compatible-worker diagnostics, cross-language PHP/Python pinning, adversarial no-bump behavior, and history API version pins.',
+                'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/worker-versioning-runtime-scenarios.json',
+                    ],
+                ],
+                'authority_doc' => self::AUTHORITY_URL,
+                'required_scenarios' => self::workerVersioningRequiredScenarios(),
+            ],
+            'saga_runtime_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Live published-artifact scenarios for Temporal-parity saga compensation across forward success, reverse-order compensation after later-step failure, early failure, retry idempotence, compensation failure visibility, worker restart replay, PHP/Python cross-language compensation, typed compensation errors, and operator-visible in-progress compensation state.',
+                'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/saga-runtime-scenarios.json',
+                    ],
+                ],
+                'authority_doc' => self::AUTHORITY_URL,
+                'required_scenarios' => self::sagaRequiredScenarios(),
+            ],
             'failure_repair_actionability' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
                 'description' => 'Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces.',
@@ -417,6 +451,8 @@ final class PlatformConformanceSuite
                     'history_replay_bundles',
                     'namespace_runtime_contract',
                     'child_workflow_runtime_contract',
+                    'worker_versioning_runtime_contract',
+                    'saga_runtime_contract',
                 ],
             ],
             'provisional_categories_warn_only' => [
@@ -532,6 +568,49 @@ final class PlatformConformanceSuite
             'worker_restart_replay_preserves_child_outcome',
             'concurrent_child_fan_out',
             'child_workflow_namespace_contract',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function workerVersioningRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'worker_registration_build_ids',
+            'operator_rollout_visibility',
+            'drain_resume_operator_controls',
+            'pin_on_start',
+            'replay_only_by_compatible_workers',
+            'new_starts_to_promoted_version',
+            'replay_across_cache_eviction',
+            'no_compatible_worker_behavior',
+            'operator_visibility_surfaces',
+            'cross_language_php_python_pinning',
+            'adversarial_no_version_bump',
+            'history_api_version_pin',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function sagaRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'forward_success_path',
+            'failure_at_d_reverse_compensation',
+            'failure_at_c_reverse_compensation',
+            'failure_at_a_no_compensation',
+            'compensation_retry_idempotence',
+            'compensation_failure_visibility',
+            'mid_compensation_worker_restart',
+            'php_workflow_python_compensation',
+            'python_workflow_php_compensation',
+            'typed_compensation_error_round_trip',
+            'operator_visible_mid_compensation_status',
         ];
     }
 
