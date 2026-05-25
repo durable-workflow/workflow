@@ -419,6 +419,235 @@ final class ControlPlaneClientTest extends TestCase
         ], $requests);
     }
 
+    public function testScheduleMethodsUseControlPlaneRoutes(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $query = $request->data();
+            if ($query === []) {
+                parse_str(parse_url((string) $request->url(), PHP_URL_QUERY) ?: '', $query);
+            }
+
+            $requests[] = [
+                'method' => $request->method(),
+                'url' => (string) $request->url(),
+                'path' => parse_url((string) $request->url(), PHP_URL_PATH),
+                'query' => $query,
+                'body' => $request->method() === 'GET' ? [] : $request->data(),
+                'namespace' => $request->hasHeader('X-Namespace', 'schedule-test'),
+            ];
+
+            $headers = [
+                ControlPlaneClient::CONTROL_PLANE_HEADER => ControlPlaneClient::CONTROL_PLANE_VERSION,
+            ];
+
+            return match (count($requests)) {
+                1 => $http->response([
+                    'schedules' => [
+                        [
+                            'schedule_id' => 'php-schedule',
+                            'action' => ['workflow_type' => 'PhpWorkflow'],
+                            'next_fire_at' => '2026-05-24T06:00:00Z',
+                        ],
+                    ],
+                ], 200, $headers),
+                2 => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'outcome' => 'created',
+                ], 201, $headers),
+                3 => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'status' => 'active',
+                ], 200, $headers),
+                4 => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'outcome' => 'updated',
+                ], 200, $headers),
+                5 => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'outcome' => 'paused',
+                ], 200, $headers),
+                6 => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'outcome' => 'resumed',
+                ], 200, $headers),
+                7 => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'outcome' => 'triggered',
+                    'workflow_id' => 'wf-php-schedule',
+                ], 200, $headers),
+                8 => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'outcome' => 'backfill_started',
+                    'fires_attempted' => 2,
+                ], 200, $headers),
+                9 => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'events' => [
+                        ['sequence' => 1, 'event_type' => 'ScheduleCreated'],
+                    ],
+                ], 200, $headers),
+                default => $http->response([
+                    'schedule_id' => 'php-schedule',
+                    'outcome' => 'deleted',
+                ], 200, $headers),
+            };
+        });
+
+        $client = new ControlPlaneClient($http, 'http://server:8080', 'test-token', namespace: 'schedule-test');
+
+        $list = $client->listSchedules(['page_size' => 100]);
+        $created = $client->createSchedule(
+            'php-schedule',
+            [
+                'cron_expressions' => ['*/5 * * * *'],
+                'timezone' => 'UTC',
+            ],
+            [
+                'workflow_type' => 'PhpWorkflow',
+                'task_queue' => 'scheduled',
+                'input' => [['source' => 'php']],
+            ],
+            [
+                'overlap_policy' => 'allow_all',
+                'jitter_seconds' => 0,
+                'max_runs' => 5,
+                'memo' => ['client' => 'php'],
+                'search_attributes' => ['ScheduleOwner' => 'php'],
+                'paused' => true,
+                'note' => 'created by php client',
+            ],
+        );
+        $described = $client->describeSchedule('php-schedule');
+        $updated = $client->updateSchedule('php-schedule', [
+            'spec' => ['intervals' => [['every' => 'PT30S']]],
+            'action' => ['workflow_type' => 'PhpWorkflowV2'],
+            'overlap_policy' => 'skip',
+            'jitter_seconds' => 1,
+            'max_runs' => 6,
+            'memo' => ['client' => 'php-v2'],
+            'search_attributes' => ['ScheduleOwner' => 'php-v2'],
+            'note' => 'updated by php client',
+        ]);
+        $paused = $client->pauseSchedule('php-schedule', 'hold');
+        $resumed = $client->resumeSchedule('php-schedule', 'resume');
+        $triggered = $client->triggerSchedule('php-schedule', 'allow_all');
+        $backfilled = $client->backfillSchedule(
+            'php-schedule',
+            '2026-05-24T05:00:00Z',
+            '2026-05-24T05:10:00Z',
+            'allow_all',
+        );
+        $history = $client->getScheduleHistory('php-schedule', ['limit' => 50, 'after_sequence' => 0]);
+        $deleted = $client->deleteSchedule('php-schedule');
+
+        $this->assertSame('php-schedule', $list['schedules'][0]['schedule_id']);
+        $this->assertSame('created', $created['outcome']);
+        $this->assertSame('active', $described['status']);
+        $this->assertSame('updated', $updated['outcome']);
+        $this->assertSame('paused', $paused['outcome']);
+        $this->assertSame('resumed', $resumed['outcome']);
+        $this->assertSame('triggered', $triggered['outcome']);
+        $this->assertSame(2, $backfilled['fires_attempted']);
+        $this->assertSame('ScheduleCreated', $history['events'][0]['event_type']);
+        $this->assertSame('deleted', $deleted['outcome']);
+
+        $this->assertSame([
+            [
+                'method' => 'GET',
+                'path' => '/api/schedules',
+                'body' => [],
+            ],
+            [
+                'method' => 'POST',
+                'path' => '/api/schedules',
+                'body' => [
+                    'schedule_id' => 'php-schedule',
+                    'spec' => [
+                        'cron_expressions' => ['*/5 * * * *'],
+                        'timezone' => 'UTC',
+                    ],
+                    'action' => [
+                        'workflow_type' => 'PhpWorkflow',
+                        'task_queue' => 'scheduled',
+                        'input' => [['source' => 'php']],
+                    ],
+                    'overlap_policy' => 'allow_all',
+                    'jitter_seconds' => 0,
+                    'max_runs' => 5,
+                    'memo' => ['client' => 'php'],
+                    'search_attributes' => ['ScheduleOwner' => 'php'],
+                    'paused' => true,
+                    'note' => 'created by php client',
+                ],
+            ],
+            [
+                'method' => 'GET',
+                'path' => '/api/schedules/php-schedule',
+                'body' => [],
+            ],
+            [
+                'method' => 'PUT',
+                'path' => '/api/schedules/php-schedule',
+                'body' => [
+                    'spec' => ['intervals' => [['every' => 'PT30S']]],
+                    'action' => ['workflow_type' => 'PhpWorkflowV2'],
+                    'overlap_policy' => 'skip',
+                    'jitter_seconds' => 1,
+                    'max_runs' => 6,
+                    'memo' => ['client' => 'php-v2'],
+                    'search_attributes' => ['ScheduleOwner' => 'php-v2'],
+                    'note' => 'updated by php client',
+                ],
+            ],
+            [
+                'method' => 'POST',
+                'path' => '/api/schedules/php-schedule/pause',
+                'body' => ['note' => 'hold'],
+            ],
+            [
+                'method' => 'POST',
+                'path' => '/api/schedules/php-schedule/resume',
+                'body' => ['note' => 'resume'],
+            ],
+            [
+                'method' => 'POST',
+                'path' => '/api/schedules/php-schedule/trigger',
+                'body' => ['overlap_policy' => 'allow_all'],
+            ],
+            [
+                'method' => 'POST',
+                'path' => '/api/schedules/php-schedule/backfill',
+                'body' => [
+                    'start_time' => '2026-05-24T05:00:00Z',
+                    'end_time' => '2026-05-24T05:10:00Z',
+                    'overlap_policy' => 'allow_all',
+                ],
+            ],
+            [
+                'method' => 'GET',
+                'path' => '/api/schedules/php-schedule/history',
+                'body' => [],
+            ],
+            [
+                'method' => 'DELETE',
+                'path' => '/api/schedules/php-schedule',
+                'body' => [],
+            ],
+        ], array_map(static fn (array $request): array => [
+            'method' => $request['method'],
+            'path' => $request['path'],
+            'body' => $request['body'],
+        ], $requests));
+
+        $this->assertSame('100', (string) $requests[0]['query']['page_size']);
+        $this->assertSame('50', (string) $requests[8]['query']['limit']);
+        $this->assertSame('0', (string) $requests[8]['query']['after_sequence']);
+        $this->assertNotContains(false, array_column($requests, 'namespace'));
+    }
+
     public function testThrowsTypedExceptionForControlPlaneErrors(): void
     {
         $http = new HttpFactory();

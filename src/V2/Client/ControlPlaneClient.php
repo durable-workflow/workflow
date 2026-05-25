@@ -356,6 +356,130 @@ final class ControlPlaneClient
     }
 
     /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    public function listSchedules(array $filters = []): array
+    {
+        return $this->get('/schedules', $this->withoutNulls($filters));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function describeSchedule(string $scheduleId): array
+    {
+        return $this->get($this->schedulePath($scheduleId));
+    }
+
+    /**
+     * @param array<string, mixed> $spec
+     * @param array<string, mixed> $action
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    public function createSchedule(
+        string $scheduleId,
+        array $spec,
+        array $action,
+        array $options = [],
+    ): array {
+        return $this->post('/schedules', $this->withoutNulls([
+            'schedule_id' => $scheduleId,
+            'spec' => $spec,
+            'action' => $action,
+            'overlap_policy' => $this->stringOption($options, 'overlap_policy'),
+            'jitter_seconds' => $this->intOption($options, 'jitter_seconds'),
+            'max_runs' => $this->intOption($options, 'max_runs'),
+            'memo' => $this->arrayOption($options, 'memo'),
+            'search_attributes' => $this->arrayOption($options, 'search_attributes'),
+            'paused' => $this->boolOption($options, 'paused'),
+            'note' => $this->stringOption($options, 'note'),
+        ]), [200, 201]);
+    }
+
+    /**
+     * @param array<string, mixed> $changes
+     * @return array<string, mixed>
+     */
+    public function updateSchedule(string $scheduleId, array $changes): array
+    {
+        return $this->put($this->schedulePath($scheduleId), $this->withoutNulls([
+            'spec' => $this->arrayOption($changes, 'spec'),
+            'action' => $this->arrayOption($changes, 'action'),
+            'overlap_policy' => $this->stringOption($changes, 'overlap_policy'),
+            'jitter_seconds' => $this->intOption($changes, 'jitter_seconds'),
+            'max_runs' => $this->intOption($changes, 'max_runs'),
+            'memo' => $this->arrayOption($changes, 'memo'),
+            'search_attributes' => $this->arrayOption($changes, 'search_attributes'),
+            'note' => $this->stringOption($changes, 'note'),
+        ]));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function pauseSchedule(string $scheduleId, ?string $note = null): array
+    {
+        return $this->post($this->schedulePath($scheduleId, 'pause'), $this->withoutNulls([
+            'note' => $note,
+        ]), [200]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function resumeSchedule(string $scheduleId, ?string $note = null): array
+    {
+        return $this->post($this->schedulePath($scheduleId, 'resume'), $this->withoutNulls([
+            'note' => $note,
+        ]), [200]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function triggerSchedule(string $scheduleId, ?string $overlapPolicy = null): array
+    {
+        return $this->post($this->schedulePath($scheduleId, 'trigger'), $this->withoutNulls([
+            'overlap_policy' => $overlapPolicy,
+        ]), [200]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function backfillSchedule(
+        string $scheduleId,
+        string $startTime,
+        string $endTime,
+        ?string $overlapPolicy = null,
+    ): array {
+        return $this->post($this->schedulePath($scheduleId, 'backfill'), $this->withoutNulls([
+            'start_time' => $startTime,
+            'end_time' => $endTime,
+            'overlap_policy' => $overlapPolicy,
+        ]), [200]);
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    public function getScheduleHistory(string $scheduleId, array $filters = []): array
+    {
+        return $this->get($this->schedulePath($scheduleId, 'history'), $this->withoutNulls($filters));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function deleteSchedule(string $scheduleId): array
+    {
+        return $this->delete($this->schedulePath($scheduleId));
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function clusterInfo(): array
@@ -538,6 +662,16 @@ final class ControlPlaneClient
 
     /**
      * @param array<string, mixed> $options
+     */
+    private function boolOption(array $options, string $key): ?bool
+    {
+        $value = $options[$key] ?? null;
+
+        return is_bool($value) ? $value : null;
+    }
+
+    /**
+     * @param array<string, mixed> $options
      * @return array<string, mixed>|null
      */
     private function arrayOption(array $options, string $key): ?array
@@ -559,6 +693,13 @@ final class ControlPlaneClient
     private function pathSegment(string $value): string
     {
         return rawurlencode($value);
+    }
+
+    private function schedulePath(string $scheduleId, ?string $suffix = null): string
+    {
+        $path = sprintf('/schedules/%s', $this->pathSegment($scheduleId));
+
+        return $suffix === null ? $path : $path.'/'.trim($suffix, '/');
     }
 
     private static function normalizePath(string $path): string

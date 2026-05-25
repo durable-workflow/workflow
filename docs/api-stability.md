@@ -183,14 +183,21 @@ processes that need to drive the standalone server control plane from PHP:
 list/create/describe/update/delete, namespace external-storage policy
 updates, workflow start, workflow list by visibility query, workflow
 describe, run describe, signal delivery, query execution, cancel,
-terminate, search-attribute definition list/create/delete, and
-cluster-info reads
+terminate, schedule list/create/describe/update/pause/resume/trigger/
+backfill/history/delete, search-attribute definition list/create/delete,
+and cluster-info reads
 against `POST /api/workflows`, `GET /api/workflows/{workflowId}`,
 `GET /api/workflows/{workflowId}/runs/{runId}`,
 `POST /api/workflows/{workflowId}/signal/{signalName}`,
 `POST /api/workflows/{workflowId}/query/{queryName}`,
 `POST /api/workflows/{workflowId}/cancel`,
 `POST /api/workflows/{workflowId}/terminate`,
+`GET|POST /api/schedules`, `GET|PUT|DELETE /api/schedules/{scheduleId}`,
+`POST /api/schedules/{scheduleId}/pause`,
+`POST /api/schedules/{scheduleId}/resume`,
+`POST /api/schedules/{scheduleId}/trigger`,
+`POST /api/schedules/{scheduleId}/backfill`,
+`GET /api/schedules/{scheduleId}/history`,
 `GET /api/workflows`, `GET|POST /api/search-attributes`, and
 `DELETE /api/search-attributes/{name}`,
 `GET|POST /api/namespaces`, `GET|PUT|DELETE /api/namespaces/{name}`,
