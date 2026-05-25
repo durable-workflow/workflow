@@ -24,6 +24,7 @@ file_patterns=(
   "$(pattern_from_hex 7a6f72706f726174696f6e2f)"
   "$(pattern_from_hex 2f686f6d652f7673636f6465)"
   "$(pattern_from_hex 2f686f6d652f6c61622f776f726b73706163652d6871)"
+  "$(pattern_from_hex 5b63726f73732d7265706f2066726f6d20)"
 )
 
 metadata_patterns=(
@@ -53,7 +54,7 @@ for pattern in "${file_patterns[@]}"; do
     [[ -n "${file:-}" ]] || continue
     printf 'public-boundary: forbidden file content at %s:%s\n' "$file" "$line" >&2
     status=1
-  done < <(git grep -n -I -e "$pattern" -- "${pathspec[@]}" || true)
+  done < <(git grep -n -I -F -e "$pattern" -- "${pathspec[@]}" || true)
 done
 
 # Bare cross-tracker issue references like "#NNN" in customer-facing
