@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(14, $manifest['version']);
+        $this->assertSame(15, $manifest['version']);
         $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -116,6 +116,7 @@ final class PlatformConformanceSuiteTest extends TestCase
             'worker_versioning_runtime_contract',
             'saga_runtime_contract',
             'migration_runtime_contract',
+            'skew_refusal_matrix_contract',
             'prerelease_readiness_contract',
             'failure_repair_actionability',
             'cli_json_envelopes',
@@ -173,16 +174,22 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame(
-            14,
+            15,
             $manifest['version'],
             'the workflow mirror must stay aligned with the currently published platform conformance contract',
         );
         $this->assertArrayHasKey('migration_runtime_contract', $manifest['fixture_catalog']);
+        $this->assertArrayHasKey('skew_refusal_matrix_contract', $manifest['fixture_catalog']);
         $this->assertArrayHasKey('prerelease_readiness_contract', $manifest['fixture_catalog']);
         $this->assertContains(
             'migration_runtime_contract',
             $manifest['pass_fail_rules']['stable_runtime_scenario_coverage']['applies_to_categories'],
             'migration conformance is load-bearing once the public scenario manifest is published',
+        );
+        $this->assertContains(
+            'skew_refusal_matrix_contract',
+            $manifest['pass_fail_rules']['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'skew refusal matrix conformance must stay non-passing until the full published-artifact matrix exists',
         );
         $this->assertContains(
             'prerelease_readiness_contract',
@@ -202,10 +209,15 @@ final class PlatformConformanceSuiteTest extends TestCase
                 $manifest['targets'][$target]['required_fixture_categories'],
                 "$target is an implementation target; prerelease readiness is claimed only by the release-candidate aggregate target",
             );
+            $this->assertContains(
+                'skew_refusal_matrix_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target must be graded against the published-artifact skew-refusal matrix",
+            );
         }
 
         $this->assertSame(
-            ['prerelease_readiness_contract'],
+            ['skew_refusal_matrix_contract', 'prerelease_readiness_contract'],
             $manifest['targets']['prerelease_release_candidate']['required_fixture_categories'],
         );
     }
@@ -239,6 +251,50 @@ final class PlatformConformanceSuiteTest extends TestCase
             ],
             $category['sources'],
             'the tool-result JSON Schema must remain named as a conformance source',
+        );
+    }
+
+    public function testSkewRefusalMatrixContractNamesFullRuntimeSurface(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['skew_refusal_matrix_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'skew refusal must be load-bearing, not a protocol-manifest smoke.',
+        );
+        $this->assertSame(
+            [
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/skew-refusal-matrix-scenarios.json',
+                ],
+            ],
+            $category['sources'],
+            'the public skew scenario manifest must be the consumable source for the full matrix',
+        );
+
+        foreach ([
+            'published_artifact_install_only',
+            'cli_version_pair_matrix',
+            'sdk_python_version_pair_matrix',
+            'workflow_worker_version_pair_matrix',
+            'waterline_version_pair_matrix',
+            'future_version_boundary_matrix',
+            'request_response_capture_for_skewed_operations',
+            'focused_finding_routing',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "skew conformance must name scenario $scenario",
+            );
+        }
+
+        $this->assertContains(
+            'skew_refusal_matrix_contract',
+            $manifest['pass_fail_rules']['stable_runtime_scenario_coverage']['applies_to_categories'],
         );
     }
 

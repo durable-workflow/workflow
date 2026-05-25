@@ -18,7 +18,7 @@ The machine-readable mirror of the public authority is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `14`.
+`durable-workflow.v2.platform-conformance.suite`, version `15`.
 
 ## Why one suite
 
@@ -50,14 +50,14 @@ target (the standalone `server` claims `standalone_server` *and*
 
 | Target | Required surface families | Required fixture categories |
 | --- | --- | --- |
-| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
-| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
-| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `history_replay_bundles` |
-| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `cli_json_envelopes` |
-| `waterline_contract_surface` | `waterline_api` | `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `waterline_observer_envelopes` |
+| `standalone_server` | `server_api`, `worker_protocol`, `cluster_info_manifests` | `control_plane_request_response`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `worker_task_lifecycle`, `failure_repair_actionability` |
+| `official_sdk` | `official_sdks` (own row), `worker_protocol`, `history_event_wire_formats` | `control_plane_request_response`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `worker_task_lifecycle`, `history_replay_bundles` |
+| `worker_protocol_implementation` | `worker_protocol`, `history_event_wire_formats` | `worker_task_lifecycle`, `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `history_replay_bundles` |
+| `cli_json_client` | `cli_json` | `control_plane_request_response` (request side), `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `child_workflow_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `cli_json_envelopes` |
+| `waterline_contract_surface` | `waterline_api` | `signal_query_runtime_contract`, `search_attribute_runtime_contract`, `namespace_runtime_contract`, `saga_runtime_contract`, `worker_versioning_runtime_contract`, `migration_runtime_contract`, `skew_refusal_matrix_contract`, `waterline_observer_envelopes` |
 | `repair_actionability_surface` | `worker_protocol` (failure subset), `server_api` (repair routes) | `failure_repair_actionability` |
 | `mcp_discovery_surface` | `mcp_discovery_results` | `mcp_discovery_envelopes` |
-| `prerelease_release_candidate` | `server_api`, `official_sdks`, `cli_json`, `waterline_api`, `cluster_info_manifests` | `prerelease_readiness_contract` |
+| `prerelease_release_candidate` | `server_api`, `official_sdks`, `cli_json`, `waterline_api`, `cluster_info_manifests` | `skew_refusal_matrix_contract`, `prerelease_readiness_contract` |
 
 Targets are stable. Adding a new target, adding a required surface to an
 existing target, or adding a required fixture category is a contract
@@ -82,6 +82,7 @@ them from the declared locations.
 | `worker_versioning_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/worker-versioning-runtime-scenarios.json` | Live published-artifact scenarios for safe-deploy worker versioning across build-ID registration, rollout visibility, drain/resume controls, per-run pins, compatible replay routing, no-compatible-worker diagnostics, cross-language PHP/Python pinning, adversarial no-bump behavior, and history API version pins. |
 | `saga_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/saga-runtime-scenarios.json` | Live published-artifact scenarios for saga compensation across forward success, reverse-order compensation, early failure, retry idempotence, compensation failure visibility, worker restart replay, cross-language compensation, typed compensation errors, and operator-visible in-progress compensation state. |
 | `migration_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/migration-runtime-scenarios.json` | Live published-artifact scenarios for v1 to v2 migration across preserved histories, in-flight progress, activities, schedules, worker registrations, CLI access, Waterline operator visibility, new v2 starts, rollback semantics, and version-skew refusal. |
+| `skew_refusal_matrix_contract` | `durable-workflow.github.io` | `static/platform-conformance/skew-refusal-matrix-scenarios.json` | Published-artifact version-skew refusal scenarios across CLI, Python SDK, PHP workflow worker, Waterline, future-version boundaries, worker registration classifications, Waterline render classifications, and per-operation request/response evidence. |
 | `prerelease_readiness_contract` | `durable-workflow.github.io` | `static/platform-conformance/prerelease-readiness-scenarios.json` | Published-artifact scenarios for 2.0 prerelease readiness across Workflow, Waterline, server, CLI, Python SDK, sample app, and public docs. |
 | `failure_repair_actionability` | `server`, `workflow` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, fixture pointers therein | Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces. |
 | `cli_json_envelopes` | `cli` | `tests/fixtures/control-plane/`, `schemas/` | The `--output=json` and `--output=jsonl` envelopes that automation depends on. Diagnostic-only fields are listed and excluded from the contract diff. |
@@ -97,6 +98,43 @@ Migration runtime coverage is stable in suite version 13 and later.
 Prerelease readiness is stable in suite version 14 and later, and is
 claimed by the `prerelease_release_candidate` aggregate target instead
 of by individual implementation targets.
+Skew refusal matrix coverage is stable in suite version 15 and later and
+is required for every target that claims the server, SDK, CLI, worker,
+or Waterline compatibility surface.
+
+### Skew refusal matrix contract
+
+The `skew_refusal_matrix_contract` category is stable and load-bearing.
+It must run against published install channels only, pin the resolved
+artifact versions in the result, and cover compatible, backward-skewed,
+forward-skewed, and outside-window pairings for the CLI, Python SDK, PHP
+workflow worker, and Waterline surfaces. A protocol-manifest smoke-only
+result is nonconforming even if the covered smoke probes pass.
+
+Required scenarios:
+
+- `published_artifact_install_only` - server image, CLI installer,
+  Python package, PHP package, and Waterline package are resolved from
+  published channels; no local source checkout is used as the artifact
+  under test.
+- `cli_version_pair_matrix` - CLI to server pairings cover cluster info,
+  workflow control-plane, and schedule control-plane operations.
+- `sdk_python_version_pair_matrix` - Python SDK to server pairings cover
+  client, worker lifecycle, and schedule operations.
+- `workflow_worker_version_pair_matrix` - PHP worker to server pairings
+  classify registration behavior as `register_refused`,
+  `register_and_serve`, or `register_and_drop`.
+- `waterline_version_pair_matrix` - Waterline to server pairings
+  classify render behavior as `banner`, `render_refused`, or
+  `stale_render`.
+- `future_version_boundary_matrix` - the harness probes one step past
+  the advertised compatibility window for client, worker, observer, and
+  server surfaces.
+- `request_response_capture_for_skewed_operations` - every skewed
+  operation records request and response evidence with both artifact
+  versions and the compatibility-window context.
+- `focused_finding_routing` - uncovered cells and product failures link
+  to focused findings with an owner and next acceptance criterion.
 
 ### Signals and queries runtime contract
 
@@ -341,7 +379,8 @@ emits a structured result. The rules below are normative.
    as `signal_query_runtime_contract`, `history_replay_bundles`,
    `namespace_runtime_contract`, `child_workflow_runtime_contract`,
    `worker_versioning_runtime_contract`, `saga_runtime_contract`,
-   `migration_runtime_contract`, or `prerelease_readiness_contract`
+   `migration_runtime_contract`, `skew_refusal_matrix_contract`, or
+   `prerelease_readiness_contract`
    must report every scenario it declares with one of the statuses
    published by its runtime scenario manifest: `pass`, `fail`,
    `unsupported`, `not_covered`, or `runner_blocked`. Full conformance

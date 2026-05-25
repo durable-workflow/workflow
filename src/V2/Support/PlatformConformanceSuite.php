@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 14;
+    public const VERSION = 15;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -118,6 +118,7 @@ final class PlatformConformanceSuite
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
                     'migration_runtime_contract',
+                    'skew_refusal_matrix_contract',
                     'worker_task_lifecycle',
                     'failure_repair_actionability',
                 ],
@@ -138,6 +139,7 @@ final class PlatformConformanceSuite
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
                     'migration_runtime_contract',
+                    'skew_refusal_matrix_contract',
                     'worker_task_lifecycle',
                     'history_replay_bundles',
                 ],
@@ -157,6 +159,7 @@ final class PlatformConformanceSuite
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
                     'migration_runtime_contract',
+                    'skew_refusal_matrix_contract',
                     'history_replay_bundles',
                 ],
             ],
@@ -174,6 +177,7 @@ final class PlatformConformanceSuite
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
                     'migration_runtime_contract',
+                    'skew_refusal_matrix_contract',
                     'cli_json_envelopes',
                 ],
             ],
@@ -189,6 +193,7 @@ final class PlatformConformanceSuite
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
                     'migration_runtime_contract',
+                    'skew_refusal_matrix_contract',
                     'waterline_observer_envelopes',
                 ],
             ],
@@ -221,6 +226,7 @@ final class PlatformConformanceSuite
                     'cluster_info_manifests',
                 ],
                 'required_fixture_categories' => [
+                    'skew_refusal_matrix_contract',
                     'prerelease_readiness_contract',
                 ],
             ],
@@ -390,6 +396,18 @@ final class PlatformConformanceSuite
                 'authority_doc' => self::AUTHORITY_URL,
                 'required_scenarios' => self::migrationRequiredScenarios(),
             ],
+            'skew_refusal_matrix_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Published-artifact version-skew refusal scenarios across CLI, Python SDK, PHP workflow worker, Waterline, future-version boundaries, worker registration classifications, Waterline render classifications, and per-operation request/response evidence.',
+                'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/skew-refusal-matrix-scenarios.json',
+                    ],
+                ],
+                'authority_doc' => self::AUTHORITY_URL,
+                'required_scenarios' => self::skewRefusalRequiredScenarios(),
+            ],
             'prerelease_readiness_contract' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
                 'description' => 'Published-artifact scenarios for 2.0 prerelease readiness across Workflow, Waterline, server, CLI, Python SDK, sample app, and public docs.',
@@ -496,6 +514,7 @@ final class PlatformConformanceSuite
                     'worker_versioning_runtime_contract',
                     'saga_runtime_contract',
                     'migration_runtime_contract',
+                    'skew_refusal_matrix_contract',
                     'prerelease_readiness_contract',
                 ],
             ],
@@ -677,6 +696,23 @@ final class PlatformConformanceSuite
             'new_v2_workflow_start_after_upgrade',
             'rollback_contract_verified',
             'version_skew_refusal',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function skewRefusalRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'cli_version_pair_matrix',
+            'sdk_python_version_pair_matrix',
+            'workflow_worker_version_pair_matrix',
+            'waterline_version_pair_matrix',
+            'future_version_boundary_matrix',
+            'request_response_capture_for_skewed_operations',
+            'focused_finding_routing',
         ];
     }
 
