@@ -225,7 +225,9 @@ final class WorkflowFiberRunner
 
             if ($current instanceof SideEffectCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
-                $recorded = $this->recordedSideEffects[$historySequence] ?? null;
+                $recorded = $historySequence === null
+                    ? null
+                    : ($this->recordedSideEffects[$historySequence] ?? null);
 
                 if ($recorded !== null) {
                     ++$this->sequence;
@@ -246,8 +248,14 @@ final class WorkflowFiberRunner
 
             if ($current instanceof VersionCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
-                $versionMarkerEvent = $this->recordedVersionMarkers[$historySequence] ?? null;
-                $resolution = $this->resolveVersion($current, $versionMarkerEvent, $historySequence);
+                $versionMarkerEvent = $historySequence === null
+                    ? null
+                    : ($this->recordedVersionMarkers[$historySequence] ?? null);
+                $resolution = $this->resolveVersion(
+                    $current,
+                    $versionMarkerEvent,
+                    $historySequence ?? $this->sequence,
+                );
 
                 if ($resolution->shouldRecordMarker) {
                     $step = WorkflowStep::yielded($current, $this->payloadCodec);
@@ -268,7 +276,9 @@ final class WorkflowFiberRunner
 
             if ($current instanceof UpsertSearchAttributesCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
-                $recorded = $this->recordedSearchAttributeUpserts[$historySequence] ?? null;
+                $recorded = $historySequence === null
+                    ? null
+                    : ($this->recordedSearchAttributeUpserts[$historySequence] ?? null);
 
                 if ($recorded !== null) {
                     ++$this->sequence;
@@ -288,7 +298,9 @@ final class WorkflowFiberRunner
 
             if ($current instanceof ActivityCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
-                $recorded = $this->recordedActivityOutcomes[$historySequence] ?? null;
+                $recorded = $historySequence === null
+                    ? null
+                    : ($this->recordedActivityOutcomes[$historySequence] ?? null);
 
                 if ($recorded !== null) {
                     ++$this->sequence;
@@ -304,7 +316,7 @@ final class WorkflowFiberRunner
                     continue;
                 }
 
-                if (isset($this->openActivityWaits[$historySequence])) {
+                if ($historySequence !== null && isset($this->openActivityWaits[$historySequence])) {
                     $this->waitingForHistory = true;
 
                     return WorkflowStep::waiting($current)
@@ -314,7 +326,9 @@ final class WorkflowFiberRunner
 
             if ($current instanceof TimerCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
-                $recorded = $this->recordedTimerOutcomes[$historySequence] ?? null;
+                $recorded = $historySequence === null
+                    ? null
+                    : ($this->recordedTimerOutcomes[$historySequence] ?? null);
 
                 if ($recorded !== null) {
                     ++$this->sequence;
@@ -323,7 +337,7 @@ final class WorkflowFiberRunner
                     continue;
                 }
 
-                if (isset($this->openTimerWaits[$historySequence])) {
+                if ($historySequence !== null && isset($this->openTimerWaits[$historySequence])) {
                     $this->waitingForHistory = true;
 
                     return WorkflowStep::waiting($current)
@@ -333,7 +347,9 @@ final class WorkflowFiberRunner
 
             if ($current instanceof ChildWorkflowCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
-                $recorded = $this->recordedChildOutcomes[$historySequence] ?? null;
+                $recorded = $historySequence === null
+                    ? null
+                    : ($this->recordedChildOutcomes[$historySequence] ?? null);
 
                 if ($recorded !== null) {
                     ++$this->sequence;
@@ -349,7 +365,7 @@ final class WorkflowFiberRunner
                     continue;
                 }
 
-                if (isset($this->openChildWaits[$historySequence])) {
+                if ($historySequence !== null && isset($this->openChildWaits[$historySequence])) {
                     $this->waitingForHistory = true;
 
                     return WorkflowStep::waiting($current)
@@ -367,6 +383,9 @@ final class WorkflowFiberRunner
     private function historyAvailableForPendingYielded(): bool
     {
         $historySequence = $this->historySequenceForCurrentPosition();
+        if ($historySequence === null) {
+            return false;
+        }
 
         return match (true) {
             $this->pendingYielded instanceof ActivityCall => isset($this->recordedActivityOutcomes[$historySequence])
@@ -379,9 +398,13 @@ final class WorkflowFiberRunner
         };
     }
 
-    private function historySequenceForCurrentPosition(): int
+    private function historySequenceForCurrentPosition(): ?int
     {
-        return $this->historySequencesByPosition[$this->sequence] ?? $this->sequence;
+        if (isset($this->historySequencesByPosition[$this->sequence])) {
+            return $this->historySequencesByPosition[$this->sequence];
+        }
+
+        return $this->hasReplayHistory ? null : $this->sequence;
     }
 
     /**

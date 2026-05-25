@@ -15,6 +15,7 @@ use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\WorkflowDefinition;
@@ -135,6 +136,46 @@ final class WorkflowFiberRunnerTest extends TestCase
             'tolygolp',
             CarbonImmutable::parse($completedAt)->getTimestampMs(),
         ], Serializer::unserializeWithCodec('avro', $scheduled->command['arguments']));
+    }
+
+    public function testRunnerDoesNotReplayEarlierNonContiguousActivityOutcomeForNewPosition(): void
+    {
+        $scheduled = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerFourActivityWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 4,
+                'event_type' => 'ActivityCompleted',
+                'payload' => [
+                    'sequence' => 3,
+                    'result' => Serializer::serializeWithCodec('avro', 'first-result'),
+                    'payload_codec' => 'avro',
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ], [
+                'sequence' => 7,
+                'event_type' => 'ActivityCompleted',
+                'payload' => [
+                    'sequence' => 6,
+                    'result' => Serializer::serializeWithCodec('avro', 'second-result'),
+                    'payload_codec' => 'avro',
+                ],
+                'recorded_at' => '2026-05-12T10:13:14+00:00',
+            ]],
+        )->step();
+
+        $this->assertFalse($scheduled->completed);
+        $this->assertSame('schedule_activity', $scheduled->command['type']);
+        $this->assertSame('demo.third', $scheduled->command['activity_type']);
+        $this->assertSame('sagas-php', $scheduled->command['queue']);
     }
 
     public function testRunnerWaitsWhenActivityHistoryIsOpen(): void
@@ -917,6 +958,18 @@ final class WorkerProtocolRunnerActivityThenActivityWorkflow extends Workflow
         $result = Workflow::activity('demo.reverse', 'polyglot');
 
         return Workflow::activity('demo.consume-activity', $result, Workflow::now()->getTimestampMs());
+    }
+}
+
+final class WorkerProtocolRunnerFourActivityWorkflow extends Workflow
+{
+    public function handle(): mixed
+    {
+        Workflow::activity('demo.first', new ActivityOptions(queue: 'sagas-php'));
+        Workflow::activity('demo.second', new ActivityOptions(queue: 'sagas-php'));
+        Workflow::activity('demo.third', new ActivityOptions(queue: 'sagas-php'));
+
+        return Workflow::activity('demo.fourth', new ActivityOptions(queue: 'sagas-php'));
     }
 }
 
