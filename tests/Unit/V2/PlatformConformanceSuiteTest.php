@@ -165,6 +165,35 @@ final class PlatformConformanceSuiteTest extends TestCase
         }
     }
 
+    public function testMigrationRuntimeContractIsDeferredUntilPublicScenarioManifestPublishes(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+
+        $this->assertSame(
+            12,
+            $manifest['version'],
+            'the workflow mirror must stay aligned with the currently published platform conformance contract',
+        );
+        $this->assertArrayNotHasKey(
+            'migration_runtime_contract',
+            $manifest['fixture_catalog'],
+            'migration conformance becomes a fixture category only after its public scenario manifest exists',
+        );
+        $this->assertNotContains(
+            'migration_runtime_contract',
+            $manifest['pass_fail_rules']['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'missing migration scenarios must not be part of stable runtime coverage while the source manifest is unpublished',
+        );
+
+        foreach ($manifest['targets'] as $name => $target) {
+            $this->assertNotContains(
+                'migration_runtime_contract',
+                $target['required_fixture_categories'],
+                "$name must not require migration conformance before the public scenario manifest is published",
+            );
+        }
+    }
+
     public function testMcpDiscoveryCategoryNamesCurrentReferenceSurface(): void
     {
         $manifest = PlatformConformanceSuite::manifest();

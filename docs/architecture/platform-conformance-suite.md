@@ -90,6 +90,11 @@ column lists it *and* the category status is not `provisional`.
 Provisional categories ship an advisory result (warn but do not fail);
 they become required when promoted to `stable` in a later suite version.
 
+Migration runtime coverage is intentionally absent from suite version
+12. It becomes a fixture category only after the docs-site static
+contract and public scenario manifest publish together; until then,
+implementations do not fail conformance for missing migration scenarios.
+
 ### Signals and queries runtime contract
 
 The `signal_query_runtime_contract` category is stable and load-bearing.
