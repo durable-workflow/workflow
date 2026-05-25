@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 12;
+    public const VERSION = 14;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -117,6 +117,7 @@ final class PlatformConformanceSuite
                     'child_workflow_runtime_contract',
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
+                    'migration_runtime_contract',
                     'worker_task_lifecycle',
                     'failure_repair_actionability',
                 ],
@@ -136,6 +137,7 @@ final class PlatformConformanceSuite
                     'child_workflow_runtime_contract',
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
+                    'migration_runtime_contract',
                     'worker_task_lifecycle',
                     'history_replay_bundles',
                 ],
@@ -154,6 +156,7 @@ final class PlatformConformanceSuite
                     'child_workflow_runtime_contract',
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
+                    'migration_runtime_contract',
                     'history_replay_bundles',
                 ],
             ],
@@ -170,6 +173,7 @@ final class PlatformConformanceSuite
                     'child_workflow_runtime_contract',
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
+                    'migration_runtime_contract',
                     'cli_json_envelopes',
                 ],
             ],
@@ -184,6 +188,7 @@ final class PlatformConformanceSuite
                     'namespace_runtime_contract',
                     'saga_runtime_contract',
                     'worker_versioning_runtime_contract',
+                    'migration_runtime_contract',
                     'waterline_observer_envelopes',
                 ],
             ],
@@ -204,6 +209,19 @@ final class PlatformConformanceSuite
                 ],
                 'required_fixture_categories' => [
                     'mcp_discovery_envelopes',
+                ],
+            ],
+            'prerelease_release_candidate' => [
+                'description' => 'Coordinated Durable Workflow 2.0 prerelease artifact tuples spanning server, CLI, SDKs, Workflow, Waterline, sample app, and public docs.',
+                'required_surface_families' => [
+                    'server_api',
+                    'official_sdks',
+                    'cli_json',
+                    'waterline_api',
+                    'cluster_info_manifests',
+                ],
+                'required_fixture_categories' => [
+                    'prerelease_readiness_contract',
                 ],
             ],
         ];
@@ -360,6 +378,30 @@ final class PlatformConformanceSuite
                 'authority_doc' => self::AUTHORITY_URL,
                 'required_scenarios' => self::sagaRequiredScenarios(),
             ],
+            'migration_runtime_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Live published-artifact scenarios for v1 to v2 migration across preserved histories, in-flight progress, activities, schedules, worker registrations, CLI access, Waterline operator visibility, new v2 starts, rollback semantics, and version-skew refusal.',
+                'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/migration-runtime-scenarios.json',
+                    ],
+                ],
+                'authority_doc' => self::AUTHORITY_URL,
+                'required_scenarios' => self::migrationRequiredScenarios(),
+            ],
+            'prerelease_readiness_contract' => [
+                'status' => self::CATEGORY_STATUS_STABLE,
+                'description' => 'Published-artifact scenarios for 2.0 prerelease readiness across Workflow, Waterline, server, CLI, Python SDK, sample app, and public docs.',
+                'sources' => [
+                    [
+                        'repository' => 'durable-workflow.github.io',
+                        'path' => 'static/platform-conformance/prerelease-readiness-scenarios.json',
+                    ],
+                ],
+                'authority_doc' => self::AUTHORITY_URL,
+                'required_scenarios' => self::prereleaseReadinessRequiredScenarios(),
+            ],
             'failure_repair_actionability' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
                 'description' => 'Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces.',
@@ -453,6 +495,8 @@ final class PlatformConformanceSuite
                     'child_workflow_runtime_contract',
                     'worker_versioning_runtime_contract',
                     'saga_runtime_contract',
+                    'migration_runtime_contract',
+                    'prerelease_readiness_contract',
                 ],
             ],
             'provisional_categories_warn_only' => [
@@ -615,6 +659,47 @@ final class PlatformConformanceSuite
     }
 
     /**
+     * @return list<string>
+     */
+    private static function migrationRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'latest_supported_v1_state_setup',
+            'documented_migration_steps_execute',
+            'completed_history_preservation_and_replay',
+            'in_flight_workflow_progress_preserved',
+            'mid_activity_retry_preserved',
+            'schedule_cross_upgrade_cadence_preserved',
+            'worker_registration_projection_preserved',
+            'waterline_operator_visibility_preserved',
+            'cli_access_to_preupgrade_state',
+            'new_v2_workflow_start_after_upgrade',
+            'rollback_contract_verified',
+            'version_skew_refusal',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function prereleaseReadinessRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_release_set',
+            'workflow_feature_completeness_verdict',
+            'workflow_migration_readiness_verdict',
+            'workflow_public_api_stability_verdict',
+            'workflow_documentation_and_config_verdict',
+            'waterline_feature_completeness_verdict',
+            'waterline_migration_and_config_verdict',
+            'waterline_public_api_and_docs_verdict',
+            'ecosystem_compatibility_verdict',
+            'focused_finding_routing',
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function harnessContract(): array
@@ -682,6 +767,12 @@ final class PlatformConformanceSuite
                         'waterline_contract_surface',
                     ],
                     'artifact' => 'GitHub release attaches the harness result document.',
+                ],
+                'durable-workflow/2.0-release-candidate' => [
+                    'required_targets' => [
+                        'prerelease_release_candidate',
+                    ],
+                    'artifact' => 'Conformance record stores the published-artifact prerelease readiness result.',
                 ],
             ],
             'enforcement' => [

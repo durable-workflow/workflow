@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(12, $manifest['version']);
+        $this->assertSame(14, $manifest['version']);
         $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -67,6 +67,7 @@ final class PlatformConformanceSuiteTest extends TestCase
             'waterline_contract_surface',
             'repair_actionability_surface',
             'mcp_discovery_surface',
+            'prerelease_release_candidate',
         ];
         $this->assertSame($expected, PlatformConformanceSuite::targetNames());
     }
@@ -114,6 +115,8 @@ final class PlatformConformanceSuiteTest extends TestCase
             'child_workflow_runtime_contract',
             'worker_versioning_runtime_contract',
             'saga_runtime_contract',
+            'migration_runtime_contract',
+            'prerelease_readiness_contract',
             'failure_repair_actionability',
             'cli_json_envelopes',
             'waterline_observer_envelopes',
@@ -165,33 +168,46 @@ final class PlatformConformanceSuiteTest extends TestCase
         }
     }
 
-    public function testMigrationRuntimeContractIsDeferredUntilPublicScenarioManifestPublishes(): void
+    public function testMigrationAndPrereleaseReadinessContractsArePublished(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame(
-            12,
+            14,
             $manifest['version'],
             'the workflow mirror must stay aligned with the currently published platform conformance contract',
         );
-        $this->assertArrayNotHasKey(
-            'migration_runtime_contract',
-            $manifest['fixture_catalog'],
-            'migration conformance becomes a fixture category only after its public scenario manifest exists',
-        );
-        $this->assertNotContains(
+        $this->assertArrayHasKey('migration_runtime_contract', $manifest['fixture_catalog']);
+        $this->assertArrayHasKey('prerelease_readiness_contract', $manifest['fixture_catalog']);
+        $this->assertContains(
             'migration_runtime_contract',
             $manifest['pass_fail_rules']['stable_runtime_scenario_coverage']['applies_to_categories'],
-            'missing migration scenarios must not be part of stable runtime coverage while the source manifest is unpublished',
+            'migration conformance is load-bearing once the public scenario manifest is published',
+        );
+        $this->assertContains(
+            'prerelease_readiness_contract',
+            $manifest['pass_fail_rules']['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'prerelease readiness must stay non-passing until published-artifact product evidence exists',
         );
 
-        foreach ($manifest['targets'] as $name => $target) {
+        foreach ([
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+            'waterline_contract_surface',
+        ] as $target) {
             $this->assertNotContains(
-                'migration_runtime_contract',
-                $target['required_fixture_categories'],
-                "$name must not require migration conformance before the public scenario manifest is published",
+                'prerelease_readiness_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target is an implementation target; prerelease readiness is claimed only by the release-candidate aggregate target",
             );
         }
+
+        $this->assertSame(
+            ['prerelease_readiness_contract'],
+            $manifest['targets']['prerelease_release_candidate']['required_fixture_categories'],
+        );
     }
 
     public function testMcpDiscoveryCategoryNamesCurrentReferenceSurface(): void
@@ -657,6 +673,47 @@ final class PlatformConformanceSuiteTest extends TestCase
         }
     }
 
+    public function testPrereleaseReadinessContractNamesReleaseCandidateAuditSurface(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['prerelease_readiness_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'prerelease readiness must be load-bearing, not coverage-only evidence.',
+        );
+        $this->assertSame(
+            [
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/prerelease-readiness-scenarios.json',
+                ],
+            ],
+            $category['sources'],
+            'the public prerelease readiness scenario manifest must be the consumable source for release-candidate evidence',
+        );
+
+        foreach ([
+            'published_artifact_release_set',
+            'workflow_feature_completeness_verdict',
+            'workflow_migration_readiness_verdict',
+            'workflow_public_api_stability_verdict',
+            'workflow_documentation_and_config_verdict',
+            'waterline_feature_completeness_verdict',
+            'waterline_migration_and_config_verdict',
+            'waterline_public_api_and_docs_verdict',
+            'ecosystem_compatibility_verdict',
+            'focused_finding_routing',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "prerelease readiness conformance must name scenario $scenario",
+            );
+        }
+    }
+
     public function testPassFailRulesNameTheCoreContract(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
@@ -705,6 +762,16 @@ final class PlatformConformanceSuiteTest extends TestCase
             $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
             'saga compensation coverage must not satisfy the suite with smoke-only evidence',
         );
+        $this->assertContains(
+            'migration_runtime_contract',
+            $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'migration coverage must not satisfy the suite with fresh-install-only evidence',
+        );
+        $this->assertContains(
+            'prerelease_readiness_contract',
+            $rules['stable_runtime_scenario_coverage']['applies_to_categories'],
+            'runner-only prerelease readiness evidence must not satisfy the suite',
+        );
         foreach (['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'] as $status) {
             $this->assertStringContainsString(
                 $status,
@@ -750,11 +817,15 @@ final class PlatformConformanceSuiteTest extends TestCase
         $this->assertArrayHasKey('durable_workflow', $gates);
         $this->assertArrayHasKey('dw', $gates);
         $this->assertArrayHasKey('waterline', $gates);
+        $this->assertArrayHasKey('durable-workflow/2.0-release-candidate', $gates);
 
         $serverGate = $gates['durable-workflow/server'];
         $this->assertContains('standalone_server', $serverGate['required_targets']);
         $this->assertContains('worker_protocol_implementation', $serverGate['required_targets']);
         $this->assertContains('repair_actionability_surface', $serverGate['required_targets']);
+
+        $releaseCandidateGate = $gates['durable-workflow/2.0-release-candidate'];
+        $this->assertContains('prerelease_release_candidate', $releaseCandidateGate['required_targets']);
 
         $this->assertTrue(
             $manifest['release_gates']['enforcement']['block_on_nonconforming'],
