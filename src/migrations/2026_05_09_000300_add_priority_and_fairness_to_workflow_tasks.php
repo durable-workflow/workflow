@@ -32,14 +32,8 @@ return new class() extends WorkflowMigration {
                 ->default(1)
                 ->after('fairness_key');
 
-            $table->index(
-                ['queue', 'status', 'priority', 'available_at'],
-                'workflow_tasks_dispatch_order_index',
-            );
-            $table->index(
-                ['queue', 'status', 'fairness_key'],
-                'workflow_tasks_fairness_class_index',
-            );
+            $table->index(['queue', 'status', 'priority', 'available_at'], 'workflow_tasks_dispatch_order_index');
+            $table->index(['queue', 'status', 'fairness_key'], 'workflow_tasks_fairness_class_index');
         });
     }
 

@@ -24,10 +24,7 @@ return new class() extends WorkflowMigration {
     {
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
             $table->dropIndex('workflow_run_summaries_history_budget_pressure_index');
-            $table->dropColumn([
-                'history_fan_out',
-                'history_budget_pressure',
-            ]);
+            $table->dropColumn(['history_fan_out', 'history_budget_pressure']);
         });
     }
 };

@@ -373,8 +373,7 @@ class WorkflowSchedule extends Model
         ?string $runId,
         string $outcome,
         ?DateTimeInterface $occurrenceTime = null,
-    ): void
-    {
+    ): void {
         $firedAt = now();
         $actions = $this->recent_actions ?? [];
 

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Workflow\Support\WorkflowMigration;
@@ -7,7 +9,7 @@ use Workflow\Support\WorkflowMigration;
 return new class() extends WorkflowMigration {
     public function up(): void
     {
-        Schema::table('workflow_runs', function (Blueprint $table): void {
+        Schema::table('workflow_runs', static function (Blueprint $table): void {
             if (! Schema::hasColumn('workflow_runs', 'sticky_worker_id')) {
                 $table->string('sticky_worker_id')
                     ->nullable()
@@ -21,7 +23,7 @@ return new class() extends WorkflowMigration {
             }
         });
 
-        Schema::table('workflow_tasks', function (Blueprint $table): void {
+        Schema::table('workflow_tasks', static function (Blueprint $table): void {
             if (! Schema::hasColumn('workflow_tasks', 'sticky_worker_id')) {
                 $table->string('sticky_worker_id')
                     ->nullable()
@@ -50,7 +52,7 @@ return new class() extends WorkflowMigration {
 
     public function down(): void
     {
-        Schema::table('workflow_tasks', function (Blueprint $table): void {
+        Schema::table('workflow_tasks', static function (Blueprint $table): void {
             foreach (['sticky_worker_id', 'sticky_until', 'sticky_replay_mode', 'sticky_claimed_at'] as $column) {
                 if (Schema::hasColumn('workflow_tasks', $column)) {
                     $table->dropColumn($column);
@@ -58,7 +60,7 @@ return new class() extends WorkflowMigration {
             }
         });
 
-        Schema::table('workflow_runs', function (Blueprint $table): void {
+        Schema::table('workflow_runs', static function (Blueprint $table): void {
             foreach (['sticky_worker_id', 'sticky_until'] as $column) {
                 if (Schema::hasColumn('workflow_runs', $column)) {
                     $table->dropColumn($column);
