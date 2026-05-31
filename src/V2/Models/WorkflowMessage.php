@@ -6,12 +6,15 @@ namespace Workflow\V2\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\MessageConsumeState;
 use Workflow\V2\Enums\MessageDirection;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowMessage extends Model
 {
+    use ResolvesStorageConnection;
+
     // Structural limits
     public const MAX_MESSAGES_PER_STREAM = 10000;
 

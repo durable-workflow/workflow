@@ -7,10 +7,13 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use InvalidArgumentException;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowMemo extends Model
 {
+    use ResolvesStorageConnection;
+
     // Size and count limits (Phase 1 structural limits)
     public const MAX_MEMOS_PER_RUN = 100;
 

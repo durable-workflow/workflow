@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Workflow\Support\WorkflowMigration;
 
-return new class() extends Migration {
+return new class() extends WorkflowMigration {
     private const TABLE = 'workflow_service_operations';
 
     private const ENDPOINT_INDEX = 'wf_service_ops_endpoint_idx';

@@ -7,10 +7,13 @@ namespace Workflow\V2\Models;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowTimelineEntry extends Model
 {
+    use ResolvesStorageConnection;
+
     public $incrementing = false;
 
     protected $table = 'workflow_run_timeline_entries';

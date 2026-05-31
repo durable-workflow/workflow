@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Workflow\Support\WorkflowMigration;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 
-return new class() extends Migration {
+return new class() extends WorkflowMigration {
     public function up(): void
     {
         Schema::create('workflow_run_timer_entries', static function (Blueprint $table): void {

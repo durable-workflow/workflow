@@ -7,11 +7,14 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowServiceCall extends Model
 {
+    use ResolvesStorageConnection;
+
     use HasUlids;
 
     public $incrementing = false;

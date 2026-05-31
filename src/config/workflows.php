@@ -406,6 +406,12 @@ return [
     // be flagged by `workflow:v2:doctor`; JSON is not a registered v2 codec.
     'serializer' => Env::dw('DW_SERIALIZER', 'WORKFLOW_SERIALIZER', 'avro'),
 
+    'storage' => [
+        // Database connection used for ALL workflow persistence (Eloquent models + migrations).
+        // null => the application's default connection (preserves existing behavior).
+        'connection' => Env::dw('DW_STORAGE_CONNECTION', 'WORKFLOW_STORAGE_CONNECTION', null),
+    ],
+
     'prune_age' => '1 month',
 
     'webhooks_route' => Env::dw('DW_WEBHOOKS_ROUTE', 'WORKFLOW_WEBHOOKS_ROUTE', 'webhooks'),

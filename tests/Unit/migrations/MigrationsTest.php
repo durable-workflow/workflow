@@ -69,6 +69,44 @@ final class MigrationsTest extends TestCase
     }
 
     /**
+     * Every package migration must extend Workflow\Support\WorkflowMigration
+     * so it honors the configurable workflows.storage.connection. The default
+     * `php artisan make:migration` output extends the framework's bare
+     * Illuminate\Database\Migrations\Migration, which silently lands the
+     * workflow tables on the application's default connection. This contract
+     * fails closed when a newly generated migration forgets the swap.
+     */
+    public function testEveryPackageMigrationExtendsWorkflowMigrationBase(): void
+    {
+        $files = glob(dirname(__DIR__, 3) . '/src/migrations/*.php') ?: [];
+
+        $this->assertNotEmpty($files);
+
+        $violations = [];
+
+        foreach ($files as $file) {
+            $contents = file_get_contents($file);
+
+            $this->assertIsString($contents);
+
+            if (! str_contains($contents, 'extends WorkflowMigration')) {
+                $violations[] = basename($file) . ' does not extend WorkflowMigration';
+            }
+
+            if (preg_match('/extends\s+Migration\b/', $contents) === 1) {
+                $violations[] = basename($file) . ' still extends the framework Migration base';
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $violations,
+            'Every package migration must extend Workflow\Support\WorkflowMigration so it '
+            . 'honors workflows.storage.connection (regenerate with the package base class).',
+        );
+    }
+
+    /**
      * Mirrors `App\Support\MigrationAdoption::createdTablesIn()` in the
      * `durableworkflow/server` package. That class drives BLK-S002 recovery
      * by scanning each pending package migration's `Schema::create()` target

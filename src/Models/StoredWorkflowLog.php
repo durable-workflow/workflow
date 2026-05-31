@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Workflow\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Workflow\Traits\ResolvesStorageConnection;
 
 class StoredWorkflowLog extends Model
 {
+    use ResolvesStorageConnection;
+
     public const UPDATED_AT = null;
 
     /**

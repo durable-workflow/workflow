@@ -8,10 +8,13 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowRunTimerEntry extends Model
 {
+    use ResolvesStorageConnection;
+
     public const CURRENT_SCHEMA_VERSION = 1;
 
     public $incrementing = false;

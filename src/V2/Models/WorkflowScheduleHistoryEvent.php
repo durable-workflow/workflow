@@ -9,12 +9,15 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\UniqueConstraintViolationException;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 
 class WorkflowScheduleHistoryEvent extends Model
 {
+    use ResolvesStorageConnection;
+
     use HasUlids;
 
     /**

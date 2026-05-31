@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -17,6 +18,8 @@ use Workflow\V2\Support\ExternalPayloads;
 
 class WorkflowUpdate extends Model
 {
+    use ResolvesStorageConnection;
+
     use HasUlids;
 
     public $incrementing = false;

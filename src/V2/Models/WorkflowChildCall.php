@@ -6,12 +6,15 @@ namespace Workflow\V2\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowChildCall extends Model
 {
+    use ResolvesStorageConnection;
+
     public $incrementing = true;
 
     protected $table = 'workflow_child_calls';

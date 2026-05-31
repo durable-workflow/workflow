@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
 
@@ -27,6 +28,8 @@ use Workflow\V2\Support\ConfiguredV2Models;
  */
 class WorkflowSchedule extends Model
 {
+    use ResolvesStorageConnection;
+
     use HasUlids;
 
     public const OVERLAP_POLICIES = [

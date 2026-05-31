@@ -6,10 +6,13 @@ namespace Workflow\V2\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 class WorkflowRunLineageEntry extends Model
 {
+    use ResolvesStorageConnection;
+
     public $incrementing = false;
 
     protected $table = 'workflow_run_lineage_entries';
