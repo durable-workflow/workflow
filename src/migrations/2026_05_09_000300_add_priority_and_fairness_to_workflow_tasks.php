@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Workflow\Support\WorkflowMigration;
 
-return new class() extends Migration {
+return new class() extends WorkflowMigration {
     public function up(): void
     {
         Schema::table('workflow_runs', static function (Blueprint $table): void {
@@ -32,14 +32,8 @@ return new class() extends Migration {
                 ->default(1)
                 ->after('fairness_key');
 
-            $table->index(
-                ['queue', 'status', 'priority', 'available_at'],
-                'workflow_tasks_dispatch_order_index',
-            );
-            $table->index(
-                ['queue', 'status', 'fairness_key'],
-                'workflow_tasks_fairness_class_index',
-            );
+            $table->index(['queue', 'status', 'priority', 'available_at'], 'workflow_tasks_dispatch_order_index');
+            $table->index(['queue', 'status', 'fairness_key'], 'workflow_tasks_fairness_class_index');
         });
     }
 

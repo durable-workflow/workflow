@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Workflow\Serializers\Serializer;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -15,6 +16,8 @@ use Workflow\V2\Support\ExternalPayloads;
 
 class WorkflowSignal extends Model
 {
+    use ResolvesStorageConnection;
+
     use HasUlids;
 
     public $incrementing = false;

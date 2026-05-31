@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Workflow\Serializers\Serializer;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
@@ -20,6 +21,8 @@ use Workflow\V2\Support\MessageStreamCursor;
 
 class WorkflowCommand extends Model
 {
+    use ResolvesStorageConnection;
+
     use HasUlids;
 
     private const MESSAGE_COMMAND_TYPES = ['signal', 'update'];

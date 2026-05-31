@@ -7,6 +7,7 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\RepairBlockedReason;
@@ -14,6 +15,8 @@ use Workflow\V2\Support\WorkflowTaskProblem;
 
 class WorkflowRunSummary extends Model
 {
+    use ResolvesStorageConnection;
+
     public $incrementing = false;
 
     protected $table = 'workflow_run_summaries';

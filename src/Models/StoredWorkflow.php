@@ -13,12 +13,15 @@ use Illuminate\Support\Arr;
 use Workflow\States\HasStates;
 use Workflow\States\WorkflowContinuedStatus;
 use Workflow\States\WorkflowStatus;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\WorkflowMetadata;
 use Workflow\WorkflowOptions;
 use Workflow\WorkflowStub;
 
 class StoredWorkflow extends Model
 {
+    use ResolvesStorageConnection;
+
     use HasStates;
     use Prunable;
 

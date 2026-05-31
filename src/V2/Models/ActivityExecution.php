@@ -9,12 +9,15 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Workflow\Serializers\Serializer;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 
 class ActivityExecution extends Model
 {
+    use ResolvesStorageConnection;
+
     use HasUlids;
 
     public $incrementing = false;

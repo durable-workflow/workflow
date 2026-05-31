@@ -69,6 +69,34 @@ $workflow->output();
 => 'Hello, world!'
 ```
 
+## Using a dedicated storage connection
+
+By default all workflow persistence (every Eloquent model and every migration shipped
+by this package) lives on your application's **default** database connection. To isolate
+workflow state on its own database — for separate backup/retention/scaling, a different
+driver, or tenant isolation — point the package at a dedicated connection:
+
+```php
+// config/workflows.php
+'storage' => [
+    // null => the application's default connection (the default, unchanged behavior).
+    'connection' => Env::dw('DW_STORAGE_CONNECTION', 'WORKFLOW_STORAGE_CONNECTION', null),
+],
+```
+
+```dotenv
+# .env — must match a key under config('database.connections')
+DW_STORAGE_CONNECTION=durable_workflow
+```
+
+When set, both the models and the migrations are routed to that connection, so
+`php artisan migrate` creates the workflow tables there and all reads/writes target it.
+Leaving it `null` preserves today's behavior exactly.
+
+The schema/database is governed by the connection's own configuration — use
+`search_path` for PostgreSQL or `database` for MySQL on that connection. There is no
+separate schema option.
+
 ## Sponsors
 
 The Durable Workflow package is sustained by the community via sponsors and volunteers.

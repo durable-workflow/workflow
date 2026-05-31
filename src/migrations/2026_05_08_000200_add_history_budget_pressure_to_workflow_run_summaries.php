@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Workflow\Support\WorkflowMigration;
 
-return new class() extends Migration {
+return new class() extends WorkflowMigration {
     public function up(): void
     {
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
@@ -24,10 +24,7 @@ return new class() extends Migration {
     {
         Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
             $table->dropIndex('workflow_run_summaries_history_budget_pressure_index');
-            $table->dropColumn([
-                'history_fan_out',
-                'history_budget_pressure',
-            ]);
+            $table->dropColumn(['history_fan_out', 'history_budget_pressure']);
         });
     }
 };

@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use InvalidArgumentException;
+use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 /**
@@ -50,6 +51,8 @@ use Workflow\V2\Support\ConfiguredV2Models;
  */
 class WorkflowSearchAttribute extends Model
 {
+    use ResolvesStorageConnection;
+
     // Size limits from v2 plan
     public const MAX_ATTRIBUTES_PER_RUN = 100;
 

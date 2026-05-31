@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Workflow\V2\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Workflow\Traits\ResolvesStorageConnection;
 
 class WorkerCompatibilityHeartbeat extends Model
 {
+    use ResolvesStorageConnection;
+
     protected $table = 'workflow_worker_compatibility_heartbeats';
 
     protected $guarded = [];
