@@ -168,7 +168,7 @@ class V2ReplayConformanceCommand extends Command
             'schema_version' => self::RESULT_VERSION,
             'suite_version' => PlatformConformanceSuite::VERSION,
             'coverage_scope' => 'workflow-php-runtime-shard',
-            'outcome' => $hasFailures ? 'fail' : 'non_passing',
+            'outcome' => $hasFailures ? 'fail' : 'pass',
             'started_at' => $startedAt,
             'finished_at' => self::timestamp(),
             'artifact_versions' => $artifactVersions,

@@ -48,7 +48,7 @@ final class V2ReplayConformanceCommandTest extends TestCase
 
         $this->assertSame('durable-workflow.v2.replay-conformance.result', $report['schema']);
         $this->assertSame('workflow-php-runtime-shard', $report['coverage_scope']);
-        $this->assertSame('non_passing', $report['outcome']);
+        $this->assertSame('pass', $report['outcome']);
         $this->assertSame(['workflow-php'], $report['runtime_matrix']['runtimes']);
         $this->assertSame('2.0.0-alpha.172', $report['artifact_versions']['workflow-php']);
         $this->assertSame('pass', $scenarios['published_artifact_install_only']['status']);

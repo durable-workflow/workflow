@@ -770,8 +770,9 @@ do not introduce new durable truth.
   `--artifact-version` and `--artifact-source` entries for every artifact
   in the published install tuple; local checkouts, development versions,
   and inferred Composer metadata cannot satisfy the published-artifact
-  scenario. The shard is merged with server and Python evidence before a
-  full conformance run can pass.
+  scenario. The shard reports `outcome: pass` when every PHP scenario
+  passes, while the host harness still merges it with server and Python
+  evidence before a full conformance run can pass.
 - `php artisan workflow:v2:namespace-conformance` emits the Workflow PHP
   runtime's namespace conformance evidence shard for host harnesses. The
   shard runs against a standalone server through the published
