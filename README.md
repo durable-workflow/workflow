@@ -73,6 +73,7 @@ $workflow->output();
 
 The Durable Workflow package is sustained by the community via sponsors and volunteers.
 
+- <a href="https://github.com/discovery-ukraine" target="_blank" rel="noopener sponsored">Andriy Karpishyn</a>
 - <a href="https://freispace.com" target="_blank" rel="noopener sponsored">Freispace Resource Scheduling</a>
 - <a href="https://github.com/hnccox" target="_blank" rel="noopener sponsored">Hugo Cox</a>
 - <a href="https://translateabook.com" target="_blank" rel="noopener sponsored">Translate a Book</a>
