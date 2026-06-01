@@ -349,6 +349,24 @@ error round trips, and operator-visible in-progress compensation status.
 Required scenarios are published in the public saga scenario manifest at
 `static/platform-conformance/saga-runtime-scenarios.json`.
 
+### Migration runtime contract
+
+The `migration_runtime_contract` category is stable and load-bearing. It
+must run against published install channels only, pin the resolved v1 and
+v2 artifact versions in the result, and name every required migration
+scenario as `pass`, `fail`, `unsupported`, `not_covered`, or
+`runner_blocked` with linked findings. A fresh-install smoke or a run
+that skips migrated state is nonconforming until the run starts from the
+latest supported v1 release set, builds realistic state, follows the
+published migration guide verbatim, preserves histories, in-flight
+progress, activities, schedules, worker registrations, CLI access, and
+Waterline visibility, verifies new v2 starts, checks rollback semantics,
+and proves unsupported version skew refuses loudly.
+
+Required scenarios are published in the public migration scenario
+manifest at
+`static/platform-conformance/migration-runtime-scenarios.json`.
+
 ## Pass / fail rules
 
 The harness runs each fixture against the implementation under test and

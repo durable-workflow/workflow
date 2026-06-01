@@ -222,6 +222,70 @@ final class PlatformConformanceSuiteTest extends TestCase
         );
     }
 
+    public function testMigrationRuntimeContractNamesUpgradeSafetySurface(): void
+    {
+        $manifest = PlatformConformanceSuite::manifest();
+        $category = $manifest['fixture_catalog']['migration_runtime_contract'];
+
+        $this->assertSame(
+            PlatformConformanceSuite::CATEGORY_STATUS_STABLE,
+            $category['status'],
+            'v1 to v2 migration safety must be load-bearing, not a fresh-install smoke.',
+        );
+
+        foreach ([
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+            'waterline_contract_surface',
+        ] as $target) {
+            $this->assertContains(
+                'migration_runtime_contract',
+                $manifest['targets'][$target]['required_fixture_categories'],
+                "$target must be graded against the live migration contract",
+            );
+        }
+
+        $this->assertSame(
+            [
+                [
+                    'repository' => 'durable-workflow.github.io',
+                    'path' => 'static/platform-conformance/migration-runtime-scenarios.json',
+                ],
+            ],
+            $category['sources'],
+            'the public migration scenario manifest must be the consumable source for upgrade-safety coverage',
+        );
+        $this->assertSame(
+            'https://durable-workflow.github.io/docs/2.0/platform-conformance',
+            $category['authority_doc'],
+            'the migration contract must point at the public platform conformance authority doc',
+        );
+
+        foreach ([
+            'published_artifact_install_only',
+            'latest_supported_v1_state_setup',
+            'documented_migration_steps_execute',
+            'completed_history_preservation_and_replay',
+            'in_flight_workflow_progress_preserved',
+            'mid_activity_retry_preserved',
+            'schedule_cross_upgrade_cadence_preserved',
+            'worker_registration_projection_preserved',
+            'waterline_operator_visibility_preserved',
+            'cli_access_to_preupgrade_state',
+            'new_v2_workflow_start_after_upgrade',
+            'rollback_contract_verified',
+            'version_skew_refusal',
+        ] as $scenario) {
+            $this->assertContains(
+                $scenario,
+                $category['required_scenarios'],
+                "migration conformance must name scenario $scenario",
+            );
+        }
+    }
+
     public function testMcpDiscoveryCategoryNamesCurrentReferenceSurface(): void
     {
         $manifest = PlatformConformanceSuite::manifest();
