@@ -2318,6 +2318,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
         MessageStreamCursor::transferCursor($run, $continuedRun);
 
+        $childCallId = ChildRunHistory::childCallIdForRun($run);
+
         /** @var WorkflowLink $link */
         $link = WorkflowLink::query()->create([
             'link_type' => 'continue_as_new',
@@ -2328,6 +2330,83 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'child_workflow_run_id' => $continuedRun->id,
             'is_primary_parent' => true,
         ]);
+
+        $parentChildLinks = WorkflowLink::query()
+            ->where('child_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->lockForUpdate()
+            ->get();
+
+        $parentRunsToProject = [];
+
+        foreach ($parentChildLinks as $parentChildLink) {
+            /** @var WorkflowLink $continuedChildLink */
+            $continuedChildLink = WorkflowLink::query()->create([
+                'link_type' => 'child_workflow',
+                'sequence' => $parentChildLink->sequence,
+                'parent_workflow_instance_id' => $parentChildLink->parent_workflow_instance_id,
+                'parent_workflow_run_id' => $parentChildLink->parent_workflow_run_id,
+                'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+                'child_workflow_run_id' => $continuedRun->id,
+                'is_primary_parent' => $parentChildLink->is_primary_parent,
+                'parallel_group_path' => $parentChildLink->parallel_group_path,
+                'parent_close_policy' => $parentChildLink->parent_close_policy,
+            ]);
+
+            if (
+                ! is_string($parentChildLink->parent_workflow_run_id)
+                || $parentChildLink->parent_workflow_run_id === ''
+                || ! is_int($parentChildLink->sequence)
+            ) {
+                continue;
+            }
+
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($parentChildLink->parent_workflow_run_id);
+
+            if ($parentRun === null || $parentRun->status->isTerminal()) {
+                continue;
+            }
+
+            $parentRunsToProject[$parentRun->id] = true;
+            $parentRun->loadMissing('historyEvents');
+
+            ChildRunHistory::markChildCallContinued(
+                $parentRun,
+                $parentChildLink->sequence,
+                $continuedRun,
+                $run,
+                $childCallId,
+            );
+
+            $alreadyRecorded = $parentRun->historyEvents->contains(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted
+                    && ($event->payload['sequence'] ?? null) === $parentChildLink->sequence
+                    && ($event->payload['child_workflow_run_id'] ?? null) === $continuedRun->id
+            );
+
+            if ($alreadyRecorded) {
+                continue;
+            }
+
+            $parallelMetadata = ParallelChildGroup::payloadForPath(
+                ChildRunHistory::parallelGroupPathForSequence($parentRun, $parentChildLink->sequence)
+            );
+
+            WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildRunStarted, array_filter(array_merge([
+                'sequence' => $parentChildLink->sequence,
+                'workflow_link_id' => $continuedChildLink->id,
+                'child_call_id' => $childCallId,
+                'child_workflow_instance_id' => $continuedRun->workflow_instance_id,
+                'child_workflow_run_id' => $continuedRun->id,
+                'child_workflow_class' => $continuedRun->workflow_class,
+                'child_workflow_type' => $continuedRun->workflow_type,
+                'child_run_number' => $continuedRun->run_number,
+                'parent_close_policy' => $continuedChildLink->parent_close_policy,
+            ], $parallelMetadata), static fn (mixed $value): bool => $value !== null));
+        }
 
         $run->forceFill([
             'status' => RunStatus::Completed,
@@ -2344,6 +2423,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'closed_reason' => 'continued',
         ], $task);
 
+        $parentReference = ChildRunHistory::parentReferenceForRun($run);
+
         WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $workflowType,
             'workflow_type' => $workflowType,
@@ -2351,6 +2432,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'workflow_run_id' => $continuedRun->id,
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
+            'child_call_id' => $childCallId,
+            'parent_workflow_instance_id' => $parentReference['parent_workflow_instance_id'] ?? null,
+            'parent_workflow_run_id' => $parentReference['parent_workflow_run_id'] ?? null,
+            'parent_sequence' => $parentReference['parent_sequence'] ?? null,
         ]);
 
         /** @var WorkflowTask $continuedTask */
@@ -2376,6 +2461,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         LifecycleEventDispatcher::workflowStarted($continuedRun);
 
         self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+
+        foreach (array_keys($parentRunsToProject) as $parentRunId) {
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->find($parentRunId);
+
+            if ($parentRun instanceof WorkflowRun) {
+                self::projectRun($parentRun, self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN);
+            }
+        }
 
         self::projectRun($continuedRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
     }
