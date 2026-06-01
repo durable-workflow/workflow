@@ -81,7 +81,18 @@ else
   rev_args=(-1 HEAD)
 fi
 
-if mapfile -t commits < <(git rev-list "${rev_args[@]}" 2>/dev/null); then
+baseline_args=()
+if [[ -n "${PUBLIC_BOUNDARY_GIT_BASELINE:-}" ]]; then
+  read -r -a baseline_refs <<< "$PUBLIC_BOUNDARY_GIT_BASELINE"
+
+  # Baseline refs represent already-public target history. Commit metadata
+  # checks should reject only candidate commits that are not reachable there.
+  for baseline_ref in "${baseline_refs[@]}"; do
+    baseline_args+=(--not "$baseline_ref")
+  done
+fi
+
+if mapfile -t commits < <(git rev-list "${rev_args[@]}" "${baseline_args[@]}" 2>/dev/null); then
   for commit in "${commits[@]}"; do
     metadata="$(git show -s --format='%an <%ae>%n%s%n%b' "$commit")"
 

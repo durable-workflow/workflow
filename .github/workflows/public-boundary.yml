@@ -23,12 +23,26 @@ jobs:
         run: |
           set -euo pipefail
 
+          baseline=""
+
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+            base_ref="origin/${{ github.event.pull_request.base.ref }}"
+
+            # File content is always scanned in the checked-out tree. Commit
+            # metadata is scanned only for commits introduced by the candidate
+            # branch, so already-public target history is used as a baseline.
+            if git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null; then
+              baseline="$base_ref"
+            else
+              baseline="${{ github.event.pull_request.base.sha }}"
+            fi
           elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
             range="${{ github.sha }}^..${{ github.sha }}"
           else
             range="${{ github.event.before }}..${{ github.sha }}"
           fi
 
-          PUBLIC_BOUNDARY_GIT_RANGE="$range" scripts/check-public-boundary.sh
+          PUBLIC_BOUNDARY_GIT_RANGE="$range" \
+            PUBLIC_BOUNDARY_GIT_BASELINE="$baseline" \
+            scripts/check-public-boundary.sh
