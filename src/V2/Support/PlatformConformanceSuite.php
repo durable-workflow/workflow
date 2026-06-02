@@ -29,7 +29,7 @@ final class PlatformConformanceSuite
 {
     public const SCHEMA = 'durable-workflow.v2.platform-conformance.suite';
 
-    public const VERSION = 17;
+    public const VERSION = 18;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.platform-conformance.result';
 
@@ -410,7 +410,7 @@ final class PlatformConformanceSuite
             ],
             'prerelease_readiness_contract' => [
                 'status' => self::CATEGORY_STATUS_STABLE,
-                'description' => 'Published-artifact scenarios for 2.0 prerelease readiness across Workflow, Waterline, server, CLI, Python SDK, sample app, public docs, and the quickstart local-server hosting path.',
+                'description' => 'Published-artifact scenarios for 2.0 prerelease readiness across Workflow, Waterline, server, CLI, Python SDK, sample app, public docs, and the quickstart local-server hosting and Laravel paths.',
                 'sources' => [
                     [
                         'repository' => 'durable-workflow.github.io',
@@ -728,6 +728,7 @@ final class PlatformConformanceSuite
             'workflow_public_api_stability_verdict',
             'workflow_documentation_and_config_verdict',
             'quickstart_local_server_hosted_completion',
+            'quickstart_laravel_branch_completion',
             'waterline_feature_completeness_verdict',
             'waterline_migration_and_config_verdict',
             'waterline_public_api_and_docs_verdict',

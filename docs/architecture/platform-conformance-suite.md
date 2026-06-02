@@ -18,7 +18,7 @@ The machine-readable mirror of the public authority is
 `Workflow\V2\Support\PlatformConformanceSuite`, exported by the
 standalone `workflow-server` from `GET /api/cluster/info` under
 `platform_conformance_suite`. Schema:
-`durable-workflow.v2.platform-conformance.suite`, version `17`.
+`durable-workflow.v2.platform-conformance.suite`, version `18`.
 
 ## Why one suite
 
@@ -83,7 +83,7 @@ them from the declared locations.
 | `saga_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/saga-runtime-scenarios.json` | Live published-artifact scenarios for saga compensation across forward success, reverse-order compensation, early failure, retry idempotence, compensation failure visibility, worker restart replay, cross-language compensation, typed compensation errors, and operator-visible in-progress compensation state. |
 | `migration_runtime_contract` | `durable-workflow.github.io` | `static/platform-conformance/migration-runtime-scenarios.json` | Live published-artifact scenarios for v1 to v2 migration across preserved histories, in-flight progress, activities, schedules, worker registrations, CLI access, Waterline operator visibility, new v2 starts, rollback semantics, and version-skew refusal. |
 | `skew_refusal_matrix_contract` | `durable-workflow.github.io` | `static/platform-conformance/skew-refusal-matrix-scenarios.json` | Published-artifact version-skew refusal scenarios across CLI, Python SDK, PHP workflow worker, Waterline, future-version boundaries, worker registration classifications, Waterline render classifications, and per-operation request/response evidence. |
-| `prerelease_readiness_contract` | `durable-workflow.github.io` | `static/platform-conformance/prerelease-readiness-scenarios.json` | Published-artifact scenarios for 2.0 prerelease readiness across Workflow, Waterline, server, CLI, Python SDK, sample app, public docs, and the quickstart local-server hosting path. |
+| `prerelease_readiness_contract` | `durable-workflow.github.io` | `static/platform-conformance/prerelease-readiness-scenarios.json` | Published-artifact scenarios for 2.0 prerelease readiness across Workflow, Waterline, server, CLI, Python SDK, sample app, public docs, and the quickstart local-server hosting and Laravel paths. |
 | `failure_repair_actionability` | `server`, `workflow` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, fixture pointers therein | Failure objects and repair / actionability shapes for stuck tasks, deterministic failure, and replay-mismatch surfaces. |
 | `cli_json_envelopes` | `cli` | `tests/fixtures/control-plane/`, `schemas/` | The `--output=json` and `--output=jsonl` envelopes that automation depends on. Diagnostic-only fields are listed and excluded from the contract diff. |
 | `waterline_observer_envelopes` | `waterline` | (TBD: `tests/fixtures/observer/`) | The `/waterline/api/v2/*` shapes and operator dashboard JSON envelopes. Status: provisional — fixtures land alongside the next Waterline contract slice. |
@@ -98,10 +98,14 @@ Migration runtime coverage is stable in suite version 13 and later.
 Prerelease readiness is stable in suite version 14 and later, and is
 claimed by the `prerelease_release_candidate` aggregate target instead
 of by individual implementation targets. Suite version 17 requires
-quickstart evidence to start from live public docs, use the published
-server image, verify `/api/ready` and `/api/cluster/info`, and reach an
-observable completed workflow within 10 minutes while recording exact
-artifact versions, commands, outputs, and wall-clock timings.
+quickstart local-server evidence to start from live public docs, use the
+published server image, verify `/api/ready` and `/api/cluster/info`, and
+reach an observable completed workflow within 10 minutes while recording
+exact artifact versions, commands, outputs, and wall-clock timings. Suite
+version 18 adds the Laravel branch: published Workflow and Waterline
+Composer package pins, documented environment setup, workflow/activity
+files, the queue worker, and `php artisan app:quickstart-workflow` must
+reach `status=completed` and `output=Hello, Laravel!` within 10 minutes.
 Skew refusal matrix coverage is stable in suite version 15 and later and
 is required for every target that claims the server, SDK, CLI, worker,
 or Waterline compatibility surface.
