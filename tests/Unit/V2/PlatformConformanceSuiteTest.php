@@ -28,7 +28,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame('durable-workflow.v2.platform-conformance.suite', $manifest['schema']);
-        $this->assertSame(15, $manifest['version']);
+        $this->assertSame(17, $manifest['version']);
         $this->assertSame('docs/platform-conformance.md', $manifest['authority_doc']);
         $this->assertSame(
             'https://durable-workflow.github.io/docs/2.0/platform-conformance',
@@ -174,7 +174,7 @@ final class PlatformConformanceSuiteTest extends TestCase
         $manifest = PlatformConformanceSuite::manifest();
 
         $this->assertSame(
-            15,
+            17,
             $manifest['version'],
             'the workflow mirror must stay aligned with the currently published platform conformance contract',
         );
@@ -820,6 +820,7 @@ final class PlatformConformanceSuiteTest extends TestCase
             'workflow_migration_readiness_verdict',
             'workflow_public_api_stability_verdict',
             'workflow_documentation_and_config_verdict',
+            'quickstart_local_server_hosted_completion',
             'waterline_feature_completeness_verdict',
             'waterline_migration_and_config_verdict',
             'waterline_public_api_and_docs_verdict',
