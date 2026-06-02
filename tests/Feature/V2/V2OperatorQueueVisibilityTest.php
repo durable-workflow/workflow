@@ -345,6 +345,34 @@ final class V2OperatorQueueVisibilityTest extends TestCase
         $this->assertSame([], WorkerCompatibilityFleet::detailsForNamespace('missing', 'build-a'));
     }
 
+    public function testStandaloneWorkerVisibilityForgetsOneNamespaceWorkerCompatibility(): void
+    {
+        Carbon::setTestNow('2026-04-16 12:00:00');
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+            WorkerCompatibilityFleet::clear();
+        });
+        WorkerCompatibilityFleet::clear();
+
+        StandaloneWorkerVisibility::recordCompatibility('default', 'worker-a', 'external', 'build-a');
+        StandaloneWorkerVisibility::recordCompatibility('default', 'worker-b', 'external', 'build-b');
+        StandaloneWorkerVisibility::recordCompatibility('other', 'worker-c', 'external', 'build-other');
+
+        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external'));
+        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-b', null, 'external'));
+        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('other', 'build-other', null, 'external'));
+
+        WorkerCompatibilityFleet::forgetWorkerForNamespace('default', 'worker-a');
+
+        $this->assertSame([], WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external'));
+        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-b', null, 'external'));
+        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('other', 'build-other', null, 'external'));
+
+        StandaloneWorkerVisibility::recordCompatibility('default', 'worker-a', 'external', 'build-a');
+
+        $this->assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-a', null, 'external'));
+    }
+
     private function createRun(string $instanceId, string $runId, string $namespace): WorkflowRun
     {
         $instance = WorkflowInstance::query()->create([

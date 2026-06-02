@@ -207,6 +207,27 @@ final class WorkerCompatibilityFleet
         self::forgetSnapshotCache();
     }
 
+    public static function forgetWorkerForNamespace(string $namespace, string $workerId): void
+    {
+        $namespace = self::normalizeValue($namespace) ?? $namespace;
+        $workerId = self::normalizeValue($workerId);
+
+        if ($workerId === null) {
+            return;
+        }
+
+        if (self::heartbeatTableExists()) {
+            WorkerCompatibilityHeartbeat::query()
+                ->where('namespace', $namespace)
+                ->where('worker_id', $workerId)
+                ->delete();
+        }
+
+        self::forgetLegacyWorkerSnapshot($namespace, $workerId);
+        unset(self::$lastRecorded[$workerId]);
+        self::forgetSnapshotCache();
+    }
+
     public static function activeWorkerCount(?string $connection = null, ?string $queue = null): int
     {
         return count(self::matchingSnapshots(self::scopeNamespace(), $connection, $queue));
@@ -559,6 +580,30 @@ final class WorkerCompatibilityFleet
     {
         self::$snapshotCache = null;
         self::$snapshotCacheSecond = null;
+    }
+
+    private static function forgetLegacyWorkerSnapshot(string $namespace, string $workerId): void
+    {
+        $fleet = Cache::get(self::LEGACY_CACHE_KEY);
+
+        if (! is_array($fleet) || ! isset($fleet[$workerId]) || ! is_array($fleet[$workerId])) {
+            return;
+        }
+
+        $snapshotNamespace = self::normalizeValue($fleet[$workerId]['namespace'] ?? null);
+        if ($snapshotNamespace !== null && $snapshotNamespace !== $namespace) {
+            return;
+        }
+
+        unset($fleet[$workerId]);
+
+        if ($fleet === []) {
+            Cache::forget(self::LEGACY_CACHE_KEY);
+
+            return;
+        }
+
+        Cache::put(self::LEGACY_CACHE_KEY, $fleet, self::ttlSeconds());
     }
 
     private static function hostName(): ?string
