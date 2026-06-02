@@ -11,6 +11,8 @@ use JsonException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Client\ControlPlaneClient;
+use Workflow\V2\Client\WorkflowClient;
+use Workflow\V2\Client\WorkflowClientException;
 use Workflow\V2\Exceptions\ControlPlaneRequestException;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Worker\WorkerProtocolClient;
@@ -116,6 +118,15 @@ class V2NamespaceConformanceCommand extends Command
             'packagist',
             'packagist_package',
         ],
+    ];
+
+    /**
+     * @var list<string>
+     */
+    private const WORKFLOW_NOT_FOUND_REASONS = [
+        'instance_not_found',
+        'workflow_not_found',
+        'run_not_found',
     ];
 
     public function __construct(
@@ -321,8 +332,9 @@ class V2NamespaceConformanceCommand extends Command
         $pollTimeoutSeconds = $this->pollTimeoutSeconds();
 
         $defaultClient = new ControlPlaneClient($this->http, $serverUrl, $token);
-        $tenantAClient = $defaultClient->withNamespace($namespaces['a']);
-        $tenantBClient = $defaultClient->withNamespace($namespaces['b']);
+        $defaultWorkflowClient = new WorkflowClient($this->http, $serverUrl, $token);
+        $tenantAWorkflowClient = $defaultWorkflowClient->withNamespace($namespaces['a']);
+        $tenantBWorkflowClient = $defaultWorkflowClient->withNamespace($namespaces['b']);
 
         $createDescription = sprintf('PHP namespace conformance shard %s', $runId);
         $updatedDescription = sprintf('PHP namespace conformance shard %s updated', $runId);
@@ -355,7 +367,7 @@ class V2NamespaceConformanceCommand extends Command
         $workflowA = sprintf('%s-%s-workflow', $runId, $namespaces['a']);
         $workflowB = sprintf('%s-%s-workflow', $runId, $namespaces['b']);
 
-        $startA = $tenantAClient->startWorkflow($workflowType, $workflowA, [
+        $startA = $tenantAWorkflowClient->startWorkflow($workflowType, $workflowA, [
             [
                 'conformance_run_id' => $runId,
                 'namespace' => $namespaces['a'],
@@ -365,7 +377,9 @@ class V2NamespaceConformanceCommand extends Command
             'task_queue' => $taskQueue,
         ]);
 
-        $crossNamespaceLookup = $this->notFoundOutcome(static fn (): array => $tenantBClient->describeWorkflow($workflowA));
+        $crossNamespaceLookup = $this->notFoundOutcome(
+            static fn (): mixed => $tenantBWorkflowClient->queryWorkflow($workflowA, '__namespace_probe'),
+        );
 
         $workerA = new WorkerProtocolClient($this->http, $serverUrl, $token, $namespaces['a']);
         $workerB = new WorkerProtocolClient($this->http, $serverUrl, $token, $namespaces['b']);
@@ -392,7 +406,7 @@ class V2NamespaceConformanceCommand extends Command
             timeoutSeconds: $pollTimeoutSeconds,
         );
 
-        $startB = $tenantBClient->startWorkflow($workflowType, $workflowB, [
+        $startB = $tenantBWorkflowClient->startWorkflow($workflowType, $workflowB, [
             [
                 'conformance_run_id' => $runId,
                 'namespace' => $namespaces['b'],
@@ -450,12 +464,13 @@ class V2NamespaceConformanceCommand extends Command
                 'observed_outputs' => [
                     'python_client_namespace' => 'covered_by_full_harness',
                     'php_client_namespace' => [
-                        'default' => $defaultClient->namespace(),
-                        'tenant_a' => $tenantAClient->namespace(),
-                        'tenant_b' => $tenantBClient->namespace(),
+                        'client' => WorkflowClient::class,
+                        'default' => $defaultWorkflowClient->namespace(),
+                        'tenant_a' => $tenantAWorkflowClient->namespace(),
+                        'tenant_b' => $tenantBWorkflowClient->namespace(),
                     ],
                     'default_namespace_behavior' => [
-                        'selected_namespace' => $defaultClient->namespace(),
+                        'selected_namespace' => $defaultWorkflowClient->namespace(),
                         'documented_default' => 'default',
                     ],
                     'cross_namespace_lookup_denied' => $crossNamespaceLookup,
@@ -674,7 +689,7 @@ class V2NamespaceConformanceCommand extends Command
     }
 
     /**
-     * @param callable(): array<string, mixed> $operation
+     * @param callable(): mixed $operation
      *
      * @return array<string, mixed>
      */
@@ -690,14 +705,30 @@ class V2NamespaceConformanceCommand extends Command
             ];
         } catch (ControlPlaneRequestException $exception) {
             return [
-                'not_found' => $exception->status() === 404
-                    || in_array($exception->reason(), ['not_found', 'workflow_not_found', 'run_not_found'], true),
+                'not_found' => self::isWorkflowNotFoundOutcome($exception->status(), $exception->reason()),
                 'status' => $exception->status(),
                 'reason' => $exception->reason(),
                 'body' => $exception->body(),
                 'message' => $exception->getMessage(),
             ];
+        } catch (WorkflowClientException $exception) {
+            $body = $exception->body();
+            $reason = is_string($body['reason'] ?? null) ? $body['reason'] : null;
+
+            return [
+                'not_found' => self::isWorkflowNotFoundOutcome($exception->statusCode(), $reason),
+                'status' => $exception->statusCode(),
+                'reason' => $reason,
+                'body' => $body,
+                'message' => $exception->getMessage(),
+            ];
         }
+    }
+
+    private static function isWorkflowNotFoundOutcome(int $status, ?string $reason): bool
+    {
+        return $status === 404
+            && in_array($reason, self::WORKFLOW_NOT_FOUND_REASONS, true);
     }
 
     /**

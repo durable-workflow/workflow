@@ -291,7 +291,10 @@ are encoded as language-neutral payload envelopes, and query results are
 decoded from `result_envelope` when the server returns one. Rejected requests
 raise `Workflow\V2\Client\WorkflowClientException`, which preserves the HTTP
 status code and exact decoded response body so cross-language callers can
-record typed failure evidence without parsing exception text.
+record typed failure evidence without parsing exception text. `namespace()`
+returns the client's selected namespace, defaulting to `default`, and
+`withNamespace()` creates a fresh workflow client with the same connection
+settings for a different namespace.
 
 ## `Workflow\V2\Workflow` authoring facade
 

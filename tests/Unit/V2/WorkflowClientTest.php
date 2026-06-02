@@ -14,6 +14,39 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 
 final class WorkflowClientTest extends TestCase
 {
+    public function testWithNamespaceClonesConnectionSettingsAndUsesSelectedNamespaceHeader(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'url' => $request->url(),
+                'authorization' => $request->hasHeader('Authorization', 'Bearer test-token'),
+                'default' => $request->hasHeader('X-Namespace', 'default'),
+                'tenant_b' => $request->hasHeader('X-Namespace', 'tenant-b'),
+            ];
+
+            return $http->response([
+                'started' => true,
+                'workflow_id' => 'counter-php',
+            ]);
+        });
+
+        $defaultClient = new WorkflowClient($http, 'http://server:8080/', 'test-token');
+        $tenantBClient = $defaultClient->withNamespace('tenant-b');
+
+        $this->assertSame('default', $defaultClient->namespace());
+        $this->assertSame('tenant-b', $tenantBClient->namespace());
+
+        $tenantBClient->startWorkflow('conformance.php.Counter', 'counter-php');
+
+        $this->assertSame('http://server:8080/api/workflows', $requests[0]['url']);
+        $this->assertTrue($requests[0]['authorization']);
+        $this->assertFalse($requests[0]['default']);
+        $this->assertTrue($requests[0]['tenant_b']);
+    }
+
     public function testSignalWorkflowUsesControlPlaneEndpointAndPayloadEnvelope(): void
     {
         $http = new HttpFactory();

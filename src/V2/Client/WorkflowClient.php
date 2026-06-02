@@ -48,13 +48,31 @@ final class WorkflowClient
             throw new InvalidArgumentException('Base URL cannot be empty.');
         }
 
-        if ($this->namespace === '') {
+        if (trim($this->namespace) === '') {
             throw new InvalidArgumentException('Namespace cannot be empty.');
         }
 
         if ($this->defaultRequestTimeoutSeconds < 1) {
             throw new InvalidArgumentException('Default request timeout must be at least 1 second.');
         }
+    }
+
+    public function namespace(): string
+    {
+        return $this->namespace;
+    }
+
+    public function withNamespace(string $namespace): self
+    {
+        return new self(
+            $this->http,
+            $this->baseUrl,
+            $this->token,
+            $namespace,
+            $this->defaultRequestTimeoutSeconds,
+            $this->controlPlaneVersion,
+            $this->workerProtocolVersion,
+        );
     }
 
     /**
