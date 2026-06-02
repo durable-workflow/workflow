@@ -276,6 +276,23 @@ The `Workflow\Serializers\Avro::envelope()` and `::decodeEnvelope()`
 helpers provide the language-neutral payload envelope used by those
 worker-protocol commands.
 
+## Control-plane SDK shims
+
+The PHP SDK exposes a stable control-plane client for automation and
+conformance scripts that need to call the standalone server without shelling
+out to the CLI:
+
+- `Workflow\V2\Client\WorkflowClient`
+- `Workflow\V2\Client\WorkflowClientException`
+
+`WorkflowClient` uses the same public HTTP routes and protocol headers as the
+CLI for workflow start, signal, and query operations. Signal and query inputs
+are encoded as language-neutral payload envelopes, and query results are
+decoded from `result_envelope` when the server returns one. Rejected requests
+raise `Workflow\V2\Client\WorkflowClientException`, which preserves the HTTP
+status code and exact decoded response body so cross-language callers can
+record typed failure evidence without parsing exception text.
+
 ## `Workflow\V2\Workflow` authoring facade
 
 The abstract base class `Workflow\V2\Workflow` is the stable authoring API
