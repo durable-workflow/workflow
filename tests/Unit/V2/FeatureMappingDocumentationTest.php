@@ -315,6 +315,7 @@ final class FeatureMappingDocumentationTest extends TestCase
         'workflow:v2:replay-simulate',
         'workflow:v2:replay-conformance',
         'workflow:v2:namespace-conformance',
+        'workflow:v2:schedule-conformance',
         'workflow:v2:doctor',
         'workflow:v2:rebuild-projections',
         'workflow:v2:repair-pass',
