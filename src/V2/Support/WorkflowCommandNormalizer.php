@@ -89,8 +89,8 @@ final class WorkflowCommandNormalizer
             'guidance' => 'delay_seconds is the timer delay and only applies to a start_timer command.',
         ],
         'timeout_seconds' => [
-            'allowed' => ['open_condition_wait'],
-            'guidance' => 'timeout_seconds only applies to open_condition_wait. For activities use start_to_close_timeout / schedule_to_start_timeout / schedule_to_close_timeout / heartbeat_timeout; for child workflows use execution_timeout_seconds / run_timeout_seconds.',
+            'allowed' => ['open_condition_wait', 'open_signal_wait'],
+            'guidance' => 'timeout_seconds only applies to open_condition_wait or open_signal_wait. For activities use start_to_close_timeout / schedule_to_start_timeout / schedule_to_close_timeout / heartbeat_timeout; for child workflows use execution_timeout_seconds / run_timeout_seconds.',
         ],
         'payload_codec' => [
             'allowed' => [
@@ -498,6 +498,38 @@ final class WorkflowCommandNormalizer
                     'type' => $type,
                     'condition_key' => $conditionKey,
                     'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
+                    'timeout_seconds' => $timeoutSeconds,
+                ], static fn (mixed $value): bool => $value !== null);
+
+                continue;
+            }
+
+            if ($type === 'open_signal_wait') {
+                if (! is_string($command['signal_name'] ?? null) || trim((string) $command['signal_name']) === '') {
+                    $errors["commands.{$index}.signal_name"] = [
+                        'Open signal wait commands require a non-empty signal_name.',
+                    ];
+
+                    continue;
+                }
+
+                $timeoutSeconds = null;
+
+                if (array_key_exists('timeout_seconds', $command) && $command['timeout_seconds'] !== null) {
+                    if (! is_int($command['timeout_seconds']) || (int) $command['timeout_seconds'] < 0) {
+                        $errors["commands.{$index}.timeout_seconds"] = [
+                            'Open signal wait timeout_seconds must be a non-negative integer when provided.',
+                        ];
+
+                        continue;
+                    }
+
+                    $timeoutSeconds = (int) $command['timeout_seconds'];
+                }
+
+                $normalized[] = array_filter([
+                    'type' => $type,
+                    'signal_name' => trim((string) $command['signal_name']),
                     'timeout_seconds' => $timeoutSeconds,
                 ], static fn (mixed $value): bool => $value !== null);
 

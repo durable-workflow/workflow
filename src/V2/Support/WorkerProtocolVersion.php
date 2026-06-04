@@ -29,7 +29,13 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.8';
+    public const VERSION = '1.9';
+
+    private const QUERY_TASKS_MINIMUM_PROTOCOL_VERSION = '1.8';
+
+    private const UPSERT_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION = '1.8';
+
+    private const WORKER_SESSIONS_MINIMUM_PROTOCOL_VERSION = '1.8';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -177,6 +183,8 @@ final class WorkerProtocolVersion
             'record_side_effect',
             'record_version_marker',
             'upsert_search_attributes',
+            'open_condition_wait',
+            'open_signal_wait',
         ];
     }
 
@@ -330,7 +338,7 @@ final class WorkerProtocolVersion
         return [
             'type' => 'upsert_search_attributes',
             'category' => 'non_terminal_command',
-            'minimum_protocol_version' => self::VERSION,
+            'minimum_protocol_version' => self::UPSERT_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION,
             'required_fields' => ['type', 'attributes'],
             'optional_fields' => ['attribute_types'],
             'attributes' => [
@@ -371,7 +379,7 @@ final class WorkerProtocolVersion
     {
         return [
             'feature' => self::CAPABILITY_QUERY_TASKS,
-            'minimum_protocol_version' => self::VERSION,
+            'minimum_protocol_version' => self::QUERY_TASKS_MINIMUM_PROTOCOL_VERSION,
             'worker_capability' => self::CAPABILITY_QUERY_TASKS,
             'verbs' => self::queryTaskVerbs(),
             'path_prefix' => '/api/worker/query-tasks',
@@ -523,7 +531,7 @@ final class WorkerProtocolVersion
         return [
             'feature' => 'worker_sessions',
             'contract_version' => '1.0',
-            'minimum_protocol_version' => self::VERSION,
+            'minimum_protocol_version' => self::WORKER_SESSIONS_MINIMUM_PROTOCOL_VERSION,
             'command_field' => 'worker_session',
             'activity_options_field' => 'worker_session',
             'verbs' => self::workerSessionVerbs(),
@@ -548,7 +556,7 @@ final class WorkerProtocolVersion
                 'allow_reacquire_after_failure_default' => true,
             ],
             'rollout_safety' => [
-                'minimum_protocol_version' => self::VERSION,
+                'minimum_protocol_version' => self::WORKER_SESSIONS_MINIMUM_PROTOCOL_VERSION,
                 'mixed_server_rollout_fenced_by_protocol_version' => true,
                 'servers_below_minimum_must_reject_worker_session_commands' => true,
                 'servers_below_minimum_must_not_claim_worker_session_activity_tasks' => true,

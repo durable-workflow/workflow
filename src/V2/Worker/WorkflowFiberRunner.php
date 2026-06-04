@@ -16,10 +16,13 @@ use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ActivityCall;
+use Workflow\V2\Support\AwaitCall;
+use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\SideEffectCall;
+use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
@@ -74,6 +77,26 @@ final class WorkflowFiberRunner
      * @var array<int, true>
      */
     private array $openTimerWaits = [];
+
+    /**
+     * @var array<int, array{result: bool, recorded_at: CarbonInterface|null}>
+     */
+    private array $recordedConditionOutcomes = [];
+
+    /**
+     * @var array<int, true>
+     */
+    private array $openConditionWaits = [];
+
+    /**
+     * @var array<int, array{signal_name: string, result: mixed, recorded_at: CarbonInterface|null}>
+     */
+    private array $recordedSignalOutcomes = [];
+
+    /**
+     * @var array<int, array{signal_name: string, signal_wait_id: string|null}>
+     */
+    private array $openSignalWaits = [];
 
     /**
      * @var array<int, array{status: string, result?: mixed, exception?: Throwable, recorded_at: CarbonInterface|null}>
@@ -345,6 +368,50 @@ final class WorkflowFiberRunner
                 }
             }
 
+            if ($current instanceof AwaitCall || $current instanceof AwaitWithTimeoutCall) {
+                $historySequence = $this->historySequenceForCurrentPosition();
+                $recorded = $historySequence === null
+                    ? null
+                    : ($this->recordedConditionOutcomes[$historySequence] ?? null);
+
+                if ($recorded !== null) {
+                    ++$this->sequence;
+                    $this->execution->send($recorded['result'], $recorded['recorded_at']);
+
+                    continue;
+                }
+
+                if ($historySequence !== null && isset($this->openConditionWaits[$historySequence])) {
+                    $this->waitingForHistory = true;
+
+                    return WorkflowStep::waiting($current)
+                        ->withPrependedCommands($immediateCommands);
+                }
+            }
+
+            if ($current instanceof SignalCall) {
+                $historySequence = $this->historySequenceForCurrentPosition();
+                $recorded = $historySequence === null
+                    ? null
+                    : ($this->recordedSignalOutcomes[$historySequence] ?? null);
+
+                if ($recorded !== null && $recorded['signal_name'] === $current->name) {
+                    ++$this->sequence;
+                    $this->execution->send($recorded['result'], $recorded['recorded_at']);
+
+                    continue;
+                }
+
+                $open = $historySequence === null ? null : ($this->openSignalWaits[$historySequence] ?? null);
+
+                if ($open !== null && $open['signal_name'] === $current->name) {
+                    $this->waitingForHistory = true;
+
+                    return WorkflowStep::waiting($current)
+                        ->withPrependedCommands($immediateCommands);
+                }
+            }
+
             if ($current instanceof ChildWorkflowCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
                 $recorded = $historySequence === null
@@ -392,6 +459,10 @@ final class WorkflowFiberRunner
                 || isset($this->openActivityWaits[$historySequence]),
             $this->pendingYielded instanceof TimerCall => isset($this->recordedTimerOutcomes[$historySequence])
                 || isset($this->openTimerWaits[$historySequence]),
+            $this->pendingYielded instanceof AwaitCall || $this->pendingYielded instanceof AwaitWithTimeoutCall => isset($this->recordedConditionOutcomes[$historySequence])
+                || isset($this->openConditionWaits[$historySequence]),
+            $this->pendingYielded instanceof SignalCall => isset($this->recordedSignalOutcomes[$historySequence])
+                || isset($this->openSignalWaits[$historySequence]),
             $this->pendingYielded instanceof ChildWorkflowCall => isset($this->recordedChildOutcomes[$historySequence])
                 || isset($this->openChildWaits[$historySequence]),
             default => false,
@@ -441,6 +512,20 @@ final class WorkflowFiberRunner
         $this->openTimerWaits = array_diff_key(
             self::indexOpenTimerWaits($historyEvents),
             $this->recordedTimerOutcomes,
+        );
+        $this->recordedConditionOutcomes = self::indexRecordedConditionOutcomes($historyEvents);
+        $this->openConditionWaits = array_diff_key(
+            self::indexOpenConditionWaits($historyEvents),
+            $this->recordedConditionOutcomes,
+        );
+        $this->recordedSignalOutcomes = self::indexRecordedSignalOutcomes(
+            $historyEvents,
+            $this->payloadCodec,
+            $this->namespace,
+        );
+        $this->openSignalWaits = array_diff_key(
+            self::indexOpenSignalWaits($historyEvents),
+            $this->recordedSignalOutcomes,
         );
         $this->recordedChildOutcomes = self::indexRecordedChildOutcomes(
             $historyEvents,
@@ -630,6 +715,11 @@ final class WorkflowFiberRunner
             'TimerScheduled',
             'TimerCancelled',
             'TimerFired',
+            'ConditionWaitOpened',
+            'ConditionWaitSatisfied',
+            'ConditionWaitTimedOut',
+            'SignalWaitOpened',
+            'SignalApplied',
             'ChildWorkflowScheduled',
             'ChildRunStarted',
             'ChildRunCompleted',
@@ -792,6 +882,174 @@ final class WorkflowFiberRunner
         }
 
         return $open;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     * @return array<int, array{result: bool, recorded_at: CarbonInterface|null}>
+     */
+    private static function indexRecordedConditionOutcomes(array $historyEvents): array
+    {
+        $outcomes = [];
+
+        foreach ($historyEvents as $event) {
+            $type = self::eventType($event);
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+
+            if (! in_array($type, ['ConditionWaitSatisfied', 'ConditionWaitTimedOut', 'TimerFired'], true)) {
+                continue;
+            }
+
+            if ($type === 'TimerFired' && ($payload['timer_kind'] ?? null) !== 'condition_timeout') {
+                continue;
+            }
+
+            $sequence = self::eventSequence($event, $payload);
+
+            if ($sequence === null) {
+                continue;
+            }
+
+            $outcomes[$sequence] = [
+                'result' => $type === 'ConditionWaitSatisfied',
+                'recorded_at' => self::eventRecordedAt($event, $payload, ['fired_at']),
+            ];
+        }
+
+        return $outcomes;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     * @return array<int, true>
+     */
+    private static function indexOpenConditionWaits(array $historyEvents): array
+    {
+        $open = [];
+
+        foreach ($historyEvents as $event) {
+            if (self::eventType($event) !== 'ConditionWaitOpened') {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = self::eventSequence($event, $payload);
+
+            if ($sequence !== null) {
+                $open[$sequence] = true;
+            }
+        }
+
+        return $open;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     * @return array<int, array{signal_name: string, signal_wait_id: string|null}>
+     */
+    private static function indexOpenSignalWaits(array $historyEvents): array
+    {
+        $open = [];
+
+        foreach ($historyEvents as $event) {
+            if (self::eventType($event) !== 'SignalWaitOpened') {
+                continue;
+            }
+
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+            $sequence = self::eventSequence($event, $payload);
+            $signalName = self::stringValue($payload['signal_name'] ?? null);
+
+            if ($sequence !== null && $signalName !== null) {
+                $open[$sequence] = [
+                    'signal_name' => $signalName,
+                    'signal_wait_id' => self::stringValue($payload['signal_wait_id'] ?? null),
+                ];
+            }
+        }
+
+        return $open;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     * @return array<int, array{signal_name: string, result: mixed, recorded_at: CarbonInterface|null}>
+     */
+    private static function indexRecordedSignalOutcomes(
+        array $historyEvents,
+        string $payloadCodec,
+        ?string $namespace,
+    ): array {
+        $outcomes = [];
+        $openBySequence = self::indexOpenSignalWaits($historyEvents);
+        $sequenceByWaitId = [];
+
+        foreach ($openBySequence as $sequence => $wait) {
+            if ($wait['signal_wait_id'] !== null) {
+                $sequenceByWaitId[$wait['signal_wait_id']] = $sequence;
+            }
+        }
+
+        foreach ($historyEvents as $event) {
+            $type = self::eventType($event);
+            $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+
+            if (! in_array($type, ['SignalReceived', 'SignalApplied', 'TimerFired'], true)) {
+                continue;
+            }
+
+            if ($type === 'TimerFired' && ($payload['timer_kind'] ?? null) !== 'signal_timeout') {
+                continue;
+            }
+
+            $signalName = self::stringValue($payload['signal_name'] ?? null);
+            $sequence = $type === 'SignalReceived'
+                ? self::intValue($payload['workflow_sequence'] ?? null)
+                : self::eventSequence($event, $payload);
+
+            if ($sequence === null) {
+                $signalWaitId = self::stringValue($payload['signal_wait_id'] ?? null);
+                $sequence = $signalWaitId === null ? null : ($sequenceByWaitId[$signalWaitId] ?? null);
+            }
+
+            if ($sequence === null || $signalName === null) {
+                continue;
+            }
+
+            if ($type === 'TimerFired') {
+                $outcomes[$sequence] = [
+                    'signal_name' => $signalName,
+                    'result' => null,
+                    'recorded_at' => self::eventRecordedAt($event, $payload, ['fired_at']),
+                ];
+
+                continue;
+            }
+
+            if ($type === 'SignalApplied' && array_key_exists('value', $payload)) {
+                $result = self::decodePayload(
+                    $payload['value'],
+                    $payloadCodec,
+                    self::stringValue($payload['payload_codec'] ?? null),
+                    $namespace,
+                );
+            } else {
+                $result = self::signalValueFromArgumentsPayload(
+                    $payload['arguments'] ?? null,
+                    $payloadCodec,
+                    self::stringValue($payload['payload_codec'] ?? null),
+                    $namespace,
+                );
+            }
+
+            $outcomes[$sequence] = [
+                'signal_name' => $signalName,
+                'result' => $result,
+                'recorded_at' => self::eventRecordedAt($event, $payload),
+            ];
+        }
+
+        return $outcomes;
     }
 
     /**
@@ -989,6 +1247,31 @@ final class WorkflowFiberRunner
         return Serializer::unserializeWithCodec($codec, $serialized);
     }
 
+    private static function signalValueFromArgumentsPayload(
+        mixed $payload,
+        string $fallbackCodec,
+        ?string $eventCodec = null,
+        ?string $namespace = null,
+    ): mixed {
+        if ($payload === null) {
+            return true;
+        }
+
+        $arguments = self::decodePayload($payload, $fallbackCodec, $eventCodec, $namespace);
+
+        if (! is_array($arguments)) {
+            return $arguments;
+        }
+
+        $arguments = array_values($arguments);
+
+        if ($arguments === []) {
+            return true;
+        }
+
+        return count($arguments) === 1 ? $arguments[0] : $arguments;
+    }
+
     private static function payloadCodec(mixed $payload, ?string $eventCodec, string $fallbackCodec): string
     {
         if ($eventCodec !== null) {
@@ -1039,6 +1322,12 @@ final class WorkflowFiberRunner
 
         if ($payloadSequence !== null) {
             return $payloadSequence;
+        }
+
+        $workflowSequence = self::intValue($payload['workflow_sequence'] ?? null);
+
+        if ($workflowSequence !== null) {
+            return $workflowSequence;
         }
 
         return self::intValue($event['sequence'] ?? null);

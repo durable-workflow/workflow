@@ -728,6 +728,47 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]], $out);
     }
 
+    public function testOpenSignalWaitTrimsNameAndPreservesTimeout(): void
+    {
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => ' increment ',
+                'timeout_seconds' => 30,
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'open_signal_wait',
+            'signal_name' => 'increment',
+            'timeout_seconds' => 30,
+        ]], $out);
+    }
+
+    public function testOpenSignalWaitRequiresName(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'open_signal_wait',
+            ],
+        ]);
+    }
+
+    public function testOpenSignalWaitRejectsNegativeTimeout(): void
+    {
+        $this->expectException(ValidationException::class);
+
+        WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'increment',
+                'timeout_seconds' => -1,
+            ],
+        ]);
+    }
+
     public function testUnknownCommandTypeRejected(): void
     {
         $this->expectException(ValidationException::class);

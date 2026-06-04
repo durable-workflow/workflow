@@ -9,10 +9,13 @@ use Workflow\V2\Contracts\YieldedCommand;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityOptions;
+use Workflow\V2\Support\AwaitCall;
+use Workflow\V2\Support\AwaitWithTimeoutCall;
 use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\ChildWorkflowOptions;
 use Workflow\V2\Support\ContinueAsNewCall;
 use Workflow\V2\Support\SideEffectCall;
+use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\VersionCall;
@@ -120,6 +123,8 @@ final class WorkflowStep
                 'type' => 'start_timer',
                 'delay_seconds' => $yielded->seconds,
             ],
+            $yielded instanceof SignalCall => self::signalWaitCommand($yielded),
+            $yielded instanceof AwaitCall || $yielded instanceof AwaitWithTimeoutCall => self::conditionWaitCommand($yielded),
             $yielded instanceof ChildWorkflowCall => self::childWorkflowCommand($yielded, $payloadCodec),
             $yielded instanceof SideEffectCall => throw new UnsupportedWorkflowYieldException(
                 'Worker protocol side effects require WorkflowFiberRunner history resolution before command emission.',
@@ -145,6 +150,31 @@ final class WorkflowStep
                 get_debug_type($yielded),
             )),
         };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function signalWaitCommand(SignalCall $call): array
+    {
+        return array_filter([
+            'type' => 'open_signal_wait',
+            'signal_name' => $call->name,
+            'timeout_seconds' => $call->timeoutSeconds,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function conditionWaitCommand(AwaitCall|AwaitWithTimeoutCall $call): array
+    {
+        return array_filter([
+            'type' => 'open_condition_wait',
+            'condition_key' => $call->conditionKey,
+            'condition_definition_fingerprint' => $call->conditionDefinitionFingerprint,
+            'timeout_seconds' => $call instanceof AwaitWithTimeoutCall ? $call->seconds : null,
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**

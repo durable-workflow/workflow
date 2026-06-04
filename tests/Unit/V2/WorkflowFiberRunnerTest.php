@@ -71,6 +71,107 @@ final class WorkflowFiberRunnerTest extends TestCase
         ]], $scheduled->commands);
     }
 
+    public function testRunnerSurfacesConditionWaitCommand(): void
+    {
+        $scheduled = $this->runnerFor(WorkerProtocolRunnerConditionWaitWorkflow::class)->step();
+
+        $this->assertFalse($scheduled->completed);
+        $this->assertSame([[
+            'type' => 'open_condition_wait',
+            'condition_key' => 'done',
+            'condition_definition_fingerprint' => $scheduled->command['condition_definition_fingerprint'],
+        ]], $scheduled->commands);
+        $this->assertIsString($scheduled->command['condition_definition_fingerprint']);
+    }
+
+    public function testRunnerSurfacesSignalWaitCommand(): void
+    {
+        $scheduled = $this->runnerFor(WorkerProtocolRunnerSignalWaitWorkflow::class)->step();
+
+        $this->assertFalse($scheduled->completed);
+        $this->assertSame([[
+            'type' => 'open_signal_wait',
+            'signal_name' => 'increment',
+        ]], $scheduled->commands);
+    }
+
+    public function testRunnerWaitsWhenSignalWaitHistoryIsOpen(): void
+    {
+        $waiting = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerSignalWaitWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'SignalWaitOpened',
+                'payload' => [
+                    'sequence' => 1,
+                    'signal_name' => 'increment',
+                    'signal_wait_id' => 'wait-1',
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ]],
+        )->step();
+
+        $this->assertFalse($waiting->completed);
+        $this->assertNull($waiting->command);
+        $this->assertSame([], $waiting->commands);
+    }
+
+    public function testRunnerReplaysSignalReceivedAndEmitsNextSignalWait(): void
+    {
+        WorkerProtocolRunnerCounterSignalWorkflow::reset();
+
+        $scheduled = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerCounterSignalWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'SignalWaitOpened',
+                'payload' => [
+                    'sequence' => 1,
+                    'signal_name' => 'increment',
+                    'signal_wait_id' => 'wait-1',
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ], [
+                'sequence' => 3,
+                'event_type' => 'SignalReceived',
+                'payload' => [
+                    'signal_name' => 'increment',
+                    'signal_wait_id' => 'wait-1',
+                    'arguments' => [
+                        'codec' => 'avro',
+                        'blob' => Serializer::serializeWithCodec('avro', [5]),
+                    ],
+                ],
+                'recorded_at' => '2026-05-12T10:13:14+00:00',
+            ]],
+        )->step();
+
+        $this->assertFalse($scheduled->completed);
+        $this->assertSame([[
+            'type' => 'open_signal_wait',
+            'signal_name' => 'increment',
+        ]], $scheduled->commands);
+        $this->assertSame(5, WorkerProtocolRunnerCounterSignalWorkflow::lastCount());
+    }
+
     public function testRunnerSurfacesChildWorkflowCommand(): void
     {
         $scheduled = $this->runnerFor(WorkerProtocolRunnerChildWorkflow::class)->step();
@@ -928,6 +1029,47 @@ final class WorkerProtocolRunnerTimerWorkflow extends Workflow
     public function handle(): mixed
     {
         return Workflow::timer(30);
+    }
+}
+
+final class WorkerProtocolRunnerConditionWaitWorkflow extends Workflow
+{
+    public function handle(): mixed
+    {
+        return Workflow::await(static fn (): bool => false, null, 'done');
+    }
+}
+
+final class WorkerProtocolRunnerSignalWaitWorkflow extends Workflow
+{
+    public function handle(): mixed
+    {
+        return Workflow::awaitSignal('increment');
+    }
+}
+
+final class WorkerProtocolRunnerCounterSignalWorkflow extends Workflow
+{
+    private static int $lastCount = 0;
+
+    private int $count = 0;
+
+    public static function reset(): void
+    {
+        self::$lastCount = 0;
+    }
+
+    public static function lastCount(): int
+    {
+        return self::$lastCount;
+    }
+
+    public function handle(): mixed
+    {
+        while (true) {
+            $this->count += (int) Workflow::awaitSignal('increment');
+            self::$lastCount = $this->count;
+        }
     }
 }
 

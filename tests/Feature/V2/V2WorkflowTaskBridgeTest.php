@@ -11,6 +11,8 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Attributes\Signal;
+use Workflow\V2\Attributes\Type;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
@@ -52,6 +54,7 @@ use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowTaskPayload;
 use Workflow\V2\Worker\WorkflowFiberRunner;
 use Workflow\V2\Workflow as V2Workflow;
+use Workflow\V2\WorkflowStub;
 
 final class V2WorkflowTaskBridgeTest extends TestCase
 {
@@ -581,6 +584,214 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             Serializer::unserializeWithCodec('avro', $step->command['arguments']),
         );
         $this->assertSame([$namespace], $policy->driverNamespaces);
+    }
+
+    public function testFiberRunnerReplaysRealWorkflowStubSignalReceivedPayloadFromBridgeHistory(): void
+    {
+        Queue::fake();
+        BridgeProtocolSignalReplayWorkflow::reset();
+
+        $workflow = WorkflowStub::make(BridgeProtocolSignalReplayWorkflow::class, 'bridge-protocol-signal-replay');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertIsString($runId);
+
+        /** @var WorkflowTask $firstTask */
+        $firstTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertNotNull($this->bridge->claim($firstTask->id, 'protocol-worker-1'));
+
+        $firstHistory = $this->bridge->historyPayload($firstTask->id);
+
+        $this->assertNotNull($firstHistory);
+
+        $firstStep = WorkflowFiberRunner::forClass(
+            BridgeProtocolSignalReplayWorkflow::class,
+            $workflow->id(),
+            $runId,
+            [],
+            $firstHistory['payload_codec'],
+            $firstHistory['history_events'],
+        )->step();
+
+        $this->assertFalse($firstStep->completed);
+        $this->assertSame('open_signal_wait', $firstStep->command['type']);
+        $this->assertSame('increment', $firstStep->command['signal_name']);
+
+        $opened = $this->bridge->complete($firstTask->id, $firstStep->commands);
+
+        $this->assertTrue($opened['completed']);
+        $this->assertSame('waiting', $opened['run_status']);
+
+        $signalResult = $workflow->signal('increment', 7);
+
+        $this->assertTrue($signalResult->accepted());
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $signalResult->commandId())
+            ->sole();
+
+        /** @var WorkflowHistoryEvent $storedSignalReceived */
+        $storedSignalReceived = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->sole();
+
+        $this->assertSame($signal->id, $storedSignalReceived->payload['signal_id'] ?? null);
+        $this->assertArrayNotHasKey('arguments', $storedSignalReceived->payload);
+        $this->assertArrayNotHasKey('workflow_sequence', $storedSignalReceived->payload);
+
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame($signal->id, $signalTask->payload['workflow_signal_id'] ?? null);
+        $this->assertNotNull($this->bridge->claim($signalTask->id, 'protocol-worker-2'));
+
+        $resumeHistory = $this->bridge->historyPayload($signalTask->id);
+        $pagedHistory = $this->bridge->historyPayloadPaginated($signalTask->id);
+
+        $this->assertNotNull($resumeHistory);
+        $this->assertNotNull($pagedHistory);
+
+        foreach ([$resumeHistory, $pagedHistory] as $history) {
+            $received = collect($history['history_events'])
+                ->firstWhere('event_type', HistoryEventType::SignalReceived->value);
+
+            $this->assertIsArray($received);
+            $this->assertSame($signal->id, $received['payload']['signal_id'] ?? null);
+            $this->assertSame($signal->payload_codec, $received['payload']['payload_codec'] ?? null);
+            $this->assertSame(
+                [7],
+                Serializer::unserializeWithCodec(
+                    $received['payload']['arguments']['codec'],
+                    $received['payload']['arguments']['blob'],
+                ),
+            );
+        }
+
+        $resumeStep = WorkflowFiberRunner::forClass(
+            BridgeProtocolSignalReplayWorkflow::class,
+            $workflow->id(),
+            $runId,
+            [],
+            $resumeHistory['payload_codec'],
+            $resumeHistory['history_events'],
+        )->step();
+
+        $this->assertFalse($resumeStep->completed);
+        $this->assertSame('open_signal_wait', $resumeStep->command['type']);
+        $this->assertSame('increment', $resumeStep->command['signal_name']);
+        $this->assertSame(7, BridgeProtocolSignalReplayWorkflow::lastCount());
+    }
+
+    public function testProtocolOpenSignalWaitUsesBufferedSignalWaitIdWhenSignalArrivesDuringLeasedTask(): void
+    {
+        Queue::fake();
+        BridgeProtocolSignalReplayWorkflow::reset();
+
+        $workflow = WorkflowStub::make(BridgeProtocolSignalReplayWorkflow::class, 'bridge-protocol-buffered-signal');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->assertIsString($runId);
+
+        /** @var WorkflowTask $firstTask */
+        $firstTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertNotNull($this->bridge->claim($firstTask->id, 'protocol-worker-1'));
+
+        $firstHistory = $this->bridge->historyPayload($firstTask->id);
+
+        $this->assertNotNull($firstHistory);
+
+        $firstStep = WorkflowFiberRunner::forClass(
+            BridgeProtocolSignalReplayWorkflow::class,
+            $workflow->id(),
+            $runId,
+            [],
+            $firstHistory['payload_codec'],
+            $firstHistory['history_events'],
+        )->step();
+
+        $this->assertFalse($firstStep->completed);
+        $this->assertSame('open_signal_wait', $firstStep->command['type']);
+        $this->assertSame('increment', $firstStep->command['signal_name']);
+
+        $signalResult = $workflow->signal('increment', 7);
+
+        $this->assertTrue($signalResult->accepted());
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $signalResult->commandId())
+            ->sole();
+        $bufferedWaitId = $signal->signal_wait_id;
+
+        $this->assertIsString($bufferedWaitId);
+
+        /** @var WorkflowHistoryEvent $received */
+        $received = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->sole();
+
+        $this->assertSame($bufferedWaitId, $received->payload['signal_wait_id'] ?? null);
+
+        $opened = $this->bridge->complete($firstTask->id, $firstStep->commands);
+
+        $this->assertTrue($opened['completed']);
+        $this->assertSame('waiting', $opened['run_status']);
+        $this->assertCount(1, $opened['created_task_ids']);
+
+        /** @var WorkflowHistoryEvent $waitOpened */
+        $waitOpened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->sole();
+
+        $this->assertSame('increment', $waitOpened->payload['signal_name'] ?? null);
+        $this->assertSame($bufferedWaitId, $waitOpened->payload['signal_wait_id'] ?? null);
+
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()
+            ->whereKey($opened['created_task_ids'][0])
+            ->firstOrFail();
+
+        $this->assertSame($signal->id, $signalTask->payload['workflow_signal_id'] ?? null);
+        $this->assertSame($bufferedWaitId, $signalTask->payload['signal_wait_id'] ?? null);
+
+        $this->assertNotNull($this->bridge->claim($signalTask->id, 'protocol-worker-2'));
+
+        $resumeHistory = $this->bridge->historyPayload($signalTask->id);
+
+        $this->assertNotNull($resumeHistory);
+
+        $resumeStep = WorkflowFiberRunner::forClass(
+            BridgeProtocolSignalReplayWorkflow::class,
+            $workflow->id(),
+            $runId,
+            [],
+            $resumeHistory['payload_codec'],
+            $resumeHistory['history_events'],
+        )->step();
+
+        $this->assertFalse($resumeStep->completed);
+        $this->assertSame('open_signal_wait', $resumeStep->command['type']);
+        $this->assertSame(7, BridgeProtocolSignalReplayWorkflow::lastCount());
     }
 
     public function testHistoryPayloadReturnsLegacyArgumentsAndExternalizedEnvelope(): void
@@ -2907,6 +3118,186 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertSame(0, $opened->payload['timeout_seconds'] ?? null);
         $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function testCompleteOpenSignalWaitRecordsEventAndOptionalTimeout(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'increment',
+                'timeout_seconds' => 45,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame('increment', $opened->payload['signal_name'] ?? null);
+        $this->assertSame(1, $opened->payload['sequence'] ?? null);
+        $this->assertSame(45, $opened->payload['timeout_seconds'] ?? null);
+        $this->assertIsString($opened->payload['signal_wait_id'] ?? null);
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(TimerStatus::Pending, $timer->status);
+        $this->assertSame(45, $timer->delay_seconds);
+    }
+
+    public function testCompleteOpenSignalWaitReusesMatchingBufferedSignalWaitId(): void
+    {
+        $run = $this->createWaitingRun();
+
+        $unrelated = $this->recordReceivedSignal($run, 'finish', 'signal-wait-finish');
+        $matching = $this->recordReceivedSignal($run, 'advance', 'signal-wait-advance');
+
+        $unrelated->forceFill([
+            'received_at' => now()->subSeconds(2),
+            'created_at' => now()->subSeconds(2),
+        ])->save();
+        $matching->forceFill([
+            'received_at' => now()->subSecond(),
+            'created_at' => now()->subSecond(),
+        ])->save();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame('advance', $opened->payload['signal_name'] ?? null);
+        $this->assertSame('signal-wait-advance', $opened->payload['signal_wait_id'] ?? null);
+
+        $signalTask = WorkflowTask::query()
+            ->whereKey($result['created_task_ids'][0])
+            ->firstOrFail();
+
+        $this->assertSame($matching->id, $signalTask->payload['workflow_signal_id'] ?? null);
+        $this->assertSame('advance', $signalTask->payload['signal_name'] ?? null);
+        $this->assertSame('signal-wait-advance', $signalTask->payload['signal_wait_id'] ?? null);
+    }
+
+    public function testCompleteOpenSignalWaitDoesNotEnqueueNonMatchingBufferedSignal(): void
+    {
+        $run = $this->createWaitingRun();
+        $unrelated = $this->recordReceivedSignal($run, 'finish', 'signal-wait-finish');
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertSame([], $result['created_task_ids']);
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame('advance', $opened->payload['signal_name'] ?? null);
+        $this->assertNotSame($unrelated->signal_wait_id, $opened->payload['signal_wait_id'] ?? null);
+
+        $openSignalTaskExists = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->get()
+            ->contains(
+                static fn (WorkflowTask $workflowTask): bool => ($workflowTask->payload['workflow_signal_id'] ?? null)
+                    === $unrelated->id
+            );
+
+        $this->assertFalse($openSignalTaskExists);
+    }
+
+    public function testSignalResumeCompletionRecordsSignalAppliedForOpenSignalWait(): void
+    {
+        $run = $this->createWaitingRun();
+
+        $openTask = $this->createLeasedTask($run);
+
+        $openedResult = $this->bridge->complete($openTask->id, [
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+            ],
+        ]);
+
+        $this->assertTrue($openedResult['completed']);
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->firstOrFail();
+        $signalWaitId = $opened->payload['signal_wait_id'] ?? null;
+
+        $this->assertIsString($signalWaitId);
+
+        $signal = $this->recordReceivedSignal($run, 'advance', $signalWaitId);
+        $resumeTask = $this->createLeasedTask($run);
+        $resumeTask->forceFill([
+            'payload' => WorkflowTaskPayload::forSignal($signal),
+        ])->save();
+
+        $completed = $this->bridge->complete($resumeTask->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize([
+                    'ok' => true,
+                ]),
+            ],
+        ]);
+
+        $this->assertTrue($completed['completed']);
+        $this->assertSame('completed', $completed['run_status']);
+
+        $applied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalApplied->value)
+            ->firstOrFail();
+
+        $this->assertSame('advance', $applied->payload['signal_name'] ?? null);
+        $this->assertSame($signalWaitId, $applied->payload['signal_wait_id'] ?? null);
+        $this->assertSame(1, $applied->payload['sequence'] ?? null);
+        $this->assertSame('Ada', Serializer::unserialize($applied->payload['value']));
+
+        $signal->refresh();
+        $this->assertSame('applied', $signal->status->value);
+        $this->assertSame(1, $signal->workflow_sequence);
     }
 
     public function testCompletingLeasedTaskAfterSignalArrivesEnqueuesSignalResumeTask(): void
@@ -5289,5 +5680,32 @@ final class BridgeHistorySequenceWorkflow extends V2Workflow
         $first = V2Workflow::activity('demo.first', $input);
 
         return V2Workflow::activity('demo.second', $first);
+    }
+}
+
+#[Type('bridge-protocol-signal-replay-workflow')]
+#[Signal('increment')]
+final class BridgeProtocolSignalReplayWorkflow extends V2Workflow
+{
+    private static int $lastCount = 0;
+
+    private int $count = 0;
+
+    public static function reset(): void
+    {
+        self::$lastCount = 0;
+    }
+
+    public static function lastCount(): int
+    {
+        return self::$lastCount;
+    }
+
+    public function handle(): mixed
+    {
+        while (true) {
+            $this->count += (int) V2Workflow::awaitSignal('increment');
+            self::$lastCount = $this->count;
+        }
     }
 }

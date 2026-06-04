@@ -13,6 +13,7 @@ use LogicException;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
@@ -127,6 +128,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         'record_version_marker',
         'upsert_search_attributes',
         'open_condition_wait',
+        'open_signal_wait',
     ];
 
     public function __construct(
@@ -430,7 +432,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'sequence' => (int) $event->sequence,
                 'event_type' => $event->event_type->value,
                 'namespace' => self::nonEmptyString($run->namespace),
-                'payload' => is_array($event->payload) ? $event->payload : [],
+                'payload' => self::workerHistoryEventPayload($event, $run),
                 'workflow_task_id' => self::nonEmptyString($event->workflow_task_id),
                 'workflow_command_id' => self::nonEmptyString($event->workflow_command_id),
                 'recorded_at' => $event->recorded_at?->toJSON(),
@@ -508,7 +510,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 'sequence' => (int) $event->sequence,
                 'event_type' => $event->event_type->value,
                 'namespace' => self::nonEmptyString($run->namespace),
-                'payload' => is_array($event->payload) ? $event->payload : [],
+                'payload' => self::workerHistoryEventPayload($event, $run),
                 'workflow_task_id' => self::nonEmptyString($event->workflow_task_id),
                 'workflow_command_id' => self::nonEmptyString($event->workflow_command_id),
                 'recorded_at' => $event->recorded_at?->toJSON(),
@@ -901,6 +903,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                 ];
             }
 
+            $this->recordAppliedSignalForSignalResume($run, $task);
             $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
 
             foreach ($parsed['non_terminal'] as $command) {
@@ -1124,15 +1127,15 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         foreach ($nonTerminalCommands as $command) {
             $type = $command['type'] ?? null;
 
-            if ($type === 'open_condition_wait') {
-                $latestOpenedWait = 'condition';
+            if (in_array($type, ['open_condition_wait', 'open_signal_wait'], true)) {
+                $latestOpenedWait = 'signal';
             } elseif (in_array($type, ['schedule_activity', 'start_timer', 'start_child_workflow'], true)) {
                 $latestOpenedWait = 'non_signal';
             }
         }
 
         if ($latestOpenedWait !== null) {
-            return $latestOpenedWait === 'condition';
+            return $latestOpenedWait === 'signal';
         }
 
         return self::hasOpenSignalAdvanceableWait($run);
@@ -1165,6 +1168,108 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             : null;
     }
 
+    private function recordAppliedSignalForSignalResume(WorkflowRun $run, WorkflowTask $task): void
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+
+        if (($taskPayload['resume_source_kind'] ?? null) !== 'workflow_signal') {
+            return;
+        }
+
+        $signalId = self::nonEmptyString($taskPayload['workflow_signal_id'] ?? null)
+            ?? self::nonEmptyString($taskPayload['resume_source_id'] ?? null);
+        $signalWaitId = self::nonEmptyString($taskPayload['signal_wait_id'] ?? null);
+        $signalName = self::nonEmptyString($taskPayload['signal_name'] ?? null);
+
+        if ($signalId === null || $signalWaitId === null || $signalName === null) {
+            return;
+        }
+
+        /** @var WorkflowHistoryEvent|null $opened */
+        $opened = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->get()
+            ->first(static function (WorkflowHistoryEvent $event) use ($signalWaitId, $signalName): bool {
+                return ($event->payload['signal_wait_id'] ?? null) === $signalWaitId
+                    && ($event->payload['signal_name'] ?? null) === $signalName;
+            });
+
+        if ($opened === null) {
+            return;
+        }
+
+        $openedPayload = is_array($opened->payload) ? $opened->payload : [];
+        $sequence = is_int($openedPayload['sequence'] ?? null)
+            ? (int) $openedPayload['sequence']
+            : null;
+
+        if ($sequence === null) {
+            return;
+        }
+
+        $alreadyApplied = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalApplied->value)
+            ->get()
+            ->contains(static function (WorkflowHistoryEvent $event) use ($signalWaitId, $signalName): bool {
+                return ($event->payload['signal_wait_id'] ?? null) === $signalWaitId
+                    && ($event->payload['signal_name'] ?? null) === $signalName;
+            });
+
+        if ($alreadyApplied) {
+            return;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+            ->whereKey($signalId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if (! $signal instanceof WorkflowSignal || $signal->signal_name !== $signalName) {
+            return;
+        }
+
+        /** @var WorkflowCommand|null $command */
+        $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->whereKey($signal->workflow_command_id)
+            ->first();
+
+        $appliedAt = now();
+
+        if ($command instanceof WorkflowCommand) {
+            $command->forceFill([
+                'applied_at' => $appliedAt,
+            ])->save();
+        }
+
+        $signal->forceFill([
+            'signal_wait_id' => $signalWaitId,
+            'status' => SignalStatus::Applied->value,
+            'workflow_sequence' => $sequence,
+            'applied_at' => $appliedAt,
+            'closed_at' => $appliedAt,
+        ])->save();
+
+        if ($command instanceof WorkflowCommand && $command->message_sequence !== null) {
+            MessageStreamCursor::advanceCursor($run, (int) $command->message_sequence, $task);
+        }
+
+        $value = self::signalValueFromRecord($signal, $run);
+
+        $this->cancelOpenSignalTimer($run, $task, $sequence, $signalWaitId);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, array_filter([
+            'workflow_command_id' => $signal->workflow_command_id,
+            'signal_id' => $signal->id,
+            'signal_name' => $signalName,
+            'signal_wait_id' => $signalWaitId,
+            'sequence' => $sequence,
+            'value' => Serializer::serializeWithCodec($run->payload_codec ?? CodecRegistry::defaultCodec(), $value),
+        ], static fn (mixed $payloadValue): bool => $payloadValue !== null), $task, $command);
+    }
+
     /**
      * Signals can be accepted while a workflow task is already leased. In that
      * case the signal path cannot create a second workflow task. Completing
@@ -1193,11 +1298,25 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             ->orderBy('id')
             ->get();
 
+        $freshRun = $run->fresh(['historyEvents']) ?? $run;
+        $hasAdvanceableConditionWait = self::hasAdvanceableConditionWait($freshRun);
+        $openSignalWaitsById = self::openSignalWaitsById($freshRun);
+
+        $eligibleSignals = $signals
+            ->filter(
+                static fn (WorkflowSignal $candidate): bool => self::signalCanAdvanceOpenWait(
+                    $candidate,
+                    $hasAdvanceableConditionWait,
+                    $openSignalWaitsById,
+                )
+            )
+            ->values();
+
         /** @var WorkflowSignal|null $signal */
         $signal = null;
         $afterAttemptedSignal = $alreadyAttemptedSignalId === null;
 
-        foreach ($signals as $candidate) {
+        foreach ($eligibleSignals as $candidate) {
             if ($afterAttemptedSignal) {
                 $signal = $candidate;
                 break;
@@ -1209,7 +1328,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         if (! $afterAttemptedSignal) {
-            $signal = $signals->first();
+            $signal = $eligibleSignals->first();
         }
 
         if (! $signal instanceof WorkflowSignal) {
@@ -1230,6 +1349,59 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ]);
 
         $createdTaskIds[] = $signalTask->id;
+    }
+
+    /**
+     * @param array<string, string> $openSignalWaitsById
+     */
+    private static function signalCanAdvanceOpenWait(
+        WorkflowSignal $signal,
+        bool $hasAdvanceableConditionWait,
+        array $openSignalWaitsById,
+    ): bool
+    {
+        if ($hasAdvanceableConditionWait) {
+            return true;
+        }
+
+        $signalWaitId = self::nonEmptyString($signal->signal_wait_id);
+
+        return $signalWaitId !== null
+            && ($openSignalWaitsById[$signalWaitId] ?? null) === $signal->signal_name;
+    }
+
+    private static function hasAdvanceableConditionWait(WorkflowRun $run): bool
+    {
+        foreach (ConditionWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) === 'open' && ($wait['source_status'] ?? null) !== 'timeout_fired') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function openSignalWaitsById(WorkflowRun $run): array
+    {
+        $waits = [];
+
+        foreach (SignalWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            $signalWaitId = self::nonEmptyString($wait['signal_wait_id'] ?? null);
+            $signalName = self::nonEmptyString($wait['signal_name'] ?? null);
+
+            if ($signalWaitId !== null && $signalName !== null) {
+                $waits[$signalWaitId] = $signalName;
+            }
+        }
+
+        return $waits;
     }
 
     private static function hasOpenWorkflowTask(string $runId): bool
@@ -1264,6 +1436,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'record_version_marker' => $this->applyRecordVersionMarker($run, $task, $command, $sequence),
             'upsert_search_attributes' => $this->applyUpsertSearchAttributes($run, $task, $command, $sequence),
             'open_condition_wait' => $this->applyOpenConditionWait($run, $task, $command, $sequence, $createdTaskIds),
+            'open_signal_wait' => $this->applyOpenSignalWait($run, $task, $command, $sequence, $createdTaskIds),
             default => $sequence,
         };
     }
@@ -1441,6 +1614,87 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
                     'last_error' => null,
                 ])->save();
             });
+    }
+
+    private function cancelOpenSignalTimer(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $signalWaitId,
+    ): void {
+        /** @var WorkflowTimer|null $timer */
+        $timer = ConfiguredV2Models::query('timer_model', WorkflowTimer::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', $sequence)
+            ->where('status', TimerStatus::Pending->value)
+            ->first();
+
+        if (! $timer instanceof WorkflowTimer) {
+            return;
+        }
+
+        $hasSignalTimeoutHistory = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerScheduled->value)
+            ->get()
+            ->contains(static function (WorkflowHistoryEvent $event) use ($signalWaitId, $timer): bool {
+                return ($event->payload['timer_id'] ?? null) === $timer->id
+                    && ($event->payload['timer_kind'] ?? null) === 'signal_timeout'
+                    && ($event->payload['signal_wait_id'] ?? null) === $signalWaitId;
+            });
+
+        if (! $hasSignalTimeoutHistory) {
+            return;
+        }
+
+        $timer->forceFill([
+            'status' => TimerStatus::Cancelled,
+        ])->save();
+
+        TimerCancellation::record($run, $timer, $task);
+
+        ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->where('payload->timer_id', $timer->id)
+            ->get()
+            ->each(static function (WorkflowTask $timerTask): void {
+                $timerTask->forceFill([
+                    'status' => TaskStatus::Cancelled,
+                    'lease_expires_at' => null,
+                    'last_error' => null,
+                ])->save();
+            });
+    }
+
+    private static function signalValueFromRecord(WorkflowSignal $signal, WorkflowRun $run): mixed
+    {
+        $codec = self::nonEmptyString($signal->payload_codec)
+            ?? $run->payload_codec
+            ?? CodecRegistry::defaultCodec();
+        $serialized = ExternalPayloads::payloadBlob(
+            $signal->arguments,
+            $codec,
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+
+        if ($serialized === null) {
+            return true;
+        }
+
+        $arguments = Serializer::unserializeWithCodec($codec, $serialized);
+
+        if (! is_array($arguments)) {
+            return $arguments;
+        }
+
+        $arguments = array_values($arguments);
+
+        if ($arguments === []) {
+            return true;
+        }
+
+        return count($arguments) === 1 ? $arguments[0] : $arguments;
     }
 
     /**
@@ -1920,6 +2174,117 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return $sequence + 1;
+    }
+
+    /**
+     * @param array{
+     *     type: string,
+     *     signal_name: string,
+     *     timeout_seconds?: int|null
+     * } $command
+     * @param list<string> $createdTaskIds
+     */
+    private function applyOpenSignalWait(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        array $command,
+        int $sequence,
+        array &$createdTaskIds,
+    ): int {
+        $signalName = $command['signal_name'];
+        $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
+            ? (int) $command['timeout_seconds']
+            : null;
+        $waitId = $this->pendingSignalWaitIdForOpenSignalWait($run, $signalName) ?? (string) Str::ulid();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalWaitOpened, array_filter([
+            'signal_name' => $signalName,
+            'signal_wait_id' => $waitId,
+            'sequence' => $sequence,
+            'timeout_seconds' => $timeoutSeconds,
+        ], static fn (mixed $value): bool => $value !== null), $task);
+
+        if ($timeoutSeconds !== null) {
+            $fireAt = now()
+                ->addSeconds($timeoutSeconds);
+
+            /** @var WorkflowTimer $timer */
+            $timer = WorkflowTimer::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $sequence,
+                'status' => TimerStatus::Pending->value,
+                'delay_seconds' => $timeoutSeconds,
+                'fire_at' => $fireAt,
+            ]);
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+                'timer_id' => $timer->id,
+                'sequence' => $sequence,
+                'delay_seconds' => $timer->delay_seconds,
+                'fire_at' => $timer->fire_at?->toJSON(),
+                'timer_kind' => 'signal_timeout',
+                'signal_wait_id' => $waitId,
+                'signal_name' => $signalName,
+            ], $task);
+
+            /** @var WorkflowTask $timerTask */
+            $timerTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Timer->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => $fireAt,
+                'payload' => [
+                    'timer_id' => $timer->id,
+                    'signal_wait_id' => $waitId,
+                    'signal_name' => $signalName,
+                ],
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $createdTaskIds[] = $timerTask->id;
+        }
+
+        return $sequence + 1;
+    }
+
+    private function pendingSignalWaitIdForOpenSignalWait(WorkflowRun $run, string $signalName): ?string
+    {
+        $openedWaitIds = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->get()
+            ->filter(static function (WorkflowHistoryEvent $event) use ($signalName): bool {
+                return ($event->payload['signal_name'] ?? null) === $signalName
+                    && self::nonEmptyString($event->payload['signal_wait_id'] ?? null) !== null;
+            })
+            ->mapWithKeys(static fn (WorkflowHistoryEvent $event): array => [
+                (string) $event->payload['signal_wait_id'] => true,
+            ])
+            ->all();
+
+        /** @var \Illuminate\Support\Collection<int, WorkflowSignal> $signals */
+        $signals = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('signal_name', $signalName)
+            ->where('status', SignalStatus::Received->value)
+            ->whereNull('closed_at')
+            ->orderBy('received_at')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get();
+
+        foreach ($signals as $signal) {
+            $signalWaitId = self::nonEmptyString($signal->signal_wait_id);
+
+            if ($signalWaitId !== null && ! isset($openedWaitIds[$signalWaitId])) {
+                return $signalWaitId;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -2938,6 +3303,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'record_version_marker' => self::normalizeRecordVersionMarkerCommand($command),
             'upsert_search_attributes' => self::normalizeUpsertSearchAttributesCommand($command),
             'open_condition_wait' => self::normalizeOpenConditionWaitCommand($command),
+            'open_signal_wait' => self::normalizeOpenSignalWaitCommand($command),
             default => null,
         };
     }
@@ -2961,6 +3327,31 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'condition_definition_fingerprint' => self::normalizeOptionalString(
                 $command['condition_definition_fingerprint'] ?? null,
             ),
+            'timeout_seconds' => is_int($timeoutSeconds) && $timeoutSeconds >= 0 ? $timeoutSeconds : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @return array{
+     *     type: string,
+     *     signal_name: string,
+     *     timeout_seconds?: int
+     * }|null
+     */
+    private static function normalizeOpenSignalWaitCommand(array $command): ?array
+    {
+        $signalName = self::normalizeOptionalString($command['signal_name'] ?? null);
+
+        if ($signalName === null) {
+            return null;
+        }
+
+        $timeoutSeconds = $command['timeout_seconds'] ?? null;
+
+        return array_filter([
+            'type' => 'open_signal_wait',
+            'signal_name' => $signalName,
             'timeout_seconds' => is_int($timeoutSeconds) && $timeoutSeconds >= 0 ? $timeoutSeconds : null,
         ], static fn (mixed $value): bool => $value !== null);
     }
@@ -3576,6 +3967,67 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return $policy === [] ? null : $policy;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function workerHistoryEventPayload(WorkflowHistoryEvent $event, WorkflowRun $run): array
+    {
+        $payload = is_array($event->payload) ? $event->payload : [];
+
+        if ($event->event_type !== HistoryEventType::SignalReceived) {
+            return $payload;
+        }
+
+        $signalId = self::nonEmptyString($payload['signal_id'] ?? null);
+
+        if ($signalId === null) {
+            return $payload;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+            ->whereKey($signalId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if (! $signal instanceof WorkflowSignal) {
+            return $payload;
+        }
+
+        $codec = self::nonEmptyString($signal->payload_codec)
+            ?? self::nonEmptyString($run->payload_codec)
+            ?? CodecRegistry::defaultCodec();
+        $namespace = is_string($run->namespace) ? $run->namespace : null;
+
+        if (! array_key_exists('arguments', $payload) || $payload['arguments'] === null) {
+            $payload['arguments'] = ExternalPayloads::wireEnvelope(
+                self::nonEmptyString($signal->arguments),
+                $codec,
+                $namespace,
+            );
+        }
+
+        if (! array_key_exists('payload_codec', $payload) || $payload['payload_codec'] === null) {
+            $payload['payload_codec'] = $codec;
+        }
+
+        if (! array_key_exists('signal_name', $payload) || $payload['signal_name'] === null) {
+            $payload['signal_name'] = self::nonEmptyString($signal->signal_name);
+        }
+
+        if (! array_key_exists('signal_wait_id', $payload) || $payload['signal_wait_id'] === null) {
+            $payload['signal_wait_id'] = self::nonEmptyString($signal->signal_wait_id);
+        }
+
+        if (! array_key_exists('workflow_sequence', $payload) || $payload['workflow_sequence'] === null) {
+            $payload['workflow_sequence'] = is_int($signal->workflow_sequence)
+                ? $signal->workflow_sequence
+                : null;
+        }
+
+        return array_filter($payload, static fn (mixed $value): bool => $value !== null);
     }
 
     /**

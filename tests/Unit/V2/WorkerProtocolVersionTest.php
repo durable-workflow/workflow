@@ -16,9 +16,9 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksSearchAttributeCommandShape(): void
+    public function testVersionTracksSignalWaitCommandShape(): void
     {
-        $this->assertSame('1.8', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.9', WorkerProtocolVersion::VERSION);
     }
 
     public function testWorkflowTaskVerbsIncludesAllBridgeMethods(): void
@@ -70,6 +70,8 @@ final class WorkerProtocolVersionTest extends TestCase
             'record_side_effect',
             'record_version_marker',
             'upsert_search_attributes',
+            'open_condition_wait',
+            'open_signal_wait',
         ], WorkerProtocolVersion::nonTerminalCommandTypes());
     }
 
@@ -125,7 +127,7 @@ final class WorkerProtocolVersionTest extends TestCase
         $shape = $summary['upsert_search_attributes_command'];
         $this->assertSame('upsert_search_attributes', $shape['type']);
         $this->assertSame('non_terminal_command', $shape['category']);
-        $this->assertSame(WorkerProtocolVersion::VERSION, $shape['minimum_protocol_version']);
+        $this->assertSame('1.8', $shape['minimum_protocol_version']);
         $this->assertSame(['type', 'attributes'], $shape['required_fields']);
         $this->assertSame(['attribute_types'], $shape['optional_fields']);
         $this->assertSame('map<string, scalar|list<string>|null>', $shape['attributes']['shape']);
@@ -155,7 +157,7 @@ final class WorkerProtocolVersionTest extends TestCase
 
         $queryTasks = $summary['query_tasks'];
         $this->assertSame(WorkerProtocolVersion::CAPABILITY_QUERY_TASKS, $queryTasks['feature']);
-        $this->assertSame(WorkerProtocolVersion::VERSION, $queryTasks['minimum_protocol_version']);
+        $this->assertSame('1.8', $queryTasks['minimum_protocol_version']);
         $this->assertSame(WorkerProtocolVersion::CAPABILITY_QUERY_TASKS, $queryTasks['worker_capability']);
         $this->assertSame(WorkerProtocolVersion::queryTaskVerbs(), $queryTasks['verbs']);
         $this->assertSame('/api/worker/query-tasks', $queryTasks['path_prefix']);
@@ -332,7 +334,7 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame(WorkerProtocolVersion::workerSessionVerbs(), $summary['worker_session_verbs']);
         $this->assertArrayHasKey('worker_sessions', $summary);
         $this->assertSame('worker_sessions', $summary['worker_sessions']['feature']);
-        $this->assertSame(WorkerProtocolVersion::VERSION, $summary['worker_sessions']['minimum_protocol_version']);
+        $this->assertSame('1.8', $summary['worker_sessions']['minimum_protocol_version']);
         $this->assertSame('worker_session', $summary['worker_sessions']['command_field']);
         $this->assertSame(['create', 'heartbeat', 'close'], $summary['worker_sessions']['verbs']);
         $this->assertSame(
@@ -343,6 +345,7 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertTrue(
             $summary['worker_sessions']['rollout_safety']['mixed_server_rollout_fenced_by_protocol_version'],
         );
+        $this->assertSame('1.8', $summary['worker_sessions']['rollout_safety']['minimum_protocol_version']);
         $this->assertTrue(
             $summary['worker_sessions']['rollout_safety']['servers_below_minimum_must_reject_worker_session_commands'],
         );
