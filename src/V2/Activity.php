@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use Illuminate\Container\Container;
 use Illuminate\Support\Facades\DB;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -33,11 +34,14 @@ abstract class Activity
 
     public int $tries = 1;
 
+    private Container $container;
+
     final public function __construct(
         public readonly ActivityExecution $execution,
         public readonly WorkflowRun $run,
         public readonly ?string $taskId = null,
     ) {
+        $this->container = Container::getInstance();
     }
 
     public function workflowId(): string

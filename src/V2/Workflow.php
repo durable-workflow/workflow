@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Carbon\CarbonInterval;
+use Illuminate\Container\Container;
 use Throwable;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Models\WorkflowRun;
@@ -50,6 +51,8 @@ abstract class Workflow
 
     public ?string $queue = null;
 
+    private Container $container;
+
     private int $visibleSequence = 1;
 
     private bool $commandDispatchEnabled = true;
@@ -66,6 +69,7 @@ abstract class Workflow
     final public function __construct(
         public readonly WorkflowRun $run,
     ) {
+        $this->container = Container::getInstance();
     }
 
     /**
