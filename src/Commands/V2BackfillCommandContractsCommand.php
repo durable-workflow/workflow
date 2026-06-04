@@ -6,14 +6,12 @@ namespace Workflow\Commands;
 
 use Illuminate\Console\Command;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\RunCommandContract;
 
-#[AsCommand(name: 'workflow:v2:backfill-command-contracts')]
 final class V2BackfillCommandContractsCommand extends Command
 {
     protected $signature = 'workflow:v2:backfill-command-contracts

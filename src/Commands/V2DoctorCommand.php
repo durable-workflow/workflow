@@ -6,12 +6,10 @@ namespace Workflow\Commands;
 
 use Illuminate\Console\Command;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\RoleTopologySnapshot;
 
-#[AsCommand(name: 'workflow:v2:doctor')]
 class V2DoctorCommand extends Command
 {
     protected $signature = 'workflow:v2:doctor

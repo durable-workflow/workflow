@@ -7,7 +7,6 @@ namespace Workflow\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -26,7 +25,6 @@ use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\WorkflowReplayer;
 
-#[AsCommand(name: 'workflow:v2:replay-conformance')]
 class V2ReplayConformanceCommand extends Command
 {
     protected $signature = 'workflow:v2:replay-conformance

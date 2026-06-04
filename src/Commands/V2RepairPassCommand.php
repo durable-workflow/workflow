@@ -6,11 +6,9 @@ namespace Workflow\Commands;
 
 use Illuminate\Console\Command;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Support\TaskRepairPolicy;
 
-#[AsCommand(name: 'workflow:v2:repair-pass')]
 class V2RepairPassCommand extends Command
 {
     protected $signature = 'workflow:v2:repair-pass

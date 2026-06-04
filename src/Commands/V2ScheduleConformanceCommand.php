@@ -8,13 +8,11 @@ use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Client\ControlPlaneClient;
 use Workflow\V2\Exceptions\ControlPlaneRequestException;
 use Workflow\V2\Support\PlatformConformanceSuite;
 
-#[AsCommand(name: 'workflow:v2:schedule-conformance')]
 class V2ScheduleConformanceCommand extends Command
 {
     protected $signature = 'workflow:v2:schedule-conformance

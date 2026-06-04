@@ -9,10 +9,8 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Filesystem\Filesystem;
 use JsonException;
 use LogicException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Workflow\V2\WorkflowStub;
 
-#[AsCommand(name: 'workflow:v2:history-export')]
 class V2HistoryExportCommand extends Command
 {
     protected $signature = 'workflow:v2:history-export

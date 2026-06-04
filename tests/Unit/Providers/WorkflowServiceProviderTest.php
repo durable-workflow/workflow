@@ -291,8 +291,11 @@ final class WorkflowServiceProviderTest extends TestCase
             'make:workflow',
             'workflow:v2:doctor',
             'workflow:v2:history-export',
+            'workflow:v2:namespace-conformance',
             'workflow:v2:repair-pass',
             'workflow:v2:rebuild-projections',
+            'workflow:v2:replay-conformance',
+            'workflow:v2:schedule-conformance',
             'workflow:v2:schedule-tick',
         ];
 
@@ -309,6 +312,37 @@ final class WorkflowServiceProviderTest extends TestCase
             $registeredCommands,
             'Final v2 must not ship preview-era parallel-group metadata backfill commands.'
         );
+    }
+
+    public function testConformanceCommandsRegisterRunIdAsOptionOnly(): void
+    {
+        $commands = Artisan::all();
+
+        foreach ([
+            'workflow:v2:namespace-conformance',
+            'workflow:v2:schedule-conformance',
+        ] as $commandName) {
+            $this->assertArrayHasKey($commandName, $commands);
+
+            $definition = $commands[$commandName]->getDefinition();
+
+            $this->assertArrayNotHasKey(
+                'run',
+                $definition->getArguments(),
+                "Command [{$commandName}] must not register a positional [run] argument."
+            );
+            $this->assertArrayHasKey(
+                'run-id',
+                $definition->getOptions(),
+                "Command [{$commandName}] must keep [--run-id] as an option."
+            );
+        }
+
+        $historyExport = $commands['workflow:v2:history-export']->getDefinition();
+
+        $this->assertArrayNotHasKey('run', $historyExport->getArguments());
+        $this->assertArrayHasKey('run', $historyExport->getOptions());
+        $this->assertArrayHasKey('run-id', $historyExport->getOptions());
     }
 
     public function testLoopingEventWakesWatchdog(): void

@@ -6,10 +6,8 @@ namespace Workflow\Commands;
 
 use Illuminate\Console\Command;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Workflow\V2\Contracts\SchedulerRole;
 
-#[AsCommand(name: 'workflow:v2:schedule-tick')]
 class V2ScheduleTickCommand extends Command
 {
     protected $signature = 'workflow:v2:schedule-tick

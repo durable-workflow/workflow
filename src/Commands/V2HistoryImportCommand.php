@@ -7,10 +7,8 @@ namespace Workflow\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 
-#[AsCommand(name: 'workflow:v2:history-import')]
 class V2HistoryImportCommand extends Command
 {
     protected $signature = 'workflow:v2:history-import

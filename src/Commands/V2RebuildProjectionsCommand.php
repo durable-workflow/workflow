@@ -6,7 +6,6 @@ namespace Workflow\Commands;
 
 use Illuminate\Console\Command;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
 use Workflow\V2\Models\WorkflowRun;
@@ -14,7 +13,6 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\RunSummaryProjectionDrift;
 use Workflow\V2\Support\SelectedRunProjectionDrift;
 
-#[AsCommand(name: 'workflow:v2:rebuild-projections')]
 class V2RebuildProjectionsCommand extends Command
 {
     protected $signature = 'workflow:v2:rebuild-projections

@@ -7,13 +7,11 @@ namespace Workflow\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Filesystem\Filesystem;
 use JsonException;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\ReplayVerification;
 
-#[AsCommand(name: 'workflow:v2:replay-verify')]
 class V2ReplayVerifyCommand extends Command
 {
     protected $signature = 'workflow:v2:replay-verify

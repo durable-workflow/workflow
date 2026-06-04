@@ -6,10 +6,8 @@ namespace Workflow\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Helper\Table;
 
-#[AsCommand(name: 'workflow:v1:list')]
 class V1ListCommand extends Command
 {
     protected $signature = 'workflow:v1:list
