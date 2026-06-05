@@ -12,6 +12,7 @@ use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\YieldedCommand;
+use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -1299,17 +1300,32 @@ final class WorkflowFiberRunner
     private static function failureFromEvent(array $payload, string $fallbackMessage): Throwable
     {
         $exception = is_array($payload['exception'] ?? null) ? $payload['exception'] : [];
+        $exceptionClass = self::stringValue($payload['exception_class'] ?? null) ?? RuntimeException::class;
+        $message = self::stringValue($payload['message'] ?? null) ?? $fallbackMessage;
+        $code = self::intValue($payload['code'] ?? null) ?? 0;
 
         if (! is_string($exception['type'] ?? null) && is_string($payload['exception_type'] ?? null)) {
             $exception['type'] = $payload['exception_type'];
         }
 
-        return FailureFactory::restoreForReplay(
-            $exception,
-            self::stringValue($payload['exception_class'] ?? null) ?? RuntimeException::class,
-            self::stringValue($payload['message'] ?? null) ?? $fallbackMessage,
-            self::intValue($payload['code'] ?? null) ?? 0,
-        );
+        if (! is_string($exception['class'] ?? null)) {
+            $exception['class'] = $exceptionClass;
+        }
+
+        if (! is_string($exception['message'] ?? null)) {
+            $exception['message'] = $message;
+        }
+
+        if (! is_int($exception['code'] ?? null)) {
+            $exception['code'] = $code;
+        }
+
+        try {
+            return FailureFactory::restoreForReplay($exception, $exceptionClass, $message, $code);
+        } catch (UnresolvedWorkflowFailureException) {
+            // External SDKs can report durable type keys without a PHP class mapping.
+            return FailureFactory::restoreExternalWorkerFailure($exception, $exceptionClass, $message, $code);
+        }
     }
 
     /**

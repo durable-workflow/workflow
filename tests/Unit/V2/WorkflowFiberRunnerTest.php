@@ -9,9 +9,11 @@ use Generator;
 use LogicException;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Throwable;
 use Workflow\Exceptions\VersionNotSupportedException;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ParentClosePolicy;
+use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Support\ActivityCall;
@@ -579,6 +581,124 @@ final class WorkflowFiberRunnerTest extends TestCase
             'activity exploded',
             CarbonImmutable::parse($failedAt)->getTimestampMs(),
         ], Serializer::unserializeWithCodec('avro', $scheduled->command['arguments']));
+    }
+
+    public function testRunnerPropagatesUnmappedTypedSequentialCompensationFailureFromHistory(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage(
+            'compensation failed for cancel_flight: cancel_flight typed compensation failure',
+        );
+
+        try {
+            WorkflowFiberRunner::forClass(
+                WorkerProtocolRunnerSequentialCompensationFailureWorkflow::class,
+                'workflow-1',
+                'run-1',
+                [],
+                'avro',
+                [[
+                    'sequence' => 1,
+                    'event_type' => 'WorkflowStarted',
+                    'payload' => [],
+                    'recorded_at' => '2026-05-12T10:11:12+00:00',
+                ], [
+                    'sequence' => 2,
+                    'event_type' => 'ActivityCompleted',
+                    'payload' => [
+                        'sequence' => 1,
+                        'activity_type' => 'reserve_flight',
+                        'result' => Serializer::serializeWithCodec('avro', 'flight-1'),
+                        'payload_codec' => 'avro',
+                    ],
+                    'recorded_at' => '2026-05-12T10:12:00+00:00',
+                ], [
+                    'sequence' => 3,
+                    'event_type' => 'ActivityCompleted',
+                    'payload' => [
+                        'sequence' => 2,
+                        'activity_type' => 'reserve_hotel',
+                        'result' => Serializer::serializeWithCodec('avro', 'hotel-1'),
+                        'payload_codec' => 'avro',
+                    ],
+                    'recorded_at' => '2026-05-12T10:12:05+00:00',
+                ], [
+                    'sequence' => 4,
+                    'event_type' => 'ActivityCompleted',
+                    'payload' => [
+                        'sequence' => 3,
+                        'activity_type' => 'charge_card',
+                        'result' => Serializer::serializeWithCodec('avro', 'charge-1'),
+                        'payload_codec' => 'avro',
+                    ],
+                    'recorded_at' => '2026-05-12T10:12:10+00:00',
+                ], [
+                    'sequence' => 5,
+                    'event_type' => 'ActivityFailed',
+                    'payload' => [
+                        'sequence' => 4,
+                        'activity_type' => 'saga_planned_failure',
+                        'exception_class' => RuntimeException::class,
+                        'exception_type' => 'PlannedSagaFailure',
+                        'message' => 'charge_card planned saga failure',
+                        'code' => 0,
+                        'exception' => [
+                            'class' => RuntimeException::class,
+                            'type' => 'PlannedSagaFailure',
+                            'message' => 'charge_card planned saga failure',
+                            'code' => 0,
+                        ],
+                    ],
+                    'recorded_at' => '2026-05-12T10:12:15+00:00',
+                ], [
+                    'sequence' => 6,
+                    'event_type' => 'ActivityCompleted',
+                    'payload' => [
+                        'sequence' => 5,
+                        'activity_type' => 'refund_card',
+                        'result' => Serializer::serializeWithCodec('avro', ['activity' => 'refund_card']),
+                        'payload_codec' => 'avro',
+                    ],
+                    'recorded_at' => '2026-05-12T10:12:20+00:00',
+                ], [
+                    'sequence' => 7,
+                    'event_type' => 'ActivityCompleted',
+                    'payload' => [
+                        'sequence' => 6,
+                        'activity_type' => 'cancel_hotel',
+                        'result' => Serializer::serializeWithCodec('avro', ['activity' => 'cancel_hotel']),
+                        'payload_codec' => 'avro',
+                    ],
+                    'recorded_at' => '2026-05-12T10:12:25+00:00',
+                ], [
+                    'sequence' => 8,
+                    'event_type' => 'ActivityFailed',
+                    'payload' => [
+                        'sequence' => 7,
+                        'activity_type' => 'cancel_flight',
+                        'exception_class' => 'TypedCancelFlightError',
+                        'exception_type' => 'TypedCancelFlightError',
+                        'message' => 'cancel_flight typed compensation failure',
+                        'code' => 0,
+                        'exception' => [
+                            'class' => 'TypedCancelFlightError',
+                            'type' => 'TypedCancelFlightError',
+                            'message' => 'cancel_flight typed compensation failure',
+                            'code' => 0,
+                        ],
+                    ],
+                    'recorded_at' => '2026-05-12T10:12:30+00:00',
+                ]],
+            )->step();
+        } catch (RuntimeException $exception) {
+            $previous = $exception->getPrevious();
+
+            $this->assertInstanceOf(RestoredWorkflowException::class, $previous);
+            $this->assertSame('cancel_flight typed compensation failure', $previous->getMessage());
+            $this->assertSame('TypedCancelFlightError', $previous->failurePayload()['type'] ?? null);
+
+            throw $exception;
+        }
     }
 
     public function testRunnerThrowsRecordedChildFailureIntoWorkflow(): void
@@ -1154,6 +1274,50 @@ final class WorkerProtocolRunnerHandledActivityFailureWorkflow extends Workflow
             'not caught',
             Workflow::now()->getTimestampMs(),
         );
+    }
+}
+
+final class WorkerProtocolRunnerSequentialCompensationFailureWorkflow extends Workflow
+{
+    public function handle(): mixed
+    {
+        try {
+            Workflow::activity('reserve_flight');
+            $this->addCompensation(static fn () => Workflow::activity('cancel_flight'));
+
+            Workflow::activity('reserve_hotel');
+            $this->addCompensation(static fn () => Workflow::activity('cancel_hotel'));
+
+            Workflow::activity('charge_card');
+            $this->addCompensation(static fn () => Workflow::activity('refund_card'));
+
+            Workflow::activity('saga_planned_failure');
+
+            return ['status' => 'completed'];
+        } catch (Throwable) {
+            try {
+                $this->compensate();
+            } catch (Throwable $compensationFailure) {
+                throw new RuntimeException(
+                    'compensation failed for '.self::failedCompensationStep($compensationFailure->getMessage())
+                        .': '.$compensationFailure->getMessage(),
+                    previous: $compensationFailure,
+                );
+            }
+
+            return ['status' => 'compensated'];
+        }
+    }
+
+    private static function failedCompensationStep(string $message): string
+    {
+        foreach (['cancel_flight', 'cancel_hotel', 'refund_card'] as $step) {
+            if (str_contains($message, $step)) {
+                return $step;
+            }
+        }
+
+        return 'unknown';
     }
 }
 
