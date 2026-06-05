@@ -23,9 +23,11 @@ use Workflow\V2\Models\WorkflowSearchAttribute;
  * and per-attempt/total/heartbeat timeouts only belong on `schedule_activity`,
  * durable child workflow retry policy and execution/run timeouts only belong
  * on `start_child_workflow`, and the worker-side `non_retryable` failure
- * marker only belongs on `fail_workflow` / `fail_update`. Workflow failure
- * itself is non-retryable, and the SDK HTTP transport retry policy is a
- * client concern that does not appear in the workflow task command stream.
+ * marker only belongs on `fail_workflow` / `fail_update`. Structured
+ * exception payloads belong on `fail_workflow` so terminal worker failures can
+ * preserve the original typed failure. Workflow failure itself is non-retryable,
+ * and the SDK HTTP transport retry policy is a client concern that does not
+ * appear in the workflow task command stream.
  *
  * Extracted from App\Http\Controllers\Api\WorkerController so the server
  * is no longer the source of truth for the command grammar.
@@ -79,6 +81,10 @@ final class WorkflowCommandNormalizer
         'non_retryable' => [
             'allowed' => ['fail_workflow', 'fail_update'],
             'guidance' => 'non_retryable marks a workflow or update failure as non-retryable and only applies to a fail_workflow or fail_update command. Activity non-retryable error types belong inside the schedule_activity retry_policy.non_retryable_error_types list.',
+        ],
+        'exception' => [
+            'allowed' => ['fail_workflow'],
+            'guidance' => 'exception carries the structured terminal workflow failure payload and only applies to a fail_workflow command.',
         ],
         'parent_close_policy' => [
             'allowed' => ['start_child_workflow'],
@@ -180,6 +186,8 @@ final class WorkflowCommandNormalizer
                     continue;
                 }
 
+                $exception = self::optionalExceptionPayload($command, $index, $errors);
+
                 $normalized[] = array_filter([
                     'type' => $type,
                     'message' => $command['message'],
@@ -189,6 +197,7 @@ final class WorkflowCommandNormalizer
                     'exception_type' => is_string($command['exception_type'] ?? null)
                         ? $command['exception_type']
                         : null,
+                    'exception' => $exception,
                     'non_retryable' => is_bool($command['non_retryable'] ?? null)
                         ? $command['non_retryable']
                         : null,
@@ -750,6 +759,28 @@ final class WorkflowCommandNormalizer
 
             return null;
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     * @return array<string, mixed>|null
+     */
+    private static function optionalExceptionPayload(array $command, int $index, array &$errors): ?array
+    {
+        if (! array_key_exists('exception', $command) || $command['exception'] === null) {
+            return null;
+        }
+
+        if (! is_array($command['exception'])) {
+            $errors["commands.{$index}.exception"] = [
+                'Workflow task command field [exception] must be an object when provided.',
+            ];
+
+            return null;
+        }
+
+        return $command['exception'];
     }
 
     /**

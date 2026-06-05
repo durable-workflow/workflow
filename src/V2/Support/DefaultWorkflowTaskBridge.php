@@ -987,15 +987,28 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
     }
 
     /**
-     * @param array{type: string, message: string, exception_class?: string, exception_type?: string} $command
+     * @param array{
+     *     type: string,
+     *     message: string,
+     *     exception_class?: string,
+     *     exception_type?: string,
+     *     exception?: array<string, mixed>,
+     *     non_retryable?: bool
+     * } $command
      */
     private function applyWorkflowFailure(WorkflowRun $run, WorkflowTask $task, array $command): void
     {
-        $message = is_string($command['message'] ?? null) ? $command['message'] : 'External workflow task failed';
-        $exceptionClass = is_string(
-            $command['exception_class'] ?? null
-        ) ? $command['exception_class'] : RuntimeException::class;
-        $exceptionType = is_string($command['exception_type'] ?? null) ? $command['exception_type'] : null;
+        $structuredException = self::normalizeExceptionPayload($command['exception'] ?? null) ?? [];
+        $message = self::normalizeOptionalString($command['message'] ?? null)
+            ?? self::normalizeOptionalString($structuredException['message'] ?? null)
+            ?? 'External workflow task failed';
+        $exceptionClass = self::normalizeOptionalString($structuredException['class'] ?? null)
+            ?? self::normalizeOptionalString($command['exception_class'] ?? null)
+            ?? RuntimeException::class;
+        $exceptionType = self::normalizeOptionalString($structuredException['type'] ?? null)
+            ?? self::normalizeOptionalString($command['exception_type'] ?? null);
+        $exceptionMessage = self::normalizeOptionalString($structuredException['message'] ?? null)
+            ?? $message;
 
         $failureCategory = FailureFactory::classifyFromStrings('terminal', 'workflow_run', $exceptionClass, $message);
         $nonRetryable = (bool) ($command['non_retryable'] ?? FailureFactory::isNonRetryableFromStrings(
@@ -1034,16 +1047,16 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'exception_type' => $exceptionType,
             'exception_class' => $exceptionClass,
             'message' => $message,
-            'exception' => [
+            'exception' => array_replace([
                 'class' => $exceptionClass,
                 'type' => $exceptionType,
-                'message' => $message,
+                'message' => $exceptionMessage,
                 'code' => 0,
                 'file' => '',
                 'line' => 0,
                 'trace' => [],
                 'properties' => [],
-            ],
+            ], $structuredException),
         ], $task);
 
         $task->forceFill([
@@ -3377,7 +3390,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
 
     /**
      * @param array<string, mixed> $command
-     * @return array{type: string, message: string, exception_class?: string, exception_type?: string}|null
+     * @return array{
+     *     type: string,
+     *     message: string,
+     *     exception_class?: string,
+     *     exception_type?: string,
+     *     exception?: array<string, mixed>,
+     *     non_retryable?: bool
+     * }|null
      */
     private static function normalizeFailWorkflowCommand(array $command): ?array
     {
@@ -3392,6 +3412,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'message' => $message,
             'exception_class' => self::normalizeOptionalString($command['exception_class'] ?? null),
             'exception_type' => self::normalizeOptionalString($command['exception_type'] ?? null),
+            'exception' => self::normalizeExceptionPayload($command['exception'] ?? null),
+            'non_retryable' => is_bool($command['non_retryable'] ?? null) ? $command['non_retryable'] : null,
         ], static fn (mixed $value): bool => $value !== null);
     }
 
@@ -3513,6 +3535,14 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return $strings === [] ? null : array_values(array_unique($strings));
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function normalizeExceptionPayload(mixed $value): ?array
+    {
+        return is_array($value) ? $value : null;
     }
 
     /**

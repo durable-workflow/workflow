@@ -12,6 +12,7 @@ use PDOException;
 use ReflectionClass;
 use ReflectionException;
 use ReflectionProperty;
+use RuntimeException;
 use Throwable;
 use Workflow\Exceptions\NonRetryableExceptionContract;
 use Workflow\Serializers\Serializer;
@@ -270,6 +271,15 @@ final class FailureFactory
 
         if ($resolution === null) {
             throw UnresolvedWorkflowFailureException::unresolved($normalized);
+        }
+
+        if (
+            $resolution['source'] === 'recorded_class'
+            && $resolution['class'] === RuntimeException::class
+            && is_string($normalized['type'] ?? null)
+            && $normalized['type'] !== ''
+        ) {
+            return new RestoredWorkflowException($normalized);
         }
 
         try {

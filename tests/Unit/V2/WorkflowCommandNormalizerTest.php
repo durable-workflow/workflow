@@ -121,6 +121,12 @@ final class WorkflowCommandNormalizerTest extends TestCase
                 'type' => 'fail_workflow',
                 'message' => 'boom',
                 'exception_class' => 'App\\Exceptions\\Boom',
+                'exception_type' => 'typed_boom',
+                'exception' => [
+                    'class' => 'App\\Exceptions\\Boom',
+                    'type' => 'typed_boom',
+                    'message' => 'typed boom detail',
+                ],
                 'non_retryable' => true,
             ],
         ]);
@@ -129,6 +135,12 @@ final class WorkflowCommandNormalizerTest extends TestCase
             'type' => 'fail_workflow',
             'message' => 'boom',
             'exception_class' => 'App\\Exceptions\\Boom',
+            'exception_type' => 'typed_boom',
+            'exception' => [
+                'class' => 'App\\Exceptions\\Boom',
+                'type' => 'typed_boom',
+                'message' => 'typed boom detail',
+            ],
             'non_retryable' => true,
         ]], $out);
     }

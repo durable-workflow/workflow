@@ -331,7 +331,7 @@ interface WorkflowTaskBridge
      * - complete_workflow: {type: 'complete_workflow', result?: string|null, payload_codec?: string|null}
      *   Marks the workflow run as completed with an optional serialized result.
      *
-     * - fail_workflow: {type: 'fail_workflow', message: string, exception_class?: string, exception_type?: string}
+     * - fail_workflow: {type: 'fail_workflow', message: string, exception_class?: string, exception_type?: string, exception?: array<string, mixed>}
      *   Marks the workflow run as failed with a failure record.
      *
      * - continue_as_new: {type: 'continue_as_new', arguments?: string|null, payload_codec?: string|null, workflow_type?: string|null}

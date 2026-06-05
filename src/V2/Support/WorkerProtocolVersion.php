@@ -29,13 +29,15 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.9';
+    public const VERSION = '1.10';
 
     private const QUERY_TASKS_MINIMUM_PROTOCOL_VERSION = '1.8';
 
     private const UPSERT_SEARCH_ATTRIBUTES_MINIMUM_PROTOCOL_VERSION = '1.8';
 
     private const WORKER_SESSIONS_MINIMUM_PROTOCOL_VERSION = '1.8';
+
+    private const FAIL_WORKFLOW_EXCEPTION_MINIMUM_PROTOCOL_VERSION = '1.10';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -291,6 +293,7 @@ final class WorkerProtocolVersion
      *     worker_sessions: array<string, mixed>,
      *     query_tasks: array<string, mixed>,
      *     upsert_search_attributes_command: array<string, mixed>,
+     *     fail_workflow_command: array<string, mixed>,
      *     invocable_carrier: array<string, mixed>,
      *     task_queue_priority_fairness: array<string, mixed>,
      * }
@@ -320,6 +323,7 @@ final class WorkerProtocolVersion
             'worker_sessions' => self::workerSessionSemantics(),
             'query_tasks' => self::queryTaskSemantics(),
             'upsert_search_attributes_command' => self::upsertSearchAttributesCommandShape(),
+            'fail_workflow_command' => self::failWorkflowCommandShape(),
             'payload_codecs_universal' => CodecRegistry::universal(),
             'payload_codecs_engine_specific' => CodecRegistry::engineSpecific(),
             'unsupported_payload_codec_reason' => self::REASON_UNSUPPORTED_PAYLOAD_CODEC,
@@ -366,6 +370,49 @@ final class WorkerProtocolVersion
                 'valid_values' => WorkflowSearchAttribute::VALID_TYPES,
                 'invalid_values' => 'ignored',
                 'omitted_values' => 'infer_from_attribute_value',
+            ],
+        ];
+    }
+
+    /**
+     * Published workflow-task terminal failure command shape.
+     *
+     * @return array<string, mixed>
+     */
+    public static function failWorkflowCommandShape(): array
+    {
+        return [
+            'type' => 'fail_workflow',
+            'category' => 'terminal_command',
+            'required_fields' => ['type', 'message'],
+            'optional_fields' => ['exception_class', 'exception_type', 'exception', 'non_retryable'],
+            'field_minimum_protocol_versions' => [
+                'exception' => self::FAIL_WORKFLOW_EXCEPTION_MINIMUM_PROTOCOL_VERSION,
+            ],
+            'message' => [
+                'shape' => 'non-empty string',
+                'meaning' => 'terminal workflow failure summary',
+            ],
+            'exception_class' => [
+                'shape' => 'string',
+                'required' => false,
+                'meaning' => 'SDK exception class name when available',
+            ],
+            'exception_type' => [
+                'shape' => 'string',
+                'required' => false,
+                'meaning' => 'stable typed failure classification when available',
+            ],
+            'exception' => [
+                'shape' => 'array<string, mixed>',
+                'required' => false,
+                'minimum_protocol_version' => self::FAIL_WORKFLOW_EXCEPTION_MINIMUM_PROTOCOL_VERSION,
+                'meaning' => 'structured terminal workflow failure payload preserved from the worker',
+            ],
+            'non_retryable' => [
+                'shape' => 'bool',
+                'required' => false,
+                'meaning' => 'marks the terminal workflow failure as non-retryable',
             ],
         ];
     }

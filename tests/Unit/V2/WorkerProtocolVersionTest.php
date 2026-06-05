@@ -16,9 +16,9 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksSignalWaitCommandShape(): void
+    public function testVersionTracksFailWorkflowExceptionCommandShape(): void
     {
-        $this->assertSame('1.9', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.10', WorkerProtocolVersion::VERSION);
     }
 
     public function testWorkflowTaskVerbsIncludesAllBridgeMethods(): void
@@ -146,6 +146,36 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertFalse($shape['attribute_types']['required']);
         $this->assertSame(WorkflowSearchAttribute::VALID_TYPES, $shape['attribute_types']['valid_values']);
         $this->assertSame('infer_from_attribute_value', $shape['attribute_types']['omitted_values']);
+    }
+
+    public function testDescribeIncludesFailWorkflowCommandShape(): void
+    {
+        $summary = WorkerProtocolVersion::describe();
+
+        $this->assertArrayHasKey('fail_workflow_command', $summary);
+
+        $shape = $summary['fail_workflow_command'];
+        $this->assertSame('fail_workflow', $shape['type']);
+        $this->assertSame('terminal_command', $shape['category']);
+        $this->assertSame(['type', 'message'], $shape['required_fields']);
+        $this->assertSame(
+            ['exception_class', 'exception_type', 'exception', 'non_retryable'],
+            $shape['optional_fields'],
+        );
+        $this->assertSame(
+            ['exception' => '1.10'],
+            $shape['field_minimum_protocol_versions'],
+        );
+        $this->assertSame('non-empty string', $shape['message']['shape']);
+        $this->assertSame('string', $shape['exception_class']['shape']);
+        $this->assertFalse($shape['exception_class']['required']);
+        $this->assertSame('string', $shape['exception_type']['shape']);
+        $this->assertFalse($shape['exception_type']['required']);
+        $this->assertSame('array<string, mixed>', $shape['exception']['shape']);
+        $this->assertFalse($shape['exception']['required']);
+        $this->assertSame('1.10', $shape['exception']['minimum_protocol_version']);
+        $this->assertSame('bool', $shape['non_retryable']['shape']);
+        $this->assertFalse($shape['non_retryable']['required']);
     }
 
     public function testDescribeIncludesQueryTaskSemantics(): void

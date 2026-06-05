@@ -96,4 +96,20 @@ final class FailureFactoryRestoreTest extends TestCase
         $this->assertSame('avro', $failurePayload['details_payload_codec'] ?? null);
         $this->assertSame($payload['details'], $failurePayload['details'] ?? null);
     }
+
+    public function testReplayPreservesExternalLogicalTypeWhenRecordedClassIsGeneric(): void
+    {
+        $payload = [
+            'class' => RuntimeException::class,
+            'type' => 'TypedCancelFlightError',
+            'message' => 'cancel_flight typed compensation failure',
+        ];
+
+        $restored = FailureFactory::restoreForReplay($payload);
+
+        $this->assertInstanceOf(RuntimeException::class, $restored);
+        $this->assertInstanceOf(RestoredWorkflowException::class, $restored);
+        $this->assertSame('cancel_flight typed compensation failure', $restored->getMessage());
+        $this->assertSame('TypedCancelFlightError', $restored->failurePayload()['type'] ?? null);
+    }
 }

@@ -42,6 +42,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
@@ -1744,8 +1745,14 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $result = $this->bridge->complete($task->id, [
             [
                 'type' => 'fail_workflow',
-                'message' => 'Determinism violation',
+                'message' => 'compensation failed for unknown: activity failed',
                 'exception_class' => RuntimeException::class,
+                'exception_type' => RuntimeException::class,
+                'exception' => [
+                    'class' => RuntimeException::class,
+                    'type' => 'TypedCancelFlightError',
+                    'message' => 'cancel_flight typed compensation failure',
+                ],
             ],
         ]);
 
@@ -1765,15 +1772,21 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->first();
 
         $this->assertNotNull($failureEvent);
-        $this->assertSame('Determinism violation', $failureEvent->payload['message']);
+        $this->assertSame('compensation failed for unknown: activity failed', $failureEvent->payload['message']);
+        $this->assertSame('TypedCancelFlightError', $failureEvent->payload['exception_type']);
+        $this->assertSame('cancel_flight typed compensation failure', $failureEvent->payload['exception']['message'] ?? null);
 
         $failure = WorkflowFailure::query()
             ->where('workflow_run_id', $run->id)
             ->first();
 
         $this->assertNotNull($failure);
-        $this->assertSame('Determinism violation', $failure->message);
+        $this->assertSame('compensation failed for unknown: activity failed', $failure->message);
         $this->assertSame(RuntimeException::class, $failure->exception_class);
+
+        $snapshots = FailureSnapshots::forRun($run->fresh(['historyEvents', 'failures']));
+        $this->assertSame('TypedCancelFlightError', $snapshots[0]['exception_type'] ?? null);
+        $this->assertSame('cancel_flight typed compensation failure', $snapshots[0]['message'] ?? null);
     }
 
     public function testCompleteRejectsNonLeasedTask(): void
