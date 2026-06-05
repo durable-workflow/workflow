@@ -62,6 +62,9 @@ final class ServiceCallView
             'resolved_target_reference' => $call->resolved_target_reference,
 
             'idempotency_key' => $call->idempotency_key,
+            'retry_policy' => self::array($call->retry_policy),
+            'service_call_attempts' => self::attempts($call),
+            'retry_attempt_count' => count(self::attempts($call)),
             'failure_message' => $call->failure_message,
 
             'accepted_at' => self::iso($call->accepted_at),
@@ -88,7 +91,6 @@ final class ServiceCallView
         $base['deadline_policy'] = self::array($call->deadline_policy);
         $base['idempotency_policy'] = self::array($call->idempotency_policy);
         $base['cancellation_policy'] = self::array($call->cancellation_policy);
-        $base['retry_policy'] = self::array($call->retry_policy);
         $base['boundary_policy'] = self::array($call->boundary_policy);
         $base['metadata'] = self::array($call->metadata);
         $base['caller_principal_claims'] = self::array($call->caller_principal_claims);
@@ -182,6 +184,20 @@ final class ServiceCallView
     private static function array(mixed $value): array
     {
         return is_array($value) ? $value : [];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function attempts(WorkflowServiceCall $call): array
+    {
+        foreach ([self::array($call->metadata), self::array($call->outcome_metadata)] as $container) {
+            if (isset($container['service_call_attempts']) && is_array($container['service_call_attempts'])) {
+                return array_values(array_filter($container['service_call_attempts'], 'is_array'));
+            }
+        }
+
+        return [];
     }
 
     private static function iso(mixed $value): ?string

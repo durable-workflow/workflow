@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallFailureReason;
@@ -18,6 +19,8 @@ use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\ServiceBoundaryDecision;
+use Workflow\V2\Support\ServiceBoundaryRequest;
 
 final class DefaultServiceControlPlaneTest extends TestCase
 {
@@ -262,6 +265,254 @@ final class DefaultServiceControlPlaneTest extends TestCase
         $this->assertSame('invoice-42', $fakeWorkflow->queries[0]['instance_id']);
         $this->assertSame('status', $fakeWorkflow->queries[0]['name']);
         $this->assertSame('billing', $fakeWorkflow->queries[0]['options']['namespace']);
+    }
+
+    public function testExecuteRetriesTransientHandlerFailuresAndRecordsAttempts(): void
+    {
+        $fakeWorkflow = new FakeServiceWorkflowControlPlane();
+        $fakeWorkflow->queryResults = [
+            [
+                'success' => false,
+                'reason' => 'transient_greeter_failure',
+                'message' => 'first transient failure',
+                'error_type' => 'TransientGreetingFailure',
+            ],
+            [
+                'success' => false,
+                'reason' => 'transient_greeter_failure',
+                'message' => 'second transient failure',
+                'error_type' => 'TransientGreetingFailure',
+            ],
+            [
+                'success' => true,
+                'workflow_instance_id' => 'invoice-42',
+                'run_id' => 'run-service-1',
+                'result' => 'hello, world',
+                'reason' => null,
+            ],
+        ];
+        $controlPlane = new DefaultServiceControlPlane($fakeWorkflow, new DefaultServiceBoundaryPolicy());
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'operation_mode' => ServiceCallOperationMode::Sync->value,
+            'handler_binding_kind' => ServiceCallBindingKind::WorkflowQuery->value,
+            'handler_binding' => [
+                'workflow_instance_id' => 'invoice-42',
+                'query_name' => 'greet',
+            ],
+            'retry_policy' => [
+                'max_attempts' => 3,
+                'backoff_seconds' => [0, 0],
+            ],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Completed->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::Completed->value, $result['outcome']);
+        $this->assertCount(3, $fakeWorkflow->queries);
+        $this->assertCount(3, $result['service_call_attempts']);
+        $this->assertSame(3, $result['retry_attempt_count']);
+        $this->assertTrue($result['service_call_attempts'][0]['retry_scheduled']);
+        $this->assertEquals(0, $result['service_call_attempts'][0]['scheduled_backoff_seconds']);
+        $this->assertSame(ServiceCallStatus::Started->value, $result['service_call_attempts'][0]['status']);
+        $this->assertSame(ServiceCallOutcome::Accepted->value, $result['service_call_attempts'][0]['outcome']);
+        $this->assertSame('transient_greeter_failure', $result['service_call_attempts'][0]['outcome_reason']);
+        $this->assertArrayNotHasKey('failed_at', $result['service_call_attempts'][0]);
+        $this->assertSame('TransientGreetingFailure', $result['service_call_attempts'][0]['failure_type']);
+        $this->assertSame('first transient failure', $result['service_call_attempts'][0]['failure_message']);
+        $this->assertSame(ServiceCallStatus::Completed->value, $result['service_call_attempts'][2]['status']);
+        $this->assertSame(
+            [
+                ServiceCallStatus::Accepted->value,
+                ServiceCallStatus::Started->value,
+                ServiceCallStatus::Started->value,
+            ],
+            $fakeWorkflow->queryObservedCallStatuses,
+        );
+        $this->assertSame(
+            [
+                ServiceCallOutcome::Accepted->value,
+                ServiceCallOutcome::Accepted->value,
+                ServiceCallOutcome::Accepted->value,
+            ],
+            $fakeWorkflow->queryObservedCallOutcomes,
+        );
+
+        $call = WorkflowServiceCall::query()->firstOrFail();
+        $this->assertCount(3, $call->metadata['service_call_attempts']);
+        $this->assertSame(ServiceCallStatus::Completed->value, $call->status);
+        $this->assertSame(ServiceCallOutcome::Completed, $call->outcome);
+        $this->assertNull($call->failed_at);
+        $this->assertNull($call->failure_message);
+    }
+
+    public function testRetryExhaustionPersistsFailedOnlyAfterFinalAttempt(): void
+    {
+        $fakeWorkflow = new FakeServiceWorkflowControlPlane();
+        $fakeWorkflow->queryResults = [
+            [
+                'success' => false,
+                'reason' => 'transient_greeter_failure',
+                'message' => 'first transient failure',
+                'error_type' => 'TransientGreetingFailure',
+            ],
+            [
+                'success' => false,
+                'reason' => 'transient_greeter_failure',
+                'message' => 'second transient failure',
+                'error_type' => 'TransientGreetingFailure',
+            ],
+        ];
+        $controlPlane = new DefaultServiceControlPlane($fakeWorkflow, new DefaultServiceBoundaryPolicy());
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'operation_mode' => ServiceCallOperationMode::Sync->value,
+            'handler_binding_kind' => ServiceCallBindingKind::WorkflowQuery->value,
+            'handler_binding' => [
+                'workflow_instance_id' => 'invoice-42',
+                'query_name' => 'greet',
+            ],
+            'retry_policy' => [
+                'max_attempts' => 2,
+                'backoff_seconds' => [0],
+            ],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+        ]);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Failed->value, $result['status']);
+        $this->assertSame(ServiceCallOutcome::HandlerFailed->value, $result['outcome']);
+        $this->assertCount(2, $fakeWorkflow->queries);
+        $this->assertSame(
+            [
+                ServiceCallStatus::Accepted->value,
+                ServiceCallStatus::Started->value,
+            ],
+            $fakeWorkflow->queryObservedCallStatuses,
+        );
+        $this->assertSame(ServiceCallStatus::Started->value, $result['service_call_attempts'][0]['status']);
+        $this->assertSame(ServiceCallOutcome::Accepted->value, $result['service_call_attempts'][0]['outcome']);
+        $this->assertSame('transient_greeter_failure', $result['service_call_attempts'][0]['outcome_reason']);
+        $this->assertTrue($result['service_call_attempts'][0]['retry_scheduled']);
+        $this->assertArrayNotHasKey('failed_at', $result['service_call_attempts'][0]);
+        $this->assertSame(ServiceCallStatus::Failed->value, $result['service_call_attempts'][1]['status']);
+        $this->assertSame(ServiceCallOutcome::HandlerFailed->value, $result['service_call_attempts'][1]['outcome']);
+        $this->assertFalse($result['service_call_attempts'][1]['retry_scheduled']);
+
+        $call = WorkflowServiceCall::query()->firstOrFail();
+        $this->assertSame(ServiceCallStatus::Failed->value, $call->status);
+        $this->assertSame(ServiceCallOutcome::HandlerFailed, $call->outcome);
+        $this->assertNotNull($call->failed_at);
+        $this->assertSame('TransientGreetingFailure', $call->outcome_metadata['service_error_type']);
+        $this->assertCount(2, $call->outcome_metadata['service_call_attempts']);
+    }
+
+    public function testRetriesKeepBoundaryAdmissionHeldUntilTerminalOutcome(): void
+    {
+        $fakeWorkflow = new FakeServiceWorkflowControlPlane();
+        $fakeWorkflow->queryResults = [
+            [
+                'success' => false,
+                'reason' => 'transient_greeter_failure',
+                'message' => 'first transient failure',
+                'error_type' => 'TransientGreetingFailure',
+            ],
+            [
+                'success' => true,
+                'workflow_instance_id' => 'invoice-42',
+                'run_id' => 'run-service-1',
+                'result' => 'hello, world',
+                'reason' => null,
+            ],
+        ];
+        $boundaryPolicy = new RetryReleaseAssertingBoundaryPolicy();
+        $controlPlane = new DefaultServiceControlPlane($fakeWorkflow, $boundaryPolicy);
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'operation_mode' => ServiceCallOperationMode::Sync->value,
+            'handler_binding_kind' => ServiceCallBindingKind::WorkflowQuery->value,
+            'handler_binding' => [
+                'workflow_instance_id' => 'invoice-42',
+                'query_name' => 'greet',
+            ],
+            'boundary_policy' => [
+                'concurrency_limit' => ['max_in_flight' => 1],
+            ],
+            'retry_policy' => [
+                'max_attempts' => 2,
+                'backoff_seconds' => [0],
+            ],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+        ]);
+
+        $this->assertTrue($result['accepted']);
+        $this->assertSame(ServiceCallStatus::Completed->value, $result['status']);
+        $this->assertCount(2, $fakeWorkflow->queries);
+        $this->assertSame([ServiceCallStatus::Completed->value], $boundaryPolicy->releaseStatuses);
+        $this->assertFalse($boundaryPolicy->releasedWhileCallWasFailed);
+        $this->assertFalse($boundaryPolicy->admittedCompetingCallDuringRetry);
+    }
+
+    public function testExecutePreservesTypedPermanentFailureAndDoesNotRetryNonRetryableTypes(): void
+    {
+        $fakeWorkflow = new FakeServiceWorkflowControlPlane();
+        $fakeWorkflow->queryResults = [
+            [
+                'success' => false,
+                'reason' => 'service_error',
+                'message' => 'shared greeter is permanently unavailable',
+                'error_type' => 'SharedGreeterUnavailable',
+            ],
+        ];
+        $controlPlane = new DefaultServiceControlPlane($fakeWorkflow, new DefaultServiceBoundaryPolicy());
+        [$endpoint, $service] = $this->catalog('billing');
+
+        $this->operation($endpoint, $service, [
+            'operation_mode' => ServiceCallOperationMode::Sync->value,
+            'handler_binding_kind' => ServiceCallBindingKind::WorkflowQuery->value,
+            'handler_binding' => [
+                'workflow_instance_id' => 'invoice-42',
+                'query_name' => 'greet',
+            ],
+            'retry_policy' => [
+                'max_attempts' => 3,
+                'non_retryable_error_types' => ['SharedGreeterUnavailable'],
+            ],
+        ]);
+
+        $result = $controlPlane->execute('billing', 'invoices', 'create', [
+            'namespace' => 'billing',
+            'caller_namespace' => 'finance',
+        ]);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('SharedGreeterUnavailable', $result['error_type']);
+        $this->assertSame('SharedGreeterUnavailable', $result['service_error_type']);
+        $this->assertSame('shared greeter is permanently unavailable', $result['message']);
+        $this->assertCount(1, $fakeWorkflow->queries);
+        $this->assertCount(1, $result['service_call_attempts']);
+
+        $call = WorkflowServiceCall::query()->firstOrFail();
+        $this->assertSame('SharedGreeterUnavailable', $call->outcome_metadata['service_error_type']);
+        $this->assertSame('SharedGreeterUnavailable', $call->outcome_metadata['caller_observed_error_type']);
+        $this->assertSame('shared greeter is permanently unavailable', $call->outcome_metadata['typed_error_message']);
+        $this->assertCount(1, $call->outcome_metadata['service_call_attempts']);
     }
 
     public function testExplicitPreAdmittedCallStillDispatchesWhenIdempotencyKeyIsPresent(): void
@@ -564,6 +815,93 @@ final class DefaultServiceControlPlaneTest extends TestCase
     }
 }
 
+final class RetryReleaseAssertingBoundaryPolicy implements ServiceBoundaryPolicy
+{
+    /**
+     * @var array<string, int>
+     */
+    private array $inFlight = [];
+
+    /**
+     * @var list<string|null>
+     */
+    public array $releaseStatuses = [];
+
+    public bool $releasedWhileCallWasFailed = false;
+
+    public bool $admittedCompetingCallDuringRetry = false;
+
+    public function evaluate(ServiceBoundaryRequest $request): ServiceBoundaryDecision
+    {
+        $maxInFlight = $this->maxInFlight($request);
+        $key = $request->boundaryKey();
+        $current = $this->inFlight[$key] ?? 0;
+
+        if ($maxInFlight !== null && $current >= $maxInFlight) {
+            return ServiceBoundaryDecision::denyConcurrency(
+                message: 'Concurrency limit reached while service call is retrying.',
+                metadata: [
+                    'observed_in_flight' => $current,
+                    'max_in_flight' => $maxInFlight,
+                    'boundary_key' => $key,
+                ],
+            );
+        }
+
+        if ($maxInFlight !== null) {
+            $this->inFlight[$key] = $current + 1;
+        }
+
+        return ServiceBoundaryDecision::allow(metadata: ['boundary_key' => $key]);
+    }
+
+    public function release(ServiceBoundaryRequest $request): void
+    {
+        $key = $request->boundaryKey();
+
+        if (isset($this->inFlight[$key])) {
+            if (--$this->inFlight[$key] <= 0) {
+                unset($this->inFlight[$key]);
+            }
+        }
+
+        $status = WorkflowServiceCall::query()
+            ->where('target_namespace', $request->targetNamespace)
+            ->where('endpoint_name', $request->endpointName)
+            ->where('service_name', $request->serviceName)
+            ->where('operation_name', $request->operationName)
+            ->oldest('created_at')
+            ->oldest('id')
+            ->value('status');
+
+        $this->releaseStatuses[] = is_string($status) ? $status : null;
+
+        if ($status !== ServiceCallStatus::Failed->value) {
+            return;
+        }
+
+        $this->releasedWhileCallWasFailed = true;
+        $this->admittedCompetingCallDuringRetry = $this->evaluate($request)->isAllowed();
+    }
+
+    private function maxInFlight(ServiceBoundaryRequest $request): ?int
+    {
+        $policy = $request->effectiveBoundaryPolicy();
+        $rules = [];
+
+        foreach (['concurrency_limit', 'concurrency'] as $key) {
+            if (isset($policy[$key]) && is_array($policy[$key])) {
+                $rules = $policy[$key];
+                break;
+            }
+        }
+
+        $max = isset($rules['max_in_flight']) ? (int) $rules['max_in_flight'] : null;
+
+        return $max !== null && $max > 0 ? $max : null;
+    }
+}
+
 final class FakeServiceWorkflowControlPlane implements WorkflowControlPlane
 {
     /**
@@ -580,6 +918,21 @@ final class FakeServiceWorkflowControlPlane implements WorkflowControlPlane
      * @var list<array{instance_id: string, name: string, options: array<string, mixed>}>
      */
     public array $queries = [];
+
+    /**
+     * @var list<array<string, mixed>>
+     */
+    public array $queryResults = [];
+
+    /**
+     * @var list<string|null>
+     */
+    public array $queryObservedCallStatuses = [];
+
+    /**
+     * @var list<string|null>
+     */
+    public array $queryObservedCallOutcomes = [];
 
     /**
      * @var array<string, mixed>
@@ -624,11 +977,25 @@ final class FakeServiceWorkflowControlPlane implements WorkflowControlPlane
 
     public function query(string $instanceId, string $name, array $options = []): array
     {
+        $call = WorkflowServiceCall::query()->oldest('created_at')->oldest('id')->first();
+        $outcome = $call?->outcome;
+
+        $this->queryObservedCallStatuses[] = $call instanceof WorkflowServiceCall
+            ? (string) $call->status
+            : null;
+        $this->queryObservedCallOutcomes[] = $outcome instanceof ServiceCallOutcome
+            ? $outcome->value
+            : (is_string($outcome) ? $outcome : null);
+
         $this->queries[] = [
             'instance_id' => $instanceId,
             'name' => $name,
             'options' => $options,
         ];
+
+        if ($this->queryResults !== []) {
+            return array_shift($this->queryResults);
+        }
 
         return [
             'success' => true,

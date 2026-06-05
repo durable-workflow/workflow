@@ -335,6 +335,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'input_payload_reference' => $call->input_payload_reference,
             'output_payload_reference' => $call->output_payload_reference,
             'failure_payload_reference' => $call->failure_payload_reference,
+            'service_call_attempts' => $this->serviceCallAttempts($call),
+            'retry_attempt_count' => count($this->serviceCallAttempts($call)),
             'accepted_at' => $this->timestamp($call->accepted_at),
             'started_at' => $this->timestamp($call->started_at),
             'completed_at' => $this->timestamp($call->completed_at),
@@ -370,6 +372,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             'input_payload_reference' => null,
             'output_payload_reference' => null,
             'failure_payload_reference' => null,
+            'service_call_attempts' => [],
+            'retry_attempt_count' => 0,
             'accepted_at' => null,
             'started_at' => null,
             'completed_at' => null,
@@ -707,6 +711,50 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         ServiceBoundaryRequest $request,
         array $options,
     ): ?array {
+        $maxAttempts = $this->maxServiceCallAttempts($call->retry_policy);
+        $result = null;
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            $attemptStartedAt = now();
+            $result = $this->dispatchHandlerAttempt($call, $operation, $request, $options, $attempt, $maxAttempts);
+            $call->refresh();
+
+            $retry = $this->shouldRetryServiceCall($result, $attempt, $maxAttempts);
+            $backoffSeconds = $retry ? $this->serviceCallBackoffSeconds($call->retry_policy, $attempt) : null;
+
+            $this->recordServiceCallAttempt(
+                $call,
+                $this->serviceCallAttemptEntry($call, $result, $attempt, $attemptStartedAt, $retry, $backoffSeconds),
+            );
+
+            if (! $retry) {
+                if ($this->isFailed($call)) {
+                    $this->releaseBoundaryAdmission($request);
+                }
+
+                return $result;
+            }
+
+            if ($backoffSeconds !== null && $backoffSeconds > 0) {
+                usleep((int) round($backoffSeconds * 1_000_000));
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>|null
+     */
+    private function dispatchHandlerAttempt(
+        WorkflowServiceCall $call,
+        WorkflowServiceOperation $operation,
+        ServiceBoundaryRequest $request,
+        array $options,
+        int $attempt,
+        int $maxAttempts,
+    ): ?array {
         $kind = $this->bindingKind($operation);
 
         return match ($kind) {
@@ -715,39 +763,198 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $operation,
                 $request,
                 $options,
+                $attempt,
+                $maxAttempts,
             ),
             ServiceCallBindingKind::WorkflowUpdate->value, 'update_workflow' => $this->dispatchWorkflowUpdate(
                 $call,
                 $operation,
                 $request,
                 $options,
+                $attempt,
+                $maxAttempts,
             ),
             ServiceCallBindingKind::WorkflowSignal->value, 'signal_workflow' => $this->dispatchWorkflowSignal(
                 $call,
                 $operation,
                 $request,
                 $options,
+                $attempt,
+                $maxAttempts,
             ),
             ServiceCallBindingKind::WorkflowQuery->value, 'query_workflow' => $this->dispatchWorkflowQuery(
                 $call,
                 $operation,
                 $request,
                 $options,
+                $attempt,
+                $maxAttempts,
             ),
             ServiceCallBindingKind::ActivityExecution->value => $this->dispatchActivityExecution(
                 $call,
                 $operation,
                 $request,
                 $options,
+                $attempt,
+                $maxAttempts,
             ),
             ServiceCallBindingKind::InvocableCarrierRequest->value, 'invocable_http' => $this->dispatchInvocableCarrierRequest(
                 $call,
                 $operation,
                 $request,
                 $options,
+                $attempt,
+                $maxAttempts,
             ),
             default => null,
         };
+    }
+
+    private function maxServiceCallAttempts(mixed $policy): int
+    {
+        $policy = $this->arrayValue($policy);
+
+        foreach (['max_attempts', 'maximum_attempts', 'maximumAttempts'] as $key) {
+            $attempts = $this->positiveInt($policy[$key] ?? null);
+            if ($attempts !== null) {
+                return min($attempts, 10);
+            }
+        }
+
+        return 1;
+    }
+
+    /**
+     * @param array<string, mixed>|null $result
+     */
+    private function shouldRetryServiceCall(
+        ?array $result,
+        int $attempt,
+        int $maxAttempts,
+    ): bool {
+        if ($attempt >= $maxAttempts) {
+            return false;
+        }
+
+        return ($result['retry_scheduled'] ?? false) === true;
+    }
+
+    private function serviceCallBackoffSeconds(mixed $policy, int $completedAttempt): float
+    {
+        $policy = $this->arrayValue($policy);
+
+        foreach (['backoff_seconds', 'backoffSeconds'] as $key) {
+            if (array_key_exists($key, $policy)) {
+                $backoff = $policy[$key];
+
+                if (is_array($backoff)) {
+                    $indexed = array_values($backoff);
+                    $value = $this->numericValue($indexed[$completedAttempt - 1] ?? null);
+
+                    return max(0.0, $value ?? 0.0);
+                }
+
+                $value = $this->numericValue($backoff);
+
+                return max(0.0, $value ?? 0.0);
+            }
+        }
+
+        $initial = $this->firstNumeric($policy, [
+            'initial_interval_seconds',
+            'initialIntervalSeconds',
+            'initial_interval',
+            'initialInterval',
+        ]) ?? 0.0;
+        $coefficient = $this->firstNumeric($policy, [
+            'backoff_coefficient',
+            'backoffCoefficient',
+        ]) ?? 2.0;
+        $maximum = $this->firstNumeric($policy, [
+            'maximum_interval_seconds',
+            'max_interval_seconds',
+            'maximumIntervalSeconds',
+            'maxIntervalSeconds',
+        ]);
+        $backoff = $initial * ($coefficient ** max(0, $completedAttempt - 1));
+
+        if ($maximum !== null && $maximum >= 0) {
+            $backoff = min($backoff, $maximum);
+        }
+
+        return max(0.0, $backoff);
+    }
+
+    /**
+     * @param array<string, mixed>|null $result
+     * @return array<string, mixed>
+     */
+    private function serviceCallAttemptEntry(
+        WorkflowServiceCall $call,
+        ?array $result,
+        int $attempt,
+        DateTimeInterface $startedAt,
+        bool $retryScheduled,
+        ?float $backoffSeconds,
+    ): array {
+        $failureType = $this->failureTypeFrom($this->arrayValue($call->outcome_metadata))
+            ?? $this->failureTypeFrom($this->arrayValue($result));
+
+        return array_filter([
+            'attempt' => $attempt,
+            'status' => $call->status,
+            'outcome' => $this->outcomeValue($call),
+            'outcome_reason' => $this->stringFrom($result['reason'] ?? null) ?? $call->outcome_reason,
+            'failure_type' => $failureType,
+            'failure_message' => $call->failure_message ?? $this->stringFrom($result['message'] ?? null),
+            'started_at' => $this->timestamp($startedAt),
+            'completed_at' => $this->timestamp($call->completed_at),
+            'failed_at' => $this->timestamp($call->failed_at),
+            'cancelled_at' => $this->timestamp($call->cancelled_at),
+            'retry_scheduled' => $retryScheduled,
+            'scheduled_backoff_seconds' => $backoffSeconds,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $attempt
+     */
+    private function recordServiceCallAttempt(WorkflowServiceCall $call, array $attempt): void
+    {
+        $metadata = $this->arrayValue($call->metadata);
+        $attempts = isset($metadata['service_call_attempts']) && is_array($metadata['service_call_attempts'])
+            ? array_values(array_filter($metadata['service_call_attempts'], 'is_array'))
+            : [];
+        $attempts[] = $attempt;
+        $metadata['service_call_attempts'] = $attempts;
+        $metadata['retry_attempt_count'] = count($attempts);
+        $call->metadata = $metadata;
+
+        if ($this->isFailed($call)) {
+            $outcomeMetadata = $this->arrayValue($call->outcome_metadata);
+            $outcomeMetadata['service_call_attempts'] = $attempts;
+            $outcomeMetadata['retry_attempt_count'] = count($attempts);
+            $call->outcome_metadata = $outcomeMetadata;
+        }
+
+        $call->save();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function serviceCallAttempts(WorkflowServiceCall $call): array
+    {
+        foreach ([
+            $this->arrayValue($call->metadata),
+            $this->arrayValue($call->outcome_metadata),
+        ] as $container) {
+            if (isset($container['service_call_attempts']) && is_array($container['service_call_attempts'])) {
+                return array_values(array_filter($container['service_call_attempts'], 'is_array'));
+            }
+        }
+
+        return [];
     }
 
     /**
@@ -759,13 +966,22 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         WorkflowServiceOperation $operation,
         ServiceBoundaryRequest $request,
         array $options,
+        int $attempt,
+        int $maxAttempts,
     ): array {
         $binding = $this->handlerBinding($operation);
         $workflowType = $this->bindingString($binding, ['workflow_type', 'workflow_class', 'type'])
             ?? $this->filledString($operation->handler_target_reference);
 
         if ($workflowType === null) {
-            return $this->markHandlerFailure($call, $request, 'handler_target_missing', 'Workflow start binding has no workflow type.');
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'handler_target_missing',
+                'Workflow start binding has no workflow type.',
+                attempt: $attempt,
+                maxAttempts: $maxAttempts,
+            );
         }
 
         $instanceId = $this->bindingString($binding, ['workflow_instance_id', 'instance_id'])
@@ -778,7 +994,15 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $options,
             ));
         } catch (Throwable $exception) {
-            return $this->markHandlerFailure($call, $request, 'workflow_start_exception', $exception->getMessage());
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'workflow_start_exception',
+                $exception->getMessage(),
+                ['exception_type' => get_class($exception)],
+                $attempt,
+                $maxAttempts,
+            );
         }
 
         if (($result['started'] ?? false) === true) {
@@ -801,6 +1025,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $this->stringFrom($result['reason'] ?? null) ?? 'workflow_start_rejected',
             $this->stringFrom($result['message'] ?? null),
             ['control_plane' => $this->publicResult($result)],
+            $attempt,
+            $maxAttempts,
         );
     }
 
@@ -813,6 +1039,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         WorkflowServiceOperation $operation,
         ServiceBoundaryRequest $request,
         array $options,
+        int $attempt,
+        int $maxAttempts,
     ): array {
         $binding = $this->handlerBinding($operation);
         $instanceId = $this->bindingString($binding, ['workflow_instance_id', 'instance_id', 'target_instance_id'])
@@ -823,7 +1051,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ?? $operation->operation_name;
 
         if ($instanceId === null) {
-            return $this->markHandlerFailure($call, $request, 'handler_target_missing', 'Workflow update binding has no workflow instance id.');
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'handler_target_missing',
+                'Workflow update binding has no workflow instance id.',
+                attempt: $attempt,
+                maxAttempts: $maxAttempts,
+            );
         }
 
         $commandOptions = $this->workflowCommandOptions($call, $binding, $options);
@@ -834,7 +1069,15 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         try {
             $result = $this->workflows()->update($instanceId, $updateName, $commandOptions);
         } catch (Throwable $exception) {
-            return $this->markHandlerFailure($call, $request, 'workflow_update_exception', $exception->getMessage());
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'workflow_update_exception',
+                $exception->getMessage(),
+                ['exception_type' => get_class($exception)],
+                $attempt,
+                $maxAttempts,
+            );
         }
 
         if (($result['accepted'] ?? false) === true) {
@@ -874,6 +1117,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $this->stringFrom($result['reason'] ?? null) ?? 'workflow_update_rejected',
             $this->stringFrom($result['message'] ?? null),
             ['control_plane' => $this->publicResult($result)],
+            $attempt,
+            $maxAttempts,
         );
     }
 
@@ -886,6 +1131,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         WorkflowServiceOperation $operation,
         ServiceBoundaryRequest $request,
         array $options,
+        int $attempt,
+        int $maxAttempts,
     ): array {
         $binding = $this->handlerBinding($operation);
         $instanceId = $this->bindingString($binding, ['workflow_instance_id', 'instance_id', 'target_instance_id'])
@@ -896,7 +1143,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ?? $operation->operation_name;
 
         if ($instanceId === null) {
-            return $this->markHandlerFailure($call, $request, 'handler_target_missing', 'Workflow signal binding has no workflow instance id.');
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'handler_target_missing',
+                'Workflow signal binding has no workflow instance id.',
+                attempt: $attempt,
+                maxAttempts: $maxAttempts,
+            );
         }
 
         try {
@@ -906,7 +1160,15 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $options,
             ));
         } catch (Throwable $exception) {
-            return $this->markHandlerFailure($call, $request, 'workflow_signal_exception', $exception->getMessage());
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'workflow_signal_exception',
+                $exception->getMessage(),
+                ['exception_type' => get_class($exception)],
+                $attempt,
+                $maxAttempts,
+            );
         }
 
         if (($result['accepted'] ?? false) === true) {
@@ -931,6 +1193,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $this->stringFrom($result['reason'] ?? null) ?? 'workflow_signal_rejected',
             $this->stringFrom($result['message'] ?? null),
             ['control_plane' => $this->publicResult($result)],
+            $attempt,
+            $maxAttempts,
         );
     }
 
@@ -943,6 +1207,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         WorkflowServiceOperation $operation,
         ServiceBoundaryRequest $request,
         array $options,
+        int $attempt,
+        int $maxAttempts,
     ): array {
         $binding = $this->handlerBinding($operation);
         $instanceId = $this->bindingString($binding, ['workflow_instance_id', 'instance_id', 'target_instance_id'])
@@ -953,7 +1219,14 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ?? $operation->operation_name;
 
         if ($instanceId === null) {
-            return $this->markHandlerFailure($call, $request, 'handler_target_missing', 'Workflow query binding has no workflow instance id.');
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'handler_target_missing',
+                'Workflow query binding has no workflow instance id.',
+                attempt: $attempt,
+                maxAttempts: $maxAttempts,
+            );
         }
 
         try {
@@ -963,7 +1236,15 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $options,
             ));
         } catch (Throwable $exception) {
-            return $this->markHandlerFailure($call, $request, 'workflow_query_exception', $exception->getMessage());
+            return $this->markHandlerFailure(
+                $call,
+                $request,
+                'workflow_query_exception',
+                $exception->getMessage(),
+                ['exception_type' => get_class($exception)],
+                $attempt,
+                $maxAttempts,
+            );
         }
 
         if (($result['success'] ?? false) === true) {
@@ -989,6 +1270,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $this->stringFrom($result['reason'] ?? null) ?? 'workflow_query_rejected',
             $this->stringFrom($result['message'] ?? null),
             ['control_plane' => $this->publicResult($result)],
+            $attempt,
+            $maxAttempts,
         );
     }
 
@@ -1001,6 +1284,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         WorkflowServiceOperation $operation,
         ServiceBoundaryRequest $request,
         array $options,
+        int $attempt,
+        int $maxAttempts,
     ): array {
         $binding = $this->handlerBinding($operation);
         $activityClass = $this->bindingString($binding, ['activity_class', 'class'])
@@ -1014,6 +1299,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $request,
                 'handler_target_missing',
                 'Activity binding has no activity class or type.',
+                attempt: $attempt,
+                maxAttempts: $maxAttempts,
             );
         }
 
@@ -1067,6 +1354,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         WorkflowServiceOperation $operation,
         ServiceBoundaryRequest $request,
         array $options,
+        int $attempt,
+        int $maxAttempts,
     ): array {
         $binding = $this->handlerBinding($operation);
         $carrierEndpoint = $this->bindingString($binding, ['carrier_endpoint', 'endpoint', 'url'])
@@ -1080,6 +1369,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                 $request,
                 'handler_target_missing',
                 'Invocable carrier binding has no endpoint or carrier reference.',
+                attempt: $attempt,
+                maxAttempts: $maxAttempts,
             );
         }
 
@@ -1171,6 +1462,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $call->status = ServiceCallStatus::Started->value;
         $call->outcome = ServiceCallOutcome::Accepted->value;
         $call->outcome_category = ServiceCallOutcome::Accepted->category();
+        $call->outcome_reason = null;
+        $call->outcome_message = null;
+        $call->outcome_metadata = null;
         $call->resolved_binding_kind = $bindingKind;
         $call->resolved_target_reference = $targetReference;
         $call->linked_workflow_instance_id = $instanceId;
@@ -1178,6 +1472,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $call->linked_workflow_update_id = $updateId;
         $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
         $call->started_at ??= now();
+        $call->failed_at = null;
+        $call->failure_message = null;
         $call->save();
     }
 
@@ -1197,6 +1493,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $call->outcome = ServiceCallOutcome::Completed->value;
         $call->outcome_category = ServiceCallOutcome::Completed->category();
         $call->outcome_reason = 'completed';
+        $call->outcome_message = null;
+        $call->outcome_metadata = null;
         $call->resolved_binding_kind = $bindingKind;
         $call->resolved_target_reference = $targetReference;
         $call->linked_workflow_instance_id = $instanceId;
@@ -1205,6 +1503,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $call->metadata = $this->mergeMetadata($call->metadata, $metadata);
         $call->started_at ??= now();
         $call->completed_at ??= now();
+        $call->failed_at = null;
+        $call->failure_message = null;
         $call->save();
     }
 
@@ -1218,26 +1518,81 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         string $reason,
         ?string $message,
         array $metadata = [],
+        int $attempt = 1,
+        int $maxAttempts = 1,
     ): array {
+        $failureType = $this->failureTypeFrom($metadata) ?? $reason;
+        $typedFailureMetadata = [
+            'failure_type' => $failureType,
+            'service_error_type' => $failureType,
+            'caller_observed_error_type' => $failureType,
+            'typed_error_message' => $message ?? $reason,
+        ];
+        $metadata = $this->mergeMetadata($metadata, $typedFailureMetadata) ?? $typedFailureMetadata;
+        $outcomeMetadata = ['failure_reason' => ServiceCallFailureReason::HandlerFailure->value] + $metadata;
+        $retryScheduled = $this->canRetryHandlerFailure($call, $failureType, $attempt, $maxAttempts);
+
+        if ($retryScheduled) {
+            $call->status = ServiceCallStatus::Started->value;
+            $call->outcome = ServiceCallOutcome::Accepted->value;
+            $call->outcome_category = ServiceCallOutcome::Accepted->category();
+            $call->outcome_reason = 'retry_scheduled';
+            $call->outcome_message = $message;
+            $call->outcome_metadata = null;
+            $call->metadata = $this->mergeMetadata($call->metadata, [
+                'last_retry_failure' => $outcomeMetadata,
+            ]);
+            $call->started_at ??= now();
+            $call->failure_message = null;
+            $call->failed_at = null;
+            $call->save();
+
+            return [
+                'accepted' => false,
+                'kind' => $call->resolved_binding_kind,
+                'reason' => $reason,
+                'message' => $message,
+                'error_type' => $failureType,
+                'failure_type' => $failureType,
+                'service_error_type' => $failureType,
+                'retry_scheduled' => true,
+            ];
+        }
+
         $call->status = ServiceCallStatus::Failed->value;
         $call->outcome = ServiceCallOutcome::HandlerFailed->value;
         $call->outcome_category = ServiceCallOutcome::HandlerFailed->category();
         $call->outcome_reason = $reason;
         $call->outcome_message = $message;
-        $call->outcome_metadata = ['failure_reason' => ServiceCallFailureReason::HandlerFailure->value] + $metadata;
+        $call->outcome_metadata = $outcomeMetadata;
         $call->metadata = $this->mergeMetadata($call->metadata, $call->outcome_metadata);
         $call->failure_message = $message ?? $reason;
-        $call->failed_at ??= now();
+        $call->failed_at = now();
         $call->save();
-
-        $this->releaseBoundaryAdmission($request);
 
         return [
             'accepted' => false,
             'kind' => $call->resolved_binding_kind,
             'reason' => $reason,
             'message' => $message,
+            'error_type' => $failureType,
+            'failure_type' => $failureType,
+            'service_error_type' => $failureType,
+            'retry_scheduled' => false,
         ];
+    }
+
+    private function canRetryHandlerFailure(
+        WorkflowServiceCall $call,
+        string $failureType,
+        int $attempt,
+        int $maxAttempts,
+    ): bool {
+        if ($attempt >= $maxAttempts) {
+            return false;
+        }
+
+        return ! in_array($failureType, $this->nonRetryableFailureTypes($call->retry_policy), true);
     }
 
     /**
@@ -1435,9 +1790,110 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         return $this->stringFrom($options[$key] ?? null);
     }
 
+    private function positiveInt(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+
+        if (is_string($value) && ctype_digit(trim($value))) {
+            $parsed = (int) trim($value);
+
+            return $parsed > 0 ? $parsed : null;
+        }
+
+        return null;
+    }
+
+    private function numericValue(mixed $value): ?float
+    {
+        if (is_int($value) || is_float($value)) {
+            return (float) $value;
+        }
+
+        if (is_string($value) && is_numeric(trim($value))) {
+            return (float) trim($value);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $source
+     * @param list<string> $keys
+     */
+    private function firstNumeric(array $source, array $keys): ?float
+    {
+        foreach ($keys as $key) {
+            if (($value = $this->numericValue($source[$key] ?? null)) !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
     private function stringFrom(mixed $value): ?string
     {
         return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
+    /**
+     * @param array<string, mixed> $source
+     */
+    private function failureTypeFrom(array $source): ?string
+    {
+        foreach ([
+            'service_error_type',
+            'serviceErrorType',
+            'caller_observed_error_type',
+            'callerObservedErrorType',
+            'failure_type',
+            'failureType',
+            'error_type',
+            'errorType',
+            'typed_error',
+            'typedError',
+            'exception_type',
+            'exceptionType',
+        ] as $key) {
+            if (($value = $this->stringFrom($source[$key] ?? null)) !== null) {
+                return $value;
+            }
+        }
+
+        foreach (['control_plane', 'handler', 'error', 'failure'] as $key) {
+            if (isset($source[$key]) && is_array($source[$key])) {
+                $nested = $this->failureTypeFrom($source[$key]);
+                if ($nested !== null) {
+                    return $nested;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function nonRetryableFailureTypes(mixed $policy): array
+    {
+        $policy = $this->arrayValue($policy);
+
+        foreach ([
+            'non_retryable_error_types',
+            'nonRetryableErrorTypes',
+            'non_retryable_failure_types',
+            'nonRetryableFailureTypes',
+        ] as $key) {
+            $types = $this->stringList($policy[$key] ?? []);
+            if ($types !== []) {
+                return $types;
+            }
+        }
+
+        return [];
     }
 
     /**

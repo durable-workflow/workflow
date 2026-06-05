@@ -212,6 +212,23 @@ class ServiceCatalogTest extends TestCase
             'namespace' => 'billing',
             'status' => ServiceCallStatus::Failed->value,
             'outcome' => ServiceCallOutcome::RejectedForbidden->value,
+            'retry_policy' => ['max_attempts' => 3],
+            'metadata' => [
+                'service_call_attempts' => [
+                    [
+                        'attempt' => 1,
+                        'outcome' => 'handler_failed',
+                        'failure_type' => 'TransientGreetingFailure',
+                        'retry_scheduled' => true,
+                        'scheduled_backoff_seconds' => 1,
+                    ],
+                    [
+                        'attempt' => 2,
+                        'outcome' => 'completed',
+                        'retry_scheduled' => false,
+                    ],
+                ],
+            ],
         ]);
 
         $shape = ServiceCallView::listItem($rejected);
@@ -222,6 +239,10 @@ class ServiceCatalogTest extends TestCase
         $this->assertSame('policy', $shape['outcome_bucket']);
         $this->assertTrue($shape['is_terminal']);
         $this->assertTrue($shape['is_policy_outcome']);
+        $this->assertSame(['max_attempts' => 3], $shape['retry_policy']);
+        $this->assertSame(2, $shape['retry_attempt_count']);
+        $this->assertSame('TransientGreetingFailure', $shape['service_call_attempts'][0]['failure_type']);
+        $this->assertSame(1, $shape['service_call_attempts'][0]['scheduled_backoff_seconds']);
     }
 
     public function testServiceCallDetailFlagsForeignNamespaceLinks(): void
