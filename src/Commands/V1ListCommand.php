@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Workflow\Commands;
 
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\DB;
 use Symfony\Component\Console\Helper\Table;
+use Workflow\Models\StoredWorkflow;
 
 class V1ListCommand extends Command
 {
@@ -18,7 +18,10 @@ class V1ListCommand extends Command
 
     public function handle(): int
     {
-        $query = DB::table('workflows')
+        $storedWorkflow = new StoredWorkflow();
+
+        $query = $storedWorkflow->getConnection()
+            ->table($storedWorkflow->getTable())
             ->whereNotIn('status', ['completed', 'failed', 'cancelled']);
 
         $status = $this->option('status');
