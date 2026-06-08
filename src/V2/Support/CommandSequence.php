@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
+use Illuminate\Database\Query\Builder;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
 
 final class CommandSequence
@@ -28,7 +29,7 @@ final class CommandSequence
 
     private static function ensureBackfilled(WorkflowRun $run): int
     {
-        $commandQuery = DB::table('workflow_commands')
+        $commandQuery = self::commandsTable()
             ->where('workflow_run_id', $run->id);
 
         $maxSequence = (int) ($commandQuery->max('command_sequence') ?? 0);
@@ -54,7 +55,7 @@ final class CommandSequence
     private static function backfill(WorkflowRun $run): int
     {
         $sequence = 0;
-        $commands = DB::table('workflow_commands')
+        $commands = self::commandsTable()
             ->select(['id', 'command_sequence'])
             ->where('workflow_run_id', $run->id)
             ->orderBy('created_at')
@@ -69,7 +70,7 @@ final class CommandSequence
                 continue;
             }
 
-            DB::table('workflow_commands')
+            self::commandsTable()
                 ->where('id', $command->id)
                 ->update([
                     'command_sequence' => $sequence,
@@ -81,5 +82,16 @@ final class CommandSequence
         ])->save();
 
         return $sequence;
+    }
+
+    private static function commandsTable(): Builder
+    {
+        $model = ConfiguredV2Models::resolve('command_model', WorkflowCommand::class);
+
+        /** @var WorkflowCommand $command */
+        $command = new $model();
+
+        return $command->getConnection()
+            ->table($command->getTable());
     }
 }
