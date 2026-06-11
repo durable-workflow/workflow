@@ -51,4 +51,13 @@ jobs:
         env:
           DOCS_RELEASE_AUDIT_ARTIFACT: workflow
           DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release.outputs.tag }}
+          DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json
         run: scripts/ci/check-docs-release-audit.sh
+
+      - name: Upload docs release audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-release-audit-evidence
+          path: docs-release-audit-evidence.json
+          if-no-files-found: warn
