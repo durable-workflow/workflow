@@ -1,0 +1,54 @@
+name: Release Docs Audit
+
+on:
+  push:
+    tags:
+      - '2.0.0-alpha.*'
+      - '2.0.0-beta.*'
+      - '2.0.0'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to audit, for example 2.0.0-alpha.201'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  docs-release-audit:
+    name: Verify public docs release-audit tuple
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          tag="${tag#v}"
+          if ! printf '%s\n' "$tag" | grep -Eq '^2\.0\.0((-(alpha|beta)\.[0-9]+)?)$'; then
+            echo "::error::Invalid Workflow release tag for docs audit: $tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Packagist release
+        env:
+          PACKAGIST_PACKAGE_NAME: durable-workflow/workflow
+          PACKAGIST_PACKAGE_VERSION: ${{ steps.release.outputs.tag }}
+        run: scripts/ci/check-packagist-release.sh
+
+      - name: Require live docs release audit refresh
+        env:
+          DOCS_RELEASE_AUDIT_ARTIFACT: workflow
+          DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release.outputs.tag }}
+        run: scripts/ci/check-docs-release-audit.sh
