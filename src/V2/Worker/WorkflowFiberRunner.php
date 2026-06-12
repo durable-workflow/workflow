@@ -383,10 +383,29 @@ final class WorkflowFiberRunner
                 }
 
                 if ($historySequence !== null && isset($this->openConditionWaits[$historySequence])) {
+                    if (self::conditionSatisfied($current)) {
+                        ++$this->sequence;
+                        $this->execution->send(true);
+
+                        continue;
+                    }
+
                     $this->waitingForHistory = true;
 
                     return WorkflowStep::waiting($current)
                         ->withPrependedCommands($immediateCommands);
+                }
+
+                if (self::conditionSatisfied($current)) {
+                    $this->execution->send(true);
+
+                    continue;
+                }
+
+                if ($current instanceof AwaitWithTimeoutCall && $current->seconds === 0) {
+                    $this->execution->send(false);
+
+                    continue;
                 }
             }
 
@@ -489,6 +508,11 @@ final class WorkflowFiberRunner
         }
 
         return $step->command;
+    }
+
+    private static function conditionSatisfied(AwaitCall|AwaitWithTimeoutCall $call): bool
+    {
+        return ($call->condition)() === true;
     }
 
     /**
@@ -892,6 +916,7 @@ final class WorkflowFiberRunner
     private static function indexRecordedConditionOutcomes(array $historyEvents): array
     {
         $outcomes = [];
+        $resolvedSequences = [];
 
         foreach ($historyEvents as $event) {
             $type = self::eventType($event);
@@ -911,10 +936,15 @@ final class WorkflowFiberRunner
                 continue;
             }
 
+            if (isset($resolvedSequences[$sequence])) {
+                continue;
+            }
+
             $outcomes[$sequence] = [
                 'result' => $type === 'ConditionWaitSatisfied',
                 'recorded_at' => self::eventRecordedAt($event, $payload, ['fired_at']),
             ];
+            $resolvedSequences[$sequence] = true;
         }
 
         return $outcomes;
@@ -984,6 +1014,7 @@ final class WorkflowFiberRunner
         $outcomes = [];
         $openBySequence = self::indexOpenSignalWaits($historyEvents);
         $sequenceByWaitId = [];
+        $resolvedKinds = [];
 
         foreach ($openBySequence as $sequence => $wait) {
             if ($wait['signal_wait_id'] !== null) {
@@ -1018,12 +1049,21 @@ final class WorkflowFiberRunner
             }
 
             if ($type === 'TimerFired') {
+                if (isset($resolvedKinds[$sequence])) {
+                    continue;
+                }
+
                 $outcomes[$sequence] = [
                     'signal_name' => $signalName,
                     'result' => null,
                     'recorded_at' => self::eventRecordedAt($event, $payload, ['fired_at']),
                 ];
+                $resolvedKinds[$sequence] = 'timeout';
 
+                continue;
+            }
+
+            if (isset($resolvedKinds[$sequence])) {
                 continue;
             }
 
@@ -1048,6 +1088,7 @@ final class WorkflowFiberRunner
                 'result' => $result,
                 'recorded_at' => self::eventRecordedAt($event, $payload),
             ];
+            $resolvedKinds[$sequence] = 'signal';
         }
 
         return $outcomes;

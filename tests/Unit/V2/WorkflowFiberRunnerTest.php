@@ -86,6 +86,163 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertIsString($scheduled->command['condition_definition_fingerprint']);
     }
 
+    public function testRunnerAdvancesImmediatelySatisfiedConditionWait(): void
+    {
+        $completed = $this->runnerFor(WorkerProtocolRunnerSatisfiedConditionWaitWorkflow::class)->step();
+
+        $this->assertTrue($completed->completed);
+        $this->assertSame('complete_workflow', $completed->command['type']);
+        $this->assertSame('ready', $completed->result);
+        $this->assertSame(['complete_workflow'], array_column($completed->commands, 'type'));
+    }
+
+    public function testRunnerAdvancesOpenConditionWaitWhenConditionBecomesSatisfied(): void
+    {
+        WorkerProtocolRunnerToggleConditionWaitWorkflow::reset();
+        WorkerProtocolRunnerToggleConditionWaitWorkflow::markReady();
+
+        $completed = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerToggleConditionWaitWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => [
+                    'sequence' => 1,
+                    'condition_wait_id' => 'wait-1',
+                    'condition_key' => 'ready',
+                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ]],
+        )->step();
+
+        $this->assertTrue($completed->completed);
+        $this->assertSame('complete_workflow', $completed->command['type']);
+        $this->assertSame('ready', $completed->result);
+    }
+
+    public function testRunnerKeepsWaitingForOpenConditionWaitWhenConditionRemainsFalse(): void
+    {
+        WorkerProtocolRunnerToggleConditionWaitWorkflow::reset();
+
+        $waiting = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerToggleConditionWaitWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => [
+                    'sequence' => 1,
+                    'condition_wait_id' => 'wait-1',
+                    'condition_key' => 'ready',
+                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ]],
+        )->step();
+
+        $this->assertFalse($waiting->completed);
+        $this->assertNull($waiting->command);
+        $this->assertSame([], $waiting->commands);
+    }
+
+    public function testRunnerAdvancesZeroTimeoutConditionWaitWithoutParking(): void
+    {
+        $completed = $this->runnerFor(WorkerProtocolRunnerZeroTimeoutConditionWaitWorkflow::class)->step();
+
+        $this->assertTrue($completed->completed);
+        $this->assertSame('complete_workflow', $completed->command['type']);
+        $this->assertFalse($completed->result);
+    }
+
+    public function testRunnerReplaysConditionSatisfiedBeforeLaterTimeoutAsSatisfied(): void
+    {
+        $completed = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerReplayConditionWaitWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'ConditionWaitOpened',
+                'payload' => [
+                    'sequence' => 1,
+                    'condition_wait_id' => 'wait-1',
+                    'condition_key' => 'ready',
+                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'timeout_seconds' => 5,
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ], [
+                'sequence' => 3,
+                'event_type' => 'TimerScheduled',
+                'payload' => [
+                    'timer_id' => 'timer-1',
+                    'sequence' => 1,
+                    'timer_kind' => 'condition_timeout',
+                    'condition_wait_id' => 'wait-1',
+                    'condition_key' => 'ready',
+                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'delay_seconds' => 5,
+                    'fire_at' => '2026-05-12T10:12:18+00:00',
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ], [
+                'sequence' => 4,
+                'event_type' => 'ConditionWaitSatisfied',
+                'payload' => [
+                    'sequence' => 1,
+                    'condition_wait_id' => 'wait-1',
+                    'condition_key' => 'ready',
+                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'timeout_seconds' => 5,
+                ],
+                'recorded_at' => '2026-05-12T10:12:15+00:00',
+            ], [
+                'sequence' => 5,
+                'event_type' => 'TimerFired',
+                'payload' => [
+                    'timer_id' => 'timer-1',
+                    'sequence' => 1,
+                    'timer_kind' => 'condition_timeout',
+                    'condition_wait_id' => 'wait-1',
+                    'condition_key' => 'ready',
+                    'condition_definition_fingerprint' => 'sha256:'.str_repeat('1', 64),
+                    'delay_seconds' => 5,
+                    'fired_at' => '2026-05-12T10:12:18+00:00',
+                ],
+                'recorded_at' => '2026-05-12T10:12:18+00:00',
+            ]],
+        )->step();
+
+        $this->assertTrue($completed->completed);
+        $this->assertSame('complete_workflow', $completed->command['type']);
+        $this->assertTrue($completed->result);
+    }
+
     public function testRunnerSurfacesSignalWaitCommand(): void
     {
         $scheduled = $this->runnerFor(WorkerProtocolRunnerSignalWaitWorkflow::class)->step();
@@ -172,6 +329,78 @@ final class WorkflowFiberRunnerTest extends TestCase
             'signal_name' => 'increment',
         ]], $scheduled->commands);
         $this->assertSame(5, WorkerProtocolRunnerCounterSignalWorkflow::lastCount());
+    }
+
+    public function testRunnerReplaysSignalReceivedBeforeLaterTimeoutAsSignal(): void
+    {
+        $completed = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerSignalTimeoutWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'SignalWaitOpened',
+                'payload' => [
+                    'sequence' => 1,
+                    'signal_name' => 'approved-by',
+                    'signal_wait_id' => 'wait-1',
+                    'timeout_seconds' => 5,
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ], [
+                'sequence' => 3,
+                'event_type' => 'TimerScheduled',
+                'payload' => [
+                    'timer_id' => 'timer-1',
+                    'sequence' => 1,
+                    'timer_kind' => 'signal_timeout',
+                    'signal_name' => 'approved-by',
+                    'signal_wait_id' => 'wait-1',
+                    'delay_seconds' => 5,
+                    'fire_at' => '2026-05-12T10:12:18+00:00',
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ], [
+                'sequence' => 4,
+                'event_type' => 'SignalReceived',
+                'payload' => [
+                    'signal_name' => 'approved-by',
+                    'signal_wait_id' => 'wait-1',
+                    'arguments' => [
+                        'codec' => 'avro',
+                        'blob' => Serializer::serializeWithCodec('avro', ['Jordan']),
+                    ],
+                ],
+                'recorded_at' => '2026-05-12T10:12:15+00:00',
+            ], [
+                'sequence' => 5,
+                'event_type' => 'TimerFired',
+                'payload' => [
+                    'timer_id' => 'timer-1',
+                    'sequence' => 1,
+                    'timer_kind' => 'signal_timeout',
+                    'signal_name' => 'approved-by',
+                    'signal_wait_id' => 'wait-1',
+                    'delay_seconds' => 5,
+                    'fired_at' => '2026-05-12T10:12:18+00:00',
+                ],
+                'recorded_at' => '2026-05-12T10:12:18+00:00',
+            ]],
+        )->step();
+
+        $this->assertTrue($completed->completed);
+        $this->assertSame('complete_workflow', $completed->command['type']);
+        $this->assertSame([
+            'payload' => 'Jordan',
+            'timed_out' => false,
+        ], $completed->result);
     }
 
     public function testRunnerSurfacesChildWorkflowCommand(): void
@@ -1160,11 +1389,72 @@ final class WorkerProtocolRunnerConditionWaitWorkflow extends Workflow
     }
 }
 
+final class WorkerProtocolRunnerSatisfiedConditionWaitWorkflow extends Workflow
+{
+    public function handle(): string
+    {
+        Workflow::await(static fn (): bool => true, null, 'ready');
+
+        return 'ready';
+    }
+}
+
+final class WorkerProtocolRunnerToggleConditionWaitWorkflow extends Workflow
+{
+    private static bool $ready = false;
+
+    public static function reset(): void
+    {
+        self::$ready = false;
+    }
+
+    public static function markReady(): void
+    {
+        self::$ready = true;
+    }
+
+    public function handle(): string
+    {
+        Workflow::await(static fn (): bool => self::$ready, null, 'ready');
+
+        return 'ready';
+    }
+}
+
+final class WorkerProtocolRunnerZeroTimeoutConditionWaitWorkflow extends Workflow
+{
+    public function handle(): bool
+    {
+        return Workflow::await(static fn (): bool => false, 0, 'ready');
+    }
+}
+
+final class WorkerProtocolRunnerReplayConditionWaitWorkflow extends Workflow
+{
+    public function handle(): bool
+    {
+        return Workflow::await(static fn (): bool => false, 5, 'ready');
+    }
+}
+
 final class WorkerProtocolRunnerSignalWaitWorkflow extends Workflow
 {
     public function handle(): mixed
     {
         return Workflow::awaitSignal('increment');
+    }
+}
+
+final class WorkerProtocolRunnerSignalTimeoutWorkflow extends Workflow
+{
+    public function handle(): array
+    {
+        $payload = Workflow::await('approved-by', 5);
+
+        return [
+            'payload' => $payload,
+            'timed_out' => $payload === null,
+        ];
     }
 }
 

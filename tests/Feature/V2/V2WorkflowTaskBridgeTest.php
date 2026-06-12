@@ -1824,6 +1824,37 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('invalid_commands', $result['reason']);
     }
 
+    public function testCompleteRejectsInvalidOpenWaitTimeoutsBeforeTaskLookup(): void
+    {
+        $cases = [
+            'condition negative timeout' => [
+                'type' => 'open_condition_wait',
+                'timeout_seconds' => -1,
+            ],
+            'condition string timeout' => [
+                'type' => 'open_condition_wait',
+                'timeout_seconds' => '30',
+            ],
+            'signal negative timeout' => [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+                'timeout_seconds' => -1,
+            ],
+            'signal string timeout' => [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+                'timeout_seconds' => '30',
+            ],
+        ];
+
+        foreach ($cases as $label => $command) {
+            $result = $this->bridge->complete('missing-task-'.$label, [$command]);
+
+            $this->assertFalse($result['completed'], $label);
+            $this->assertSame('invalid_commands', $result['reason'], $label);
+        }
+    }
+
     public function testCompleteRejectsMultipleTerminalCommands(): void
     {
         $result = $this->bridge->complete('any-task', [
@@ -3170,6 +3201,108 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(45, $timer->delay_seconds);
     }
 
+    public function testCompleteOpenSignalWaitWithZeroTimeoutFiresImmediately(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+                'timeout_seconds' => 0,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->count());
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->firstOrFail();
+        $waitId = $opened->payload['signal_wait_id'] ?? null;
+
+        $this->assertIsString($waitId);
+        $this->assertSame('advance', $opened->payload['signal_name'] ?? null);
+        $this->assertSame(0, $opened->payload['timeout_seconds'] ?? null);
+
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+
+        $this->assertSame(TimerStatus::Fired, $timer->status);
+        $this->assertSame(0, $timer->delay_seconds);
+
+        $scheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerScheduled->value)
+            ->firstOrFail();
+        $fired = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerFired->value)
+            ->firstOrFail();
+
+        foreach ([$scheduled, $fired] as $event) {
+            $this->assertSame($timer->id, $event->payload['timer_id'] ?? null);
+            $this->assertSame($waitId, $event->payload['signal_wait_id'] ?? null);
+            $this->assertSame('advance', $event->payload['signal_name'] ?? null);
+            $this->assertSame('signal_timeout', $event->payload['timer_kind'] ?? null);
+            $this->assertSame(0, $event->payload['delay_seconds'] ?? null);
+        }
+
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()
+            ->whereKey($result['created_task_ids'][0])
+            ->firstOrFail();
+
+        $this->assertSame(TaskType::Workflow, $resumeTask->task_type);
+        $this->assertSame(TaskStatus::Ready, $resumeTask->status);
+        $this->assertSame('signal', $resumeTask->payload['workflow_wait_kind'] ?? null);
+        $this->assertSame('timer', $resumeTask->payload['resume_source_kind'] ?? null);
+        $this->assertSame($timer->id, $resumeTask->payload['timer_id'] ?? null);
+        $this->assertSame('signal_timeout', $resumeTask->payload['timer_kind'] ?? null);
+        $this->assertSame($waitId, $resumeTask->payload['signal_wait_id'] ?? null);
+        $this->assertSame('advance', $resumeTask->payload['signal_name'] ?? null);
+        $this->assertSame(HistoryEventType::TimerFired->value, $resumeTask->payload['workflow_event_type'] ?? null);
+
+        $lateSignal = $this->recordReceivedSignal($run, 'advance', $waitId);
+
+        $wait = collect(\Workflow\V2\Support\SignalWaits::forRun($run))
+            ->firstWhere('signal_wait_id', $waitId);
+
+        $this->assertIsArray($wait);
+        $this->assertSame('resolved', $wait['status'] ?? null);
+        $this->assertSame('timed_out', $wait['source_status'] ?? null);
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalApplied->value)
+            ->count());
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalApplied, [
+            'workflow_command_id' => $lateSignal->workflow_command_id,
+            'signal_id' => $lateSignal->id,
+            'signal_name' => 'advance',
+            'signal_wait_id' => $waitId,
+            'sequence' => 1,
+            'value' => Serializer::serialize(['late' => true]),
+        ]);
+
+        $wait = collect(\Workflow\V2\Support\SignalWaits::forRun($run))
+            ->firstWhere('signal_wait_id', $waitId);
+
+        $this->assertIsArray($wait);
+        $this->assertSame('resolved', $wait['status'] ?? null);
+        $this->assertSame('timed_out', $wait['source_status'] ?? null);
+    }
+
     public function testCompleteOpenSignalWaitReusesMatchingBufferedSignalWaitId(): void
     {
         $run = $this->createWaitingRun();
@@ -3212,6 +3345,97 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             ->whereKey($result['created_task_ids'][0])
             ->firstOrFail();
 
+        $this->assertSame($matching->id, $signalTask->payload['workflow_signal_id'] ?? null);
+        $this->assertSame('advance', $signalTask->payload['signal_name'] ?? null);
+        $this->assertSame('signal-wait-advance', $signalTask->payload['signal_wait_id'] ?? null);
+    }
+
+    public function testCompleteOpenSignalWaitWithZeroTimeoutUsesBufferedSignalBeforeTimeout(): void
+    {
+        $run = $this->createWaitingRun();
+        $matching = $this->recordReceivedSignal($run, 'advance', 'signal-wait-advance');
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+                'timeout_seconds' => 0,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+        $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame('signal-wait-advance', $opened->payload['signal_wait_id'] ?? null);
+        $this->assertSame(0, $opened->payload['timeout_seconds'] ?? null);
+
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()
+            ->whereKey($result['created_task_ids'][0])
+            ->firstOrFail();
+
+        $this->assertSame(TaskType::Workflow, $signalTask->task_type);
+        $this->assertSame('workflow_signal', $signalTask->payload['resume_source_kind'] ?? null);
+        $this->assertSame($matching->id, $signalTask->payload['workflow_signal_id'] ?? null);
+        $this->assertSame('advance', $signalTask->payload['signal_name'] ?? null);
+        $this->assertSame('signal-wait-advance', $signalTask->payload['signal_wait_id'] ?? null);
+    }
+
+    public function testCompleteOpenSignalWaitWithPositiveTimeoutUsesBufferedSignalWithoutTimer(): void
+    {
+        $run = $this->createWaitingRun();
+        $matching = $this->recordReceivedSignal($run, 'advance', 'signal-wait-advance');
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+                'timeout_seconds' => 45,
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+        $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::TimerScheduled->value)
+            ->count());
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame('advance', $opened->payload['signal_name'] ?? null);
+        $this->assertSame('signal-wait-advance', $opened->payload['signal_wait_id'] ?? null);
+        $this->assertSame(45, $opened->payload['timeout_seconds'] ?? null);
+
+        /** @var WorkflowTask $signalTask */
+        $signalTask = WorkflowTask::query()
+            ->whereKey($result['created_task_ids'][0])
+            ->firstOrFail();
+
+        $this->assertSame(TaskType::Workflow, $signalTask->task_type);
+        $this->assertSame('workflow_signal', $signalTask->payload['resume_source_kind'] ?? null);
         $this->assertSame($matching->id, $signalTask->payload['workflow_signal_id'] ?? null);
         $this->assertSame('advance', $signalTask->payload['signal_name'] ?? null);
         $this->assertSame('signal-wait-advance', $signalTask->payload['signal_wait_id'] ?? null);
@@ -3307,6 +3531,13 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame($signalWaitId, $applied->payload['signal_wait_id'] ?? null);
         $this->assertSame(1, $applied->payload['sequence'] ?? null);
         $this->assertSame('Ada', Serializer::unserialize($applied->payload['value']));
+
+        $wait = collect(\Workflow\V2\Support\SignalWaits::forRun($run))
+            ->firstWhere('signal_wait_id', $signalWaitId);
+
+        $this->assertIsArray($wait);
+        $this->assertSame('resolved', $wait['status'] ?? null);
+        $this->assertSame('applied', $wait['source_status'] ?? null);
 
         $signal->refresh();
         $this->assertSame('applied', $signal->status->value);

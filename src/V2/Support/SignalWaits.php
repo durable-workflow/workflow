@@ -159,6 +159,16 @@ final class SignalWaits
                     continue;
                 }
 
+                $currentStatus = $waits[$waitId]['status'] ?? null;
+                $currentSourceStatus = $waits[$waitId]['source_status'] ?? null;
+                $canApplyReceivedSignal = $event->event_type === HistoryEventType::SignalApplied
+                    && $currentStatus === 'resolved'
+                    && $currentSourceStatus === 'received';
+
+                if ($currentStatus !== 'open' && ! $canApplyReceivedSignal) {
+                    continue;
+                }
+
                 $waits[$waitId]['status'] = 'resolved';
                 $waits[$waitId]['source_status'] = $event->event_type === HistoryEventType::SignalApplied
                     ? 'applied'

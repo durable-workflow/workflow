@@ -2208,7 +2208,8 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         $timeoutSeconds = is_int($command['timeout_seconds'] ?? null) && $command['timeout_seconds'] >= 0
             ? (int) $command['timeout_seconds']
             : null;
-        $waitId = $this->pendingSignalWaitIdForOpenSignalWait($run, $signalName) ?? (string) Str::ulid();
+        $pendingSignalWaitId = $this->pendingSignalWaitIdForOpenSignalWait($run, $signalName);
+        $waitId = $pendingSignalWaitId ?? (string) Str::ulid();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SignalWaitOpened, array_filter([
             'signal_name' => $signalName,
@@ -2217,7 +2218,24 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'timeout_seconds' => $timeoutSeconds,
         ], static fn (mixed $value): bool => $value !== null), $task);
 
-        if ($timeoutSeconds !== null) {
+        if ($timeoutSeconds === 0 && $pendingSignalWaitId === null) {
+            $firedEvent = $this->fireImmediateSignalTimeout($run, $task, $sequence, $waitId, $signalName);
+
+            /** @var WorkflowTask $resumeTask */
+            $resumeTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => WorkflowTaskPayload::forTimerResolution($firedEvent),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+
+            $createdTaskIds[] = $resumeTask->id;
+        } elseif ($timeoutSeconds !== null && $timeoutSeconds > 0 && $pendingSignalWaitId === null) {
             $fireAt = now()
                 ->addSeconds($timeoutSeconds);
 
@@ -2261,6 +2279,46 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         }
 
         return $sequence + 1;
+    }
+
+    private function fireImmediateSignalTimeout(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        string $waitId,
+        string $signalName,
+    ): WorkflowHistoryEvent {
+        $recordedAt = now();
+
+        /** @var WorkflowTimer $timer */
+        $timer = WorkflowTimer::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'status' => TimerStatus::Fired->value,
+            'delay_seconds' => 0,
+            'fire_at' => $recordedAt,
+            'fired_at' => $recordedAt,
+        ]);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $timer->fire_at?->toJSON(),
+            'timer_kind' => 'signal_timeout',
+            'signal_wait_id' => $waitId,
+            'signal_name' => $signalName,
+        ], $task);
+
+        return WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
+            'timer_id' => $timer->id,
+            'sequence' => $sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fired_at' => $timer->fired_at?->toJSON(),
+            'timer_kind' => 'signal_timeout',
+            'signal_wait_id' => $waitId,
+            'signal_name' => $signalName,
+        ], $task);
     }
 
     private function pendingSignalWaitIdForOpenSignalWait(WorkflowRun $run, string $signalName): ?string
@@ -3328,11 +3386,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      *     condition_key?: string,
      *     condition_definition_fingerprint?: string,
      *     timeout_seconds?: int
-     * }
+     * }|null
      */
-    private static function normalizeOpenConditionWaitCommand(array $command): array
+    private static function normalizeOpenConditionWaitCommand(array $command): ?array
     {
-        $timeoutSeconds = $command['timeout_seconds'] ?? null;
+        if (self::hasInvalidWaitTimeoutSeconds($command)) {
+            return null;
+        }
 
         return array_filter([
             'type' => 'open_condition_wait',
@@ -3340,7 +3400,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             'condition_definition_fingerprint' => self::normalizeOptionalString(
                 $command['condition_definition_fingerprint'] ?? null,
             ),
-            'timeout_seconds' => is_int($timeoutSeconds) && $timeoutSeconds >= 0 ? $timeoutSeconds : null,
+            'timeout_seconds' => self::normalizeWaitTimeoutSeconds($command),
         ], static fn (mixed $value): bool => $value !== null);
     }
 
@@ -3360,13 +3420,37 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             return null;
         }
 
-        $timeoutSeconds = $command['timeout_seconds'] ?? null;
+        if (self::hasInvalidWaitTimeoutSeconds($command)) {
+            return null;
+        }
 
         return array_filter([
             'type' => 'open_signal_wait',
             'signal_name' => $signalName,
-            'timeout_seconds' => is_int($timeoutSeconds) && $timeoutSeconds >= 0 ? $timeoutSeconds : null,
+            'timeout_seconds' => self::normalizeWaitTimeoutSeconds($command),
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     */
+    private static function hasInvalidWaitTimeoutSeconds(array $command): bool
+    {
+        if (! array_key_exists('timeout_seconds', $command) || $command['timeout_seconds'] === null) {
+            return false;
+        }
+
+        return ! is_int($command['timeout_seconds']) || $command['timeout_seconds'] < 0;
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     */
+    private static function normalizeWaitTimeoutSeconds(array $command): ?int
+    {
+        $timeoutSeconds = $command['timeout_seconds'] ?? null;
+
+        return is_int($timeoutSeconds) ? $timeoutSeconds : null;
     }
 
     /**

@@ -3116,6 +3116,32 @@ final class V2WebhookWorkflowTest extends TestCase
             ->assertJsonValidationErrors(['commands']);
     }
 
+    public function testWorkflowTaskCompleteWebhookReturns422ForInvalidOpenWaitTimeouts(): void
+    {
+        $cases = [
+            'condition' => [
+                'type' => 'open_condition_wait',
+                'timeout_seconds' => -1,
+            ],
+            'signal' => [
+                'type' => 'open_signal_wait',
+                'signal_name' => 'advance',
+                'timeout_seconds' => '30',
+            ],
+        ];
+
+        foreach ($cases as $label => $command) {
+            $response = $this->postJson("/webhooks/workflow-tasks/invalid-timeout-{$label}/complete", [
+                'commands' => [$command],
+            ]);
+
+            $response
+                ->assertStatus(422)
+                ->assertJsonPath('completed', false)
+                ->assertJsonPath('reason', 'invalid_commands');
+        }
+    }
+
     public function testWorkflowTaskCompleteWebhookReturns422ForMissingCommands(): void
     {
         $response = $this->postJson('/webhooks/workflow-tasks/some-task/complete', []);

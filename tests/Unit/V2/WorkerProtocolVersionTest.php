@@ -21,6 +21,12 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame('1.10', WorkerProtocolVersion::VERSION);
     }
 
+    public function testVersionIncludesSignalWaitCommandShape(): void
+    {
+        $this->assertTrue(version_compare(WorkerProtocolVersion::VERSION, '1.9', '>='));
+        $this->assertContains('open_signal_wait', WorkerProtocolVersion::nonTerminalCommandTypes());
+    }
+
     public function testWorkflowTaskVerbsIncludesAllBridgeMethods(): void
     {
         $verbs = WorkerProtocolVersion::workflowTaskVerbs();
