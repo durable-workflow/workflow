@@ -38,7 +38,7 @@ final class PlatformProtocolSpecs
 {
     public const SCHEMA = 'durable-workflow.v2.platform-protocol-specs.catalog';
 
-    public const VERSION = 13;
+    public const VERSION = 14;
 
     public const AUTHORITY_URL = 'https://durable-workflow.github.io/docs/2.0/platform-protocol-specs';
 
@@ -576,6 +576,24 @@ final class PlatformProtocolSpecs
                         'schema_authority' => 'Waterline\\Support\\ActionabilityContract',
                         'version_authority' => 'Waterline\\Support\\ActionabilityContract::VERSION',
                     ],
+                    [
+                        'name' => 'agent_root_cause',
+                        'owner_repo' => 'durable-workflow/durable-workflow.github.io',
+                        'schema_authority' => 'docs/agent-tooling-contract.md Root Cause And Remediation and static/platform-protocol-specs/repair-actionability-objects.schema.json',
+                        'version_authority' => 'durable-workflow.v2.agent-root-cause',
+                    ],
+                    [
+                        'name' => 'agent_remediation',
+                        'owner_repo' => 'durable-workflow/durable-workflow.github.io',
+                        'schema_authority' => 'docs/agent-tooling-contract.md Root Cause And Remediation and static/platform-protocol-specs/repair-actionability-objects.schema.json',
+                        'version_authority' => 'durable-workflow.v2.agent-remediation',
+                    ],
+                    [
+                        'name' => 'safe_mutation',
+                        'owner_repo' => 'durable-workflow/durable-workflow.github.io',
+                        'schema_authority' => 'docs/agent-tooling-contract.md MCP Tool Design and static/platform-protocol-specs/repair-actionability-objects.schema.json',
+                        'version_authority' => 'durable-workflow.v2.safe-mutation',
+                    ],
                 ],
                 'evolution_rule' => self::EVOLUTION_ADDITIVE_MINOR_BREAKING_MAJOR,
                 'breaking_change_release' => 'major',
@@ -653,6 +671,24 @@ final class PlatformProtocolSpecs
                         'owner_repo' => 'durable-workflow/durable-workflow.github.io',
                         'schema_authority' => 'docs/mcp-workflows.md Tool Result Contract and static/platform-protocol-specs/mcp-tool-results.schema.json',
                         'version_authority' => 'durable-workflow.v2.mcp-tool-results',
+                    ],
+                    [
+                        'name' => 'agent_root_cause',
+                        'owner_repo' => 'durable-workflow/durable-workflow.github.io',
+                        'schema_authority' => 'docs/mcp-workflows.md Failure And Remediation Taxonomy and static/platform-protocol-specs/mcp-tool-results.schema.json',
+                        'version_authority' => 'durable-workflow.v2.agent-root-cause',
+                    ],
+                    [
+                        'name' => 'agent_remediation',
+                        'owner_repo' => 'durable-workflow/durable-workflow.github.io',
+                        'schema_authority' => 'docs/mcp-workflows.md Failure And Remediation Taxonomy and static/platform-protocol-specs/mcp-tool-results.schema.json',
+                        'version_authority' => 'durable-workflow.v2.agent-remediation',
+                    ],
+                    [
+                        'name' => 'safe_mutation',
+                        'owner_repo' => 'durable-workflow/durable-workflow.github.io',
+                        'schema_authority' => 'docs/mcp-workflows.md Failure And Remediation Taxonomy and static/platform-protocol-specs/mcp-tool-results.schema.json',
+                        'version_authority' => 'durable-workflow.v2.safe-mutation',
                     ],
                 ],
                 'evolution_rule' => self::EVOLUTION_ADDITIVE_MINOR_BREAKING_MAJOR,
@@ -765,7 +801,7 @@ final class PlatformProtocolSpecs
                 'format_known' => 'Every entry\'s `format` is one of `openapi`, `json_schema`, or `asyncapi`.',
                 'docs_authority_aligned' => 'docs/platform-protocol-specs.md (in durable-workflow.github.io) lists every entry in this manifest with the same format, owner, object-family authority, status, and breaking-change rule.',
                 'json_mirror_aligned' => 'static/platform-protocol-specs.json (in durable-workflow.github.io) is byte-equivalent to this PHP manifest at the time of the release.',
-                'object_family_authority_declared' => 'Every entry declares a non-empty `object_families` list. Each object family names the owning repo, schema authority, and version authority. Published spec files carry matching `x-durable-workflow-object-families` metadata so the file and catalog cannot drift.',
+                'object_family_authority_declared' => 'Every entry declares a non-empty `object_families` list. Each object family names the owning repo, schema authority, and version authority. Published spec files carry matching `x-durable-workflow-object-families` metadata so the file and catalog cannot drift. Embedded public agent-tooling schema ids must have matching object-family rows.',
                 'spec_path_published_when_status_published' => 'When `status` is `published`, the file at `spec_path` exists in `durable-workflow/durable-workflow.github.io`, is referenced from the matching authority doc page, parses as the format declared by the catalog entry (JSON Schema 2020-12 / OpenAPI 3.1 / AsyncAPI 2.6+), and the document\'s `$id` (or OpenAPI `info.title` / AsyncAPI `id`) matches the catalog `spec_id`.',
                 'breaking_change_release_consistent_with_evolution_rule' => 'Every entry\'s `breaking_change_release` is one of `major`, `parallel_primitive_only`, or `experimental_any_release`, and matches the value required by its `evolution_rule`: `additive_minor_breaking_major` -> `major`, `parallel_primitive_only` -> `parallel_primitive_only`, `experimental_any_release` -> `experimental_any_release`. Letting these diverge would let a frozen wire format claim a major-version break, contradicting its rule.',
                 'deliverable_specs_published' => 'Every entry in the platform protocol-spec deliverable surface set is marked `published` and has a parseable spec document.',

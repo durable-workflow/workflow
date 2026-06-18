@@ -21,7 +21,7 @@ surface has *which* machine-readable spec, *what format* the spec uses,
 - <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>
 - machine-readable mirror: `platform_protocol_specs` in
   `GET /api/cluster/info`, schema
-  `durable-workflow.v2.platform-protocol-specs.catalog`, version `13`.
+  `durable-workflow.v2.platform-protocol-specs.catalog`, version `14`.
 - in-process source: `Workflow\V2\Support\PlatformProtocolSpecs`, which
   the standalone server re-exports verbatim.
 
