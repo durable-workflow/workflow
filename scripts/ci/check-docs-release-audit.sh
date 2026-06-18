@@ -24,6 +24,7 @@ audit_url="${DOCS_RELEASE_AUDIT_URL:-https://durable-workflow.com/docs-page-rele
 attempts="${DOCS_RELEASE_AUDIT_ATTEMPTS:-6}"
 sleep_seconds="${DOCS_RELEASE_AUDIT_RETRY_SLEEP:-20}"
 evidence_path="${DOCS_RELEASE_AUDIT_EVIDENCE:-}"
+handoff_path="${DOCS_RELEASE_AUDIT_HANDOFF:-}"
 
 write_unavailable_evidence() {
     message="$1"
@@ -75,11 +76,22 @@ attempt=1
 
 while [ "$attempt" -le "$attempts" ]; do
     if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 -o "$audit_path" "$audit_url"; then
-        if node - "$audit_path" "$artifact" "$expected" "$audit_url" "$evidence_path" <<'NODE'
+        if node - "$audit_path" "$artifact" "$expected" "$audit_url" "$evidence_path" "$handoff_path" <<'NODE'
 const fs = require('fs');
 
-const [auditPath, artifact, expected, auditUrl, evidencePath] = process.argv.slice(2);
+const [auditPath, artifact, expected, auditUrl, evidencePath, handoffPath] = process.argv.slice(2);
 const title = 'Docs release-audit tuple stale';
+const refreshCommand = 'npm run refresh:public-artifact-versions';
+const refreshFiles = [
+  'scripts/public-artifact-versions.json',
+  'docs/compatibility.md',
+];
+const releaseAuditAssertions = [
+  'LEAK=0',
+  'MIXED=0',
+  'stable default 1.x',
+  'explicit prerelease 2.0',
+];
 
 function releaseCheckSource() {
   const serverUrl = process.env.GITHUB_SERVER_URL || 'https://github.com';
@@ -99,7 +111,7 @@ function releaseCheckSource() {
   };
 }
 
-function docsRefreshRequest(message, actualVersion, observedVersions) {
+function docsRefreshHandoff(message, actualVersion, observedVersions) {
   const staleArtifact = {
     name: artifact,
     expected_version: expected,
@@ -107,29 +119,79 @@ function docsRefreshRequest(message, actualVersion, observedVersions) {
   };
 
   return {
-    schema: 'durable-workflow.docs.refresh-request',
+    schema: 'durable-workflow.release.docs-artifact-tuple-handoff',
+    schema_version: 1,
+    action: 'pipeline_ready_item',
     reason: 'public_docs_release_audit_stale',
     repository: 'durable-workflow.github.io',
     target_branch: 'main',
-    refresh_command: 'npm run refresh:public-artifact-versions',
+    integration: 'pipeline',
+    refresh_command: refreshCommand,
+    refresh_files: refreshFiles,
     stale_artifact: staleArtifact,
     observed_artifact_versions: observedVersions,
     source_release_check: releaseCheckSource(),
+    public_boundary: {
+      allowed_paths: refreshFiles,
+      forbidden_paths: [
+        'docusaurus.config.js',
+        'sidebars.js',
+        'versioned_docs/version-1.x',
+        'versioned_sidebars/version-1.x-sidebars.json',
+      ],
+    },
+    release_status_guard: {
+      stable_default_docs_line: '1.x',
+      prerelease_docs_line: '2.0',
+      no_default_docs_cutover: true,
+      live_release_audit_assertions: releaseAuditAssertions,
+    },
     ready_item: {
       title: `Refresh public docs artifact tuple for ${artifact} ${expected}`,
       body: [
         message,
         '',
         `Expected ${artifact} ${expected}; live docs release audit reports ${actualVersion || '<missing>'}.`,
-        'Refresh scripts/public-artifact-versions.json and docs/compatibility.md through the normal docs merge path.',
+        `Run ${refreshCommand} and commit only scripts/public-artifact-versions.json plus docs/compatibility.md through the normal docs merge path.`,
       ].join('\n'),
+      labels: [
+        'pipeline:ready-item',
+        'branch:main',
+        'state:pending',
+      ],
       acceptance: [
         'The public docs release-audit JSON reports the current published artifact tuple.',
         'Stable 1.x remains the default public docs line.',
+        'The live release-audit JSON reports LEAK=0 and MIXED=0.',
         'The refresh lands through the docs merge gate, not from a public release workflow.',
       ],
     },
   };
+}
+
+function docsRefreshRequest(handoff) {
+  return {
+    schema: 'durable-workflow.docs.refresh-request',
+    reason: handoff.reason,
+    repository: handoff.repository,
+    target_branch: handoff.target_branch,
+    integration: handoff.integration,
+    refresh_command: handoff.refresh_command,
+    refresh_files: handoff.refresh_files,
+    stale_artifact: handoff.stale_artifact,
+    observed_artifact_versions: handoff.observed_artifact_versions,
+    source_release_check: handoff.source_release_check,
+    ready_item: handoff.ready_item,
+    handoff_schema: handoff.schema,
+  };
+}
+
+function writeHandoff(handoff) {
+  if (!handoffPath) {
+    return;
+  }
+
+  fs.writeFileSync(handoffPath, `${JSON.stringify(handoff, null, 2)}\n`);
 }
 
 function writeEvidence(outcome, extra = {}) {
@@ -194,13 +256,18 @@ if (actual !== expected) {
   const actualVersion = Object.prototype.hasOwnProperty.call(versions, artifact) ? actual : null;
   const message = `${auditUrl} reports artifact_versions.${artifact}=${actual || '<missing>'}, expected ${expected}. ` +
     'Run npm run refresh:public-artifact-versions in durable-workflow.github.io and land scripts/public-artifact-versions.json plus docs/compatibility.md through the normal docs merge path before treating this release as fully surfaced.';
+  const handoff = docsRefreshHandoff(message, actualVersion, versions);
+
+  writeHandoff(handoff);
 
   fail(
-    `${message} When DOCS_RELEASE_AUDIT_EVIDENCE is set, the uploaded evidence includes a docs_refresh_request payload for the gate-owned refresh path.`,
+    `${message} When DOCS_RELEASE_AUDIT_HANDOFF is set, the uploaded handoff artifact contains the pipeline-ready docs refresh request.`,
     {
       actual_version: actualVersion,
       observed_artifact_versions: versions,
-      docs_refresh_request: docsRefreshRequest(message, actualVersion, versions),
+      docs_refresh_request: docsRefreshRequest(handoff),
+      docs_artifact_tuple_handoff: handoff,
+      docs_artifact_tuple_handoff_path: handoffPath || null,
     }
   );
 }
