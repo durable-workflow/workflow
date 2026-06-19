@@ -2423,11 +2423,25 @@ final class WorkflowExecutor
             ->orderBy('id')
             ->get();
 
+        $freshRun = $run->fresh(['historyEvents']) ?? $run;
+        $hasAdvanceableConditionWait = self::hasAdvanceableConditionWait($freshRun);
+        $openSignalWaitsById = self::openSignalWaitsById($freshRun);
+
+        $eligibleSignals = $signals
+            ->filter(
+                static fn (WorkflowSignal $candidate): bool => self::signalCanAdvanceOpenWait(
+                    $candidate,
+                    $hasAdvanceableConditionWait,
+                    $openSignalWaitsById,
+                )
+            )
+            ->values();
+
         /** @var WorkflowSignal|null $signal */
         $signal = null;
         $afterAttemptedSignal = $alreadyAttemptedSignalId === null;
 
-        foreach ($signals as $candidate) {
+        foreach ($eligibleSignals as $candidate) {
             if ($afterAttemptedSignal) {
                 $signal = $candidate;
                 break;
@@ -2439,7 +2453,7 @@ final class WorkflowExecutor
         }
 
         if (! $afterAttemptedSignal) {
-            $signal = $signals->first();
+            $signal = $eligibleSignals->first();
         }
 
         if (! $signal instanceof WorkflowSignal) {
@@ -2460,6 +2474,65 @@ final class WorkflowExecutor
         ]);
 
         return $signalTask;
+    }
+
+    /**
+     * @param array<string, string> $openSignalWaitsById
+     */
+    private static function signalCanAdvanceOpenWait(
+        WorkflowSignal $signal,
+        bool $hasAdvanceableConditionWait,
+        array $openSignalWaitsById,
+    ): bool {
+        if ($hasAdvanceableConditionWait) {
+            return true;
+        }
+
+        $signalWaitId = self::nonEmptyString($signal->signal_wait_id);
+
+        return $signalWaitId !== null
+            && ($openSignalWaitsById[$signalWaitId] ?? null) === $signal->signal_name;
+    }
+
+    private static function hasAdvanceableConditionWait(WorkflowRun $run): bool
+    {
+        foreach (ConditionWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) === 'open' && ($wait['source_status'] ?? null) !== 'timeout_fired') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function openSignalWaitsById(WorkflowRun $run): array
+    {
+        $waits = [];
+
+        foreach (SignalWaits::forRun($run) as $wait) {
+            if (($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            $signalWaitId = self::nonEmptyString($wait['signal_wait_id'] ?? null);
+            $signalName = self::nonEmptyString($wait['signal_name'] ?? null);
+
+            if ($signalWaitId !== null && $signalName !== null) {
+                $waits[$signalWaitId] = $signalName;
+            }
+        }
+
+        return $waits;
+    }
+
+    private static function nonEmptyString(mixed $value): ?string
+    {
+        return is_string($value) && $value !== ''
+            ? $value
+            : null;
     }
 
     private static function workflowSignalIdForTask(WorkflowTask $task): ?string

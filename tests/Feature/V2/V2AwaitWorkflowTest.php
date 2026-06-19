@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestAwaitSignalTimeoutWorkflow;
 use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
 use Tests\Fixtures\V2\TestAwaitWorkflow;
+use Tests\Fixtures\V2\TestInFlightSignalWorkflow;
 use Tests\Fixtures\V2\TestKeyedAwaitWithTimeoutWorkflow;
 use Tests\Fixtures\V2\TestKeyedAwaitWorkflow;
 use Tests\TestCase;
@@ -22,6 +23,7 @@ use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\QueryStateReplayer;
@@ -108,6 +110,88 @@ final class V2AwaitWorkflowTest extends TestCase
             ->pluck('event_type')
             ->map(static fn ($eventType) => $eventType->value)
             ->all());
+    }
+
+    public function testSignalAcceptedBeforeReadyTaskParksAtConditionWaitCreatesResumeTask(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestInFlightSignalWorkflow::class, 'in-flight-condition-signal');
+        $workflow->start('condition-wait');
+        $runId = $workflow->runId();
+
+        $this->assertIsString($runId);
+
+        $result = $workflow->signal('advance', 'Grace');
+
+        $this->assertTrue($result->accepted());
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->count());
+
+        $this->runReadyWorkflowTask($runId);
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $result->commandId())
+            ->sole();
+
+        /** @var WorkflowTask $resumeTask */
+        $resumeTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $this->assertSame('waiting', $workflow->refresh()->status());
+        $this->assertSame('workflow_signal', $resumeTask->payload['resume_source_kind'] ?? null);
+        $this->assertSame($signal->id, $resumeTask->payload['workflow_signal_id'] ?? null);
+        $this->assertSame('advance', $resumeTask->payload['signal_name'] ?? null);
+        $this->assertSame($signal->signal_wait_id, $resumeTask->payload['signal_wait_id'] ?? null);
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+        $conditionWait = $this->findConditionWait($detail['waits']);
+
+        $this->assertSame('open', $conditionWait['status']);
+        $this->assertSame('waiting', $conditionWait['source_status']);
+    }
+
+    public function testUnrelatedSignalAcceptedBeforeReadyTaskParksAtSignalWaitDoesNotCreateResumeTask(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestInFlightSignalWorkflow::class, 'in-flight-unrelated-signal');
+        $workflow->start('signal-wait');
+        $runId = $workflow->runId();
+
+        $this->assertIsString($runId);
+
+        $result = $workflow->signal('finish', 'done');
+
+        $this->assertTrue($result->accepted());
+
+        $this->runReadyWorkflowTask($runId);
+
+        /** @var WorkflowSignal $signal */
+        $signal = WorkflowSignal::query()
+            ->where('workflow_command_id', $result->commandId())
+            ->sole();
+
+        $this->assertSame('received', $signal->status->value);
+        $this->assertNull($signal->closed_at);
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->count());
+
+        $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+        $signalWait = $this->findSignalWait($detail['waits']);
+
+        $this->assertSame('advance', $signalWait['target_name']);
+        $this->assertSame('open', $signalWait['status']);
     }
 
     public function testConditionWaitProjectionIgnoresUnrelatedOpenWorkflowTaskRows(): void
