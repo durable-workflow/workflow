@@ -128,7 +128,7 @@ final class CurrentRunResolver
         array $relations = [],
         bool $lockForUpdate = false,
     ): ?WorkflowRun {
-        if ($instance->relationLoaded('runs')) {
+        if (! $lockForUpdate && $instance->relationLoaded('runs')) {
             /** @var WorkflowRun|null $loaded */
             $loaded = $instance->runs->first(static fn (WorkflowRun $candidate): bool => $candidate->id === $runId);
 
@@ -246,7 +246,7 @@ final class CurrentRunResolver
         WorkflowInstance $instance,
         bool $lockForUpdate = false,
     ): EloquentCollection {
-        if ($instance->relationLoaded('runs')) {
+        if (! $lockForUpdate && $instance->relationLoaded('runs')) {
             /** @var EloquentCollection<int, WorkflowRun> $runs */
             $runs = $instance->runs
                 ->filter(static fn (mixed $candidate): bool => $candidate instanceof WorkflowRun)

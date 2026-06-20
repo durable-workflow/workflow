@@ -63,26 +63,66 @@ class WorkflowHistoryEvent extends Model
         $commandModel = $command instanceof WorkflowCommand ? $command : null;
         $taskId = $taskModel?->id ?? (is_string($task) ? $task : null);
         $commandId = $commandModel?->id ?? (is_string($command) ? $command : null);
-        $sequence = $run->last_history_sequence + 1;
         HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
 
         /** @var self $event */
-        $event = self::query()->create([
-            'workflow_run_id' => $run->id,
-            'sequence' => $sequence,
-            'event_type' => $eventType->value,
-            'payload' => self::snapshotPayload($payload, $taskModel, $commandModel),
-            'workflow_task_id' => $taskId,
-            'workflow_command_id' => $commandId,
-            'recorded_at' => now(),
-        ]);
+        $event = ConfiguredV2Models::query('history_event_model', self::class)
+            ->getModel()
+            ->getConnection()
+            ->transaction(static function () use (
+                $run,
+                $eventType,
+                $payload,
+                $taskModel,
+                $commandModel,
+                $taskId,
+                $commandId,
+            ): self {
+                /** @var WorkflowRun $lockedRun */
+                $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->lockForUpdate()
+                    ->findOrFail($run->id);
+                $now = now();
+                $sequence = self::nextSequenceForRun($lockedRun);
 
-        $run->forceFill([
-            'last_history_sequence' => $sequence,
-            'last_progress_at' => now(),
-        ])->save();
+                /** @var self $event */
+                $event = ConfiguredV2Models::query('history_event_model', self::class)->create([
+                    'workflow_run_id' => $lockedRun->id,
+                    'sequence' => $sequence,
+                    'event_type' => $eventType->value,
+                    'payload' => self::snapshotPayload($payload, $taskModel, $commandModel),
+                    'workflow_task_id' => $taskId,
+                    'workflow_command_id' => $commandId,
+                    'recorded_at' => $now,
+                ]);
+
+                $lockedRun->forceFill([
+                    'last_history_sequence' => $sequence,
+                    'last_progress_at' => $now,
+                ])->save();
+
+                $run->forceFill([
+                    'last_history_sequence' => $sequence,
+                    'last_progress_at' => $now,
+                ]);
+                $run->syncOriginalAttributes([
+                    'last_history_sequence',
+                    'last_progress_at',
+                ]);
+
+                return $event;
+            });
 
         return $event;
+    }
+
+    private static function nextSequenceForRun(WorkflowRun $run): int
+    {
+        $storedMax = (int) (ConfiguredV2Models::query('history_event_model', self::class)
+            ->where('workflow_run_id', $run->id)
+            ->max('sequence') ?? 0);
+
+        return max((int) ($run->last_history_sequence ?? 0), $storedMax) + 1;
     }
 
     /**

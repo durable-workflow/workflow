@@ -130,6 +130,51 @@ final class ConfiguredV2ObservabilityTest extends TestCase
         $this->assertSame('01JCONFIGRUN00000000000002', $resolved?->id);
     }
 
+    public function testCurrentRunResolverBypassesLoadedRunsWhenLockingCurrentRun(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'locked-current-run-instance',
+            'workflow_class' => 'App\\Workflows\\LockedResolverWorkflow',
+            'workflow_type' => 'locked.resolver.workflow',
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::query()->create([
+            'id' => '01JLOCKEDRUN00000000000001',
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\LockedResolverWorkflow',
+            'workflow_type' => 'locked.resolver.workflow',
+            'status' => RunStatus::Waiting->value,
+            'last_history_sequence' => 1,
+            'started_at' => now()
+                ->subMinute(),
+            'last_progress_at' => now()
+                ->subSeconds(30),
+        ]);
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+
+        $instanceWithStaleRelation = $instance->fresh(['runs']);
+        $loadedRun = $instanceWithStaleRelation->runs->first();
+        $this->assertSame(1, $loadedRun?->last_history_sequence);
+
+        WorkflowRun::query()
+            ->whereKey($run->id)
+            ->update([
+                'last_history_sequence' => 9,
+                'last_progress_at' => now(),
+            ]);
+
+        $resolved = CurrentRunResolver::forInstance($instanceWithStaleRelation, lockForUpdate: true);
+
+        $this->assertSame($run->id, $resolved?->id);
+        $this->assertSame(9, $resolved?->last_history_sequence);
+        $this->assertNotSame($loadedRun, $resolved);
+    }
+
     public function testRunDetailAndHistoryExportUseConfiguredSummaryAndHistoryModels(): void
     {
         $this->createConfiguredSummariesTable();

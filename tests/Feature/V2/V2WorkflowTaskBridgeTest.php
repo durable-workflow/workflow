@@ -695,6 +695,96 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(7, BridgeProtocolSignalReplayWorkflow::lastCount());
     }
 
+    public function testBridgeHistoryExposesRapidAcceptedSignalsInInputOrder(): void
+    {
+        $run = $this->createWaitingRun();
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [],
+            'connection' => 'redis',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+        ]);
+        $staleRun = $run->fresh();
+        $codec = CodecRegistry::defaultCodec();
+
+        foreach (range(1, 10) as $amount) {
+            $command = WorkflowCommand::query()->create([
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'resolved_workflow_run_id' => $run->id,
+                'command_type' => 'signal',
+                'target_scope' => 'instance',
+                'status' => 'accepted',
+                'outcome' => 'signal_received',
+                'workflow_class' => $run->workflow_class,
+                'workflow_type' => $run->workflow_type,
+                'payload_codec' => $codec,
+                'payload' => Serializer::serializeWithCodec($codec, [
+                    'name' => 'increment',
+                    'arguments' => [$amount],
+                ]),
+                'command_sequence' => $amount,
+                'message_sequence' => $amount,
+                'accepted_at' => now()
+                    ->addMicroseconds($amount),
+            ]);
+            $signal = WorkflowSignal::query()->create([
+                'workflow_command_id' => $command->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'target_scope' => 'instance',
+                'resolved_workflow_run_id' => $run->id,
+                'signal_name' => 'increment',
+                'signal_wait_id' => sprintf('signal:%02d', $amount),
+                'status' => 'received',
+                'outcome' => 'signal_received',
+                'command_sequence' => $amount,
+                'payload_codec' => $codec,
+                'arguments' => Serializer::serializeWithCodec($codec, [$amount]),
+                'received_at' => $command->accepted_at,
+            ]);
+
+            $staleRun->forceFill([
+                'last_history_sequence' => 0,
+            ]);
+            $staleRun->syncOriginalAttributes(['last_history_sequence']);
+
+            WorkflowHistoryEvent::record($staleRun, HistoryEventType::SignalReceived, [
+                'workflow_command_id' => $command->id,
+                'signal_id' => $signal->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+                'signal_name' => 'increment',
+                'signal_wait_id' => $signal->signal_wait_id,
+            ], null, $command);
+        }
+
+        $history = $this->bridge->historyPayload($task->id);
+        $this->assertNotNull($history);
+
+        $signalEvents = collect($history['history_events'])
+            ->filter(static fn (array $event): bool => $event['event_type'] === HistoryEventType::SignalReceived->value)
+            ->values();
+        $observedAmounts = $signalEvents
+            ->map(static function (array $event): int {
+                $arguments = Serializer::unserializeWithCodec(
+                    $event['payload']['arguments']['codec'],
+                    $event['payload']['arguments']['blob'],
+                );
+
+                return (int) $arguments[0];
+            })
+            ->all();
+
+        $this->assertSame(range(1, 10), $signalEvents->pluck('sequence')->all());
+        $this->assertSame(range(1, 10), $observedAmounts);
+        $this->assertSame(55, array_sum($observedAmounts));
+    }
+
     public function testProtocolOpenSignalWaitUsesBufferedSignalWaitIdWhenSignalArrivesDuringLeasedTask(): void
     {
         Queue::fake();

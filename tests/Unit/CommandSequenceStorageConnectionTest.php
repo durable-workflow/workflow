@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Observers\WorkflowHistoryEventObserver;
 use Workflow\V2\Support\CommandSequence;
 
 final class CommandSequenceStorageConnectionTest extends TestCase
@@ -50,6 +54,55 @@ final class CommandSequenceStorageConnectionTest extends TestCase
 
         $this->assertSame(1, $sequence);
         $this->assertSame(1, (int) $run->fresh()->last_command_sequence);
+    }
+
+    public function testHistoryEventRecordTransactionUsesStorageConnection(): void
+    {
+        $default = (string) config('database.default');
+
+        $this->assertNotSame('secondary', $default);
+
+        $run = WorkflowRun::create([
+            'workflow_instance_id' => (string) Str::ulid(),
+            'run_number' => 1,
+            'workflow_class' => 'Tests\\Unit\\DummyWorkflow',
+            'workflow_type' => 'dummy',
+            'status' => RunStatus::Running,
+            'last_history_sequence' => 0,
+        ]);
+
+        $observedTransactionLevels = null;
+
+        WorkflowHistoryEvent::creating(static function (WorkflowHistoryEvent $event) use (
+            &$observedTransactionLevels,
+            $default,
+        ): void {
+            $observedTransactionLevels = [
+                'default' => DB::connection($default)->transactionLevel(),
+                'storage' => DB::connection('secondary')->transactionLevel(),
+                'event_connection' => $event->getConnectionName(),
+            ];
+        });
+
+        try {
+            $event = WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+                'workflow_class' => $run->workflow_class,
+                'workflow_type' => $run->workflow_type,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'workflow_run_id' => $run->id,
+            ]);
+        } finally {
+            WorkflowHistoryEvent::flushEventListeners();
+            WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
+        }
+
+        $this->assertSame([
+            'default' => 0,
+            'storage' => 1,
+            'event_connection' => 'secondary',
+        ], $observedTransactionLevels);
+        $this->assertSame(1, $event->sequence);
+        $this->assertSame(1, (int) $run->fresh()->last_history_sequence);
     }
 
     protected function defineEnvironment($app): void
