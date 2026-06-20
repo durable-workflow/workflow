@@ -2418,6 +2418,8 @@ final class WorkflowExecutor
             ->where('workflow_run_id', $run->id)
             ->where('status', SignalStatus::Received->value)
             ->whereNull('closed_at')
+            ->orderByRaw('CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END')
+            ->orderBy('command_sequence')
             ->orderBy('received_at')
             ->orderBy('created_at')
             ->orderBy('id')

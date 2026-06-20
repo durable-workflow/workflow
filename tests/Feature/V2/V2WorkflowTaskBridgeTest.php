@@ -3720,6 +3720,59 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame([], $secondResult['created_task_ids']);
     }
 
+    public function testCompletingSignalResumeUsesCommandSequenceForRapidReceivedSignals(): void
+    {
+        $run = $this->createWaitingRun();
+        $first = $this->recordReceivedSignal($run, 'increment', 'signal-wait-1');
+        $second = $this->recordReceivedSignal($run, 'increment', 'signal-wait-2');
+        $third = $this->recordReceivedSignal($run, 'increment', 'signal-wait-3');
+        $resumeTask = $this->createLeasedTask($run);
+
+        $first->forceFill([
+            'received_at' => now()->subSeconds(3),
+            'created_at' => now()->subSeconds(3),
+        ])->save();
+        $third->forceFill([
+            'received_at' => now()->subSeconds(2),
+            'created_at' => now()->subSeconds(2),
+        ])->save();
+        $second->forceFill([
+            'received_at' => now()->subSecond(),
+            'created_at' => now()->subSecond(),
+        ])->save();
+
+        $resumeTask->forceFill([
+            'payload' => [
+                'workflow_wait_kind' => 'signal',
+                'open_wait_id' => 'signal-application:' . $first->id,
+                'resume_source_kind' => 'workflow_signal',
+                'resume_source_id' => $first->id,
+                'workflow_signal_id' => $first->id,
+                'signal_name' => $first->signal_name,
+                'signal_wait_id' => $first->signal_wait_id,
+                'workflow_command_id' => $first->workflow_command_id,
+            ],
+        ])->save();
+
+        $result = $this->bridge->complete($resumeTask->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'approval.ready',
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $this->assertSame('waiting', $result['run_status']);
+        $this->assertCount(1, $result['created_task_ids']);
+
+        $signalTask = WorkflowTask::query()
+            ->whereKey($result['created_task_ids'][0])
+            ->firstOrFail();
+
+        $this->assertSame($second->id, $signalTask->payload['workflow_signal_id'] ?? null);
+        $this->assertNotSame($third->id, $signalTask->payload['workflow_signal_id'] ?? null);
+    }
+
     public function testSignalResumeCompletionRecordsSatisfiedConditionWaitAndCancelsTimeout(): void
     {
         $run = $this->createWaitingRun();
