@@ -3813,6 +3813,17 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     public function testCompletingSignalResumeUsesCommandSequenceForRapidReceivedSignals(): void
     {
         $run = $this->createWaitingRun();
+
+        $openTask = $this->createLeasedTask($run);
+        $openedResult = $this->bridge->complete($openTask->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'approval.ready',
+            ],
+        ]);
+
+        $this->assertTrue($openedResult['completed']);
+
         $first = $this->recordReceivedSignal($run, 'increment', 'signal-wait-1');
         $second = $this->recordReceivedSignal($run, 'increment', 'signal-wait-2');
         $third = $this->recordReceivedSignal($run, 'increment', 'signal-wait-3');
@@ -3861,6 +3872,70 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertSame($second->id, $signalTask->payload['workflow_signal_id'] ?? null);
         $this->assertNotSame($third->id, $signalTask->payload['workflow_signal_id'] ?? null);
+
+        $first->refresh();
+        $third->refresh();
+
+        $this->assertSame('applied', $first->status->value);
+        $this->assertSame(1, $first->workflow_sequence);
+        $this->assertNotNull($first->applied_at);
+        $this->assertNotNull($first->closed_at);
+        $this->assertSame('received', $third->status->value);
+        $this->assertNull($third->workflow_sequence);
+
+        $firstSatisfied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitSatisfied->value)
+            ->get()
+            ->first(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['workflow_signal_id'] ?? null) === $first->id);
+
+        $this->assertNotNull($firstSatisfied);
+        $this->assertSame(1, $firstSatisfied->payload['sequence'] ?? null);
+        $this->assertNotNull(WorkflowCommand::query()
+            ->whereKey($first->workflow_command_id)
+            ->value('applied_at'));
+
+        $signalTask->forceFill([
+            'status' => TaskStatus::Leased->value,
+            'lease_owner' => 'external-worker-1',
+            'lease_expires_at' => now()->addMinutes(5),
+        ])->save();
+
+        $secondResult = $this->bridge->complete($signalTask->id, [
+            [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'approval.ready',
+            ],
+        ]);
+
+        $this->assertTrue($secondResult['completed']);
+        $this->assertSame('waiting', $secondResult['run_status']);
+        $this->assertCount(1, $secondResult['created_task_ids']);
+
+        $thirdTask = WorkflowTask::query()
+            ->whereKey($secondResult['created_task_ids'][0])
+            ->firstOrFail();
+
+        $second->refresh();
+
+        $this->assertSame($third->id, $thirdTask->payload['workflow_signal_id'] ?? null);
+        $this->assertSame('applied', $second->status->value);
+        $this->assertIsInt($second->workflow_sequence);
+        $this->assertGreaterThan($first->workflow_sequence, $second->workflow_sequence);
+
+        $secondSatisfied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitSatisfied->value)
+            ->get()
+            ->first(static fn (WorkflowHistoryEvent $event): bool => ($event->payload['workflow_signal_id'] ?? null) === $second->id);
+
+        $this->assertNotNull($secondSatisfied);
+        $this->assertSame($second->workflow_sequence, $secondSatisfied->payload['sequence'] ?? null);
+        $this->assertSame(['applied', 'applied', 'received'], WorkflowSignal::query()
+            ->whereIn('id', [$first->id, $second->id, $third->id])
+            ->orderBy('command_sequence')
+            ->pluck('status')
+            ->all());
     }
 
     public function testSignalResumeCompletionRecordsSatisfiedConditionWaitAndCancelsTimeout(): void

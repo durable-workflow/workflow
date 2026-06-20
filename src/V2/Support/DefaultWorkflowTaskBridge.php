@@ -904,7 +904,7 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             }
 
             $this->recordAppliedSignalForSignalResume($run, $task);
-            $this->recordSatisfiedConditionWaitForSignalResume($run, $task, $parsed['non_terminal']);
+            $this->recordSatisfiedConditionWaitForSignalResume($run, $task);
 
             foreach ($parsed['non_terminal'] as $command) {
                 $sequence = $this->applyNonTerminalCommand($run, $task, $command, $sequence, $createdTaskIds);
@@ -1244,6 +1244,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             return;
         }
 
+        if ($signal->status === SignalStatus::Applied) {
+            return;
+        }
+
         /** @var WorkflowCommand|null $command */
         $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
             ->whereKey($signal->workflow_command_id)
@@ -1503,12 +1507,10 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
      * resume advances, make that resolution explicit in history for replay and
      * Waterline instead of leaving only SignalReceived as an implicit cue.
      *
-     * @param list<array{type: string, ...}> $nonTerminalCommands
      */
     private function recordSatisfiedConditionWaitForSignalResume(
         WorkflowRun $run,
         WorkflowTask $task,
-        array $nonTerminalCommands,
     ): void {
         $taskPayload = is_array($task->payload) ? $task->payload : [];
 
@@ -1516,17 +1518,13 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
             return;
         }
 
-        foreach ($nonTerminalCommands as $command) {
-            if (($command['type'] ?? null) === 'open_condition_wait') {
-                return;
-            }
-        }
-
         $wait = $this->latestOpenConditionWait($run);
 
         if ($wait === null) {
             return;
         }
+
+        $this->markConditionWaitSignalConsumed($run, $task, $wait);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ConditionWaitSatisfied, array_filter([
             'condition_wait_id' => $wait['condition_wait_id'],
@@ -1541,6 +1539,62 @@ final class DefaultWorkflowTaskBridge implements WorkflowTaskBridge
         ], static fn (mixed $value): bool => $value !== null), $task);
 
         $this->cancelOpenConditionTimer($run, $task, $wait);
+    }
+
+    /**
+     * @param array{sequence: int|null} $wait
+     */
+    private function markConditionWaitSignalConsumed(WorkflowRun $run, WorkflowTask $task, array $wait): void
+    {
+        $taskPayload = is_array($task->payload) ? $task->payload : [];
+        $signalId = self::nonEmptyString($taskPayload['workflow_signal_id'] ?? null)
+            ?? self::nonEmptyString($taskPayload['resume_source_id'] ?? null);
+        $signalName = self::nonEmptyString($taskPayload['signal_name'] ?? null);
+        $sequence = is_int($wait['sequence'] ?? null)
+            ? (int) $wait['sequence']
+            : null;
+
+        if ($signalId === null || $signalName === null || $sequence === null) {
+            return;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+            ->whereKey($signalId)
+            ->where('workflow_run_id', $run->id)
+            ->first();
+
+        if (! $signal instanceof WorkflowSignal || $signal->signal_name !== $signalName) {
+            return;
+        }
+
+        if ($signal->status === SignalStatus::Applied) {
+            return;
+        }
+
+        /** @var WorkflowCommand|null $command */
+        $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->whereKey($signal->workflow_command_id)
+            ->first();
+
+        $appliedAt = now();
+
+        if ($command instanceof WorkflowCommand) {
+            $command->forceFill([
+                'applied_at' => $appliedAt,
+            ])->save();
+        }
+
+        $signal->forceFill([
+            'status' => SignalStatus::Applied->value,
+            'workflow_sequence' => $sequence,
+            'applied_at' => $appliedAt,
+            'closed_at' => $appliedAt,
+        ])->save();
+
+        if ($command instanceof WorkflowCommand && $command->message_sequence !== null) {
+            MessageStreamCursor::advanceCursor($run, (int) $command->message_sequence, $task);
+        }
     }
 
     /**
