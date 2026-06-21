@@ -26,16 +26,14 @@ use Workflow\V2\Models\WorkflowRun;
 /**
  * Dispatches V2 lifecycle events from committed durable truth.
  *
- * All call sites are at the end of their DB::transaction() scope, after all
- * durable state has been written. Events carry only scalar identity values
- * captured eagerly from the models, so they remain valid even if the model
- * instance is later refreshed or discarded.
+ * Call sites dispatch only after the durable lifecycle write is no longer
+ * eligible to roll back. Retried transaction paths must dispatch after
+ * DB::transaction() returns successfully (or via DB::afterCommit()) so a
+ * failed attempt cannot leak duplicate public events.
  *
- * Events are dispatched synchronously so that listeners execute within the
- * same request/job that committed the state change. Since all call sites
- * are inside transactions that either fully commit or fully roll back (and
- * the dispatch is placed after all writes but before the transaction
- * closure returns), listeners always observe committed state.
+ * Events carry scalar identity values captured eagerly from the models and
+ * are dispatched synchronously within the same request/job that committed
+ * the state change.
  */
 final class LifecycleEventDispatcher
 {

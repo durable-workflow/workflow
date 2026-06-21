@@ -914,8 +914,13 @@ final class WorkflowStub
         [$arguments, $startOptions] = $this->extractStartArguments($arguments);
         $metadata = WorkflowMetadata::fromStartArguments($arguments);
         $task = null;
+        $startedRun = null;
 
-        DB::transaction(function () use ($metadata, $startOptions, &$task, &$command): void {
+        DB::transaction(function () use ($metadata, $startOptions, &$task, &$command, &$startedRun): void {
+            $task = null;
+            $command = null;
+            $startedRun = null;
+
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -1138,13 +1143,17 @@ final class WorkflowStub
                 'compatibility' => $run->compatibility,
             ]);
 
-            LifecycleEventDispatcher::workflowStarted($run);
-
             self::projectRun(
                 $run,
                 ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents'],
             );
-        });
+
+            $startedRun = $run;
+        }, self::storageTransactionAttempts());
+
+        if ($startedRun instanceof WorkflowRun) {
+            LifecycleEventDispatcher::workflowStarted($startedRun);
+        }
 
         $this->refresh();
 
@@ -2446,6 +2455,7 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $signalCommand */
         $signalCommand = null;
         $task = null;
+        $startedRun = null;
         $intakeGroupId = (string) Str::ulid();
 
         DB::transaction(function () use (
@@ -2457,7 +2467,13 @@ final class WorkflowStub
             &$startCommand,
             &$signalCommand,
             &$task,
+            &$startedRun,
         ): void {
+            $task = null;
+            $startCommand = null;
+            $signalCommand = null;
+            $startedRun = null;
+
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -2850,10 +2866,14 @@ final class WorkflowStub
                 'signal_wait_id' => $signalWaitId,
             ], static fn (mixed $value): bool => $value !== null), null, $signalCommand);
 
-            LifecycleEventDispatcher::workflowStarted($run);
-
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+            $startedRun = $run;
         });
+
+        if ($startedRun instanceof WorkflowRun) {
+            LifecycleEventDispatcher::workflowStarted($startedRun);
+        }
 
         $this->refresh();
 
@@ -4153,6 +4173,11 @@ final class WorkflowStub
     private function commandAttributes(array $attributes): array
     {
         return array_merge($this->resolvedCommandContext()->attributes(), $attributes);
+    }
+
+    private static function storageTransactionAttempts(): int
+    {
+        return max(1, (int) config('workflows.storage.transaction_attempts', 5));
     }
 
     private function signalWithStartCommandContext(string $intakeGroupId): CommandContext

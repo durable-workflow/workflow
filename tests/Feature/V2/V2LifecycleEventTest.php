@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use PDOException;
 use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Events\StateChanged;
+use Workflow\Events\WorkflowStarted as LegacyWorkflowStarted;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Events\ActivityCompleted;
@@ -20,7 +25,12 @@ use Workflow\V2\Events\WorkflowFailed;
 use Workflow\V2\Events\WorkflowStarted;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\WorkflowStub;
 
 final class V2LifecycleEventTest extends TestCase
@@ -44,6 +54,67 @@ final class V2LifecycleEventTest extends TestCase
                 && $event->workflowClass !== ''
                 && $event->committedAt !== '';
         });
+    }
+
+    public function testWorkflowStartedLifecycleEventsWaitForRetriedStartTransactionCommit(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.storage.transaction_attempts', 2);
+        Queue::fake();
+
+        $customRole = new class(new DefaultHistoryProjectionRole()) implements HistoryProjectionRole {
+            public int $projectRunCalls = 0;
+
+            public function __construct(
+                private readonly DefaultHistoryProjectionRole $delegate,
+            ) {
+            }
+
+            public function projectRun(WorkflowRun $run): WorkflowRunSummary
+            {
+                $this->projectRunCalls++;
+
+                if ($this->projectRunCalls === 1) {
+                    throw new QueryException(
+                        'sqlite',
+                        'insert into workflow_run_summaries',
+                        [],
+                        new class('SQLSTATE[HY000]: General error: 5 database is locked') extends PDOException {
+                            public function __construct(string $message)
+                            {
+                                parent::__construct($message, 5);
+                                $this->errorInfo = ['HY000', 5, 'database is locked'];
+                            }
+                        },
+                    );
+                }
+
+                return $this->delegate->projectRun($run);
+            }
+
+            public function recordActivityStarted(
+                WorkflowRun $run,
+                ActivityExecution $execution,
+                ActivityAttempt $attempt,
+                WorkflowTask $task,
+            ): WorkflowRunSummary {
+                return $this->delegate->recordActivityStarted($run, $execution, $attempt, $task);
+            }
+        };
+
+        $this->app->instance(HistoryProjectionRole::class, $customRole);
+
+        Event::fake([WorkflowStarted::class, LegacyWorkflowStarted::class, StateChanged::class]);
+
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lifecycle-start-retry');
+        $workflow->start('Taylor');
+
+        $this->assertSame(2, $customRole->projectRunCalls);
+        Event::assertDispatched(WorkflowStarted::class, 1);
+        Event::assertDispatched(LegacyWorkflowStarted::class, 1);
+        Event::assertDispatched(StateChanged::class, 1);
     }
 
     public function testSuccessfulWorkflowDispatchesFullLifecycle(): void

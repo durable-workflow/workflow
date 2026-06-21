@@ -162,6 +162,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         TypeRegistry::validateTypeMap();
         WorkflowModeGuard::check();
         ConfiguredV2Models::validateConfiguration();
+        $this->configureSqliteStorageConnection();
 
         // Register long-poll wake signal observers
         $this->registerLongPollObservers();
@@ -235,6 +236,68 @@ final class WorkflowServiceProvider extends ServiceProvider
                 $validation['backend'],
                 $multiNode ? 'true' : 'false'
             ));
+        }
+    }
+
+    private function configureSqliteStorageConnection(): void
+    {
+        $timeoutMilliseconds = (int) config('workflows.storage.sqlite_busy_timeout_ms', 5000);
+
+        if ($timeoutMilliseconds <= 0) {
+            return;
+        }
+
+        $connectionName = config('workflows.storage.connection') ?? config('database.default');
+
+        if (! is_string($connectionName) || $connectionName === '') {
+            return;
+        }
+
+        if (config("database.connections.{$connectionName}.driver") !== 'sqlite') {
+            return;
+        }
+
+        $busyTimeoutKey = "database.connections.{$connectionName}.busy_timeout";
+
+        if (config($busyTimeoutKey) === null) {
+            config()->set($busyTimeoutKey, $timeoutMilliseconds);
+        }
+
+        $optionsKey = "database.connections.{$connectionName}.options";
+        $options = config($optionsKey, []);
+        $options = is_array($options) ? $options : [];
+
+        if (! array_key_exists(\PDO::ATTR_TIMEOUT, $options)) {
+            $options[\PDO::ATTR_TIMEOUT] = max(1, (int) ceil($timeoutMilliseconds / 1000));
+            config()->set($optionsKey, $options);
+        }
+
+        $this->applySqliteBusyTimeoutToOpenConnection($connectionName, $timeoutMilliseconds);
+    }
+
+    private function applySqliteBusyTimeoutToOpenConnection(string $connectionName, int $timeoutMilliseconds): void
+    {
+        $database = $this->app->bound('db') ? $this->app->make('db') : null;
+
+        if (! is_object($database) || ! method_exists($database, 'getConnections')) {
+            return;
+        }
+
+        /** @var array<string, \Illuminate\Database\Connection> $connections */
+        $connections = $database->getConnections();
+        $connection = $connections[$connectionName] ?? null;
+
+        if ($connection === null) {
+            return;
+        }
+
+        try {
+            if ($connection->getDriverName() === 'sqlite') {
+                $connection->statement('PRAGMA busy_timeout = ' . $timeoutMilliseconds);
+            }
+        } catch (\Throwable) {
+            // The config mutation above still protects connections opened after
+            // boot; never make package boot fail while only hardening SQLite.
         }
     }
 }

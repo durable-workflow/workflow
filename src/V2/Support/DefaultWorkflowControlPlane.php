@@ -99,6 +99,10 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
             &$task,
             &$instance,
         ): void {
+            $command = null;
+            $task = null;
+            $instance = null;
+
             $instance = $this->resolveOrCreateInstance($workflowType, $workflowClass, $instanceId, $namespace);
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
@@ -338,7 +342,7 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
                     'fairness_key' => $run->fairness_key ?? $fairnessKey,
                     'fairness_weight' => $run->fairness_weight ?? $fairnessWeight,
                 ]);
-        });
+        }, self::storageTransactionAttempts());
 
         if ($task instanceof WorkflowTask) {
             try {
@@ -1048,6 +1052,11 @@ final class DefaultWorkflowControlPlane implements WorkflowControlPlane
     private function taskQuery(): \Illuminate\Database\Eloquent\Builder
     {
         return ConfiguredV2Models::query('task_model', WorkflowTask::class);
+    }
+
+    private static function storageTransactionAttempts(): int
+    {
+        return max(1, (int) config('workflows.storage.transaction_attempts', 5));
     }
 
     private function projectRun(WorkflowRun $run): void

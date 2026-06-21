@@ -410,6 +410,25 @@ return [
         // Database connection used for ALL workflow persistence (Eloquent models + migrations).
         // null => the application's default connection (preserves existing behavior).
         'connection' => Env::dw('DW_STORAGE_CONNECTION', 'WORKFLOW_STORAGE_CONNECTION', null),
+
+        // SQLite serializes writers. The documented local quickstart runs the
+        // Artisan command and a queue worker in separate PHP processes against
+        // the same SQLite file, so a short busy timeout keeps brief queue-poll
+        // write windows from failing workflow start writes immediately.
+        // Set to 0 to leave the host application's SQLite timeout untouched.
+        'sqlite_busy_timeout_ms' => max(0, (int) Env::dw(
+            'DW_STORAGE_SQLITE_BUSY_TIMEOUT_MS',
+            'WORKFLOW_STORAGE_SQLITE_BUSY_TIMEOUT_MS',
+            5000
+        )),
+
+        // Retry durable start transactions when the database reports a
+        // transient concurrency conflict after the busy timeout has elapsed.
+        'transaction_attempts' => max(1, (int) Env::dw(
+            'DW_STORAGE_TRANSACTION_ATTEMPTS',
+            'WORKFLOW_STORAGE_TRANSACTION_ATTEMPTS',
+            5
+        )),
     ],
 
     'prune_age' => '1 month',
