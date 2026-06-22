@@ -28,6 +28,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\FailureSnapshots;
+use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\TaskWatchdog;
 
 final class V2ActivityTimeoutTest extends TestCase
@@ -219,6 +220,10 @@ final class V2ActivityTimeoutTest extends TestCase
 
         $attempt->refresh();
         $this->assertSame(ActivityAttemptStatus::Failed, $attempt->status);
+
+        $activityViews = RunActivityView::activitiesForRun($run->fresh(['historyEvents', 'activityExecutions.attempts']));
+        $this->assertSame(ActivityAttemptStatus::Expired->value, $activityViews[0]['attempts'][0]['status']);
+        $this->assertSame('attempt_expired', $activityViews[0]['attempts'][0]['stop_reason']);
 
         $activityTask->refresh();
         $this->assertSame(TaskStatus::Cancelled, $activityTask->status);

@@ -92,6 +92,7 @@ final class ActivityAttemptSnapshots
                 HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityTimedOut,
                 HistoryEventType::ActivityCancelled,
             ], true))
             ->sortBy('sequence');
@@ -123,6 +124,7 @@ final class ActivityAttemptSnapshots
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityCompleted,
             HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityTimedOut,
             HistoryEventType::ActivityCancelled,
         ], true);
 
@@ -222,6 +224,7 @@ final class ActivityAttemptSnapshots
             HistoryEventType::ActivityHeartbeatRecorded => ActivityAttemptStatus::Running->value,
             HistoryEventType::ActivityRetryScheduled,
             HistoryEventType::ActivityFailed => ActivityAttemptStatus::Failed->value,
+            HistoryEventType::ActivityTimedOut => ActivityAttemptStatus::Expired->value,
             HistoryEventType::ActivityCompleted => ActivityAttemptStatus::Completed->value,
             HistoryEventType::ActivityCancelled => ActivityAttemptStatus::Cancelled->value,
             default => null,
