@@ -45,25 +45,26 @@ final class ActivityTimeoutEnforcer
         ?string $queue = null,
     ): array {
         $now = now();
+        $deadlineBoundary = self::deadlineBoundary($now);
 
         $query = ActivityExecution::query()
             ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
-            ->where(static function ($query) use ($now): void {
-                $query->where(static function ($schedule) use ($now): void {
+            ->where(static function ($query) use ($deadlineBoundary): void {
+                $query->where(static function ($schedule) use ($deadlineBoundary): void {
                     $schedule->where('status', ActivityStatus::Pending->value)
                         ->whereNotNull('schedule_deadline_at')
-                        ->where('schedule_deadline_at', '<=', $now);
-                })->orWhere(static function ($close) use ($now): void {
+                        ->where('schedule_deadline_at', '<=', $deadlineBoundary);
+                })->orWhere(static function ($close) use ($deadlineBoundary): void {
                     $close->where('status', ActivityStatus::Running->value)
                         ->whereNotNull('close_deadline_at')
-                        ->where('close_deadline_at', '<=', $now);
-                })->orWhere(static function ($scheduleToClose) use ($now): void {
+                        ->where('close_deadline_at', '<=', $deadlineBoundary);
+                })->orWhere(static function ($scheduleToClose) use ($deadlineBoundary): void {
                     $scheduleToClose->whereNotNull('schedule_to_close_deadline_at')
-                        ->where('schedule_to_close_deadline_at', '<=', $now);
-                })->orWhere(static function ($heartbeat) use ($now): void {
+                        ->where('schedule_to_close_deadline_at', '<=', $deadlineBoundary);
+                })->orWhere(static function ($heartbeat) use ($deadlineBoundary): void {
                     $heartbeat->where('status', ActivityStatus::Running->value)
                         ->whereNotNull('heartbeat_deadline_at')
-                        ->where('heartbeat_deadline_at', '<=', $now);
+                        ->where('heartbeat_deadline_at', '<=', $deadlineBoundary);
                 });
             })
             ->limit($limit);
@@ -72,6 +73,11 @@ final class ActivityTimeoutEnforcer
 
         return $query->pluck('id')
             ->all();
+    }
+
+    private static function deadlineBoundary(CarbonInterface $deadline): string
+    {
+        return $deadline->format((new ActivityExecution())->getDateFormat());
     }
 
     /**

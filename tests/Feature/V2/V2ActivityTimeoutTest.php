@@ -323,6 +323,33 @@ final class V2ActivityTimeoutTest extends TestCase
         Carbon::setTestNow();
     }
 
+    public function testExpiredExecutionIdsFindsSameSecondMicrosecondDeadlines(): void
+    {
+        $startedAt = Carbon::parse('2026-01-15 10:00:00.100000');
+        Carbon::setTestNow($startedAt);
+
+        [, $startToCloseExecution] = $this->createRunningActivity(
+            instanceId: 'act-timeout-find-same-second-stc-1',
+            closeDeadlineAt: Carbon::parse('2026-01-15 10:00:01.100000'),
+        );
+
+        [, $scheduleToCloseExecution] = $this->createPendingActivity(
+            instanceId: 'act-timeout-find-same-second-s2c-1',
+        );
+        $scheduleToCloseExecution->forceFill([
+            'schedule_to_close_deadline_at' => Carbon::parse('2026-01-15 10:00:01.200000'),
+        ])->save();
+
+        Carbon::setTestNow(Carbon::parse('2026-01-15 10:00:01.700000'));
+
+        $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds();
+
+        $this->assertContains($startToCloseExecution->id, $expiredIds);
+        $this->assertContains($scheduleToCloseExecution->id, $expiredIds);
+
+        Carbon::setTestNow();
+    }
+
     public function testWatchdogPassDetectsAndEnforcesActivityTimeouts(): void
     {
         $startedAt = Carbon::parse('2026-01-15 10:00:00');
