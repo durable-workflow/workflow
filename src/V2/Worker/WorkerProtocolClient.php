@@ -119,6 +119,7 @@ final class WorkerProtocolClient
      * @param list<string> $supportedActivityTypes
      * @param array<string, string>|null $workflowDefinitionFingerprints
      * @param list<string>|null $capabilities
+     * @param array<string, array<string, mixed>>|null $workflowCommandContracts
      * @return array<string, mixed>|null
      */
     public function registerWorker(
@@ -133,6 +134,7 @@ final class WorkerProtocolClient
         ?int $maxConcurrentActivityTasks = null,
         ?array $workflowDefinitionFingerprints = null,
         ?array $capabilities = null,
+        ?array $workflowCommandContracts = null,
     ): ?array {
         if ($maxConcurrentWorkflowTasks !== null && $maxConcurrentWorkflowTasks < 1) {
             throw new InvalidArgumentException('maxConcurrentWorkflowTasks must be at least 1.');
@@ -154,6 +156,10 @@ final class WorkerProtocolClient
 
         if ($workflowDefinitionFingerprints !== null) {
             $body['workflow_definition_fingerprints'] = $workflowDefinitionFingerprints;
+        }
+
+        if ($workflowCommandContracts !== null) {
+            $body['workflow_command_contracts'] = $workflowCommandContracts;
         }
 
         $advertisedCapabilities = $this->workerCapabilities($supportedWorkflowTypes, $capabilities);

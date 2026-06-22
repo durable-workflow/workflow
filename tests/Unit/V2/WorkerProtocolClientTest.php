@@ -96,6 +96,54 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame(['query_tasks'], $requestBody['capabilities'] ?? null);
     }
 
+    public function testStandaloneWorkflowWorkerCanAdvertiseCommandContracts(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+
+        $http->fake(function (Request $request) use ($http, &$requestBody) {
+            $requestBody = $request->data();
+
+            return $http->response(['registered' => true], 201);
+        });
+
+        $contracts = [
+            'polyglot.php.signal-query' => [
+                'queries' => ['current'],
+                'query_contracts' => [['name' => 'current', 'parameters' => []]],
+                'signals' => ['increment'],
+                'signal_contracts' => [[
+                    'name' => 'increment',
+                    'parameters' => [[
+                        'name' => 'amount',
+                        'position' => 0,
+                        'required' => true,
+                        'variadic' => false,
+                        'default_available' => false,
+                        'default' => null,
+                        'type' => 'int',
+                        'allows_null' => false,
+                    ]],
+                ]],
+                'updates' => [],
+                'update_contracts' => [],
+                'entry_method' => 'handle',
+                'entry_mode' => 'canonical',
+                'entry_declaring_class' => 'ConformanceCounterWorkflow',
+            ],
+        ];
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $client->registerWorker(
+            workerId: 'php-worker',
+            taskQueue: 'polyglot',
+            supportedWorkflowTypes: ['polyglot.php.signal-query'],
+            workflowCommandContracts: $contracts,
+        );
+
+        $this->assertSame($contracts, $requestBody['workflow_command_contracts'] ?? null);
+    }
+
     public function testWorkerClientCanSelectNamespaceForSameQueueIsolation(): void
     {
         $http = new HttpFactory();
