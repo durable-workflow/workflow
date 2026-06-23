@@ -507,6 +507,7 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame([
             'worker_id' => 'php-worker',
             'task_queue' => 'polyglot',
+            'timeout_seconds' => WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT,
         ], $requestBody);
     }
 
@@ -621,7 +622,11 @@ final class WorkerProtocolClientTest extends TestCase
             [
                 'method' => 'POST',
                 'url' => 'http://server:8080/api/worker/workflow-tasks/poll',
-                'body' => ['worker_id' => 'php-worker', 'task_queue' => 'polyglot'],
+                'body' => [
+                    'worker_id' => 'php-worker',
+                    'task_queue' => 'polyglot',
+                    'timeout_seconds' => WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+                ],
             ],
             [
                 'method' => 'POST',
@@ -685,7 +690,11 @@ final class WorkerProtocolClientTest extends TestCase
             [
                 'method' => 'POST',
                 'url' => 'http://server:8080/api/worker/workflow-tasks/poll',
-                'body' => ['worker_id' => 'php-worker', 'task_queue' => 'polyglot'],
+                'body' => [
+                    'worker_id' => 'php-worker',
+                    'task_queue' => 'polyglot',
+                    'timeout_seconds' => WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+                ],
             ],
             [
                 'method' => 'POST',
@@ -715,8 +724,10 @@ final class WorkerProtocolClientTest extends TestCase
     {
         $http = new HttpFactory();
         $requestUrls = [];
+        $requestBodies = [];
 
-        $http->fake(function (Request $request) use ($http, &$requestUrls) {
+        $http->fake(function (Request $request) use ($http, &$requestBodies, &$requestUrls) {
+            $requestBodies[] = $request->data();
             $requestUrls[] = $request->url();
 
             return $http->response([
@@ -733,6 +744,11 @@ final class WorkerProtocolClientTest extends TestCase
         $claim = $client->claimActivityTask('activity-task-1', 'php-worker');
 
         $this->assertSame(['http://server:8080/api/worker/activity-tasks/poll'], $requestUrls);
+        $this->assertSame([[
+            'worker_id' => 'php-worker',
+            'task_queue' => 'polyglot',
+            'timeout_seconds' => WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+        ]], $requestBodies);
         $this->assertIsArray($claim);
         $this->assertSame('attempt-1', $claim['activity_attempt_id']);
     }

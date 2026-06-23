@@ -829,6 +829,7 @@ final class WorkerProtocolClient
         $body = [
             'worker_id' => $this->resolveStandaloneWorkerId($workerId),
             'task_queue' => $this->resolveStandaloneTaskQueue($taskQueue),
+            'timeout_seconds' => WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds),
         ];
 
         if (($buildId ?? $this->registeredBuildId) !== null) {
@@ -883,6 +884,7 @@ final class WorkerProtocolClient
         $body = [
             'worker_id' => $this->resolveStandaloneWorkerId($workerId),
             'task_queue' => $this->resolveStandaloneTaskQueue($taskQueue),
+            'timeout_seconds' => WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds),
         ];
 
         if (($buildId ?? $this->registeredBuildId) !== null) {
