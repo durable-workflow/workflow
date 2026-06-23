@@ -317,7 +317,7 @@ final class QueryStateReplayer
                     'signal_name' => $current->name,
                 ]);
 
-                $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
+                $signalEvent = $this->signalResolutionEvent($run, $sequence, $current);
 
                 if ($signalEvent !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -654,6 +654,21 @@ final class QueryStateReplayer
         }
     }
 
+    private function signalResolutionEvent(
+        WorkflowRun $run,
+        int $sequence,
+        SignalCall $signalCall,
+    ): ?WorkflowHistoryEvent {
+        $applied = $this->appliedSignalEvent($run, $sequence, $signalCall);
+        $received = $this->receivedSignalEvent($run, $sequence, $signalCall);
+
+        if ($applied !== null && $this->signalEventCarriesPayload($applied, $run)) {
+            return $applied;
+        }
+
+        return $received ?? $applied;
+    }
+
     private function appliedSignalEvent(
         WorkflowRun $run,
         int $sequence,
@@ -667,6 +682,71 @@ final class QueryStateReplayer
         );
 
         return $event;
+    }
+
+    private function receivedSignalEvent(
+        WorkflowRun $run,
+        int $sequence,
+        SignalCall $signalCall,
+    ): ?WorkflowHistoryEvent {
+        $waitIds = $this->signalWaitIdsForSequence($run, $sequence, $signalCall->name);
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $run->historyEvents->first(
+            static function (WorkflowHistoryEvent $event) use ($sequence, $signalCall, $waitIds): bool {
+                if (
+                    $event->event_type !== HistoryEventType::SignalReceived
+                    || ($event->payload['signal_name'] ?? null) !== $signalCall->name
+                ) {
+                    return false;
+                }
+
+                if (($event->payload['workflow_sequence'] ?? null) === $sequence) {
+                    return true;
+                }
+
+                $signalWaitId = $event->payload['signal_wait_id'] ?? null;
+
+                return is_string($signalWaitId) && isset($waitIds[$signalWaitId]);
+            }
+        );
+
+        return $event;
+    }
+
+    private function signalEventCarriesPayload(WorkflowHistoryEvent $event, ?WorkflowRun $run): bool
+    {
+        $payload = is_array($event->payload) ? $event->payload : [];
+
+        return array_key_exists('value', $payload)
+            || array_key_exists('arguments', $payload)
+            || $this->signalRecordForEvent($event, $run) instanceof WorkflowSignal;
+    }
+
+    /**
+     * @return array<string, true>
+     */
+    private function signalWaitIdsForSequence(WorkflowRun $run, int $sequence, string $signalName): array
+    {
+        $waitIds = [];
+
+        foreach ($run->historyEvents as $event) {
+            if (
+                $event->event_type !== HistoryEventType::SignalWaitOpened
+                || ($event->payload['sequence'] ?? null) !== $sequence
+                || ($event->payload['signal_name'] ?? null) !== $signalName
+            ) {
+                continue;
+            }
+
+            $signalWaitId = $this->stringValue($event->payload['signal_wait_id'] ?? null);
+
+            if ($signalWaitId !== null) {
+                $waitIds[$signalWaitId] = true;
+            }
+        }
+
+        return $waitIds;
     }
 
     private function signalValue(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed

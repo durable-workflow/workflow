@@ -6,11 +6,15 @@ namespace Tests\Unit\V2;
 
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\TestCase;
+use Workflow\QueryMethod;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Workflow;
 use Workflow\V2\Worker\WorkflowQueryTaskExecutor;
+use function Workflow\V2\signal;
 
 final class WorkflowQueryTaskExecutorTest extends TestCase
 {
@@ -71,6 +75,217 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
 
         $this->assertSame('completed', $result['outcome'] ?? null);
         $this->assertSame(1, $result['result'] ?? null);
+    }
+
+    public function testExecutorReplaysReceivedSignalHistoryForRegisteredExternalWorkflowClass(): void
+    {
+        $result = (new WorkflowQueryTaskExecutor([
+            'polyglot.php.signal-query' => TestQueryWorkflow::class,
+        ]))->execute($this->externalQueryTask([
+            'query_name' => 'currentStage',
+            'history_export' => [
+                'history_events' => [
+                    1 => [
+                        'id' => 'event-signal-wait-opened',
+                        'sequence' => 2,
+                        'type' => HistoryEventType::SignalWaitOpened->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'signal_name' => 'name-provided',
+                            'signal_wait_id' => 'external-name-provided',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:30+00:00',
+                    ],
+                    2 => [
+                        'id' => 'event-signal-received',
+                        'sequence' => 3,
+                        'type' => HistoryEventType::SignalReceived->value,
+                        'payload' => [
+                            'signal_name' => 'name-provided',
+                            'signal_wait_id' => 'external-name-provided',
+                            'workflow_sequence' => 1,
+                            'payload_codec' => 'avro',
+                            'arguments' => [
+                                'codec' => 'avro',
+                                'blob' => Serializer::serializeWithCodec('avro', ['Ada']),
+                            ],
+                        ],
+                        'recorded_at' => '2026-05-17T00:01:00+00:00',
+                    ],
+                    3 => [
+                        'id' => 'event-signal-applied',
+                        'sequence' => 4,
+                        'type' => HistoryEventType::SignalApplied->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'signal_name' => 'name-provided',
+                            'signal_wait_id' => 'external-name-provided',
+                        ],
+                        'recorded_at' => '2026-05-17T00:01:01+00:00',
+                    ],
+                ],
+            ],
+        ]));
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('waiting-for-timer', $result['result'] ?? null);
+    }
+
+    public function testExecutorCorrelatesReceivedSignalHistoryByWaitIdWhenSequenceIsSparse(): void
+    {
+        $result = (new WorkflowQueryTaskExecutor([
+            'polyglot.php.signal-query' => TestQueryWorkflow::class,
+        ]))->execute($this->externalQueryTask([
+            'query_name' => 'events-starting-with',
+            'query_arguments' => [
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', [
+                    'prefix' => 'name:Ada',
+                ]),
+            ],
+            'history_export' => [
+                'history_events' => [
+                    1 => [
+                        'id' => 'event-signal-wait-opened',
+                        'sequence' => 2,
+                        'type' => HistoryEventType::SignalWaitOpened->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'signal_name' => 'name-provided',
+                            'signal_wait_id' => 'external-name-provided',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:30+00:00',
+                    ],
+                    2 => [
+                        'id' => 'event-signal-received',
+                        'sequence' => 3,
+                        'type' => HistoryEventType::SignalReceived->value,
+                        'payload' => [
+                            'signal_name' => 'name-provided',
+                            'signal_wait_id' => 'external-name-provided',
+                            'payload_codec' => 'avro',
+                            'arguments' => [
+                                'codec' => 'avro',
+                                'blob' => Serializer::serializeWithCodec('avro', ['Ada']),
+                            ],
+                        ],
+                        'recorded_at' => '2026-05-17T00:01:00+00:00',
+                    ],
+                    3 => [
+                        'id' => 'event-signal-applied',
+                        'sequence' => 4,
+                        'type' => HistoryEventType::SignalApplied->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'signal_name' => 'name-provided',
+                            'signal_wait_id' => 'external-name-provided',
+                        ],
+                        'recorded_at' => '2026-05-17T00:01:01+00:00',
+                    ],
+                ],
+            ],
+        ]));
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame(1, $result['result'] ?? null);
+    }
+
+    public function testExecutorReplaysRepeatedReceivedSignalsForCounterMirror(): void
+    {
+        $result = (new WorkflowQueryTaskExecutor([
+            'polyglot.php.counter' => WorkflowQueryTaskExecutorCounterWorkflow::class,
+        ]))->execute($this->queryTask([
+            'workflow_type' => 'polyglot.php.counter',
+            'workflow_class' => 'polyglot.php.counter',
+            'query_name' => 'current',
+            'history_export' => [
+                'workflow' => [
+                    'workflow_type' => 'polyglot.php.counter',
+                    'workflow_class' => 'polyglot.php.counter',
+                ],
+                'history_events' => [
+                    [
+                        'id' => 'event-started',
+                        'sequence' => 1,
+                        'type' => HistoryEventType::WorkflowStarted->value,
+                        'payload' => [
+                            'workflow_type' => 'polyglot.php.counter',
+                            'workflow_class' => 'polyglot.php.counter',
+                            'payload_codec' => 'avro',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:00+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-wait-opened-1',
+                        'sequence' => 2,
+                        'type' => HistoryEventType::SignalWaitOpened->value,
+                        'payload' => [
+                            'sequence' => 1,
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-1',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:10+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-received-1',
+                        'sequence' => 3,
+                        'type' => HistoryEventType::SignalReceived->value,
+                        'payload' => [
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-1',
+                            'workflow_sequence' => 1,
+                            'payload_codec' => 'avro',
+                            'arguments' => [
+                                'codec' => 'avro',
+                                'blob' => Serializer::serializeWithCodec('avro', [3]),
+                            ],
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:20+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-wait-opened-2',
+                        'sequence' => 4,
+                        'type' => HistoryEventType::SignalWaitOpened->value,
+                        'payload' => [
+                            'sequence' => 2,
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-2',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:30+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-received-2',
+                        'sequence' => 5,
+                        'type' => HistoryEventType::SignalReceived->value,
+                        'payload' => [
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-2',
+                            'workflow_sequence' => 2,
+                            'payload_codec' => 'avro',
+                            'arguments' => [
+                                'codec' => 'avro',
+                                'blob' => Serializer::serializeWithCodec('avro', [5]),
+                            ],
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:40+00:00',
+                    ],
+                    [
+                        'id' => 'event-signal-wait-opened-3',
+                        'sequence' => 6,
+                        'type' => HistoryEventType::SignalWaitOpened->value,
+                        'payload' => [
+                            'sequence' => 3,
+                            'signal_name' => 'increment',
+                            'signal_wait_id' => 'wait-3',
+                        ],
+                        'recorded_at' => '2026-05-17T00:00:50+00:00',
+                    ],
+                ],
+            ],
+        ]));
+
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame(8, $result['result'] ?? null);
     }
 
     public function testExecutorDecodesAppliedSignalValueEnvelopeForRegisteredExternalWorkflowClass(): void
@@ -316,5 +531,27 @@ final class WorkflowQueryTaskExecutorTest extends TestCase
                 ],
             ],
         ]), $overrides);
+    }
+}
+
+#[Signal('increment', [[
+    'name' => 'amount',
+    'type' => 'int',
+]])]
+final class WorkflowQueryTaskExecutorCounterWorkflow extends Workflow
+{
+    private int $count = 0;
+
+    public function handle(): mixed
+    {
+        while (true) {
+            $this->count += (int) signal('increment');
+        }
+    }
+
+    #[QueryMethod]
+    public function current(): int
+    {
+        return $this->count;
     }
 }
