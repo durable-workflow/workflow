@@ -8,6 +8,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
 use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Worker\WorkerProtocolClient;
 use Workflow\V2\Worker\WorkflowQueryTaskExecutor;
@@ -412,6 +413,17 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertIsString($requests[0]['poll_request_id']);
         $this->assertNotSame('', $requests[0]['poll_request_id']);
         $this->assertSame($requests[0]['poll_request_id'], $requests[1]['poll_request_id']);
+    }
+
+    public function testStandaloneLongPollRequestTimeoutHonorsCallerTimeout(): void
+    {
+        $client = new WorkerProtocolClient(new HttpFactory(), 'http://server:8080', 'test-token', 'default');
+        $timeout = new ReflectionMethod($client, 'longPollRequestTimeoutSeconds');
+        $timeout->setAccessible(true);
+
+        $this->assertSame(6, $timeout->invoke($client, 1));
+        $this->assertSame(35, $timeout->invoke($client, WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT));
+        $this->assertSame(65, $timeout->invoke($client, WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT + 30));
     }
 
     public function testPollWorkflowTasksUsesStandaloneWorkerApiByDefault(): void
