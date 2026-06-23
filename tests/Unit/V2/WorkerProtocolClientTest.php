@@ -451,13 +451,24 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame($requests[0]['poll_request_id'], $requests[2]['poll_request_id']);
     }
 
-    public function testStandaloneLongPollRequestTimeoutHonorsCallerTimeout(): void
+    public function testStandaloneQueryLongPollRequestTimeoutHonorsCallerTimeout(): void
     {
         $client = new WorkerProtocolClient(new HttpFactory(), 'http://server:8080', 'test-token', 'default');
         $timeout = new ReflectionMethod($client, 'longPollRequestTimeoutSeconds');
         $timeout->setAccessible(true);
 
         $this->assertSame(6, $timeout->invoke($client, 1));
+        $this->assertSame(35, $timeout->invoke($client, WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT));
+        $this->assertSame(65, $timeout->invoke($client, WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT + 30));
+    }
+
+    public function testStandaloneWorkerTaskLongPollRequestTimeoutCoversServerDefaultWait(): void
+    {
+        $client = new WorkerProtocolClient(new HttpFactory(), 'http://server:8080', 'test-token', 'default');
+        $timeout = new ReflectionMethod($client, 'workerTaskLongPollRequestTimeoutSeconds');
+        $timeout->setAccessible(true);
+
+        $this->assertSame(35, $timeout->invoke($client, 1));
         $this->assertSame(35, $timeout->invoke($client, WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT));
         $this->assertSame(65, $timeout->invoke($client, WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT + 30));
     }

@@ -851,7 +851,7 @@ final class WorkerProtocolClient
             $response = $this->workerPost(
                 $this->workerApiPath.'/workflow-tasks/poll',
                 $body,
-                $this->longPollRequestTimeoutSeconds($timeoutSeconds),
+                $this->workerTaskLongPollRequestTimeoutSeconds($timeoutSeconds),
             );
         } catch (ConnectionException $exception) {
             if ($this->isHttpTimeout($exception)) {
@@ -893,7 +893,7 @@ final class WorkerProtocolClient
             $response = $this->workerPost(
                 $this->workerApiPath.'/activity-tasks/poll',
                 $body,
-                $this->longPollRequestTimeoutSeconds($timeoutSeconds),
+                $this->workerTaskLongPollRequestTimeoutSeconds($timeoutSeconds),
             );
         } catch (ConnectionException $exception) {
             if ($this->isHttpTimeout($exception)) {
@@ -984,6 +984,16 @@ final class WorkerProtocolClient
     private function longPollRequestTimeoutSeconds(int $timeoutSeconds): int
     {
         return WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds) + 5;
+    }
+
+    private function workerTaskLongPollRequestTimeoutSeconds(int $timeoutSeconds): int
+    {
+        $serverWaitSeconds = max(
+            WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds),
+            WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+        );
+
+        return $serverWaitSeconds + 5;
     }
 
     /**
