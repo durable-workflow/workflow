@@ -303,6 +303,16 @@ final class WorkerProtocolClient
             ], allowedStatuses: [200, 404, 409, 422]);
         }
 
+        if ($commands === []) {
+            return $this->failWorkflowTask(
+                $taskId,
+                'Workflow task waiting for scheduled history.',
+                'WorkflowTaskWaitingForHistory',
+                leaseOwner: $leaseOwner,
+                workflowTaskAttempt: $workflowTaskAttempt,
+            );
+        }
+
         return $this->workerPost($this->workerApiPath.'/workflow-tasks/'.$this->pathSegment($taskId).'/complete', [
             'lease_owner' => $this->resolveWorkflowLeaseOwner($taskId, $leaseOwner),
             'workflow_task_attempt' => $this->resolveWorkflowTaskAttempt($taskId, $workflowTaskAttempt),

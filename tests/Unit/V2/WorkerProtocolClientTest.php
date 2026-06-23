@@ -597,6 +597,64 @@ final class WorkerProtocolClientTest extends TestCase
         ], $requests);
     }
 
+    public function testStandaloneWorkflowCompleteWithNoCommandsAcknowledgesWaitingForHistory(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/poll')) {
+                return $http->response([
+                    'task' => [
+                        'task_id' => 'task-waiting',
+                        'workflow_task_attempt' => 4,
+                        'lease_owner' => 'php-worker',
+                    ],
+                ]);
+            }
+
+            return $http->response([
+                'task_id' => 'task-waiting',
+                'workflow_task_attempt' => 4,
+                'outcome' => 'waiting_for_history',
+                'recorded' => true,
+                'reason' => null,
+                'next_task_id' => null,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $client->pollWorkflowTasks(queue: 'polyglot', workerId: 'php-worker');
+        $complete = $client->completeWorkflowTask('task-waiting', []);
+
+        $this->assertSame('waiting_for_history', $complete['outcome'] ?? null);
+        $this->assertSame([
+            [
+                'method' => 'POST',
+                'url' => 'http://server:8080/api/worker/workflow-tasks/poll',
+                'body' => ['worker_id' => 'php-worker', 'task_queue' => 'polyglot'],
+            ],
+            [
+                'method' => 'POST',
+                'url' => 'http://server:8080/api/worker/workflow-tasks/task-waiting/fail',
+                'body' => [
+                    'lease_owner' => 'php-worker',
+                    'workflow_task_attempt' => 4,
+                    'failure' => [
+                        'message' => 'Workflow task waiting for scheduled history.',
+                        'type' => 'WorkflowTaskWaitingForHistory',
+                    ],
+                ],
+            ],
+        ], $requests);
+    }
+
     public function testClaimWorkflowTaskReturnsNullForNotClaimableRace(): void
     {
         $http = new HttpFactory();
