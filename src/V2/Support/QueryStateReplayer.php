@@ -671,23 +671,36 @@ final class QueryStateReplayer
 
     private function signalValue(WorkflowHistoryEvent $event, ?WorkflowRun $run): mixed
     {
-        $serialized = $event->payload['value'] ?? null;
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $serialized = $payload['value'] ?? null;
 
         if (is_string($serialized)) {
             return WorkflowPayloadDecoder::unserializeWithRun($serialized, $run, [
                 'workflow_id' => $run?->workflow_instance_id,
                 'run_id' => $run?->id,
                 'event_id' => $event->id,
-                'signal_name' => $this->stringValue($event->payload['signal_name'] ?? null),
+                'signal_name' => $this->stringValue($payload['signal_name'] ?? null),
             ]);
         }
 
-        $arguments = $event->payload['arguments'] ?? null;
+        if (array_key_exists('value', $payload)) {
+            $decoded = $this->payloadValue(
+                $payload['value'],
+                $this->stringValue($payload['payload_codec'] ?? null),
+                $run,
+            );
+
+            if ($decoded['available']) {
+                return $decoded['value'];
+            }
+        }
+
+        $arguments = $payload['arguments'] ?? null;
 
         if ($arguments !== null) {
             return $this->signalValueFromArguments(
                 $arguments,
-                $this->stringValue($event->payload['payload_codec'] ?? null),
+                $this->stringValue($payload['payload_codec'] ?? null),
                 $run,
             );
         }
@@ -703,6 +716,35 @@ final class QueryStateReplayer
             $this->stringValue($signal->payload_codec ?? null),
             $run,
         );
+    }
+
+    /**
+     * @return array{available: bool, value: mixed}
+     */
+    private function payloadValue(mixed $payload, ?string $payloadCodec, ?WorkflowRun $run): array
+    {
+        $codec = $payloadCodec
+            ?? $this->stringValue(is_array($payload) ? ($payload['codec'] ?? null) : null)
+            ?? $this->stringValue($run?->payload_codec ?? null);
+        $serialized = ExternalPayloads::payloadBlob(
+            $payload,
+            $codec,
+            is_string($run?->namespace) ? $run->namespace : null,
+        );
+
+        if ($serialized === null) {
+            return [
+                'available' => false,
+                'value' => null,
+            ];
+        }
+
+        return [
+            'available' => true,
+            'value' => $codec !== null
+                ? Serializer::unserializeWithCodec($codec, $serialized)
+                : Serializer::unserialize($serialized),
+        ];
     }
 
     private function signalRecordForEvent(WorkflowHistoryEvent $event, ?WorkflowRun $run): ?WorkflowSignal

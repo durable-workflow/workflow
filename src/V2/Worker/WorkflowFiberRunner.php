@@ -1063,7 +1063,12 @@ final class WorkflowFiberRunner
                 continue;
             }
 
-            if (isset($resolvedKinds[$sequence])) {
+            $existingKind = $resolvedKinds[$sequence] ?? null;
+
+            $appliedSignalHasPayload = $type === 'SignalApplied'
+                && (array_key_exists('value', $payload) || array_key_exists('arguments', $payload));
+
+            if ($existingKind !== null && ! ($existingKind === 'signal_received' && $appliedSignalHasPayload)) {
                 continue;
             }
 
@@ -1088,7 +1093,9 @@ final class WorkflowFiberRunner
                 'result' => $result,
                 'recorded_at' => self::eventRecordedAt($event, $payload),
             ];
-            $resolvedKinds[$sequence] = 'signal';
+            $resolvedKinds[$sequence] = $type === 'SignalApplied'
+                ? 'signal_applied'
+                : 'signal_received';
         }
 
         return $outcomes;

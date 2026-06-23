@@ -331,6 +331,60 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertSame(5, WorkerProtocolRunnerCounterSignalWorkflow::lastCount());
     }
 
+    public function testRunnerPrefersAppliedSignalPayloadWhenReceivedEventIsSparse(): void
+    {
+        WorkerProtocolRunnerCounterSignalWorkflow::reset();
+
+        $scheduled = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerCounterSignalWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'SignalWaitOpened',
+                'payload' => [
+                    'sequence' => 1,
+                    'signal_name' => 'increment',
+                    'signal_wait_id' => 'wait-1',
+                ],
+                'recorded_at' => '2026-05-12T10:12:13+00:00',
+            ], [
+                'sequence' => 3,
+                'event_type' => 'SignalReceived',
+                'payload' => [
+                    'signal_name' => 'increment',
+                    'signal_wait_id' => 'wait-1',
+                ],
+                'recorded_at' => '2026-05-12T10:13:14+00:00',
+            ], [
+                'sequence' => 4,
+                'event_type' => 'SignalApplied',
+                'payload' => [
+                    'sequence' => 1,
+                    'signal_name' => 'increment',
+                    'signal_wait_id' => 'wait-1',
+                    'value' => Serializer::serializeWithCodec('avro', 5),
+                    'payload_codec' => 'avro',
+                ],
+                'recorded_at' => '2026-05-12T10:13:15+00:00',
+            ]],
+        )->step();
+
+        $this->assertFalse($scheduled->completed);
+        $this->assertSame([[
+            'type' => 'open_signal_wait',
+            'signal_name' => 'increment',
+        ]], $scheduled->commands);
+        $this->assertSame(5, WorkerProtocolRunnerCounterSignalWorkflow::lastCount());
+    }
+
     public function testRunnerReplaysSignalReceivedBeforeLaterTimeoutAsSignal(): void
     {
         $completed = WorkflowFiberRunner::forClass(
