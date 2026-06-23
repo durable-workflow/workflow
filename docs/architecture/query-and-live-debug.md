@@ -182,11 +182,14 @@ lease query work through:
 
 The poll request names `worker_id` and `task_queue`, and may include
 `poll_request_id` so a worker can recover the same poll result after
-a local HTTP timeout. A successful poll leases at most one query task
-and returns `poll_status = 'leased'`; an empty long-poll returns
-`poll_status = 'empty'` with no task. Query task long-poll timeout
-semantics are the same clamped `WorkerProtocolVersion::longPollSemantics()`
-used by workflow and activity task polling.
+a local HTTP timeout. It may also include `timeout_seconds`, clamped by
+`WorkerProtocolVersion::longPollSemantics()`, to bound how long the server
+waits for query work before returning an empty response. A successful poll
+leases at most one query task and returns `poll_status = 'leased'`; an empty
+long-poll returns `poll_status = 'empty'` with no task. Query task long-poll
+timeout semantics are the same clamped
+`WorkerProtocolVersion::longPollSemantics()` used by workflow and activity
+task polling.
 `WorkerProtocolClient::registerWorker()` advertises `query_tasks` by
 default for standalone PHP workers that register workflow types, and
 `pollQueryTasks()` sends a stable `poll_request_id` for every query

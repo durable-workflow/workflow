@@ -29,7 +29,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.10';
+    public const VERSION = '1.11';
 
     private const QUERY_TASKS_MINIMUM_PROTOCOL_VERSION = '1.8';
 
@@ -434,7 +434,7 @@ final class WorkerProtocolVersion
                 'poll' => [
                     'method' => 'POST',
                     'path' => '/api/worker/query-tasks/poll',
-                    'request_fields' => ['worker_id', 'task_queue', 'poll_request_id'],
+                    'request_fields' => ['worker_id', 'task_queue', 'poll_request_id', 'timeout_seconds'],
                     'response_fields' => ['task', 'poll_status'],
                 ],
                 'complete' => [

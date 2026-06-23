@@ -273,6 +273,7 @@ final class WorkerProtocolClientTest extends TestCase
         $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
         $tasks = $client->pollQueryTasks(
             queue: 'polyglot',
+            timeoutSeconds: 1,
             workerId: 'php-worker',
             pollRequestId: 'query-poll-request-1',
         );
@@ -292,6 +293,7 @@ final class WorkerProtocolClientTest extends TestCase
                     'worker_id' => 'php-worker',
                     'task_queue' => 'polyglot',
                     'poll_request_id' => 'query-poll-request-1',
+                    'timeout_seconds' => 1,
                 ],
             ],
             [
@@ -308,6 +310,26 @@ final class WorkerProtocolClientTest extends TestCase
                 ],
             ],
         ], $requests);
+    }
+
+    public function testStandaloneQueryPollClampsRequestedServerTimeout(): void
+    {
+        $http = new HttpFactory();
+        $requestBody = null;
+
+        $http->fake(function (Request $request) use ($http, &$requestBody) {
+            $requestBody = $request->data();
+
+            return $http->response(['task' => null]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $this->assertSame(
+            [],
+            $client->pollQueryTasks(queue: 'polyglot', timeoutSeconds: 120, workerId: 'php-worker'),
+        );
+
+        $this->assertSame(WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT, $requestBody['timeout_seconds'] ?? null);
     }
 
     public function testStandaloneQueryFailureUsesCachedLease(): void
@@ -360,6 +382,7 @@ final class WorkerProtocolClientTest extends TestCase
                     'worker_id' => 'php-worker',
                     'task_queue' => 'polyglot',
                     'poll_request_id' => 'query-poll-request-2',
+                    'timeout_seconds' => WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
                 ],
             ],
             [

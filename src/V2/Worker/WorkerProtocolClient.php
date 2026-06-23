@@ -436,6 +436,7 @@ final class WorkerProtocolClient
             'worker_id' => $resolvedWorkerId,
             'task_queue' => $resolvedTaskQueue,
             'poll_request_id' => $pollRequestId,
+            'timeout_seconds' => WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds),
         ];
 
         for ($attempt = 0; $attempt < 2; $attempt++) {

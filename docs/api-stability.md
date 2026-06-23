@@ -250,9 +250,10 @@ activity-task polling/heartbeat/complete/fail, and query-task
 polling/complete/fail all use `POST /api/worker/...` with the
 worker-protocol headers. Standalone `poll*` methods return leased tasks from
 the server's `task` envelope; query polling uses a stable `poll_request_id`
-to recover a leased task after a local HTTP timeout. The client caches the
-returned lease fields so follow-up history, heartbeat, complete, and fail
-calls can send the required `lease_owner`, `workflow_task_attempt`,
+to recover a leased task after a local HTTP timeout and sends
+`timeout_seconds` to bound the server-side query long-poll wait. The client
+caches the returned lease fields so follow-up history, heartbeat, complete,
+and fail calls can send the required `lease_owner`, `workflow_task_attempt`,
 `activity_attempt_id`, and `query_task_attempt` values.
 `namespace()` returns the worker client's selected namespace, and
 `withNamespace()` creates a fresh worker client with the same connection

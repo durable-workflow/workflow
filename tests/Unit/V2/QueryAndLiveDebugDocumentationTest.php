@@ -302,6 +302,7 @@ final class QueryAndLiveDebugDocumentationTest extends TestCase
                 'POST /api/worker/query-tasks/poll',
                 'POST /api/worker/query-tasks/{query_task_id}/complete',
                 'POST /api/worker/query-tasks/{query_task_id}/fail',
+                'timeout_seconds',
                 'query_task_id',
                 'query_task_attempt',
                 'lease_owner',

@@ -16,15 +16,20 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksFailWorkflowExceptionCommandShape(): void
+    public function testVersionTracksQueryTaskPollTimeoutShape(): void
     {
-        $this->assertSame('1.10', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.11', WorkerProtocolVersion::VERSION);
     }
 
     public function testVersionIncludesSignalWaitCommandShape(): void
     {
         $this->assertTrue(version_compare(WorkerProtocolVersion::VERSION, '1.9', '>='));
         $this->assertContains('open_signal_wait', WorkerProtocolVersion::nonTerminalCommandTypes());
+    }
+
+    public function testVersionIncludesFailWorkflowExceptionCommandShape(): void
+    {
+        $this->assertTrue(version_compare(WorkerProtocolVersion::VERSION, '1.10', '>='));
     }
 
     public function testWorkflowTaskVerbsIncludesAllBridgeMethods(): void
@@ -199,6 +204,7 @@ final class WorkerProtocolVersionTest extends TestCase
         $this->assertSame('/api/worker/query-tasks', $queryTasks['path_prefix']);
         $this->assertSame('/api/worker/query-tasks/poll', $queryTasks['endpoints']['poll']['path']);
         $this->assertContains('poll_request_id', $queryTasks['endpoints']['poll']['request_fields']);
+        $this->assertContains('timeout_seconds', $queryTasks['endpoints']['poll']['request_fields']);
         $this->assertSame(
             '/api/worker/query-tasks/{query_task_id}/complete',
             $queryTasks['endpoints']['complete']['path'],
