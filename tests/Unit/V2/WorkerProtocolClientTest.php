@@ -415,6 +415,42 @@ final class WorkerProtocolClientTest extends TestCase
         $this->assertSame($requests[0]['poll_request_id'], $requests[1]['poll_request_id']);
     }
 
+    public function testStandaloneQueryPollRecoversTimedOutGeneratedPollRequestOnNextCall(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+
+        $http->fake(function (Request $request) use ($http, &$requests) {
+            $requests[] = $request->data();
+
+            if (count($requests) <= 2) {
+                throw new ConnectionException('cURL error 28: Operation timed out');
+            }
+
+            return $http->response([
+                'task' => [
+                    'query_task_id' => 'query-task-recovered',
+                    'query_task_attempt' => 1,
+                    'lease_owner' => 'php-worker',
+                ],
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+
+        $this->assertSame([], $client->pollQueryTasks(queue: 'polyglot', workerId: 'php-worker'));
+
+        $tasks = $client->pollQueryTasks(queue: 'polyglot', workerId: 'php-worker');
+
+        $this->assertCount(1, $tasks);
+        $this->assertSame('query-task-recovered', $tasks[0]['query_task_id']);
+        $this->assertCount(3, $requests);
+        $this->assertIsString($requests[0]['poll_request_id']);
+        $this->assertNotSame('', $requests[0]['poll_request_id']);
+        $this->assertSame($requests[0]['poll_request_id'], $requests[1]['poll_request_id']);
+        $this->assertSame($requests[0]['poll_request_id'], $requests[2]['poll_request_id']);
+    }
+
     public function testStandaloneLongPollRequestTimeoutHonorsCallerTimeout(): void
     {
         $client = new WorkerProtocolClient(new HttpFactory(), 'http://server:8080', 'test-token', 'default');

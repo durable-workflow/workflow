@@ -55,6 +55,11 @@ final class WorkerProtocolClient
     /**
      * @var array<string, string>
      */
+    private array $queryPollRequestIds = [];
+
+    /**
+     * @var array<string, string>
+     */
     private array $activityAttemptTaskIds = [];
 
     private ?string $registeredWorkerId = null;
@@ -413,12 +418,23 @@ final class WorkerProtocolClient
             return [];
         }
 
+        $resolvedWorkerId = $this->resolveStandaloneWorkerId($workerId);
+        $resolvedTaskQueue = $this->resolveStandaloneTaskQueue($queue);
+        $pollRequestKey = null;
         $pollRequestId = is_string($pollRequestId) && trim($pollRequestId) !== ''
             ? trim($pollRequestId)
-            : 'query-poll-'.bin2hex(random_bytes(16));
+            : null;
+
+        if ($pollRequestId === null) {
+            $pollRequestKey = $this->pollRequestKey($resolvedWorkerId, $resolvedTaskQueue);
+            $pollRequestId = $this->queryPollRequestIds[$pollRequestKey]
+                ?? 'query-poll-'.bin2hex(random_bytes(16));
+            $this->queryPollRequestIds[$pollRequestKey] = $pollRequestId;
+        }
+
         $body = [
-            'worker_id' => $this->resolveStandaloneWorkerId($workerId),
-            'task_queue' => $this->resolveStandaloneTaskQueue($queue),
+            'worker_id' => $resolvedWorkerId,
+            'task_queue' => $resolvedTaskQueue,
             'poll_request_id' => $pollRequestId,
         ];
 
@@ -434,7 +450,15 @@ final class WorkerProtocolClient
                     continue;
                 }
 
+                if ($pollRequestKey !== null) {
+                    unset($this->queryPollRequestIds[$pollRequestKey]);
+                }
+
                 throw $exception;
+            }
+
+            if ($pollRequestKey !== null) {
+                unset($this->queryPollRequestIds[$pollRequestKey]);
             }
 
             $task = $response['task'] ?? null;
@@ -1019,6 +1043,11 @@ final class WorkerProtocolClient
         }
 
         return $resolved;
+    }
+
+    private function pollRequestKey(string $workerId, string $taskQueue): string
+    {
+        return $workerId."\0".$taskQueue;
     }
 
     private function resolveWorkflowLeaseOwner(string $taskId, ?string $leaseOwner): string
