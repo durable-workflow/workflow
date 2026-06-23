@@ -990,12 +990,7 @@ final class WorkerProtocolClient
 
     private function workerTaskLongPollRequestTimeoutSeconds(int $timeoutSeconds): int
     {
-        $serverWaitSeconds = max(
-            WorkerProtocolVersion::clampLongPollTimeout($timeoutSeconds),
-            WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
-        );
-
-        return $serverWaitSeconds + 5;
+        return $this->longPollRequestTimeoutSeconds($timeoutSeconds);
     }
 
     /**
