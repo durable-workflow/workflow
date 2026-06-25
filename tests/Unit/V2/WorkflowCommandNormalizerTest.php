@@ -102,6 +102,30 @@ final class WorkflowCommandNormalizerTest extends TestCase
         ]], $out);
     }
 
+    public function testCompleteWorkflowAcceptsJsonEnvelope(): void
+    {
+        $blob = Serializer::serializeWithCodec('json', [
+            'scenario' => 'php_created_python_workflow',
+            'workflow_runtime' => 'sdk-python',
+        ]);
+
+        $out = WorkflowCommandNormalizer::normalize([
+            [
+                'type' => 'complete_workflow',
+                'result' => [
+                    'codec' => 'json',
+                    'blob' => $blob,
+                ],
+            ],
+        ]);
+
+        $this->assertSame([[
+            'type' => 'complete_workflow',
+            'result' => $blob,
+            'payload_codec' => 'json',
+        ]], $out);
+    }
+
     public function testFailWorkflowRequiresNonEmptyMessage(): void
     {
         $this->expectException(ValidationException::class);

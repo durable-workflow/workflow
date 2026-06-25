@@ -8,10 +8,11 @@ use JsonException;
 use RuntimeException;
 
 /**
- * Legacy untagged JSON helper.
+ * UTF-8 JSON payload codec.
  *
- * Final v2 does not register JSON as a named payload codec. This class remains
- * only for the codec-blind {@see Serializer::unserialize()} legacy sniffer.
+ * The v2 default codec remains Avro, but explicit worker/control-plane
+ * envelopes may carry JSON bytes for cross-language interop and for legacy
+ * codec-blind {@see Serializer::unserialize()} sniffing.
  */
 final class Json implements SerializerInterface
 {

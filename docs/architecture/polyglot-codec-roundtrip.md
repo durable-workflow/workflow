@@ -9,11 +9,12 @@ the platform conformance suite.
 
 The `payload_codec` envelope tag on every wire payload identifies the
 codec used to encode the blob. The language-neutral v2 surface advertises
-one universal codec:
+these universal codecs:
 
 | Codec | Use |
 | --- | --- |
 | `avro` | Default for new v2 workflows and activities. The blob is a base64-encoded Avro generic-wrapper around a JSON document. |
+| `json` | Explicit interop envelope for UTF-8 JSON payloads. Workers and control-plane poll responses can decode it when an external SDK or previously persisted row already tagged the payload as JSON. |
 
 Legacy PHP history can still name PHP-engine-specific codecs. Those
 codecs are exposed under `payload_codecs_engine_specific["php"]`, not
@@ -47,9 +48,10 @@ identical observable behaviour:
 | `array` | indexed `array<int, mixed>` | `list[Any]` |
 | `object` | associative `array<string, mixed>` | `dict[str, Any]` |
 
-The Avro generic-wrapper accepts any JSON document built from this set.
-Both languages read and write the same `payload_codec: "avro"` envelope
-without further configuration.
+Both universal codecs accept any JSON document built from this set. New
+PHP-authored v2 payloads write the default `payload_codec: "avro"`
+envelope; workers and control-plane clients also read explicit
+`payload_codec: "json"` envelopes without further configuration.
 
 ### Round-trip with documented coercion
 
@@ -59,7 +61,7 @@ must adapt the value back at the consumer.
 
 | Producer | Wire shape | Consumer | Coercion |
 | --- | --- | --- | --- |
-| PHP `int` outside the JS-safe range (above 2^53-1) | JSON `number` | Python `int` | No loss in Python; PHP to Python preserves precision because Avro carries the integer in its wrapper. |
+| PHP `int` outside the JS-safe range (above 2^53-1) | JSON `number` | Python `int` | No loss in Python; PHP to Python preserves precision because the universal codecs carry the integer as a JSON integer token. Avoid routing these values through JSON processors that coerce all numbers to floating point. |
 | Python `IntEnum` / `StrEnum` | JSON scalar | PHP `int`/`string` | The receiver sees the raw scalar. Re-attach the enum class on the consumer side if it is significant. |
 | Python `Decimal` | JSON `string` (via `to_avro_payload_value`) | PHP `string` | The receiver must re-parse to its money/fixed-point type. |
 | Python `datetime` / `date` / `time` | ISO 8601 `string` | PHP `string` (parse with `Carbon`/`DateTimeImmutable`) | Time zone is preserved when the producer emits a tz-aware `datetime`; naive datetimes are wire-ambiguous and SHOULD be avoided. |
@@ -68,7 +70,7 @@ must adapt the value back at the consumer.
 
 ### Requires an explicit adapter at the call site
 
-These values are not Avro JSON payload safe. The producer MUST adapt
+These values are not universal-codec payload safe. The producer MUST adapt
 them to a value in the clean round-trip set before encode, or the
 encoder raises:
 
@@ -127,9 +129,11 @@ blocker for both packages.
 
 Operators of polyglot fleets SHOULD:
 
-- Pin `avro` as the language-neutral `payload_codec` in namespace
-  policy. Expose legacy PHP serializer codecs only through the
-  engine-specific codec list when old PHP history still needs to drain.
+- Pin `avro` as the default write codec for new v2 payloads unless a
+  namespace has an explicit policy to author JSON envelopes. Keep both
+  `avro` and `json` available as universal decode codecs. Expose legacy
+  PHP serializer codecs only through the engine-specific codec list when
+  old PHP history still needs to drain.
 - Treat the `Requires an explicit adapter` set as a workflow-author
   contract, not a runtime fallback. The SDKs deliberately fail closed
   rather than guess at a serialisation for these values.

@@ -622,10 +622,10 @@ these rules; this section is the durable-kernel authority they cite.
   application models it cannot prove still exist.
 - Custom serializer classes from v1 are not a v2 runtime contract.
   `php artisan workflow:v2:doctor` flags any `workflows.serializer`
-  setting that is not `avro`, `workflow-serializer-y`, or
+  setting that is not `avro`, `json`, `workflow-serializer-y`, or
   `workflow-serializer-base64` as migration debt; default-codec
-  resolution silently falls back to `avro` for new runs so encode does
-  not fail, and the configured custom class is never invoked.
+  resolution remains `avro` for new runs, and configured custom classes
+  are never invoked.
 - Custom model-subclass compatibility is a frozen support matrix.
   Subclassing `WorkflowInstance`, `WorkflowRun`, `WorkflowTask`,
   history-event/projection/schedule/activity/failure/link/messages
@@ -827,7 +827,7 @@ do not introduce new durable truth.
   named reason.
 - `php artisan workflow:v2:doctor` reports the active backend matrix,
   flags unsupported settings (including `workflows.serializer` values
-  outside `avro`, `workflow-serializer-y`, and
+  outside `avro`, `json`, `workflow-serializer-y`, and
   `workflow-serializer-base64`), and lists the readiness checks the
   cluster currently fails. Health endpoints surface the same shape so
   external monitors do not depend on log archaeology.

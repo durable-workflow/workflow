@@ -400,10 +400,13 @@ return [
     // mounting a config override file, but it cannot change the new-run v2
     // default away from Avro.
     //
+    // JSON is also registered as a universal v2 codec for decoding external
+    // SDK envelopes, but Avro remains the default for new v2 payloads.
+    //
     // Legacy PHP-only codecs ("workflow-serializer-y",
     // "workflow-serializer-base64") remain supported for reading v1 history.
-    // Setting this to a legacy codec, JSON, or a removed custom serializer will
-    // be flagged by `workflow:v2:doctor`; JSON is not a registered v2 codec.
+    // Setting this to a removed custom serializer will be flagged by
+    // `workflow:v2:doctor`.
     'serializer' => Env::dw('DW_SERIALIZER', 'WORKFLOW_SERIALIZER', 'avro'),
 
     'storage' => [

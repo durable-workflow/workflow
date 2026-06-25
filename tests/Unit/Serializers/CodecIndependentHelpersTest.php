@@ -7,6 +7,7 @@ namespace Tests\Unit\Serializers;
 use Exception;
 use Tests\TestCase;
 use Workflow\Serializers\Base64;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\Serializers\Y;
 
@@ -108,10 +109,10 @@ final class CodecIndependentHelpersTest extends TestCase
             $this->markTestSkipped('apache/avro package is not installed in this environment.');
         }
 
-        // Use the explicit-codec round trip: the legacy __callStatic('unserialize')
-        // sniffs the blob and cannot auto-detect binary Avro. Callers that start a
-        // run with a specific codec always persist the codec name alongside the
-        // blob and reopen through {@see Serializer::unserializeWithCodec()}.
+        // Use the explicit-codec round trip: untagged legacy sniffing can
+        // detect JSON but cannot auto-detect binary Avro. Callers that start
+        // a run with a specific codec always persist the codec name alongside
+        // the blob and reopen through {@see Serializer::unserializeWithCodec()}.
         $throwable = new Exception('boom', 9);
         $serialized = Serializer::serializeWithCodec($codec, $throwable);
         $decoded = Serializer::unserializeWithCodec($codec, $serialized);
@@ -126,9 +127,13 @@ final class CodecIndependentHelpersTest extends TestCase
 
     public static function languageNeutralCodecProvider(): array
     {
-        return [
-            'avro' => ['avro'],
-        ];
+        $cases = [];
+
+        foreach (CodecRegistry::universal() as $codec) {
+            $cases[$codec] = [$codec];
+        }
+
+        return $cases;
     }
 
     public function testLegacyCodecsRoundTripBytesThroughEncodeDecode(): void
@@ -149,6 +154,7 @@ final class CodecIndependentHelpersTest extends TestCase
     {
         return [
             'avro' => ['avro'],
+            'json' => ['json'],
             'Y' => [Y::class],
             'Base64' => [Base64::class],
         ];

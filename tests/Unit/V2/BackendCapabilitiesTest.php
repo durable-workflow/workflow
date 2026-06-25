@@ -8,6 +8,7 @@ use Illuminate\Cache\Repository;
 use Illuminate\Support\Carbon;
 use Tests\Support\NonLockingCacheStore;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\BackendCapabilities;
 
 final class BackendCapabilitiesTest extends TestCase
@@ -272,26 +273,19 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertSame('error', $queueIssue['severity']);
     }
 
-    public function testJsonCodecConfigIsRejectedAsUnknownAndAvroRemainsDefault(): void
+    public function testJsonCodecConfigIsUniversalAndAvroRemainsDefault(): void
     {
         config()->set('workflows.serializer', 'json');
 
         $snapshot = BackendCapabilities::snapshot();
 
         $this->assertSame('avro', $snapshot['codec']['canonical']);
-        $this->assertNull($snapshot['codec']['configured_canonical']);
+        $this->assertSame('json', $snapshot['codec']['configured_canonical']);
         $this->assertTrue($snapshot['codec']['universal']);
-        $this->assertFalse($snapshot['codec']['configured_universal']);
-        $this->assertFalse($snapshot['codec']['supported']);
-
-        $codecIssue = collect($snapshot['issues'])
-            ->firstWhere('code', 'codec_unknown');
-
-        $this->assertNotNull($codecIssue);
-        $this->assertSame('error', $codecIssue['severity']);
-        $this->assertSame('codec', $codecIssue['component']);
-        $this->assertStringContainsString('json', $codecIssue['message']);
-        $this->assertStringContainsString('avro', $codecIssue['message']);
+        $this->assertTrue($snapshot['codec']['configured_universal']);
+        $this->assertTrue($snapshot['codec']['supported']);
+        $this->assertNull(collect($snapshot['issues'])->firstWhere('code', 'codec_unknown'));
+        $this->assertNull(collect($snapshot['issues'])->firstWhere('code', 'codec_legacy_php_only'));
     }
 
     public function testLegacyPhpCodecEmitsPolyglotCompatibilityWarning(): void
@@ -355,8 +349,9 @@ final class BackendCapabilitiesTest extends TestCase
         $this->assertStringContainsString('does not support custom serializer classes', $codecIssue['message']);
 
         // It must name the universal codec options an operator can migrate to.
-        $this->assertStringContainsString('avro', $codecIssue['message']);
-        // json is no longer recommended for new workflows (Avro-only per #334)
+        foreach (CodecRegistry::universal() as $codec) {
+            $this->assertStringContainsString($codec, $codecIssue['message']);
+        }
 
         // It must mention that default-codec resolution silently falls back
         // to avro so operators understand why new runs still work — and that

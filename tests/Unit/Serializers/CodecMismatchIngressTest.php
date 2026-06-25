@@ -32,8 +32,8 @@ final class CodecMismatchIngressTest extends TestCase
         } catch (CodecDecodeException $e) {
             $this->assertSame('avro', $e->declaredCodec);
             $this->assertStringContainsString('look like JSON', $e->detail);
-            $this->assertStringContainsString('Final v2 does not register a JSON payload codec', $e->remediation);
             $this->assertStringContainsString('Avro::serialize', $e->remediation);
+            $this->assertStringContainsString('codec "json"', $e->remediation);
         }
     }
 
