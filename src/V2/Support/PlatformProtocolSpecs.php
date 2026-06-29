@@ -281,7 +281,7 @@ final class PlatformProtocolSpecs
                 'evolution_rule' => self::EVOLUTION_ADDITIVE_MINOR_BREAKING_MAJOR,
                 'breaking_change_release' => 'major',
                 'discovery_endpoint' => 'GET /api/cluster/info -> worker_protocol',
-                'conformance_test' => 'durable-workflow/server: tests/Feature/WorkerProtocolContractTest.php, tests/Feature/WorkerProtocolSuccessContractTest.php, tests/Feature/WorkerProtocolOwnershipErrorContractTest.php, tests/Feature/WorkerProtocolVersionCoverageTest.php, tests/Feature/WorkflowWorkerProtocolTest.php, tests/Feature/ActivityWorkerProtocolTest.php, and tests/Feature/WorkflowQueryTaskBrokerTest.php; durable-workflow/workflow: tests/Unit/V2/WorkerProtocolClientTest.php and tests/Unit/V2/WorkflowQueryTaskExecutorTest.php',
+                'conformance_test' => 'durable-workflow/server: tests/Feature/WorkerProtocolContractTest.php, tests/Feature/WorkerProtocolSuccessContractTest.php, tests/Feature/WorkerProtocolOwnershipErrorContractTest.php, tests/Feature/WorkerProtocolVersionCoverageTest.php, tests/Feature/WorkflowWorkerProtocolTest.php, tests/Feature/ActivityWorkerProtocolTest.php, and tests/Feature/WorkflowQueryTaskBrokerTest.php; durable-workflow/workflow: tests/Unit/V2/WorkerProtocolClientTest.php, tests/Unit/V2/StandaloneWorkflowWorkerTest.php, and tests/Unit/V2/WorkflowQueryTaskExecutorTest.php',
                 'status' => self::STATUS_PUBLISHED,
                 'spec_path' => 'static/platform-protocol-specs/worker-protocol-api.openapi.yaml',
             ],

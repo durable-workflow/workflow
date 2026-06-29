@@ -221,6 +221,7 @@ that host PHP workflows against the standalone server without embedding the
 Laravel queue runner:
 
 - `Workflow\V2\Worker\WorkerProtocolClient`
+- `Workflow\V2\Worker\StandaloneWorkflowWorker`
 - `Workflow\V2\Worker\WorkflowFiberRunner`
 - `Workflow\V2\Worker\WorkflowQueryTaskExecutor`
 - `Workflow\V2\Worker\WorkflowStep`
@@ -255,6 +256,12 @@ to recover a leased task after a local HTTP timeout and sends
 caches the returned lease fields so follow-up history, heartbeat, complete,
 and fail calls can send the required `lease_owner`, `workflow_task_attempt`,
 `activity_attempt_id`, and `query_task_attempt` values.
+`StandaloneWorkflowWorker` is the stable PHP worker driver for service-mode
+workflow workers that want the package to orchestrate the polling loop. Each
+tick polls and completes at most one query task before polling workflow tasks,
+then executes workflow tasks through `WorkflowFiberRunner` and completes or
+fails them through `WorkerProtocolClient`. That query-first order is part of
+the public worker shim contract for workers that advertise `query_tasks`.
 `namespace()` returns the worker client's selected namespace, and
 `withNamespace()` creates a fresh worker client with the same connection
 settings for a different namespace. That clone intentionally does not carry

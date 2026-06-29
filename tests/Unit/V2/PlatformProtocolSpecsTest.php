@@ -237,6 +237,10 @@ final class PlatformProtocolSpecsTest extends TestCase
             $entry['conformance_test'],
         );
         $this->assertStringContainsString(
+            'StandaloneWorkflowWorkerTest.php',
+            $entry['conformance_test'],
+        );
+        $this->assertStringContainsString(
             'WorkflowQueryTaskExecutorTest.php',
             $entry['conformance_test'],
         );

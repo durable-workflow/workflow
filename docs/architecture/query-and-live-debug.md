@@ -197,6 +197,11 @@ poll attempt. When the standalone server only knows an external workflow type
 key, PHP workers should pass the same `workflow_type => workflow_class` registry
 to `WorkflowQueryTaskExecutor` so query-task replay can see the class's declared
 queries before invoking the handler.
+PHP workers that use `StandaloneWorkflowWorker` inherit a query-first tick:
+each tick polls, executes, and completes at most one server-routed query task
+before polling workflow tasks. Workers that build their own loop MUST preserve
+the same fairness property when they advertise `query_tasks`; a workflow-task
+long poll must not starve a waiting public query.
 
 Each leased query task carries `query_task_id`,
 `query_task_attempt`, `lease_owner`, `workflow_id`, `run_id`,
