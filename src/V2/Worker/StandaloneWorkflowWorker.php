@@ -115,6 +115,7 @@ final class StandaloneWorkflowWorker
                 'processed' => true,
                 'outcome' => 'completed',
                 'query_task_id' => $queryTaskId,
+                'query_task' => $this->queryTaskMetadata($task, $result),
                 'worker_response' => $response,
             ];
         }
@@ -138,6 +139,7 @@ final class StandaloneWorkflowWorker
             'processed' => true,
             'outcome' => 'failed',
             'query_task_id' => $queryTaskId,
+            'query_task' => $this->queryTaskMetadata($task, $result),
             'failure' => $failure,
             'worker_response' => $response,
         ];
@@ -386,6 +388,28 @@ final class StandaloneWorkflowWorker
         }
 
         return $fallbackCodec;
+    }
+
+    /**
+     * @param array<string, mixed> $task
+     * @param array<string, mixed> $result
+     * @return array<string, mixed>
+     */
+    private function queryTaskMetadata(array $task, array $result): array
+    {
+        return array_filter([
+            'query_task_id' => $this->stringValue($result['query_task_id'] ?? null)
+                ?? $this->stringValue($task['query_task_id'] ?? null),
+            'query_task_attempt' => $this->intValue($result['query_task_attempt'] ?? null)
+                ?? $this->intValue($task['query_task_attempt'] ?? null),
+            'workflow_id' => $this->stringValue($task['workflow_id'] ?? null),
+            'run_id' => $this->stringValue($task['run_id'] ?? null)
+                ?? $this->stringValue($task['workflow_run_id'] ?? null),
+            'workflow_type' => $this->stringValue($task['workflow_type'] ?? null),
+            'query_name' => $this->stringValue($task['query_name'] ?? null),
+            'task_queue' => $this->stringValue($task['task_queue'] ?? null),
+            'lease_owner' => $this->stringValue($task['lease_owner'] ?? null),
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**

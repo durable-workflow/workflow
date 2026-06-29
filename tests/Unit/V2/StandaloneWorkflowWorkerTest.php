@@ -53,6 +53,11 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertTrue($result['processed'] ?? false);
         $this->assertSame('completed', $result['outcome'] ?? null);
         $this->assertSame('query-task-1', $result['query_task_id'] ?? null);
+        $this->assertSame('currentStage', $result['query_task']['query_name'] ?? null);
+        $this->assertSame('workflow-1', $result['query_task']['workflow_id'] ?? null);
+        $this->assertSame('run-1', $result['query_task']['run_id'] ?? null);
+        $this->assertSame('php-worker', $result['query_task']['lease_owner'] ?? null);
+        $this->assertSame(2, $result['query_task']['query_task_attempt'] ?? null);
         $this->assertSame([
             'http://server:8080/api/worker/query-tasks/poll',
             'http://server:8080/api/worker/query-tasks/query-task-1/complete',
