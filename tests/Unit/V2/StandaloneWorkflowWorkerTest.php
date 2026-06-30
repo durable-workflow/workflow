@@ -8,12 +8,15 @@ use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
 use Tests\Fixtures\V2\TestQueryWorkflow;
 use Tests\TestCase;
+use Workflow\QueryMethod;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Worker\StandaloneWorkflowWorker;
 use Workflow\V2\Worker\WorkerProtocolClient;
 use Workflow\V2\Workflow;
+use function Workflow\V2\signal;
 
 final class StandaloneWorkflowWorkerTest extends TestCase
 {
@@ -305,6 +308,129 @@ final class StandaloneWorkflowWorkerTest extends TestCase
         $this->assertSame('waiting-for-name', $requests[4]['body']['result'] ?? null);
     }
 
+    public function testProcessOneWorkflowTaskKeepsDrainingAfterCompletionUntilInitialCounterQueryArrives(): void
+    {
+        $http = new HttpFactory();
+        $requests = [];
+        $queryPolls = 0;
+
+        $http->fake(function (Request $request) use ($http, &$queryPolls, &$requests) {
+            $requests[] = [
+                'method' => strtoupper($request->method()),
+                'url' => $request->url(),
+                'body' => $request->data(),
+            ];
+
+            if (str_ends_with($request->url(), '/workflow-tasks/poll')) {
+                return $http->response([
+                    'task' => $this->workflowTask([
+                        'workflow_type' => 'conformance.counter.php',
+                        'workflow_class' => 'conformance.counter.php',
+                        'history_events' => [
+                            [
+                                'id' => 'event-started',
+                                'sequence' => 1,
+                                'event_type' => HistoryEventType::WorkflowStarted->value,
+                                'payload' => [
+                                    'workflow_type' => 'conformance.counter.php',
+                                    'workflow_class' => 'conformance.counter.php',
+                                    'payload_codec' => 'avro',
+                                ],
+                                'recorded_at' => '2026-05-17T00:00:00+00:00',
+                            ],
+                        ],
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/workflow-tasks/workflow-task-1/complete')) {
+                return $http->response([
+                    'task_id' => 'workflow-task-1',
+                    'workflow_task_attempt' => 1,
+                    'outcome' => 'completed',
+                    'recorded' => true,
+                    'status' => 200,
+                ]);
+            }
+
+            if (str_ends_with($request->url(), '/query-tasks/poll')) {
+                $queryPolls++;
+
+                if ($queryPolls < 3) {
+                    return $http->response([
+                        'task' => null,
+                        'poll_status' => 'empty',
+                    ]);
+                }
+
+                return $http->response([
+                    'task' => $this->queryTask([
+                        'lease_owner' => 'php-worker',
+                        'workflow_type' => 'conformance.counter.php',
+                        'workflow_class' => 'conformance.counter.php',
+                        'query_name' => 'state',
+                        'history_export' => [
+                            'workflow' => [
+                                'workflow_type' => 'conformance.counter.php',
+                                'workflow_class' => 'conformance.counter.php',
+                            ],
+                            'history_events' => [
+                                [
+                                    'id' => 'event-started',
+                                    'sequence' => 1,
+                                    'type' => HistoryEventType::WorkflowStarted->value,
+                                    'payload' => [
+                                        'workflow_type' => 'conformance.counter.php',
+                                        'workflow_class' => 'conformance.counter.php',
+                                        'payload_codec' => 'avro',
+                                    ],
+                                    'recorded_at' => '2026-05-17T00:00:00+00:00',
+                                ],
+                            ],
+                        ],
+                    ]),
+                    'poll_status' => 'leased',
+                ]);
+            }
+
+            return $http->response([
+                'outcome' => 'completed',
+                'status' => 200,
+            ]);
+        });
+
+        $client = new WorkerProtocolClient($http, 'http://server:8080', 'test-token', 'default');
+        $worker = new StandaloneWorkflowWorker($client, [
+            'conformance.counter.php' => StandaloneWorkflowWorkerCounterWorkflow::class,
+        ]);
+
+        $result = $worker->processOneWorkflowTask('polyglot', 'php-worker');
+
+        $this->assertSame('query_task', $result['kind'] ?? null);
+        $this->assertTrue($result['processed'] ?? false);
+        $this->assertSame('completed', $result['outcome'] ?? null);
+        $this->assertSame('state', $result['query_task']['query_name'] ?? null);
+        $this->assertSame('workflow_task', $result['deferred_workflow_task']['kind'] ?? null);
+        $this->assertSame('completed', $result['deferred_workflow_task']['outcome'] ?? null);
+        $this->assertSame([
+            'http://server:8080/api/worker/workflow-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/workflow-tasks/workflow-task-1/complete',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/query-task-1/complete',
+        ], array_column($requests, 'url'));
+        $this->assertSame(1, $requests[1]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(1, $requests[3]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(1, $requests[4]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(0, $requests[5]['body']['result'] ?? null);
+        $this->assertSame(
+            0,
+            Serializer::unserializeWithCodec('avro', $requests[5]['body']['result_envelope']['blob'] ?? ''),
+        );
+    }
+
     public function testProcessOneWorkflowTaskAcceptsWaitingForHistoryResponseForEmptyCommands(): void
     {
         $http = new HttpFactory();
@@ -387,6 +513,8 @@ final class StandaloneWorkflowWorkerTest extends TestCase
             'http://server:8080/api/worker/workflow-tasks/poll',
             'http://server:8080/api/worker/workflow-tasks/workflow-task-1/fail',
             'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
+            'http://server:8080/api/worker/query-tasks/poll',
         ], array_column($requests, 'url'));
         $this->assertSame([
             'lease_owner' => 'php-worker',
@@ -396,6 +524,9 @@ final class StandaloneWorkflowWorkerTest extends TestCase
                 'type' => 'WorkflowTaskWaitingForHistory',
             ],
         ], $requests[1]['body']);
+        $this->assertSame(1, $requests[2]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(1, $requests[3]['body']['timeout_seconds'] ?? null);
+        $this->assertSame(1, $requests[4]['body']['timeout_seconds'] ?? null);
     }
 
     public function testProcessOneWorkflowTaskDrainsReadyQueryAfterWaitingForHistory(): void
@@ -777,5 +908,33 @@ final class StandaloneWorkflowWorkerSimpleWorkflow extends Workflow
     public function handle(): string
     {
         return 'ready';
+    }
+}
+
+#[Signal('increment', [[
+    'name' => 'amount',
+    'type' => 'int',
+]])]
+final class StandaloneWorkflowWorkerCounterWorkflow extends Workflow
+{
+    private int $count = 0;
+
+    public function handle(): mixed
+    {
+        while (true) {
+            $this->count += (int) signal('increment');
+        }
+    }
+
+    #[QueryMethod]
+    public function state(): int
+    {
+        return $this->count;
+    }
+
+    #[QueryMethod]
+    public function current(): int
+    {
+        return $this->count;
     }
 }

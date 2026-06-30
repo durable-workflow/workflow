@@ -24,6 +24,8 @@ use Workflow\V2\Workflow;
  */
 final class StandaloneWorkflowWorker
 {
+    private const READY_QUERY_DRAIN_ATTEMPTS = 3;
+
     /**
      * @var array<string, class-string<Workflow>>
      */
@@ -191,12 +193,16 @@ final class StandaloneWorkflowWorker
             $poll = $this->client->lastWorkflowTaskPoll();
 
             if (($poll['poll_status'] ?? null) === 'query_task_pending') {
-                $query = $this->processOneQueryTask($queue, $workerId, $timeoutSeconds);
+                [$query, $failure] = $this->drainReadyQueryTask($queue, $workerId);
 
                 if (($query['processed'] ?? false) === true) {
                     $query['deferred_workflow_poll'] = $poll;
 
                     return $query;
+                }
+
+                if ($failure !== null) {
+                    $poll['deferred_query_poll_failure'] = $failure;
                 }
             }
 
@@ -323,27 +329,7 @@ final class StandaloneWorkflowWorker
      */
     private function drainReadyQueryTaskBeforeWorkflowTask(?string $queue, ?string $workerId): array
     {
-        try {
-            $query = $this->processOneQueryTask(
-                $queue,
-                $workerId,
-                WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT,
-            );
-        } catch (Throwable $throwable) {
-            return [
-                null,
-                [
-                    'message' => $throwable->getMessage(),
-                    'type' => $throwable::class,
-                ],
-            ];
-        }
-
-        if (($query['processed'] ?? false) !== true) {
-            return [null, null];
-        }
-
-        return [$query, null];
+        return $this->drainReadyQueryTask($queue, $workerId, 1);
     }
 
     /**
@@ -396,8 +382,8 @@ final class StandaloneWorkflowWorker
 
     /**
      * A public query can be enqueued while the PHP worker is executing a
-     * workflow task. Drain one already-routed query before returning so that
-     * query does not wait for the caller's next loop turn.
+     * workflow task. Drain a short bounded window before returning so that an
+     * already-routed query does not wait for the caller's next loop turn.
      *
      * @param array<string, mixed> $workflowResult
      * @return array<string, mixed>
@@ -407,16 +393,12 @@ final class StandaloneWorkflowWorker
         ?string $queue,
         ?string $workerId,
     ): array {
-        try {
-            $query = $this->processOneQueryTask(
-                $queue,
-                $workerId,
-                WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT,
-            );
-        } catch (Throwable $throwable) {
+        [$query, $failure] = $this->drainReadyQueryTask($queue, $workerId);
+
+        if ($failure !== null) {
             $workflowResult['deferred_query_poll_failure'] = [
-                'message' => $throwable->getMessage(),
-                'type' => $throwable::class,
+                'message' => $failure['message'],
+                'type' => $failure['type'],
             ];
 
             return $workflowResult;
@@ -429,6 +411,44 @@ final class StandaloneWorkflowWorker
         $query['deferred_workflow_task'] = $workflowResult;
 
         return $query;
+    }
+
+    /**
+     * Server-routed query tasks can appear just after a workflow poll observes
+     * a started run or just after the first wait is recorded. Poll a short,
+     * bounded window so the public query path is not left waiting for a later
+     * worker loop turn.
+     *
+     * @return array{0: array<string, mixed>|null, 1: array<string, string>|null}
+     */
+    private function drainReadyQueryTask(
+        ?string $queue,
+        ?string $workerId,
+        int $attempts = self::READY_QUERY_DRAIN_ATTEMPTS,
+    ): array {
+        for ($attempt = 0; $attempt < max(1, $attempts); $attempt++) {
+            try {
+                $query = $this->processOneQueryTask(
+                    $queue,
+                    $workerId,
+                    WorkerProtocolVersion::MIN_LONG_POLL_TIMEOUT,
+                );
+            } catch (Throwable $throwable) {
+                return [
+                    null,
+                    [
+                        'message' => $throwable->getMessage(),
+                        'type' => $throwable::class,
+                    ],
+                ];
+            }
+
+            if (($query['processed'] ?? false) === true) {
+                return [$query, null];
+            }
+        }
+
+        return [null, null];
     }
 
     /**
