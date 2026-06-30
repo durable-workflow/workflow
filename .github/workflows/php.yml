@@ -51,7 +51,13 @@ jobs:
           ${{ runner.os }}-php-
 
     - name: Install dependencies
-      run: composer install --prefer-dist --no-progress
+      # Laravel 10.x is end-of-life and every remaining 10.x release now carries
+      # published security advisories. The dev test matrix still pins
+      # orchestra/testbench ^8 (Laravel 10 only), so Composer's default policy
+      # blocking refuses to install those releases and resolution fails before
+      # any test runs. --no-blocking lets the install resolve the latest 10.x for
+      # the test run; composer.json is unchanged and shipped users are unaffected.
+      run: composer install --prefer-dist --no-progress --no-blocking
 
     - name: Check coding style via ECS
       run: vendor/bin/ecs check
